@@ -5,7 +5,7 @@ import * as THREE from "three";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { WorldScene } from "./components/World/WorldScene";
-import RAW_AGENT_TYPE_INFO from "../../shared/agents.json";
+import RAW_AGENT_TYPE_INFO from "../shared/agents.json";
 import { GLBAgent } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 

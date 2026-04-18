@@ -1,0 +1,257 @@
+{
+  "Researcher": {
+    "description": "Deep dives — data analysis, trends & insights",
+    "color": "#7AAC7A",
+    "robeColor": "#5E8E5E",
+    "accentColor": "#96C496",
+    "habitatColor": "#BDD4BD",
+    "habitatLabel": "The Sanctuary",
+    "image": "/agents/Researcher.png",
+    "suggest_in_onboarding": true
+  },
+  "Tutor": {
+    "description": "Teaches & guides — education, onboarding & mentoring",
+    "color": "#A882D8",
+    "robeColor": "#8A62C0",
+    "accentColor": "#C8A4F0",
+    "habitatColor": "#CEC4E4",
+    "habitatLabel": "The Axis",
+    "image": "/agents/Tutor.png",
+    "suggest_in_onboarding": true
+  },
+  "Interior Designer": {
+    "description": "Curates spaces with impeccable style.",
+    "color": "#82A4A8",
+    "robeColor": "#82A4A8",
+    "accentColor": "#C1D3D5",
+    "habitatColor": "#A6C2C5",
+    "habitatLabel": "Design",
+    "image": "/agents/InteriorDesigner.png",
+    "suggest_in_onboarding": true
+  },
+  "Fashion Stylist": {
+    "description": "Curates your wardrobe and looks.",
+    "color": "#B85C82",
+    "robeColor": "#B85C82",
+    "accentColor": "#E5A8C1",
+    "habitatColor": "#D6A3B9",
+    "habitatLabel": "Fashion",
+    "image": "/agents/FashionStylist.png",
+    "suggest_in_onboarding": true
+  },
+  "Therapist": {
+    "description": "Listens, guides, and supports your well-being.",
+    "color": "#E0908B",
+    "robeColor": "#E0908B",
+    "accentColor": "#FACCC9",
+    "habitatColor": "#EFAFA9",
+    "habitatLabel": "Wellness",
+    "image": "/agents/Therapist.png",
+    "suggest_in_onboarding": true
+  },
+  "Chef": {
+    "description": "Plans meals and creates culinary magic.",
+    "color": "#D96C3B",
+    "robeColor": "#D96C3B",
+    "accentColor": "#F4AD8A",
+    "habitatColor": "#E8A381",
+    "habitatLabel": "Kitchen",
+    "image": "/agents/Chef1.png",
+    "suggest_in_onboarding": true
+  },
+  "Travel Agent": {
+    "description": "Plans itineraries and perfect getaways.",
+    "color": "#6AA89E",
+    "robeColor": "#6AA89E",
+    "accentColor": "#AEE5DB",
+    "habitatColor": "#94C9C0",
+    "habitatLabel": "Travel",
+    "image": "/agents/TravelAgent.png",
+    "suggest_in_onboarding": true
+  },
+  "Media Advisor": {
+    "description": "Navigates news, entertainment & PR.",
+    "color": "#63476E",
+    "robeColor": "#63476E",
+    "accentColor": "#A485B0",
+    "habitatColor": "#7D6288",
+    "habitatLabel": "Media",
+    "image": "/agents/MediaAdvisor.png",
+    "suggest_in_onboarding": true
+  },
+  "Relationship Guru": {
+    "description": "Helps you navigate social connections.",
+    "color": "#DB998A",
+    "robeColor": "#DB998A",
+    "accentColor": "#F4CCC3",
+    "habitatColor": "#EAB3A6",
+    "habitatLabel": "Social",
+    "image": "/agents/RelationshipGuru.png",
+    "suggest_in_onboarding": true
+  },
+  "Kids Coordinator": {
+    "description": "Manages schedules, activities & fun.",
+    "color": "#BFCB75",
+    "robeColor": "#BFCB75",
+    "accentColor": "#E5EEAF",
+    "habitatColor": "#D8E38E",
+    "habitatLabel": "Family",
+    "image": "/agents/KidsCoordinator.png",
+    "suggest_in_onboarding": true
+  },
+  "Accountant": {
+    "description": "Balances the books & compliance.",
+    "color": "#8E9EAA",
+    "robeColor": "#8E9EAA",
+    "accentColor": "#D7DFE5",
+    "habitatColor": "#BCCAD6",
+    "habitatLabel": "Finance",
+    "image": "/agents/Accountant.png",
+    "suggest_in_onboarding": true
+  },
+  "Business Strategist": {
+    "description": "Plots long-term growth & objectives.",
+    "color": "#E2936B",
+    "robeColor": "#E2936B",
+    "accentColor": "#F5C2A8",
+    "habitatColor": "#EDAA87",
+    "habitatLabel": "Strategy",
+    "image": "/agents/BusinessStrategist.png",
+    "suggest_in_onboarding": true
+  },
+  "Marketing Guru": {
+    "description": "Drives traffic, campaigns and virality.",
+    "color": "#F0B466",
+    "robeColor": "#F0B466",
+    "accentColor": "#FCE1B6",
+    "habitatColor": "#F5CC8E",
+    "habitatLabel": "Marketing",
+    "image": "/agents/MarketingGuru.png",
+    "suggest_in_onboarding": true
+  },
+  "Educator": {
+    "description": "Builds curriculums and learning paths.",
+    "color": "#95B589",
+    "robeColor": "#95B589",
+    "accentColor": "#CFE5C6",
+    "habitatColor": "#B6D2AA",
+    "habitatLabel": "Education",
+    "image": "/agents/Educator.png",
+    "suggest_in_onboarding": true
+  },
+  "Artist": {
+    "description": "Brings creative visions to life.",
+    "color": "#D07C82",
+    "robeColor": "#D07C82",
+    "accentColor": "#F3BCC1",
+    "habitatColor": "#E29DA3",
+    "habitatLabel": "Creative",
+    "image": "/agents/Artist.png",
+    "suggest_in_onboarding": true
+  },
+  "Coder": {
+    "description": "Writes logic, ships code, squashes bugs.",
+    "color": "#545281",
+    "robeColor": "#545281",
+    "accentColor": "#918ECA",
+    "habitatColor": "#7472A5",
+    "habitatLabel": "Engineering",
+    "image": "/agents/Coder.png",
+    "suggest_in_onboarding": true
+  },
+  "Architect": {
+    "description": "Designs systems and structures.",
+    "color": "#8AA3C6",
+    "robeColor": "#8AA3C6",
+    "accentColor": "#C7D8F2",
+    "habitatColor": "#A9C1E1",
+    "habitatLabel": "Architecture",
+    "image": "/agents/Architect.png",
+    "suggest_in_onboarding": true
+  },
+  "Musician": {
+    "description": "Composes, mixes, and scores your life.",
+    "color": "#3B4262",
+    "robeColor": "#3B4262",
+    "accentColor": "#757D9D",
+    "habitatColor": "#535C80",
+    "habitatLabel": "Music",
+    "image": "/agents/Musician.png",
+    "suggest_in_onboarding": true
+  },
+  "Investment Manager": {
+    "description": "Grows your portfolio and assets.",
+    "color": "#615C9C",
+    "robeColor": "#615C9C",
+    "accentColor": "#A09CDF",
+    "habitatColor": "#7F7AB9",
+    "habitatLabel": "Capital",
+    "image": "/agents/InvestmentManager.png",
+    "suggest_in_onboarding": true
+  },
+  "Trainer": {
+    "description": "Pushes your fitness & health goals.",
+    "color": "#74AFA0",
+    "robeColor": "#74AFA0",
+    "accentColor": "#B1E1D5",
+    "habitatColor": "#95CBB9",
+    "habitatLabel": "Fitness",
+    "image": "/agents/Trainer.png",
+    "suggest_in_onboarding": true
+  },
+  "Strategist": {
+    "description": "Decision memos, competitive scans & long-range planning",
+    "color": "#9A94AC",
+    "robeColor": "#9A94AC",
+    "accentColor": "#E2DFF0",
+    "habitatColor": "#C5C0D0",
+    "habitatLabel": "The Citadel",
+    "suggest_in_onboarding": true
+  },
+  "Negotiator": {
+    "description": "Deal prep, BATNA analysis & high-stakes conversations",
+    "color": "#A8917E",
+    "robeColor": "#A8917E",
+    "accentColor": "#EDE0D5",
+    "habitatColor": "#D4C5B8",
+    "habitatLabel": "The Exchange",
+    "suggest_in_onboarding": true
+  },
+  "Engineer": {
+    "description": "Code review, architecture decisions & debugging deep-dives",
+    "color": "#8AA3B5",
+    "robeColor": "#8AA3B5",
+    "accentColor": "#D5E5F0",
+    "habitatColor": "#B8C8D4",
+    "habitatLabel": "The Workshop",
+    "suggest_in_onboarding": true
+  },
+  "Editor": {
+    "description": "Prose tightening, structure feedback & developmental edits",
+    "color": "#A8967E",
+    "robeColor": "#A8967E",
+    "accentColor": "#EDE4D5",
+    "habitatColor": "#D4C8B8",
+    "habitatLabel": "The Archive",
+    "suggest_in_onboarding": true
+  },
+  "Coach": {
+    "description": "Habit tracking, goal-setting & personal reflection partner",
+    "color": "#96A88E",
+    "robeColor": "#96A88E",
+    "accentColor": "#DFF0D8",
+    "habitatColor": "#C8D4C0",
+    "habitatLabel": "The Grove",
+    "suggest_in_onboarding": true
+  },
+  "Custom": {
+    "description": "A blank slate. You define their role, permissions, and skills.",
+    "color": "#7F8C8D",
+    "robeColor": "#95A5A6",
+    "accentColor": "#BDC3C7",
+    "habitatColor": "#ECF0F1",
+    "habitatLabel": "Unknown",
+    "image": "/agents/Custom.png",
+    "suggest_in_onboarding": true
+  }
+}
