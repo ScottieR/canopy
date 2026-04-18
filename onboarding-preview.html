@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Canopy — Onboarding Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+      background: #D8CFCA;
+      padding: 32px;
+      display: flex; flex-direction: column; gap: 48px;
+      min-height: 100vh;
+    }
+    .screen-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #8A7E78; margin-bottom: 12px;
+    }
+    .app-bg {
+      background: linear-gradient(135deg, #EDE4DB 0%, #F5EEE8 100%);
+      border-radius: 16px;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.10);
+    }
+
+    /* ═══════════════════ STEP 0: WELCOME ═══════════════════ */
+    .welcome-screen {
+      width: 100%; height: 600px;
+      flex-direction: column; text-align: center;
+      gap: 0;
+    }
+    .welcome-inner { display: flex; flex-direction: column; align-items: center; gap: 0; }
+
+    .hero-card-wrap {
+      animation: float 3.6s ease-in-out infinite;
+      display: inline-block;
+      margin-bottom: 32px;
+    }
+    .hero-card {
+      border-radius: 18px;
+      overflow: hidden;
+      border: 1.5px solid rgba(33,131,128,0.22);
+      box-shadow: 5px 5px 0 rgba(33,131,128,0.15), 0 20px 50px rgba(33,131,128,0.18);
+      display: inline-block;
+      background: #fff;
+    }
+    .hero-card-stage {
+      background: linear-gradient(160deg, #BDD5D2 0%, #9CBEBB 100%);
+      padding: 0;
+      display: block;
+      position: relative; width: 260px; height: 260px;
+    }
+    .hero-card-badge {
+      position: absolute; top: 12px; left: 14px; z-index: 3;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.08em;
+      color: #205E5B; text-transform: uppercase;
+      background: rgba(255,255,255,0.65); border-radius: 5px; padding: 3px 8px;
+      backdrop-filter: blur(4px);
+    }
+    .hero-card-label {
+      background: rgba(255,255,255,0.98);
+      padding: 12px 18px 13px;
+      border-top: 1px solid rgba(33,131,128,0.14);
+      text-align: center;
+    }
+    .hero-card-label span {
+      font-size: 12px; font-weight: 700; color: #205E5B; letter-spacing: 0.05em;
+    }
+
+    h1 { font-size: 44px; font-weight: 700; color: #2D3436; letter-spacing: -0.02em; margin-bottom: 16px; }
+    h2 { font-size: 40px; font-weight: 700; color: #2D3436; letter-spacing: -0.02em; margin-bottom: 12px; }
+    .subtitle { font-size: 18px; color: #636E72; line-height: 1.6; max-width: 380px; margin: 0 auto 40px; }
+    .subtitle-sm { font-size: 16px; color: #636E72; margin-bottom: 40px; text-align: center; }
+
+    .btn-primary {
+      padding: 16px 40px; border-radius: 16px; border: none;
+      background: linear-gradient(135deg, #218380, #4A9E96);
+      color: white; font-size: 16px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 8px 24px rgba(33,131,128,0.25);
+      font-family: inherit;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    /* ═══════════════════ STEP 1: ROLE CARDS ═══════════════════ */
+    .role-screen { width: 100%; height: 640px; align-items: flex-start; padding: 40px; }
+    .role-inner { width: 100%; max-width: 1040px; margin: 0 auto; }
+    .role-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 18px;
+      margin-bottom: 32px;
+    }
+
+    .role-card {
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid rgba(0,0,0,0.10);
+      transition: transform 0.25s ease, box-shadow 0.25s ease;
+      box-shadow: 3px 3px 0 rgba(0,0,0,0.07), 0 4px 10px rgba(0,0,0,0.05);
+      cursor: pointer;
+      background: #fff;
+    }
+    .role-card.selected {
+      border: 2px solid var(--card-color);
+      transform: scale(1.04) translateY(-4px);
+      box-shadow: 5px 5px 0 var(--card-color-shadow), 0 16px 36px rgba(0,0,0,0.13);
+    }
+    .card-stage {
+      padding: 0; position: relative;
+      width: 100%; aspect-ratio: 1 / 1;
+      overflow: hidden;
+    }
+    .card-habitat-badge {
+      position: absolute; top: 8px; left: 8px; z-index: 3;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.07em;
+      text-transform: uppercase;
+      background: rgba(255,255,255,0.62); border-radius: 5px;
+      padding: 3px 7px;
+      backdrop-filter: blur(4px);
+    }
+    .card-label-strip {
+      padding: 10px 14px 12px;
+      border-top: 1px solid rgba(0,0,0,0.07);
+      background: rgba(255,255,255,0.98);
+    }
+    .role-card.selected .card-label-strip {
+      background: var(--card-color-tint);
+      border-top-color: var(--card-color-border);
+    }
+    .card-name { font-size: 13px; font-weight: 700; color: #2D3436; letter-spacing: 0.01em; margin-bottom: 3px; }
+    .card-desc { font-size: 10.5px; color: #636E72; line-height: 1.45; }
+
+    .nav-row { display: flex; gap: 12px; justify-content: center; }
+    .btn-back {
+      padding: 12px 28px; border-radius: 12px; border: 1px solid rgba(0,0,0,0.08);
+      background: rgba(255,255,255,0.6); color: #636E72; font-size: 14px; font-weight: 600;
+      cursor: pointer; font-family: inherit;
+    }
+    .btn-next {
+      padding: 12px 28px; border-radius: 12px; border: none;
+      background: #218380; color: white; font-size: 14px; font-weight: 600;
+      cursor: pointer; font-family: inherit;
+    }
+
+    /* Scene SVGs fill their stage */
+    .scene { display: block; width: 100%; height: 100%; }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50%       { transform: translateY(-10px); }
+    }
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50%       { transform: scale(1.04); }
+    }
+  </style>
+</head>
+<body>
+
+<!--
+  ═══════════════════════════════════════════════════════════════════
+    ISOMETRIC LOBSTER — CONCEPT-ART-DERIVED PRO RENDER
+    Each scene is a single inline SVG with:
+      • Themed gradient backdrop + environmental props
+      • Isometric plinth (3 shaded faces)
+      • Soft directional ground shadow
+      • Bell-shaped body with radial gradient (volumetric)
+      • Specular highlight + ambient-occlusion belly shadow
+      • Subtle carapace segmentation hint
+      • Small expressive side claws
+      • Smooth rounded head + cartoon eyes w/ catchlight + tiny smile
+      • Arcing antennae w/ bulbous tips
+      • Per-role accessories (glasses, beret, laptop, flask, ledger…)
+      • Per-role habitat props (shelves, DNA, blocks, books, screens…)
+
+    Silhouette is IDENTICAL across all cards per brand rule —
+    only shell color, accessories, and habitat vary.
+  ═══════════════════════════════════════════════════════════════════
+-->
+
+<!-- ══════════════════ STEP 0: WELCOME ══════════════════ -->
+<div>
+  <div class="screen-label">Step 0 — Welcome</div>
+  <div class="app-bg welcome-screen">
+    <div class="welcome-inner">
+      <div class="hero-card-wrap">
+        <div class="hero-card">
+          <div class="hero-card-stage">
+            <div class="hero-card-badge">The Canopy</div>
+
+            <!-- HERO SCENE: Default "new lobster" — Assistant teal, ready to hatch -->
+            <svg class="scene" viewBox="0 0 260 260" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <!-- Backdrop soft glow -->
+                <radialGradient id="hBg" cx="50%" cy="35%" r="65%">
+                  <stop offset="0%"  stop-color="#D6E8E4" stop-opacity="0.75"/>
+                  <stop offset="100%" stop-color="#9CBEBB" stop-opacity="0"/>
+                </radialGradient>
+                <!-- Body volumetric gradient -->
+                <radialGradient id="hBody" cx="36%" cy="26%" r="78%">
+                  <stop offset="0%"  stop-color="#8BDFD5"/>
+                  <stop offset="45%" stop-color="#4DB8AE"/>
+                  <stop offset="100%" stop-color="#1F6A62"/>
+                </radialGradient>
+                <!-- Head gradient (slightly lighter than body) -->
+                <radialGradient id="hHead" cx="40%" cy="30%" r="75%">
+                  <stop offset="0%"  stop-color="#A6EAE1"/>
+                  <stop offset="60%" stop-color="#5EC5BB"/>
+                  <stop offset="100%" stop-color="#2D8278"/>
+                </radialGradient>
+                <!-- Claw gradient -->
+                <radialGradient id="hClaw" cx="30%" cy="25%" r="85%">
+                  <stop offset="0%"  stop-color="#B4EEE6"/>
+                  <stop offset="100%" stop-color="#3DA098"/>
+                </radialGradient>
+                <!-- Specular highlight -->
+                <radialGradient id="hSpec" cx="30%" cy="25%" r="50%">
+                  <stop offset="0%"  stop-color="#FFFFFF" stop-opacity="0.60"/>
+                  <stop offset="70%" stop-color="#FFFFFF" stop-opacity="0"/>
+                </radialGradient>
+                <!-- Plinth top (lit) -->
+                <linearGradient id="hPlinthTop" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"  stop-color="#E6EFEC"/>
+                  <stop offset="100%" stop-color="#C7DAD6"/>
+                </linearGradient>
+                <linearGradient id="hPlinthL" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#A8C3BF"/>
+                  <stop offset="100%" stop-color="#7FA29D"/>
+                </linearGradient>
+                <linearGradient id="hPlinthR" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#C3D6D2"/>
+                  <stop offset="100%" stop-color="#98B8B3"/>
+                </linearGradient>
+                <!-- Soft ground shadow -->
+                <radialGradient id="hGs" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%"  stop-color="#234E4A" stop-opacity="0.45"/>
+                  <stop offset="100%" stop-color="#234E4A" stop-opacity="0"/>
+                </radialGradient>
+                <!-- Antenna bulb glow -->
+                <radialGradient id="hBulb" cx="35%" cy="30%" r="80%">
+                  <stop offset="0%"  stop-color="#C8F5EE"/>
+                  <stop offset="100%" stop-color="#5EC0B4"/>
+                </radialGradient>
+              </defs>
+
+              <!-- Atmospheric backdrop glow -->
+              <rect x="0" y="0" width="260" height="260" fill="url(#hBg)"/>
+
+              <!-- Ambient particles -->
+              <circle cx="38"  cy="52"  r="2"   fill="#FFF" opacity="0.55"/>
+              <circle cx="222" cy="70"  r="1.4" fill="#FFF" opacity="0.45"/>
+              <circle cx="208" cy="170" r="1.8" fill="#FFF" opacity="0.35"/>
+              <circle cx="48"  cy="200" r="1.2" fill="#FFF" opacity="0.45"/>
+              <circle cx="184" cy="40"  r="1.6" fill="#FFF" opacity="0.55"/>
+
+              <!-- GROUND SHADOW -->
+              <ellipse cx="130" cy="218" rx="66" ry="11" fill="url(#hGs)"/>
+
+              <!-- ISOMETRIC PLINTH -->
+              <g>
+                <polygon points="70,192 130,215 190,192 130,170" fill="url(#hPlinthTop)"/>
+                <polygon points="70,192 70,208 130,231 130,215" fill="url(#hPlinthL)"/>
+                <polygon points="130,215 130,231 190,208 190,192" fill="url(#hPlinthR)"/>
+                <!-- Edge highlight -->
+                <polyline points="70,192 130,170 190,192" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="0.8"/>
+              </g>
+
+              <!-- LEFT CLAW (behind body) -->
+              <g>
+                <path d="M 104 145 Q 86 156 72 172" stroke="#3DA098" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+                <ellipse cx="66" cy="176" rx="11" ry="7.5" fill="url(#hClaw)" transform="rotate(-28 66 176)"/>
+                <path d="M 60 173 q 6 -1 12 2" stroke="#1F6A62" stroke-width="1" fill="none" opacity="0.5" transform="rotate(-28 66 176)"/>
+              </g>
+              <!-- RIGHT CLAW (behind body) -->
+              <g>
+                <path d="M 156 145 Q 174 156 188 172" stroke="#3DA098" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+                <ellipse cx="194" cy="176" rx="11" ry="7.5" fill="url(#hClaw)" transform="rotate(28 194 176)"/>
+                <path d="M 188 173 q 6 -1 12 2" stroke="#1F6A62" stroke-width="1" fill="none" opacity="0.5" transform="rotate(28 194 176)"/>
+              </g>
+
+              <!-- BODY (bell) -->
+              <path d="M 130 78
+                       C 98 78, 82 100, 82 138
+                       C 82 176, 100 192, 130 192
+                       C 160 192, 178 176, 178 138
+                       C 178 100, 162 78, 130 78 Z"
+                    fill="url(#hBody)"/>
+
+              <!-- Belly ambient-occlusion shadow -->
+              <path d="M 90 152 Q 130 182 170 152 Q 130 198 90 152 Z"
+                    fill="#1F6A62" opacity="0.22"/>
+
+              <!-- Carapace segmentation (subtle) -->
+              <path d="M 92 132 Q 130 144 168 132" stroke="#1F6A62" stroke-width="0.9" fill="none" opacity="0.22"/>
+              <path d="M 90 155 Q 130 170 170 155" stroke="#1F6A62" stroke-width="0.9" fill="none" opacity="0.2"/>
+
+              <!-- Shell specular highlight -->
+              <ellipse cx="108" cy="106" rx="14" ry="26" fill="url(#hSpec)"/>
+
+              <!-- HEAD -->
+              <ellipse cx="130" cy="70" rx="22" ry="17" fill="url(#hHead)"/>
+              <!-- Head underside shadow -->
+              <path d="M 110 76 Q 130 88 150 76 Q 130 92 110 76 Z" fill="#1F6A62" opacity="0.2"/>
+              <!-- Head specular -->
+              <ellipse cx="122" cy="62" rx="7" ry="4" fill="#FFF" opacity="0.4"/>
+
+              <!-- EYES -->
+              <ellipse cx="120" cy="68" rx="3.6" ry="4.2" fill="#FFFFFF"/>
+              <ellipse cx="140" cy="68" rx="3.6" ry="4.2" fill="#FFFFFF"/>
+              <circle  cx="120.4" cy="68.6" r="2.0" fill="#102E2B"/>
+              <circle  cx="140.4" cy="68.6" r="2.0" fill="#102E2B"/>
+              <circle  cx="119.2" cy="67.2" r="0.8" fill="#FFFFFF"/>
+              <circle  cx="139.2" cy="67.2" r="0.8" fill="#FFFFFF"/>
+
+              <!-- Smile -->
+              <path d="M 125 77 Q 130 80 135 77" stroke="#1F6A62" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+
+              <!-- ANTENNAE -->
+              <path d="M 118 56 Q 92 32 76 14"  stroke="#5EC0B4" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+              <path d="M 142 56 Q 168 32 184 14" stroke="#5EC0B4" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+              <circle cx="76"  cy="14" r="4.5" fill="url(#hBulb)"/>
+              <circle cx="184" cy="14" r="4.5" fill="url(#hBulb)"/>
+              <circle cx="75"  cy="13" r="1.4" fill="#FFF" opacity="0.8"/>
+              <circle cx="183" cy="13" r="1.4" fill="#FFF" opacity="0.8"/>
+            </svg>
+          </div>
+          <div class="hero-card-label"><span>YOUR AGENT AWAITS</span></div>
+        </div>
+      </div>
+
+      <h1>Welcome to The Canopy</h1>
+      <p class="subtitle">Your lobsters live here. Let's hatch your first one!</p>
+      <button class="btn-primary">Let's Go!</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ STEP 1: CHOOSE ROLE ══════════════════ -->
+<div>
+  <div class="screen-label">Step 1 — Choose Your Lobster</div>
+  <div class="app-bg role-screen">
+    <div class="role-inner">
+      <h2 style="text-align:center;">Choose Your Lobster</h2>
+      <p class="subtitle-sm">Every lobster has a specialty — pick the right claw for the job</p>
+
+      <div class="role-grid">
+
+        <!-- ════════════════════════════════════════════════════ -->
+        <!-- CARD 1 — ASSISTANT / THE AXIS (teal/seafoam exec)   -->
+        <!-- ════════════════════════════════════════════════════ -->
+        <div class="role-card selected"
+             style="--card-color:#4DB8AE; --card-color-shadow:rgba(77,184,174,0.27); --card-color-tint:rgba(77,184,174,0.11); --card-color-border:rgba(77,184,174,0.40);">
+          <div class="card-stage">
+            <div class="card-habitat-badge" style="color:#205E5B;">The Axis</div>
+            <svg class="scene" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <linearGradient id="a_bg" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#C7E2DD"/>
+                  <stop offset="100%" stop-color="#9EC4C0"/>
+                </linearGradient>
+                <radialGradient id="a_body" cx="36%" cy="26%" r="78%">
+                  <stop offset="0%"  stop-color="#8BDFD5"/>
+                  <stop offset="45%" stop-color="#4DB8AE"/>
+                  <stop offset="100%" stop-color="#1F6A62"/>
+                </radialGradient>
+                <radialGradient id="a_head" cx="40%" cy="30%" r="75%">
+                  <stop offset="0%"  stop-color="#A6EAE1"/>
+                  <stop offset="60%" stop-color="#5EC5BB"/>
+                  <stop offset="100%" stop-color="#2D8278"/>
+                </radialGradient>
+                <radialGradient id="a_claw" cx="30%" cy="25%" r="85%">
+                  <stop offset="0%"  stop-color="#B4EEE6"/>
+                  <stop offset="100%" stop-color="#3DA098"/>
+                </radialGradient>
+                <radialGradient id="a_spec" cx="30%" cy="25%" r="50%">
+                  <stop offset="0%"  stop-color="#FFFFFF" stop-opacity="0.55"/>
+                  <stop offset="70%" stop-color="#FFFFFF" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="a_pT" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"  stop-color="#E6EFEC"/>
+                  <stop offset="100%" stop-color="#C1D5D2"/>
+                </linearGradient>
+                <linearGradient id="a_pL" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#A4BFBB"/>
+                  <stop offset="100%" stop-color="#7A9B98"/>
+                </linearGradient>
+                <linearGradient id="a_pR" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#BED1CE"/>
+                  <stop offset="100%" stop-color="#93B2AE"/>
+                </linearGradient>
+                <radialGradient id="a_gs" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%"  stop-color="#1F4E4A" stop-opacity="0.45"/>
+                  <stop offset="100%" stop-color="#1F4E4A" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="a_bulb" cx="35%" cy="30%" r="80%">
+                  <stop offset="0%"  stop-color="#D4F5EE"/>
+                  <stop offset="100%" stop-color="#5EC0B4"/>
+                </radialGradient>
+                <!-- Laptop screen glow -->
+                <linearGradient id="a_screen" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="#E7FAF6"/>
+                  <stop offset="100%" stop-color="#B0DED5"/>
+                </linearGradient>
+              </defs>
+
+              <rect width="220" height="220" fill="url(#a_bg)"/>
+
+              <!-- Habitat: vertical data-screen towers (Axis = command tower, data screens) -->
+              <g opacity="0.55">
+                <rect x="12"  y="46"  width="26" height="120" rx="3" fill="#B1CEC9"/>
+                <rect x="16"  y="52"  width="18" height="22"  rx="1.5" fill="#EAF6F2"/>
+                <rect x="16"  y="78"  width="18" height="14"  rx="1.5" fill="#DCEFEA"/>
+                <rect x="16"  y="96"  width="18" height="40"  rx="1.5" fill="#EAF6F2"/>
+                <rect x="16"  y="140" width="18" height="18"  rx="1.5" fill="#DCEFEA"/>
+
+                <rect x="182" y="36" width="26" height="130" rx="3" fill="#B1CEC9"/>
+                <rect x="186" y="42" width="18" height="30"  rx="1.5" fill="#EAF6F2"/>
+                <rect x="186" y="76" width="18" height="18"  rx="1.5" fill="#DCEFEA"/>
+                <rect x="186" y="98" width="18" height="34"  rx="1.5" fill="#EAF6F2"/>
+                <rect x="186" y="136" width="18" height="22" rx="1.5" fill="#DCEFEA"/>
+              </g>
+              <!-- Floating mini screens -->
+              <g opacity="0.72">
+                <rect x="42" y="28"  width="30" height="20" rx="3" fill="#FFFFFF" opacity="0.7"/>
+                <rect x="46" y="32"  width="22" height="3"  fill="#4DB8AE"/>
+                <rect x="46" y="37"  width="14" height="2"  fill="#7FCABF" opacity="0.7"/>
+                <rect x="46" y="41"  width="18" height="2"  fill="#7FCABF" opacity="0.5"/>
+
+                <rect x="152" y="22" width="30" height="20" rx="3" fill="#FFFFFF" opacity="0.7"/>
+                <rect x="156" y="26" width="14" height="3"  fill="#4DB8AE"/>
+                <rect x="156" y="31" width="22" height="2"  fill="#7FCABF" opacity="0.7"/>
+                <rect x="156" y="35" width="18" height="2"  fill="#7FCABF" opacity="0.5"/>
+              </g>
+
+              <!-- Ground shadow -->
+              <ellipse cx="110" cy="184" rx="58" ry="9" fill="url(#a_gs)"/>
+
+              <!-- PLINTH -->
+              <g>
+                <polygon points="58,162 110,182 162,162 110,142" fill="url(#a_pT)"/>
+                <polygon points="58,162 58,176 110,196 110,182" fill="url(#a_pL)"/>
+                <polygon points="110,182 110,196 162,176 162,162" fill="url(#a_pR)"/>
+                <polyline points="58,162 110,142 162,162" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="0.7"/>
+              </g>
+
+              <!-- Claws -->
+              <g>
+                <path d="M 84 123 Q 68 132 55 146" stroke="#3DA098" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="50" cy="150" rx="9" ry="6.3" fill="url(#a_claw)" transform="rotate(-28 50 150)"/>
+              </g>
+              <g>
+                <path d="M 136 123 Q 152 132 165 146" stroke="#3DA098" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="170" cy="150" rx="9" ry="6.3" fill="url(#a_claw)" transform="rotate(28 170 150)"/>
+              </g>
+
+              <!-- Body -->
+              <path d="M 110 60
+                       C 84 60, 70 80, 70 116
+                       C 70 150, 86 164, 110 164
+                       C 134 164, 150 150, 150 116
+                       C 150 80, 136 60, 110 60 Z"
+                    fill="url(#a_body)"/>
+
+              <!-- Belly shadow -->
+              <path d="M 78 128 Q 110 156 142 128 Q 110 170 78 128 Z" fill="#1F6A62" opacity="0.22"/>
+
+              <!-- Segmentation -->
+              <path d="M 80 112 Q 110 122 140 112" stroke="#1F6A62" stroke-width="0.8" fill="none" opacity="0.22"/>
+              <path d="M 78 132 Q 110 144 142 132" stroke="#1F6A62" stroke-width="0.8" fill="none" opacity="0.2"/>
+
+              <!-- Specular -->
+              <ellipse cx="92" cy="84" rx="11" ry="20" fill="url(#a_spec)"/>
+
+              <!-- ACCESSORY: Floating clipboard held out in front (contrasts with teal body) -->
+              <g transform="translate(0,4)">
+                <!-- clipboard back (dark charcoal) -->
+                <path d="M 84 120 L 136 120 L 138 150 L 82 150 Z" fill="#2D3A3E" stroke="#1A2428" stroke-width="0.8"/>
+                <!-- paper overlay (warm off-white so it reads against teal) -->
+                <path d="M 87 123 L 133 123 L 135 147 L 85 147 Z" fill="#FAF3E3" stroke="#C9B78A" stroke-width="0.6"/>
+                <!-- clip at top -->
+                <rect x="102" y="116" width="16" height="6" rx="1" fill="#B8C4CA" stroke="#485056" stroke-width="0.6"/>
+                <rect x="104" y="114" width="12" height="3" rx="1" fill="#D8DFE3"/>
+                <!-- agenda lines -->
+                <rect x="92" y="128" width="28" height="1.6" rx="0.8" fill="#4DB8AE"/>
+                <rect x="92" y="132" width="36" height="1.2" rx="0.6" fill="#8FA3A8" opacity="0.8"/>
+                <rect x="92" y="135" width="30" height="1.2" rx="0.6" fill="#8FA3A8" opacity="0.8"/>
+                <rect x="92" y="138" width="34" height="1.2" rx="0.6" fill="#8FA3A8" opacity="0.8"/>
+                <rect x="92" y="141" width="22" height="1.2" rx="0.6" fill="#8FA3A8" opacity="0.7"/>
+                <!-- tiny checkmark -->
+                <path d="M 126 128 l 2 2 4 -4" stroke="#4DB8AE" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+              </g>
+
+              <!-- Head -->
+              <ellipse cx="110" cy="54" rx="18" ry="14" fill="url(#a_head)"/>
+              <path d="M 94 59 Q 110 69 126 59 Q 110 73 94 59 Z" fill="#1F6A62" opacity="0.2"/>
+              <ellipse cx="104" cy="48" rx="5.5" ry="3" fill="#FFF" opacity="0.4"/>
+
+              <!-- Eyes -->
+              <ellipse cx="102" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <ellipse cx="118" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <circle  cx="102.3" cy="52.5" r="1.7" fill="#102E2B"/>
+              <circle  cx="118.3" cy="52.5" r="1.7" fill="#102E2B"/>
+              <circle  cx="101.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+              <circle  cx="117.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+
+              <!-- Smile -->
+              <path d="M 106 61 Q 110 63 114 61" stroke="#1F6A62" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+
+              <!-- ACCESSORY: tiny executive headset (subtle band over head) -->
+              <path d="M 94 48 Q 110 36 126 48" stroke="#2D8278" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+              <ellipse cx="93.4" cy="50" rx="2.4" ry="3" fill="#2D8278"/>
+
+              <!-- Antennae -->
+              <path d="M 100 42 Q 80 22 68 8" stroke="#5EC0B4" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <path d="M 120 42 Q 140 22 152 8" stroke="#5EC0B4" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <circle cx="68"  cy="8" r="3.8" fill="url(#a_bulb)"/>
+              <circle cx="152" cy="8" r="3.8" fill="url(#a_bulb)"/>
+              <circle cx="67.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+              <circle cx="151.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+            </svg>
+          </div>
+          <div class="card-label-strip">
+            <div class="card-name">Assistant</div>
+            <div class="card-desc">Your right claw — tasks, scheduling &amp; coordination</div>
+          </div>
+        </div>
+
+        <!-- ════════════════════════════════════════════════════ -->
+        <!-- CARD 2 — FINANCIAL / THE LABYRINTH (warm peach)     -->
+        <!-- ════════════════════════════════════════════════════ -->
+        <div class="role-card"
+             style="--card-color:#D4965C; --card-color-shadow:rgba(212,150,92,0.27); --card-color-tint:rgba(212,150,92,0.11); --card-color-border:rgba(212,150,92,0.40);">
+          <div class="card-stage">
+            <div class="card-habitat-badge" style="color:#964D1C;">The Labyrinth</div>
+            <svg class="scene" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <linearGradient id="b_bg" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#F0D9B4"/>
+                  <stop offset="100%" stop-color="#D4B487"/>
+                </linearGradient>
+                <radialGradient id="b_body" cx="36%" cy="26%" r="78%">
+                  <stop offset="0%"  stop-color="#F7C89A"/>
+                  <stop offset="45%" stop-color="#E89A5A"/>
+                  <stop offset="100%" stop-color="#864F21"/>
+                </radialGradient>
+                <radialGradient id="b_head" cx="40%" cy="30%" r="75%">
+                  <stop offset="0%"  stop-color="#FCDDB4"/>
+                  <stop offset="60%" stop-color="#F3B075"/>
+                  <stop offset="100%" stop-color="#A96538"/>
+                </radialGradient>
+                <radialGradient id="b_claw" cx="30%" cy="25%" r="85%">
+                  <stop offset="0%"  stop-color="#FDE3BF"/>
+                  <stop offset="100%" stop-color="#C67A3C"/>
+                </radialGradient>
+                <radialGradient id="b_spec" cx="30%" cy="25%" r="50%">
+                  <stop offset="0%"  stop-color="#FFFFFF" stop-opacity="0.55"/>
+                  <stop offset="70%" stop-color="#FFFFFF" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="b_pT" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"  stop-color="#F3E3C5"/>
+                  <stop offset="100%" stop-color="#D9BF94"/>
+                </linearGradient>
+                <linearGradient id="b_pL" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#BFA179"/>
+                  <stop offset="100%" stop-color="#8F7550"/>
+                </linearGradient>
+                <linearGradient id="b_pR" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#DCBE8E"/>
+                  <stop offset="100%" stop-color="#A88A5E"/>
+                </linearGradient>
+                <radialGradient id="b_gs" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%"  stop-color="#5E3A14" stop-opacity="0.45"/>
+                  <stop offset="100%" stop-color="#5E3A14" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="b_bulb" cx="35%" cy="30%" r="80%">
+                  <stop offset="0%"  stop-color="#FFE8C4"/>
+                  <stop offset="100%" stop-color="#D4924E"/>
+                </radialGradient>
+                <!-- Ledger -->
+                <linearGradient id="b_book" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%" stop-color="#F3E0BA"/>
+                  <stop offset="100%" stop-color="#D5BA85"/>
+                </linearGradient>
+              </defs>
+
+              <rect width="220" height="220" fill="url(#b_bg)"/>
+
+              <!-- Habitat: stacked ledgers / maze stairs -->
+              <g opacity="0.75">
+                <!-- Left bookstack -->
+                <rect x="10" y="140" width="36" height="10" rx="1.5" fill="#8B5A2B"/>
+                <rect x="12" y="130" width="34" height="10" rx="1.5" fill="#A06932"/>
+                <rect x="8"  y="120" width="38" height="10" rx="1.5" fill="#B6783D"/>
+                <rect x="12" y="110" width="34" height="10" rx="1.5" fill="#8B5A2B"/>
+                <!-- Right stepped maze -->
+                <polygon points="170,170 210,170 210,155 200,155 200,140 190,140 190,125 180,125 180,110 170,110" fill="#B6783D" opacity="0.7"/>
+                <polygon points="170,170 210,170 210,155 200,155 200,140 190,140 190,125 180,125 180,110 170,110" fill="none" stroke="#7B4C1A" stroke-width="0.8" opacity="0.5"/>
+              </g>
+              <!-- Floating coins -->
+              <g>
+                <circle cx="38"  cy="48"  r="6" fill="#F2C97A" stroke="#A86B2A" stroke-width="0.8"/>
+                <text x="35"  y="51.5" font-size="7" fill="#7B4820" font-weight="700">$</text>
+                <circle cx="188" cy="60"  r="5" fill="#F2C97A" stroke="#A86B2A" stroke-width="0.8"/>
+                <text x="185.5" y="63" font-size="6" fill="#7B4820" font-weight="700">$</text>
+              </g>
+
+              <!-- Ground shadow -->
+              <ellipse cx="110" cy="184" rx="58" ry="9" fill="url(#b_gs)"/>
+
+              <!-- Plinth -->
+              <g>
+                <polygon points="58,162 110,182 162,162 110,142" fill="url(#b_pT)"/>
+                <polygon points="58,162 58,176 110,196 110,182" fill="url(#b_pL)"/>
+                <polygon points="110,182 110,196 162,176 162,162" fill="url(#b_pR)"/>
+                <polyline points="58,162 110,142 162,162" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="0.7"/>
+              </g>
+
+              <!-- Claws -->
+              <g>
+                <path d="M 84 123 Q 68 132 55 146" stroke="#C67A3C" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="50" cy="150" rx="9" ry="6.3" fill="url(#b_claw)" transform="rotate(-28 50 150)"/>
+              </g>
+              <g>
+                <path d="M 136 123 Q 152 132 165 146" stroke="#C67A3C" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="170" cy="150" rx="9" ry="6.3" fill="url(#b_claw)" transform="rotate(28 170 150)"/>
+              </g>
+
+              <!-- Body -->
+              <path d="M 110 60
+                       C 84 60, 70 80, 70 116
+                       C 70 150, 86 164, 110 164
+                       C 134 164, 150 150, 150 116
+                       C 150 80, 136 60, 110 60 Z"
+                    fill="url(#b_body)"/>
+
+              <path d="M 78 128 Q 110 156 142 128 Q 110 170 78 128 Z" fill="#7E4418" opacity="0.22"/>
+              <path d="M 80 112 Q 110 122 140 112" stroke="#7E4418" stroke-width="0.8" fill="none" opacity="0.24"/>
+              <path d="M 78 132 Q 110 144 142 132" stroke="#7E4418" stroke-width="0.8" fill="none" opacity="0.2"/>
+              <ellipse cx="92" cy="84" rx="11" ry="20" fill="url(#b_spec)"/>
+
+              <!-- ACCESSORY: Open ledger in claws -->
+              <g transform="translate(0,2)">
+                <path d="M 80 136 L 140 136 L 138 148 L 82 148 Z" fill="url(#b_book)" stroke="#7E4418" stroke-width="0.8"/>
+                <line x1="110" y1="136" x2="110" y2="148" stroke="#7E4418" stroke-width="0.8"/>
+                <line x1="86" y1="140" x2="105" y2="140" stroke="#A86B2A" stroke-width="0.6"/>
+                <line x1="86" y1="143" x2="105" y2="143" stroke="#A86B2A" stroke-width="0.6"/>
+                <line x1="86" y1="146" x2="100" y2="146" stroke="#A86B2A" stroke-width="0.6"/>
+                <line x1="115" y1="140" x2="134" y2="140" stroke="#A86B2A" stroke-width="0.6"/>
+                <line x1="115" y1="143" x2="134" y2="143" stroke="#A86B2A" stroke-width="0.6"/>
+                <line x1="115" y1="146" x2="130" y2="146" stroke="#A86B2A" stroke-width="0.6"/>
+              </g>
+
+              <!-- Head -->
+              <ellipse cx="110" cy="54" rx="18" ry="14" fill="url(#b_head)"/>
+              <path d="M 94 59 Q 110 69 126 59 Q 110 73 94 59 Z" fill="#7E4418" opacity="0.2"/>
+              <ellipse cx="104" cy="48" rx="5.5" ry="3" fill="#FFF" opacity="0.4"/>
+
+              <!-- Eyes (behind glasses) -->
+              <ellipse cx="102" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <ellipse cx="118" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <circle  cx="102.3" cy="52.5" r="1.7" fill="#3B1E08"/>
+              <circle  cx="118.3" cy="52.5" r="1.7" fill="#3B1E08"/>
+              <circle  cx="101.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+              <circle  cx="117.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+
+              <!-- Smile -->
+              <path d="M 106 61 Q 110 63 114 61" stroke="#7E4418" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+
+              <!-- ACCESSORY: round spectacles -->
+              <g stroke="#3B1E08" stroke-width="1.2" fill="none">
+                <circle cx="102" cy="52" r="4.5"/>
+                <circle cx="118" cy="52" r="4.5"/>
+                <line x1="106.5" y1="52" x2="113.5" y2="52"/>
+                <line x1="97.5" y1="52" x2="94" y2="51.5"/>
+                <line x1="122.5" y1="52" x2="126" y2="51.5"/>
+              </g>
+
+              <!-- Antennae -->
+              <path d="M 100 42 Q 80 22 68 8" stroke="#D4924E" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <path d="M 120 42 Q 140 22 152 8" stroke="#D4924E" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <circle cx="68"  cy="8" r="3.8" fill="url(#b_bulb)"/>
+              <circle cx="152" cy="8" r="3.8" fill="url(#b_bulb)"/>
+              <circle cx="67.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+              <circle cx="151.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+            </svg>
+          </div>
+          <div class="card-label-strip">
+            <div class="card-name">Financial</div>
+            <div class="card-desc">Keeps the books tight — budgets, payments &amp; forecasts</div>
+          </div>
+        </div>
+
+        <!-- ════════════════════════════════════════════════════ -->
+        <!-- CARD 3 — STR MANAGER / THE TERRACE (navy strategist)-->
+        <!-- ════════════════════════════════════════════════════ -->
+        <div class="role-card"
+             style="--card-color:#4E6E96; --card-color-shadow:rgba(78,110,150,0.27); --card-color-tint:rgba(78,110,150,0.11); --card-color-border:rgba(78,110,150,0.40);">
+          <div class="card-stage">
+            <div class="card-habitat-badge" style="color:#2F4A6A;">The Terrace</div>
+            <svg class="scene" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <linearGradient id="c_bg" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#C2D0E0"/>
+                  <stop offset="100%" stop-color="#97AEC8"/>
+                </linearGradient>
+                <radialGradient id="c_body" cx="36%" cy="26%" r="78%">
+                  <stop offset="0%"  stop-color="#8AA7C8"/>
+                  <stop offset="45%" stop-color="#4E6E96"/>
+                  <stop offset="100%" stop-color="#253A56"/>
+                </radialGradient>
+                <radialGradient id="c_head" cx="40%" cy="30%" r="75%">
+                  <stop offset="0%"  stop-color="#A6BFDA"/>
+                  <stop offset="60%" stop-color="#6D8EB4"/>
+                  <stop offset="100%" stop-color="#304D70"/>
+                </radialGradient>
+                <radialGradient id="c_claw" cx="30%" cy="25%" r="85%">
+                  <stop offset="0%"  stop-color="#B9CEE4"/>
+                  <stop offset="100%" stop-color="#3F5D82"/>
+                </radialGradient>
+                <radialGradient id="c_spec" cx="30%" cy="25%" r="50%">
+                  <stop offset="0%"  stop-color="#FFFFFF" stop-opacity="0.55"/>
+                  <stop offset="70%" stop-color="#FFFFFF" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="c_pT" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"  stop-color="#DFE6EF"/>
+                  <stop offset="100%" stop-color="#B6C5D6"/>
+                </linearGradient>
+                <linearGradient id="c_pL" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#93A7C0"/>
+                  <stop offset="100%" stop-color="#6B8098"/>
+                </linearGradient>
+                <linearGradient id="c_pR" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#ACBECF"/>
+                  <stop offset="100%" stop-color="#7E94AD"/>
+                </linearGradient>
+                <radialGradient id="c_gs" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%"  stop-color="#182A42" stop-opacity="0.45"/>
+                  <stop offset="100%" stop-color="#182A42" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="c_bulb" cx="35%" cy="30%" r="80%">
+                  <stop offset="0%"  stop-color="#DCE8F6"/>
+                  <stop offset="100%" stop-color="#6A87AD"/>
+                </radialGradient>
+              </defs>
+
+              <rect width="220" height="220" fill="url(#c_bg)"/>
+
+              <!-- Habitat: city overlook / terraces (stepped blocks behind) -->
+              <g opacity="0.7">
+                <!-- Left terrace steps -->
+                <polygon points="4,170 52,170 52,156 36,156 36,142 20,142 20,128 4,128" fill="#6D8EB4"/>
+                <polygon points="4,170 52,170 52,156 36,156 36,142 20,142 20,128 4,128" fill="none" stroke="#3F5D82" stroke-width="0.8" opacity="0.5"/>
+                <!-- Right terrace steps (mirror) -->
+                <polygon points="216,170 168,170 168,156 184,156 184,142 200,142 200,128 216,128" fill="#6D8EB4"/>
+                <polygon points="216,170 168,170 168,156 184,156 184,142 200,142 200,128 216,128" fill="none" stroke="#3F5D82" stroke-width="0.8" opacity="0.5"/>
+              </g>
+              <!-- Floating planning blocks -->
+              <g>
+                <!-- little iso cubes -->
+                <g transform="translate(38,30)">
+                  <polygon points="0,6 8,10 16,6 8,2" fill="#DDE7F2"/>
+                  <polygon points="0,6 0,12 8,16 8,10" fill="#9CB3CE"/>
+                  <polygon points="8,10 8,16 16,12 16,6" fill="#B8CBE1"/>
+                </g>
+                <g transform="translate(170,40)">
+                  <polygon points="0,6 8,10 16,6 8,2" fill="#DDE7F2"/>
+                  <polygon points="0,6 0,12 8,16 8,10" fill="#9CB3CE"/>
+                  <polygon points="8,10 8,16 16,12 16,6" fill="#B8CBE1"/>
+                </g>
+              </g>
+
+              <!-- Ground shadow -->
+              <ellipse cx="110" cy="184" rx="58" ry="9" fill="url(#c_gs)"/>
+
+              <!-- Plinth -->
+              <g>
+                <polygon points="58,162 110,182 162,162 110,142" fill="url(#c_pT)"/>
+                <polygon points="58,162 58,176 110,196 110,182" fill="url(#c_pL)"/>
+                <polygon points="110,182 110,196 162,176 162,162" fill="url(#c_pR)"/>
+                <polyline points="58,162 110,142 162,162" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="0.7"/>
+              </g>
+
+              <!-- Claws (heroic — held forward & close for Strategist stance) -->
+              <g>
+                <path d="M 86 124 Q 76 136 70 150" stroke="#3F5D82" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="68" cy="154" rx="9" ry="6.3" fill="url(#c_claw)" transform="rotate(-12 68 154)"/>
+              </g>
+              <g>
+                <path d="M 134 124 Q 144 136 150 150" stroke="#3F5D82" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="152" cy="154" rx="9" ry="6.3" fill="url(#c_claw)" transform="rotate(12 152 154)"/>
+              </g>
+
+              <!-- Body -->
+              <path d="M 110 60
+                       C 84 60, 70 80, 70 116
+                       C 70 150, 86 164, 110 164
+                       C 134 164, 150 150, 150 116
+                       C 150 80, 136 60, 110 60 Z"
+                    fill="url(#c_body)"/>
+
+              <path d="M 78 128 Q 110 156 142 128 Q 110 170 78 128 Z" fill="#253A56" opacity="0.22"/>
+              <path d="M 80 112 Q 110 122 140 112" stroke="#253A56" stroke-width="0.8" fill="none" opacity="0.24"/>
+              <path d="M 78 132 Q 110 144 142 132" stroke="#253A56" stroke-width="0.8" fill="none" opacity="0.2"/>
+              <ellipse cx="92" cy="84" rx="11" ry="20" fill="url(#c_spec)"/>
+
+              <!-- ACCESSORY: keyring + tiny house (STR property manager signature) -->
+              <g transform="translate(0,0)">
+                <!-- ring -->
+                <circle cx="104" cy="138" r="5" fill="none" stroke="#DDE7F2" stroke-width="1.6"/>
+                <circle cx="104" cy="138" r="5" fill="none" stroke="#2F4A6A" stroke-width="0.6" opacity="0.6"/>
+                <!-- key shaft -->
+                <rect x="108" y="137" width="16" height="2" rx="0.8" fill="#DDE7F2"/>
+                <rect x="108" y="137" width="16" height="2" rx="0.8" fill="none" stroke="#2F4A6A" stroke-width="0.4" opacity="0.6"/>
+                <!-- key teeth -->
+                <rect x="120" y="139" width="2" height="2.5" fill="#DDE7F2"/>
+                <rect x="116" y="139" width="2" height="2" fill="#DDE7F2"/>
+                <!-- tiny house silhouette floating above claws -->
+                <g transform="translate(126,120)">
+                  <polygon points="0,6 7,0 14,6 14,14 0,14" fill="#DDE7F2"/>
+                  <polygon points="0,6 7,0 14,6 14,14 0,14" fill="none" stroke="#2F4A6A" stroke-width="0.7"/>
+                  <rect x="5" y="9" width="4" height="5" fill="#2F4A6A" opacity="0.7"/>
+                  <polygon points="-1,6 7,-1 15,6" fill="none" stroke="#2F4A6A" stroke-width="0.7"/>
+                </g>
+              </g>
+
+              <!-- Head -->
+              <ellipse cx="110" cy="54" rx="18" ry="14" fill="url(#c_head)"/>
+              <path d="M 94 59 Q 110 69 126 59 Q 110 73 94 59 Z" fill="#253A56" opacity="0.2"/>
+              <ellipse cx="104" cy="48" rx="5.5" ry="3" fill="#FFF" opacity="0.4"/>
+
+              <!-- Eyes -->
+              <ellipse cx="102" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <ellipse cx="118" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <circle  cx="102.3" cy="52.5" r="1.7" fill="#0F1A2B"/>
+              <circle  cx="118.3" cy="52.5" r="1.7" fill="#0F1A2B"/>
+              <circle  cx="101.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+              <circle  cx="117.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+
+              <!-- Confident closed smile -->
+              <path d="M 104 61 Q 110 64 116 61" stroke="#253A56" stroke-width="1.2" fill="none" stroke-linecap="round"/>
+
+              <!-- Antennae -->
+              <path d="M 100 42 Q 80 22 68 8" stroke="#6A87AD" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <path d="M 120 42 Q 140 22 152 8" stroke="#6A87AD" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <circle cx="68"  cy="8" r="3.8" fill="url(#c_bulb)"/>
+              <circle cx="152" cy="8" r="3.8" fill="url(#c_bulb)"/>
+              <circle cx="67.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+              <circle cx="151.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+            </svg>
+          </div>
+          <div class="card-label-strip">
+            <div class="card-name">STR Manager</div>
+            <div class="card-desc">Runs operations — listings, guests &amp; logistics</div>
+          </div>
+        </div>
+
+        <!-- ════════════════════════════════════════════════════ -->
+        <!-- CARD 4 — RESEARCHER / THE SANCTUARY (sage scientist)-->
+        <!-- ════════════════════════════════════════════════════ -->
+        <div class="role-card"
+             style="--card-color:#6FA97E; --card-color-shadow:rgba(111,169,126,0.27); --card-color-tint:rgba(111,169,126,0.11); --card-color-border:rgba(111,169,126,0.40);">
+          <div class="card-stage">
+            <div class="card-habitat-badge" style="color:#3F6A4C;">The Sanctuary</div>
+            <svg class="scene" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <linearGradient id="d_bg" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#CCE1CE"/>
+                  <stop offset="100%" stop-color="#A3C0A8"/>
+                </linearGradient>
+                <radialGradient id="d_body" cx="36%" cy="26%" r="78%">
+                  <stop offset="0%"  stop-color="#A4D6AE"/>
+                  <stop offset="45%" stop-color="#6FA97E"/>
+                  <stop offset="100%" stop-color="#2F5C3B"/>
+                </radialGradient>
+                <radialGradient id="d_head" cx="40%" cy="30%" r="75%">
+                  <stop offset="0%"  stop-color="#BFE3C6"/>
+                  <stop offset="60%" stop-color="#85BD92"/>
+                  <stop offset="100%" stop-color="#437853"/>
+                </radialGradient>
+                <radialGradient id="d_claw" cx="30%" cy="25%" r="85%">
+                  <stop offset="0%"  stop-color="#C6E8CB"/>
+                  <stop offset="100%" stop-color="#4F855F"/>
+                </radialGradient>
+                <radialGradient id="d_spec" cx="30%" cy="25%" r="50%">
+                  <stop offset="0%"  stop-color="#FFFFFF" stop-opacity="0.55"/>
+                  <stop offset="70%" stop-color="#FFFFFF" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="d_pT" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"  stop-color="#E3EEE3"/>
+                  <stop offset="100%" stop-color="#BAD2BD"/>
+                </linearGradient>
+                <linearGradient id="d_pL" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#98B89F"/>
+                  <stop offset="100%" stop-color="#6E8D76"/>
+                </linearGradient>
+                <linearGradient id="d_pR" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#B0CAB3"/>
+                  <stop offset="100%" stop-color="#82A18B"/>
+                </linearGradient>
+                <radialGradient id="d_gs" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%"  stop-color="#1B3822" stop-opacity="0.45"/>
+                  <stop offset="100%" stop-color="#1B3822" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="d_bulb" cx="35%" cy="30%" r="80%">
+                  <stop offset="0%"  stop-color="#D8F0DC"/>
+                  <stop offset="100%" stop-color="#629A6F"/>
+                </radialGradient>
+                <!-- Flask glass -->
+                <linearGradient id="d_flask" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#E8FAEB" stop-opacity="0.9"/>
+                  <stop offset="100%" stop-color="#9BD4A6" stop-opacity="0.9"/>
+                </linearGradient>
+              </defs>
+
+              <rect width="220" height="220" fill="url(#d_bg)"/>
+
+              <!-- Habitat: DNA helix + leaves + lab flasks -->
+              <g opacity="0.7">
+                <!-- Leaves left -->
+                <ellipse cx="18" cy="100" rx="12" ry="18" fill="#7BAF85" transform="rotate(-25 18 100)"/>
+                <ellipse cx="22" cy="120" rx="10" ry="15" fill="#8BBE94" transform="rotate(15 22 120)"/>
+                <ellipse cx="14" cy="140" rx="11" ry="16" fill="#6DA079" transform="rotate(-10 14 140)"/>
+                <!-- Leaves right -->
+                <ellipse cx="202" cy="110" rx="12" ry="18" fill="#7BAF85" transform="rotate(25 202 110)"/>
+                <ellipse cx="198" cy="130" rx="10" ry="15" fill="#8BBE94" transform="rotate(-15 198 130)"/>
+              </g>
+              <!-- DNA helix right side -->
+              <g transform="translate(176,38)" opacity="0.85">
+                <path d="M 0 0 Q 12 16 0 32 Q -12 48 0 64" stroke="#4B7E5C" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+                <path d="M 0 0 Q -12 16 0 32 Q 12 48 0 64" stroke="#4B7E5C" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+                <line x1="-7" y1="8"  x2="7" y2="8"  stroke="#4B7E5C" stroke-width="1" opacity="0.8"/>
+                <line x1="-7" y1="24" x2="7" y2="24" stroke="#4B7E5C" stroke-width="1" opacity="0.8"/>
+                <line x1="-7" y1="40" x2="7" y2="40" stroke="#4B7E5C" stroke-width="1" opacity="0.8"/>
+                <line x1="-7" y1="56" x2="7" y2="56" stroke="#4B7E5C" stroke-width="1" opacity="0.8"/>
+              </g>
+              <!-- Small floating flask left -->
+              <g transform="translate(30,42)">
+                <path d="M 6 0 L 6 6 L 0 14 L 14 14 L 8 6 L 8 0 Z" fill="url(#d_flask)" stroke="#3F6A4C" stroke-width="0.8"/>
+                <circle cx="7" cy="11" r="1.2" fill="#5E9670" opacity="0.6"/>
+              </g>
+
+              <!-- Ground shadow -->
+              <ellipse cx="110" cy="184" rx="58" ry="9" fill="url(#d_gs)"/>
+
+              <!-- Plinth -->
+              <g>
+                <polygon points="58,162 110,182 162,162 110,142" fill="url(#d_pT)"/>
+                <polygon points="58,162 58,176 110,196 110,182" fill="url(#d_pL)"/>
+                <polygon points="110,182 110,196 162,176 162,162" fill="url(#d_pR)"/>
+                <polyline points="58,162 110,142 162,162" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="0.7"/>
+              </g>
+
+              <!-- Claws -->
+              <g>
+                <path d="M 84 123 Q 68 132 55 146" stroke="#4F855F" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="50" cy="150" rx="9" ry="6.3" fill="url(#d_claw)" transform="rotate(-28 50 150)"/>
+              </g>
+              <g>
+                <path d="M 136 123 Q 152 132 165 146" stroke="#4F855F" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="170" cy="150" rx="9" ry="6.3" fill="url(#d_claw)" transform="rotate(28 170 150)"/>
+              </g>
+
+              <!-- Body -->
+              <path d="M 110 60
+                       C 84 60, 70 80, 70 116
+                       C 70 150, 86 164, 110 164
+                       C 134 164, 150 150, 150 116
+                       C 150 80, 136 60, 110 60 Z"
+                    fill="url(#d_body)"/>
+
+              <path d="M 78 128 Q 110 156 142 128 Q 110 170 78 128 Z" fill="#2F5C3B" opacity="0.22"/>
+              <path d="M 80 112 Q 110 122 140 112" stroke="#2F5C3B" stroke-width="0.8" fill="none" opacity="0.24"/>
+              <path d="M 78 132 Q 110 144 142 132" stroke="#2F5C3B" stroke-width="0.8" fill="none" opacity="0.2"/>
+              <ellipse cx="92" cy="84" rx="11" ry="20" fill="url(#d_spec)"/>
+
+              <!-- ACCESSORY: Erlenmeyer flask held in front -->
+              <g transform="translate(0,2)">
+                <path d="M 103 124 L 103 132 L 94 148 L 126 148 L 117 132 L 117 124 Z"
+                      fill="url(#d_flask)" stroke="#2F5C3B" stroke-width="1"/>
+                <!-- cork -->
+                <rect x="102" y="120" width="16" height="5" rx="1" fill="#C9A06A"/>
+                <!-- liquid bubbles -->
+                <circle cx="106" cy="142" r="1.4" fill="#4F855F" opacity="0.7"/>
+                <circle cx="113" cy="144" r="1.1" fill="#4F855F" opacity="0.6"/>
+                <circle cx="109" cy="146" r="1.0" fill="#4F855F" opacity="0.8"/>
+              </g>
+
+              <!-- Head -->
+              <ellipse cx="110" cy="54" rx="18" ry="14" fill="url(#d_head)"/>
+              <path d="M 94 59 Q 110 69 126 59 Q 110 73 94 59 Z" fill="#2F5C3B" opacity="0.2"/>
+              <ellipse cx="104" cy="48" rx="5.5" ry="3" fill="#FFF" opacity="0.4"/>
+
+              <!-- Eyes -->
+              <ellipse cx="102" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <ellipse cx="118" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <circle  cx="102.3" cy="52.5" r="1.7" fill="#0F2418"/>
+              <circle  cx="118.3" cy="52.5" r="1.7" fill="#0F2418"/>
+              <circle  cx="101.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+              <circle  cx="117.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+
+              <!-- Smile -->
+              <path d="M 106 61 Q 110 63 114 61" stroke="#2F5C3B" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+
+              <!-- ACCESSORY: lab goggles pushed up on head -->
+              <g>
+                <path d="M 97 40 Q 110 34 123 40" stroke="#3F6A4C" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+                <ellipse cx="103" cy="42" rx="4" ry="3" fill="#E8FAEB" stroke="#3F6A4C" stroke-width="0.9" opacity="0.85"/>
+                <ellipse cx="117" cy="42" rx="4" ry="3" fill="#E8FAEB" stroke="#3F6A4C" stroke-width="0.9" opacity="0.85"/>
+                <line x1="107" y1="42" x2="113" y2="42" stroke="#3F6A4C" stroke-width="0.9"/>
+                <!-- goggle highlight -->
+                <ellipse cx="102" cy="41" rx="1.1" ry="0.7" fill="#FFF" opacity="0.85"/>
+                <ellipse cx="116" cy="41" rx="1.1" ry="0.7" fill="#FFF" opacity="0.85"/>
+              </g>
+
+              <!-- Antennae -->
+              <path d="M 100 42 Q 80 22 68 8" stroke="#629A6F" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <path d="M 120 42 Q 140 22 152 8" stroke="#629A6F" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <circle cx="68"  cy="8" r="3.8" fill="url(#d_bulb)"/>
+              <circle cx="152" cy="8" r="3.8" fill="url(#d_bulb)"/>
+              <circle cx="67.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+              <circle cx="151.2" cy="7.2" r="1.2" fill="#FFF" opacity="0.8"/>
+            </svg>
+          </div>
+          <div class="card-label-strip">
+            <div class="card-name">Researcher</div>
+            <div class="card-desc">Deep dives — data analysis, trends &amp; insights</div>
+          </div>
+        </div>
+
+        <!-- ════════════════════════════════════════════════════ -->
+        <!-- CARD 5 — TUTOR / THE ENCLAVE (pale-yellow educator) -->
+        <!-- ════════════════════════════════════════════════════ -->
+        <div class="role-card"
+             style="--card-color:#C8AE4A; --card-color-shadow:rgba(200,174,74,0.27); --card-color-tint:rgba(200,174,74,0.11); --card-color-border:rgba(200,174,74,0.40);">
+          <div class="card-stage">
+            <div class="card-habitat-badge" style="color:#6B5A1E;">The Enclave</div>
+            <svg class="scene" viewBox="0 0 220 220" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid slice">
+              <defs>
+                <linearGradient id="e_bg" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#D7DCBC"/>
+                  <stop offset="100%" stop-color="#B7C498"/>
+                </linearGradient>
+                <radialGradient id="e_body" cx="36%" cy="26%" r="78%">
+                  <stop offset="0%"  stop-color="#F3E4A7"/>
+                  <stop offset="45%" stop-color="#E5D076"/>
+                  <stop offset="100%" stop-color="#8C7820"/>
+                </radialGradient>
+                <radialGradient id="e_head" cx="40%" cy="30%" r="75%">
+                  <stop offset="0%"  stop-color="#F8ECBA"/>
+                  <stop offset="60%" stop-color="#E8D585"/>
+                  <stop offset="100%" stop-color="#A68E3A"/>
+                </radialGradient>
+                <radialGradient id="e_claw" cx="30%" cy="25%" r="85%">
+                  <stop offset="0%"  stop-color="#FAEDC2"/>
+                  <stop offset="100%" stop-color="#B89B3A"/>
+                </radialGradient>
+                <radialGradient id="e_spec" cx="30%" cy="25%" r="50%">
+                  <stop offset="0%"  stop-color="#FFFFFF" stop-opacity="0.55"/>
+                  <stop offset="70%" stop-color="#FFFFFF" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="e_pT" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%"  stop-color="#EDEFD2"/>
+                  <stop offset="100%" stop-color="#C7CFA4"/>
+                </linearGradient>
+                <linearGradient id="e_pL" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#A8B382"/>
+                  <stop offset="100%" stop-color="#808C5A"/>
+                </linearGradient>
+                <linearGradient id="e_pR" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#BCC798"/>
+                  <stop offset="100%" stop-color="#91A06B"/>
+                </linearGradient>
+                <radialGradient id="e_gs" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%"  stop-color="#3A3316" stop-opacity="0.45"/>
+                  <stop offset="100%" stop-color="#3A3316" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="e_bulb" cx="35%" cy="30%" r="80%">
+                  <stop offset="0%"  stop-color="#FAEDC2"/>
+                  <stop offset="100%" stop-color="#A68E3A"/>
+                </radialGradient>
+                <!-- Book pages -->
+                <linearGradient id="e_book" x1="0%" y1="0%" x2="0%" y2="100%">
+                  <stop offset="0%"  stop-color="#FCF8EC"/>
+                  <stop offset="100%" stop-color="#E1D8B8"/>
+                </linearGradient>
+              </defs>
+
+              <rect width="220" height="220" fill="url(#e_bg)"/>
+
+              <!-- Habitat: stacked books + floating letters -->
+              <g opacity="0.8">
+                <!-- Book stack left -->
+                <rect x="8"  y="152" width="36" height="8" rx="1" fill="#6B8B4E"/>
+                <rect x="10" y="144" width="34" height="8" rx="1" fill="#8AA665"/>
+                <rect x="6"  y="136" width="38" height="8" rx="1" fill="#5E7A44"/>
+                <!-- Book stack right -->
+                <rect x="176" y="158" width="36" height="8" rx="1" fill="#6B8B4E"/>
+                <rect x="178" y="150" width="34" height="8" rx="1" fill="#8AA665"/>
+                <!-- Floating A and + -->
+                <text x="34" y="56"  font-size="14" font-weight="700" fill="#6B5A1E" opacity="0.7">A</text>
+                <text x="176" y="48" font-size="14" font-weight="700" fill="#6B5A1E" opacity="0.7">π</text>
+                <text x="184" y="96" font-size="11" font-weight="700" fill="#6B5A1E" opacity="0.6">+</text>
+                <text x="30" y="90"  font-size="11" font-weight="700" fill="#6B5A1E" opacity="0.6">∞</text>
+              </g>
+
+              <!-- Ground shadow -->
+              <ellipse cx="110" cy="184" rx="58" ry="9" fill="url(#e_gs)"/>
+
+              <!-- Plinth -->
+              <g>
+                <polygon points="58,162 110,182 162,162 110,142" fill="url(#e_pT)"/>
+                <polygon points="58,162 58,176 110,196 110,182" fill="url(#e_pL)"/>
+                <polygon points="110,182 110,196 162,176 162,162" fill="url(#e_pR)"/>
+                <polyline points="58,162 110,142 162,162" fill="none" stroke="#FFFFFF" stroke-opacity="0.45" stroke-width="0.7"/>
+              </g>
+
+              <!-- Claws -->
+              <g>
+                <path d="M 84 123 Q 68 132 55 146" stroke="#B89B3A" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="50" cy="150" rx="9" ry="6.3" fill="url(#e_claw)" transform="rotate(-28 50 150)"/>
+              </g>
+              <g>
+                <path d="M 136 123 Q 152 132 165 146" stroke="#B89B3A" stroke-width="4.6" fill="none" stroke-linecap="round"/>
+                <ellipse cx="170" cy="150" rx="9" ry="6.3" fill="url(#e_claw)" transform="rotate(28 170 150)"/>
+              </g>
+
+              <!-- Body -->
+              <path d="M 110 60
+                       C 84 60, 70 80, 70 116
+                       C 70 150, 86 164, 110 164
+                       C 134 164, 150 150, 150 116
+                       C 150 80, 136 60, 110 60 Z"
+                    fill="url(#e_body)"/>
+
+              <path d="M 78 128 Q 110 156 142 128 Q 110 170 78 128 Z" fill="#6A5820" opacity="0.22"/>
+              <path d="M 80 112 Q 110 122 140 112" stroke="#6A5820" stroke-width="0.8" fill="none" opacity="0.24"/>
+              <path d="M 78 132 Q 110 144 142 132" stroke="#6A5820" stroke-width="0.8" fill="none" opacity="0.2"/>
+              <ellipse cx="92" cy="84" rx="11" ry="20" fill="url(#e_spec)"/>
+
+              <!-- ACCESSORY: Open textbook held in claws (bigger than ledger) -->
+              <g transform="translate(0,2)">
+                <path d="M 76 132 L 110 128 L 144 132 L 144 150 L 110 146 L 76 150 Z" fill="url(#e_book)" stroke="#6A5820" stroke-width="1"/>
+                <path d="M 110 128 L 110 146" stroke="#6A5820" stroke-width="1"/>
+                <line x1="82"  y1="136" x2="106" y2="134" stroke="#B89B3A" stroke-width="0.7"/>
+                <line x1="82"  y1="139" x2="106" y2="137" stroke="#B89B3A" stroke-width="0.7"/>
+                <line x1="82"  y1="142" x2="104" y2="141" stroke="#B89B3A" stroke-width="0.7"/>
+                <line x1="114" y1="134" x2="138" y2="136" stroke="#B89B3A" stroke-width="0.7"/>
+                <line x1="114" y1="137" x2="138" y2="139" stroke="#B89B3A" stroke-width="0.7"/>
+                <line x1="114" y1="141" x2="136" y2="142" stroke="#B89B3A" stroke-width="0.7"/>
+              </g>
+
+              <!-- Head -->
+              <ellipse cx="110" cy="54" rx="18" ry="14" fill="url(#e_head)"/>
+              <path d="M 94 59 Q 110 69 126 59 Q 110 73 94 59 Z" fill="#6A5820" opacity="0.2"/>
+              <ellipse cx="104" cy="48" rx="5.5" ry="3" fill="#FFF" opacity="0.4"/>
+
+              <!-- Eyes -->
+              <ellipse cx="102" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <ellipse cx="118" cy="52" rx="3" ry="3.5" fill="#FFFFFF"/>
+              <circle  cx="102.3" cy="52.5" r="1.7" fill="#2A2410"/>
+              <circle  cx="118.3" cy="52.5" r="1.7" fill="#2A2410"/>
+              <circle  cx="101.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+              <circle  cx="117.4" cy="51.4" r="0.7" fill="#FFFFFF"/>
+
+              <!-- Gentle smile -->
+              <path d="M 106 61 Q 110 63 114 61" stroke="#6A5820" stroke-width="1.1" fill="none" stroke-linecap="round"/>
+
+              <!-- ACCESSORY: green beret (signature educator accessory) -->
+              <g>
+                <ellipse cx="110" cy="38" rx="17" ry="7" fill="#587D3E"/>
+                <ellipse cx="110" cy="36" rx="15" ry="5.5" fill="#6B9B4B"/>
+                <ellipse cx="108" cy="35" rx="4" ry="1.4" fill="#8BB56A" opacity="0.9"/>
+                <!-- stalk/bobble on top -->
+                <circle cx="117" cy="32" r="2.2" fill="#8BB56A"/>
+                <circle cx="116.5" cy="31.5" r="0.7" fill="#FFF" opacity="0.8"/>
+              </g>
+
+              <!-- Antennae (emerge from under beret sides) -->
+              <path d="M 100 42 Q 84 24 72 10" stroke="#A68E3A" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <path d="M 122 40 Q 138 26 150 14" stroke="#A68E3A" stroke-width="2" fill="none" stroke-linecap="round"/>
+              <circle cx="72"  cy="10" r="3.6" fill="url(#e_bulb)"/>
+              <circle cx="150" cy="14" r="3.6" fill="url(#e_bulb)"/>
+              <circle cx="71.2" cy="9.2"  r="1.1" fill="#FFF" opacity="0.8"/>
+              <circle cx="149.2" cy="13.2" r="1.1" fill="#FFF" opacity="0.8"/>
+            </svg>
+          </div>
+          <div class="card-label-strip">
+            <div class="card-name">Tutor</div>
+            <div class="card-desc">Teaches &amp; guides — education, onboarding &amp; mentoring</div>
+          </div>
+        </div>
+
+      </div><!-- /role-grid -->
+
+      <div class="nav-row">
+        <button class="btn-back">Back</button>
+        <button class="btn-next">Next →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
