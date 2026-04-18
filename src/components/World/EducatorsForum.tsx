@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { AccountantLobster } from "./AccountantLobster";
+import { GLBAgent } from "./GLBAgent";
 
 function FloatingBook({ position, rotation }: { position: [number, number, number], rotation?: [number, number, number] }) {
   const ref = useRef<THREE.Group>(null);
@@ -78,16 +78,16 @@ export function EducatorsForum({ position = [0, 0, 0] }) {
       </mesh>
 
       {/* The Educator Lobster at the podium */}
-      <AccountantLobster position={[0.5, 0.1, 0]} scale={1.2} />
+      <GLBAgent position={[0.5, 0.1, 0]} scale={1.2} isWorking={true} />
 
       {/* The "Students" - smaller lobsters sitting on the tiers */}
       {/* Tier 1 */}
-      <AccountantLobster position={[-0.8, 0.6, 0.5]} scale={0.7} />
-      <AccountantLobster position={[-0.2, 0.6, 1.2]} scale={0.7} />
-      <AccountantLobster position={[-1.2, 0.6, -0.4]} scale={0.7} />
+      <GLBAgent position={[-0.8, 0.6, 0.5]} scale={0.7} />
+      <GLBAgent position={[-0.2, 0.6, 1.2]} scale={0.7} />
+      <GLBAgent position={[-1.2, 0.6, -0.4]} scale={0.7} />
       {/* Tier 2 */}
-      <AccountantLobster position={[-1.6, 1.0, 0.8]} scale={0.7} />
-      <AccountantLobster position={[-0.5, 1.0, 1.6]} scale={0.7} />
+      <GLBAgent position={[-1.6, 1.0, 0.8]} scale={0.7} />
+      <GLBAgent position={[-0.5, 1.0, 1.6]} scale={0.7} />
 
       {/* Floating Books orbiting the forum entirely in code! */}
       <FloatingBook position={[1.5, 2.5, 1.5]} rotation={[0.4, 0.5, 0]} />

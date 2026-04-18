@@ -1,4 +1,4 @@
-import { AccountantLobster } from "./AccountantLobster";
+import { GLBAgent } from "./GLBAgent";
 
 function AbacusProp({ position = [0,0,0], rotation = [0,0,0], scale = 1 }: { position?: number[], rotation?: number[], scale?: number }) {
   const wood = "#CD9882";
@@ -65,11 +65,11 @@ export function AccountantsLabyrinth() {
       <EscherStairs position={[-1.5, 0.2, 0]} rotation={[0, Math.PI / 2, 0]} steps={6} height={0.8} depth={1.2} width={0.5} color="#D5A986" />
 
       {/* The Master Accountant standing on the main block */}
-      <AccountantLobster position={[-0.5, 1.0, 0]} scale={1.5} />
+      <GLBAgent position={[-0.5, 1.0, 0]} scale={1.5} isWorking={true} />
       
       {/* A tiny worker accountant on a lower step */}
-      <AccountantLobster position={[-1.2, 0.8, 0]} scale={0.7} />
-      <AccountantLobster position={[0.6, 1.0, -0.2]} scale={0.6} />
+      <GLBAgent position={[-1.2, 0.8, 0]} scale={0.7} isWorking={true} />
+      <GLBAgent position={[0.6, 1.0, -0.2]} scale={0.6} />
 
       {/* Abacuses scattered around like the image */}
       <AbacusProp position={[-1.2, 1.15, -0.5]} rotation={[0, Math.PI/4, 0]} scale={0.8} />

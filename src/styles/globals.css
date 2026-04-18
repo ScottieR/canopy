@@ -3,17 +3,36 @@
 @tailwind utilities;
 
 :root {
-  --sky-top: #C8D8E8;
+  /* Surfaces — Architectural Serenity */
+  --surface:                   #faf9f6;
+  --surface-container-low:     #f4f4f0;
+  --surface-container-lowest:  #ffffff;
+
+  /* Brand */
+  --primary:                   #3c6663;
+  --primary-container:         #b8e6e2;
+  --secondary-container:       #f7e59d;
+  --on-surface:                #303330;
+  --outline-variant:           #b1b2af;
+  --error:                     #aa371c;
+
+  /* World / 3D scene palette (unchanged — these color the Three.js canvas) */
+  --sky-top:    #C8D8E8;
   --sky-bottom: #F5E6D8;
-  --world-bg: #EDE4DB;
-  --surface: rgba(255, 255, 255, 0.55);
-  --surface-raised: rgba(255, 255, 255, 0.72);
-  --accent: #218380;
-  --accent-light: #83C5BE;
-  --text: #2D3436;
-  --text-muted: #636E72;
-  --text-dim: #B2BEC3;
-  --border: rgba(255, 255, 255, 0.3);
+  --world-bg:   #faf9f6;
+
+  /* Legacy aliases (kept for any components not yet migrated) */
+  --surface-glass:   rgba(250, 249, 246, 0.55);
+  --surface-raised:  rgba(255, 255, 255, 0.72);
+  --accent:          #3c6663;
+  --accent-light:    #b8e6e2;
+  --text:            #303330;
+  --text-muted:      #636E72;
+  --text-dim:        #B2BEC3;
+
+  /* Shadows */
+  --shadow-ambient: 0 8px 40px rgba(48, 51, 48, 0.06);
+  --shadow-float:   0 8px 24px rgba(48, 51, 48, 0.08);
 }
 
 * {
@@ -26,11 +45,16 @@ html, body, #root {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background: var(--world-bg);
-  color: var(--text);
-  font-family: "DM Sans", system-ui, -apple-system, sans-serif;
+  background: var(--surface);
+  color: var(--on-surface);
+  font-family: 'Manrope', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* Serif headlines */
+h1, h2, h3 {
+  font-family: 'Noto Serif', Georgia, 'Times New Roman', serif;
 }
 
 /* macOS titlebar drag region */
@@ -45,6 +69,6 @@ html, body, #root {
 
 /* Selection styling */
 ::selection {
-  background: rgba(33, 131, 128, 0.2);
-  color: var(--text);
+  background: rgba(60, 102, 99, 0.15);
+  color: var(--on-surface);
 }

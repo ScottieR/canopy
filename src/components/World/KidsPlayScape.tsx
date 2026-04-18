@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { AccountantLobster } from "./AccountantLobster";
+import { GLBAgent } from "./GLBAgent";
 
 export function KidsPlayScape({ position = [0, 0, 0] }) {
   const woodLight = "#E5D2A6";
@@ -71,11 +71,10 @@ export function KidsPlayScape({ position = [0, 0, 0] }) {
       </group>
 
       {/* The Kids Coordinator Lobster wearing a fun accessory (we just tint standard lobster) */}
-      {/* We use AccountantLobster as the base frame, but place him in the scene */}
-      <AccountantLobster position={[-0.5, 0.2, -0.8]} scale={1.4} />
+      <GLBAgent position={[-0.5, 0.2, -0.8]} scale={1.4} isWorking={true} />
 
       {/* Tiny baby lobster playing in blocks */}
-      <AccountantLobster position={[0.8, 0.2, 0.5]} scale={0.5} />
+      <GLBAgent position={[0.8, 0.2, 0.5]} scale={0.5} />
     </group>
   );
 }

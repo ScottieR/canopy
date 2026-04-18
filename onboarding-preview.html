@@ -4,26 +4,31 @@
   <meta charset="UTF-8">
   <title>Canopy — Onboarding Preview</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif:ital,wght@0,400;0,600;0,700;1,400&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
-      background: #D8CFCA;
+      font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+      background: #f4f4f0;
       padding: 32px;
       display: flex; flex-direction: column; gap: 48px;
       min-height: 100vh;
+      color: #303330;
+    }
+    h1, h2 {
+      font-family: 'Noto Serif', Georgia, 'Times New Roman', serif;
     }
     .screen-label {
       font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
       text-transform: uppercase; color: #8A7E78; margin-bottom: 12px;
     }
     .app-bg {
-      background: linear-gradient(135deg, #EDE4DB 0%, #F5EEE8 100%);
+      background: #faf9f6;
       border-radius: 16px;
       display: flex; align-items: center; justify-content: center;
       overflow: hidden;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.10);
+      box-shadow: 0 8px 40px rgba(48,51,48,0.06);
     }
 
     /* ═══════════════════ STEP 0: WELCOME ═══════════════════ */
@@ -42,8 +47,8 @@
     .hero-card {
       border-radius: 18px;
       overflow: hidden;
-      border: 1.5px solid rgba(33,131,128,0.22);
-      box-shadow: 5px 5px 0 rgba(33,131,128,0.15), 0 20px 50px rgba(33,131,128,0.18);
+      border: 1px solid rgba(177,178,175,0.10);
+      box-shadow: 0 8px 40px rgba(48,51,48,0.06);
       display: inline-block;
       background: #fff;
     }
@@ -63,23 +68,23 @@
     .hero-card-label {
       background: rgba(255,255,255,0.98);
       padding: 12px 18px 13px;
-      border-top: 1px solid rgba(33,131,128,0.14);
+      background: #f4f4f0;
       text-align: center;
     }
     .hero-card-label span {
       font-size: 12px; font-weight: 700; color: #205E5B; letter-spacing: 0.05em;
     }
 
-    h1 { font-size: 44px; font-weight: 700; color: #2D3436; letter-spacing: -0.02em; margin-bottom: 16px; }
-    h2 { font-size: 40px; font-weight: 700; color: #2D3436; letter-spacing: -0.02em; margin-bottom: 12px; }
+    h1 { font-size: 44px; font-weight: 700; color: #303330; letter-spacing: -0.02em; margin-bottom: 16px; }
+    h2 { font-size: 40px; font-weight: 700; color: #303330; letter-spacing: -0.02em; margin-bottom: 12px; }
     .subtitle { font-size: 18px; color: #636E72; line-height: 1.6; max-width: 380px; margin: 0 auto 40px; }
     .subtitle-sm { font-size: 16px; color: #636E72; margin-bottom: 40px; text-align: center; }
 
     .btn-primary {
-      padding: 16px 40px; border-radius: 16px; border: none;
-      background: linear-gradient(135deg, #218380, #4A9E96);
+      padding: 16px 40px; border-radius: 9999px; border: none;
+      background: linear-gradient(135deg, #3c6663, #b8e6e2);
       color: white; font-size: 16px; font-weight: 600; cursor: pointer;
-      box-shadow: 0 8px 24px rgba(33,131,128,0.25);
+      box-shadow: 0 8px 24px rgba(48,51,48,0.08);
       font-family: inherit;
       animation: pulse 2s ease-in-out infinite;
     }
@@ -97,9 +102,8 @@
     .role-card {
       border-radius: 14px;
       overflow: hidden;
-      border: 1px solid rgba(0,0,0,0.10);
       transition: transform 0.25s ease, box-shadow 0.25s ease;
-      box-shadow: 3px 3px 0 rgba(0,0,0,0.07), 0 4px 10px rgba(0,0,0,0.05);
+      box-shadow: 0 4px 24px rgba(48,51,48,0.06);
       cursor: pointer;
       background: #fff;
     }
@@ -123,25 +127,24 @@
     }
     .card-label-strip {
       padding: 10px 14px 12px;
-      border-top: 1px solid rgba(0,0,0,0.07);
-      background: rgba(255,255,255,0.98);
+      background: #ffffff;
     }
     .role-card.selected .card-label-strip {
       background: var(--card-color-tint);
       border-top-color: var(--card-color-border);
     }
-    .card-name { font-size: 13px; font-weight: 700; color: #2D3436; letter-spacing: 0.01em; margin-bottom: 3px; }
+    .card-name { font-size: 13px; font-weight: 700; color: #303330; letter-spacing: 0.01em; margin-bottom: 3px; }
     .card-desc { font-size: 10.5px; color: #636E72; line-height: 1.45; }
 
     .nav-row { display: flex; gap: 12px; justify-content: center; }
     .btn-back {
-      padding: 12px 28px; border-radius: 12px; border: 1px solid rgba(0,0,0,0.08);
-      background: rgba(255,255,255,0.6); color: #636E72; font-size: 14px; font-weight: 600;
+      padding: 12px 28px; border-radius: 9999px; border: none;
+      background: #f4f4f0; color: #636E72; font-size: 14px; font-weight: 600;
       cursor: pointer; font-family: inherit;
     }
     .btn-next {
-      padding: 12px 28px; border-radius: 12px; border: none;
-      background: #218380; color: white; font-size: 14px; font-weight: 600;
+      padding: 12px 28px; border-radius: 9999px; border: none;
+      background: linear-gradient(135deg, #3c6663, #b8e6e2); color: white; font-size: 14px; font-weight: 600;
       cursor: pointer; font-family: inherit;
     }
 

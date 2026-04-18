@@ -1,7 +1,7 @@
 import { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { AccountantLobster } from "./AccountantLobster";
+import { GLBAgent } from "./GLBAgent";
 
 export function ExecutiveMonolith({ position = [0, 0, 0] }) {
   const towerRef = useRef<THREE.Group>(null);
@@ -47,9 +47,8 @@ export function ExecutiveMonolith({ position = [0, 0, 0] }) {
         </mesh>
 
         {/* Executive Lobster standing on top */}
-        {/* We reuse the lobster base but we can tint it later if we want a custom component, 
-            for now AccountantLobster serves perfectly as a generic agent shell */}
-        <AccountantLobster position={[0, 6.2, 0]} scale={1.2} />
+        {/* We reuse the generic agent wrapper */}
+        <GLBAgent position={[0, 6.2, 0]} scale={1.2} isWorking={true} />
 
         {/* Floating Data Screens around the Executive */}
         <mesh position={[-0.8, 7.0, 0.5]} rotation={[0, Math.PI/4, 0]}>

@@ -5,6 +5,9 @@ import * as THREE from "three";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { WorldScene } from "./components/World/WorldScene";
+import RAW_AGENT_TYPE_INFO from "../../shared/agents.json";
+import { GLBAgent } from "./components/World/GLBAgent";
+import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CANOPY — Monument Valley Isometric World + Architect Agent Detail
@@ -168,6 +171,10 @@ interface AgentData extends Agent {
   chatLog: ChatMessage[];
   personalityPrompt: string;
   avatarPrompt: string;
+  visual_identity: {
+    baseModelUrl: string | null;
+    accessories: string[];
+  };
 }
 
 interface WorldState {
@@ -214,36 +221,7 @@ const DEFAULT_PERMISSIONS: Permission[] = [
 
 // ─── Agent Type Mappings ──────────────────────────────────────────────────────
 
-const AGENT_TYPE_INFO: Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string }> = {
-  "Researcher":   { description: "Deep dives — data analysis, trends & insights",        color: "#7AAC7A", robeColor: "#5E8E5E", accentColor: "#96C496", habitatColor: "#BDD4BD", habitatLabel: "The Sanctuary", image: "/agents/Researcher.png" },
-  "Tutor":        { description: "Teaches & guides — education, onboarding & mentoring", color: "#A882D8", robeColor: "#8A62C0", accentColor: "#C8A4F0", habitatColor: "#CEC4E4", habitatLabel: "The Axis", image: "/agents/Tutor.png" },
-  
-  "Interior Designer": { description: "Curates spaces with impeccable style.", color: "#82A4A8", robeColor: "#82A4A8", accentColor: "#C1D3D5", habitatColor: "#A6C2C5", habitatLabel: "Design", image: "/agents/InteriorDesigner.png" },
-  "Fashion Stylist": { description: "Curates your wardrobe and looks.", color: "#B85C82", robeColor: "#B85C82", accentColor: "#E5A8C1", habitatColor: "#D6A3B9", habitatLabel: "Fashion", image: "/agents/FashionStylist.png" },
-  "Therapist": { description: "Listens, guides, and supports your well-being.", color: "#E0908B", robeColor: "#E0908B", accentColor: "#FACCC9", habitatColor: "#EFAFA9", habitatLabel: "Wellness", image: "/agents/Therapist.png" },
-  "Chef": { description: "Plans meals and creates culinary magic.", color: "#D96C3B", robeColor: "#D96C3B", accentColor: "#F4AD8A", habitatColor: "#E8A381", habitatLabel: "Kitchen", image: "/agents/Chef1.png" },
-  "Travel Agent": { description: "Plans itineraries and perfect getaways.", color: "#6AA89E", robeColor: "#6AA89E", accentColor: "#AEE5DB", habitatColor: "#94C9C0", habitatLabel: "Travel", image: "/agents/TravelAgent.png" },
-  "Media Advisor": { description: "Navigates news, entertainment & PR.", color: "#63476E", robeColor: "#63476E", accentColor: "#A485B0", habitatColor: "#7D6288", habitatLabel: "Media", image: "/agents/MediaAdvisor.png" },
-  "Relationship Guru": { description: "Helps you navigate social connections.", color: "#DB998A", robeColor: "#DB998A", accentColor: "#F4CCC3", habitatColor: "#EAB3A6", habitatLabel: "Social", image: "/agents/RelationshipGuru.png" },
-  "Kids Coordinator": { description: "Manages schedules, activities & fun.", color: "#BFCB75", robeColor: "#BFCB75", accentColor: "#E5EEAF", habitatColor: "#D8E38E", habitatLabel: "Family", image: "/agents/KidsCoordinator.png" },
-
-  "Accountant":   { description: "Balances the books & compliance.", color: "#8E9EAA", robeColor: "#8E9EAA", accentColor: "#D7DFE5", habitatColor: "#BCCAD6", habitatLabel: "Finance", image: "/agents/Accountant.png" },
-  "Business Strategist": { description: "Plots long-term growth & objectives.", color: "#E2936B", robeColor: "#E2936B", accentColor: "#F5C2A8", habitatColor: "#EDAA87", habitatLabel: "Strategy", image: "/agents/BusinessStrategist.png" },
-  "Marketing Guru": { description: "Drives traffic, campaigns and virality.", color: "#F0B466", robeColor: "#F0B466", accentColor: "#FCE1B6", habitatColor: "#F5CC8E", habitatLabel: "Marketing", image: "/agents/MarketingGuru.png" },
-  "Educator": { description: "Builds curriculums and learning paths.", color: "#95B589", robeColor: "#95B589", accentColor: "#CFE5C6", habitatColor: "#B6D2AA", habitatLabel: "Education", image: "/agents/Educator.png" },
-  "Artist": { description: "Brings creative visions to life.", color: "#D07C82", robeColor: "#D07C82", accentColor: "#F3BCC1", habitatColor: "#E29DA3", habitatLabel: "Creative", image: "/agents/Artist.png" },
-  "Coder": { description: "Writes logic, ships code, squashes bugs.", color: "#545281", robeColor: "#545281", accentColor: "#918ECA", habitatColor: "#7472A5", habitatLabel: "Engineering", image: "/agents/Coder.png" },
-  "Architect": { description: "Designs systems and structures.", color: "#8AA3C6", robeColor: "#8AA3C6", accentColor: "#C7D8F2", habitatColor: "#A9C1E1", habitatLabel: "Architecture", image: "/agents/Architect.png" },
-  "Musician": { description: "Composes, mixes, and scores your life.", color: "#3B4262", robeColor: "#3B4262", accentColor: "#757D9D", habitatColor: "#535C80", habitatLabel: "Music", image: "/agents/Musician.png" },
-  "Investment Manager": { description: "Grows your portfolio and assets.", color: "#615C9C", robeColor: "#615C9C", accentColor: "#A09CDF", habitatColor: "#7F7AB9", habitatLabel: "Capital", image: "/agents/InvestmentManager.png" },
-  "Trainer": { description: "Pushes your fitness & health goals.", color: "#74AFA0", robeColor: "#74AFA0", accentColor: "#B1E1D5", habitatColor: "#95CBB9", habitatLabel: "Fitness", image: "/agents/Trainer.png" },
-  "Strategist":  { description: "Decision memos, competitive scans & long-range planning",   color: "#9A94AC", robeColor: "#9A94AC", accentColor: "#E2DFF0", habitatColor: "#C5C0D0", habitatLabel: "The Citadel" },
-  "Negotiator":  { description: "Deal prep, BATNA analysis & high-stakes conversations",       color: "#A8917E", robeColor: "#A8917E", accentColor: "#EDE0D5", habitatColor: "#D4C5B8", habitatLabel: "The Exchange" },
-  "Engineer":    { description: "Code review, architecture decisions & debugging deep-dives",  color: "#8AA3B5", robeColor: "#8AA3B5", accentColor: "#D5E5F0", habitatColor: "#B8C8D4", habitatLabel: "The Workshop" },
-  "Editor":      { description: "Prose tightening, structure feedback & developmental edits",  color: "#A8967E", robeColor: "#A8967E", accentColor: "#EDE4D5", habitatColor: "#D4C8B8", habitatLabel: "The Archive" },
-  "Coach":       { description: "Habit tracking, goal-setting & personal reflection partner",  color: "#96A88E", robeColor: "#96A88E", accentColor: "#DFF0D8", habitatColor: "#C8D4C0", habitatLabel: "The Grove" },
-  "Custom": { description: "A blank slate. You define their role, permissions, and skills.", color: "#7F8C8D", robeColor: "#95A5A6", accentColor: "#BDC3C7", habitatColor: "#ECF0F1", habitatLabel: "Unknown" }
-};
+const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean }>;
 
 function getRecommendedModel(role: string) {
   const heavyRoles = ["Researcher", "Coder", "Architect", "Financial", "Accountant", "Business Strategist", "Investment Manager"];
@@ -602,7 +580,7 @@ function Toggle({ enabled, onChange, size = "normal" }: { enabled: boolean; onCh
   return (
     <button onClick={onChange} style={{
       width: w, height: h, borderRadius: h, border: "none", padding: 2, cursor: "pointer",
-      background: enabled ? "#218380" : "rgba(0,0,0,0.08)", transition: "all 0.2s ease",
+      background: enabled ? "#3c6663" : "rgba(0,0,0,0.08)", transition: "all 0.2s ease",
       display: "flex", alignItems: "center",
     }}>
       <div style={{
@@ -614,7 +592,7 @@ function Toggle({ enabled, onChange, size = "normal" }: { enabled: boolean; onCh
   );
 }
 
-function ProgressBar({ value, max = 1, color = "#218380", height = 4 }: { value: number; max?: number; color?: string; height?: number }) {
+function ProgressBar({ value, max = 1, color = "#3c6663", height = 4 }: { value: number; max?: number; color?: string; height?: number }) {
   return (
     <div style={{ height, borderRadius: height / 2, background: "rgba(0,0,0,0.06)", width: "100%" }}>
       <div style={{ height: "100%", borderRadius: height / 2, background: color, width: `${(value / max) * 100}%`, transition: "width 0.5s ease" }} />
@@ -633,6 +611,7 @@ function OnboardingWizard() {
   const [apiKey, setApiKey] = useState("");
   const [personalityPrompt, setPersonalityPrompt] = useState("");
   const [llmProvider, setLlmProvider] = useState<"OpenAI"|"Google Gemini"|"Anthropic"|"">("");
+  const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[] } | null>(null);
   
   const [plugins, setPlugins] = useState<Record<string, boolean>>({ slack: false, email: false, calendar: false, folders: false });
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
@@ -641,7 +620,7 @@ function OnboardingWizard() {
 
   const { setActiveView, addAgent } = useWorldStore();
 
-  const roleTypes = Object.entries(AGENT_TYPE_INFO).filter(([key]) => key !== "Custom").map(([key, val]) => ({ key, ...val }));
+  const roleTypes = Object.entries(AGENT_TYPE_INFO).filter(([key, val]) => key !== "Custom" && val.suggest_in_onboarding).map(([key, val]) => ({ key, ...val }));
 
   const handleRoleSelect = (roleKey: string) => {
     setSelectedRole(roleKey);
@@ -724,6 +703,10 @@ function OnboardingWizard() {
         chatLog: [],
         personalityPrompt: personalityPrompt || `${agentName} is a ${selectedRole.toLowerCase()} agent — reliable, sharp, and always working.`,
         avatarPrompt: `Isometric 3D-rendered agent character in Monument Valley art style. Rounded bell-shaped body with ${roleInfo?.robeColor || "#888"} shell, smooth round head, two swept-back antennae with bulbous ${roleInfo?.accentColor || "#ccc"} tips, small expressive claws at sides. Flat-shaded low-poly faces, soft directional lighting from upper-left. Warm muted pastel palette. No outlines. Ref: agent-style-grid.png`,
+        visual_identity: customIdentity || {
+          baseModelUrl: null,
+          accessories: [],
+        }
       };
 
       addAgent(enrichedAgent);
@@ -738,9 +721,9 @@ function OnboardingWizard() {
   return (
     <div style={{
       width: "100vw", height: "100vh",
-      background: "linear-gradient(135deg, #EDE4DB 0%, #F5EEE8 100%)",
+      background: "#faf9f6",
       display: "flex", alignItems: "center", justifyContent: "center",
-      fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
+      fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
       overflow: "hidden",
     }}>
       {/* Step 1: Welcome */}
@@ -763,12 +746,12 @@ function OnboardingWizard() {
 
           <div style={{ textAlign: "center", maxWidth: 640, zIndex: 1, position: "relative", pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center" }}>
             <div style={{
-              background: "rgba(255,255,255,0.7)", padding: "8px 16px", borderRadius: 20, 
-              fontSize: 12, fontWeight: 700, color: "#218380", backdropFilter: "blur(8px)", 
+              background: "#ffffff", padding: "8px 16px", borderRadius: 20, 
+              fontSize: 12, fontWeight: 700, color: "#3c6663", backdropFilter: "blur(8px)", 
               display: "flex", alignItems: "center", gap: 8, marginBottom: 40,
               boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
             }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#218380", display: "inline-block", animation: "pulse 2s infinite" }} />
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3c6663", display: "inline-block", animation: "pulse 2s infinite" }} />
               Interactive Habitat (Drag to rotate)
             </div>
             
@@ -776,7 +759,7 @@ function OnboardingWizard() {
               background: "radial-gradient(ellipse at center, rgba(237,228,219,0.9) 0%, rgba(237,228,219,0) 70%)", 
               padding: "40px", borderRadius: "50%" 
             }}>
-              <h1 style={{ fontSize: 56, fontWeight: 800, color: "#2D3436", marginBottom: 16, letterSpacing: "-0.03em", textShadow: "0 4px 16px rgba(255,255,255,0.8)" }}>
+              <h1 style={{ fontSize: 56, fontWeight: 700, color: "#303330", marginBottom: 16, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif", textShadow: "0 4px 32px rgba(48,51,48,0.06)" }}>
                 Welcome to The Canopy
               </h1>
               <p style={{ fontSize: 20, color: "#4A5568", marginBottom: 40, lineHeight: 1.6, maxWidth: 400, margin: "0 auto 40px", textShadow: "0 2px 8px rgba(255,255,255,0.8)" }}>
@@ -787,9 +770,9 @@ function OnboardingWizard() {
                 style={{
                   pointerEvents: "auto",
                   padding: "18px 48px", borderRadius: 16, border: "none",
-                  background: "linear-gradient(135deg, #218380, #4A9E96)",
+                  background: "linear-gradient(135deg, #3c6663, #b8e6e2)",
                   color: "white", fontSize: 18, fontWeight: 700, cursor: "pointer",
-                  boxShadow: "0 8px 24px rgba(33,131,128,0.3)",
+                  boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
                   transition: "all 0.3s ease",
                   animation: "pulse 2s ease-in-out infinite",
                 }}
@@ -804,7 +787,7 @@ function OnboardingWizard() {
       {/* Step 2: Choose Role */}
       {step === 1 && (
         <div style={{ maxWidth: 900, width: "90%", maxHeight: "90vh", overflow: "auto", padding: "20px 0" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#2D3436", marginBottom: 12, textAlign: "center" }}>
+          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
             Choose Your Agent
           </h1>
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, textAlign: "center" }}>
@@ -813,7 +796,7 @@ function OnboardingWizard() {
 
           <div style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 32 }}>
              <button onClick={() => handleRoleSelect("Custom")} style={{
-               padding: "12px 24px", borderRadius: 12, background: "rgba(255,255,255,0.8)", border: selectedRole === "Custom" ? "2px solid #218380" : "1px solid rgba(0,0,0,0.1)", color: "#2D3436", fontSize: 14, fontWeight: 600, cursor: "pointer"
+               padding: "12px 24px", borderRadius: 12, background: "rgba(255,255,255,0.8)", border: selectedRole === "Custom" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", color: "#303330", fontSize: 14, fontWeight: 600, cursor: "pointer"
              }}>+ Create Custom Agent</button>
              <button onClick={() => alert("Import flow coming soon")} style={{
                padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px dashed rgba(0,0,0,0.2)", color: "#636E72", fontSize: 14, fontWeight: 600, cursor: "pointer"
@@ -834,14 +817,14 @@ function OnboardingWizard() {
                   overflow: "hidden",
                   border: selectedRole === role.key
                     ? `2px solid ${role.color}`
-                    : "1px solid rgba(0,0,0,0.10)",
+                    : "1px solid rgba(177,178,175,0.10)",
                   transition: "all 0.25s ease",
                   transform: selectedRole === role.key
                     ? "scale(1.05) translateY(-4px)"
                     : "scale(1)",
                   boxShadow: selectedRole === role.key
                     ? `5px 5px 0 ${role.color}45, 0 14px 32px rgba(0,0,0,0.13)`
-                    : "3px 3px 0 rgba(0,0,0,0.07), 0 2px 6px rgba(0,0,0,0.05)",
+                    : "0 4px 24px rgba(48,51,48,0.06)",
                 }}
               >
                 {/* ── Habitat stage (isometric diorama area) ── */}
@@ -883,9 +866,9 @@ function OnboardingWizard() {
                   padding: "9px 12px 10px",
                   borderTop: selectedRole === role.key
                     ? `1px solid ${role.color}40`
-                    : "1px solid rgba(0,0,0,0.07)",
+                    : "1px solid rgba(177,178,175,0.10)",
                 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#2D3436", letterSpacing: "0.01em", marginBottom: 3 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", letterSpacing: "0.01em", marginBottom: 3 }}>
                     {role.key}
                   </div>
                   <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.4 }}>
@@ -901,7 +884,7 @@ function OnboardingWizard() {
                   padding: "8px 10px",
                   borderTop: selectedRole === role.key
                     ? `1px solid ${role.color}40`
-                    : "1px solid rgba(0,0,0,0.07)",
+                    : "1px solid rgba(177,178,175,0.10)",
                   borderBottomLeftRadius: 10, borderBottomRightRadius: 10
                 }}>
                   <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.3, textAlign: "center" }}>
@@ -915,13 +898,12 @@ function OnboardingWizard() {
 
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <button onClick={() => setStep(0)} style={{
-              padding: "12px 28px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)",
-              background: "rgba(255,255,255,0.6)", color: "#636E72", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
-            <button onClick={() => setStep(2)} disabled={!selectedRole} style={{
+            <button onClick={() => selectedRole === "Custom" ? setStep(1.5) : setStep(2)} disabled={!selectedRole} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: selectedRole ? "#218380" : "rgba(0,0,0,0.06)",
+              background: selectedRole ? "#3c6663" : "rgba(0,0,0,0.06)",
               color: selectedRole ? "white" : "#B2BEC3",
               fontSize: 14, fontWeight: 600, cursor: selectedRole ? "pointer" : "default",
               fontFamily: "inherit",
@@ -930,10 +912,32 @@ function OnboardingWizard() {
         </div>
       )}
 
+      {/* Step 1.5: Custom Agent 3D Generation */}
+      {step === 1.5 && (
+        <div style={{ width: "90vw", maxWidth: 1200, height: "85vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+            <div>
+              <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: 0 }}>Design Custom Agent</h1>
+              <p style={{ fontSize: 14, color: "#636E72", margin: "4px 0 0 0" }}>Describe the appearance and our AI will conform it to The Canopy's visual identity.</p>
+            </div>
+            <button onClick={() => setStep(1)} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", cursor: "pointer", fontWeight: 600, color: "#636E72" }}>
+              Back
+            </button>
+          </div>
+          
+          <div style={{ flex: 1, overflow: "hidden" }}>
+             <GenerativeStudio onApply={(res) => {
+                setCustomIdentity({ baseModelUrl: res.meshyManifest.base !== "none (habitat only)" ? "/models/agent.glb" : null, accessories: res.meshyManifest.accessories });
+                setStep(2);
+             }} />
+          </div>
+        </div>
+      )}
+
       {/* Step 3: Name & Personality */}
       {step === 2 && (
         <div style={{ maxWidth: 600, width: "90%", maxHeight: "90vh", overflow: "auto" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#2D3436", marginBottom: 12 }}>
+          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
             Name Your Agent
           </h1>
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
@@ -941,28 +945,28 @@ function OnboardingWizard() {
           </p>
 
           <div style={{ marginBottom: 32 }}>
-            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#2D3436", marginBottom: 8 }}>Agent Name</label>
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>Agent Name</label>
             <input
               value={agentName}
               onChange={e => setAgentName(e.target.value)}
               placeholder="e.g., Atlas, Nova, Sage..."
               style={{
                 width: "100%", padding: "14px 18px", borderRadius: 12,
-                border: "1px solid rgba(0,0,0,0.08)", fontSize: 15,
-                fontFamily: "inherit", color: "#2D3436",
-                outline: "none", background: "rgba(255,255,255,0.7)",
+                fontSize: 15,
+                fontFamily: "inherit", color: "#303330",
+                outline: "none", background: "#ffffff",
               }}
             />
           </div>
 
           {selectedRole && AGENT_TYPE_INFO[selectedRole] && (
             <div style={{
-              background: "rgba(255,255,255,0.5)", padding: 20, borderRadius: 16, marginBottom: 32,
+              background: "#f4f4f0", padding: 20, borderRadius: 16, marginBottom: 32,
               display: "flex", gap: 16, alignItems: "flex-start", backdropFilter: "blur(4px)",
             }}>
               <LobsterIcon size={48} shellColor={AGENT_TYPE_INFO[selectedRole].robeColor} accentColor={AGENT_TYPE_INFO[selectedRole].accentColor} />
               <div>
-                <div style={{ fontSize: 16, fontWeight: 600, color: "#2D3436", marginBottom: 4 }}>
+                <div style={{ fontSize: 16, fontWeight: 600, color: "#303330", marginBottom: 4 }}>
                   {agentName || "Your Agent"} the {selectedRole}
                 </div>
                 <div style={{ fontSize: 13, color: "#636E72", lineHeight: 1.5 }}>
@@ -972,8 +976,8 @@ function OnboardingWizard() {
             </div>
           )}
 
-          <div style={{ background: "rgba(255,255,255,0.5)", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
-            <h3 style={{ fontSize: 16, color: "#2D3436", margin: "0 0 4px 0" }}>Agent Personality</h3>
+          <div style={{ background: "#f4f4f0", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
+            <h3 style={{ fontSize: 16, color: "#303330", margin: "0 0 4px 0" }}>Agent Personality</h3>
             <p style={{ fontSize: 13, color: "#636E72", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
             
             <textarea
@@ -982,14 +986,14 @@ function OnboardingWizard() {
               rows={4}
               style={{
                 width: "100%", padding: "12px 16px", borderRadius: 12, resize: "vertical",
-                border: "1px solid rgba(0,0,0,0.08)", fontSize: 14, lineHeight: 1.5,
-                fontFamily: "inherit", color: "#2D3436", background: "rgba(255,255,255,0.7)",
+                fontSize: 14, lineHeight: 1.5,
+                fontFamily: "inherit", color: "#303330", background: "#ffffff",
                 outline: "none"
               }}
             />
             
             <div style={{ marginTop: 24 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#2D3436", marginBottom: 6 }}>Initial Training Books</label>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Initial Training Books</label>
                 <div style={{ border: "1px dashed rgba(0,0,0,0.2)", borderRadius: 8, padding: "16px", textAlign: "center", color: "#636E72", fontSize: 12, cursor: "pointer", background: "rgba(255,255,255,0.3)" }}>
                   Click to attach PDFs or URLs
                 </div>
@@ -998,13 +1002,12 @@ function OnboardingWizard() {
 
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
             <button onClick={() => setStep(1)} style={{
-              padding: "12px 28px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)",
-              background: "rgba(255,255,255,0.6)", color: "#636E72", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => setStep(3)} disabled={!agentName.trim()} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: agentName.trim() ? "#218380" : "rgba(0,0,0,0.06)",
+              background: agentName.trim() ? "#3c6663" : "rgba(0,0,0,0.06)",
               color: agentName.trim() ? "white" : "#B2BEC3",
               fontSize: 14, fontWeight: 600, cursor: agentName.trim() ? "pointer" : "default",
               fontFamily: "inherit",
@@ -1016,7 +1019,7 @@ function OnboardingWizard() {
       {/* Step 4: API Key */}
       {step === 3 && (
         <div style={{ maxWidth: 600, width: "90%", maxHeight: "90vh", overflow: "auto" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#2D3436", marginBottom: 12 }}>
+          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
             Power Up Your Agent
           </h1>
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
@@ -1024,22 +1027,22 @@ function OnboardingWizard() {
           </p>
           
           {selectedRole && (
-            <div style={{ marginBottom: 24, fontSize: 14, color: "#2D3436", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
+            <div style={{ marginBottom: 24, fontSize: 14, color: "#303330", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
               Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getRecommendedModel(selectedRole).model}</strong> model.
             </div>
           )}
 
           <div style={{ marginBottom: 24, display: "flex", gap: 12 }}>
             {["OpenAI", "Google Gemini", "Anthropic"].map(prov => (
-              <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(255,255,255,0.7)", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #218380" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
+              <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "#ffffff", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
                 <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => setLlmProvider(prov as any)} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: "#2D3436" }}>{prov}</span>
+                <span style={{ fontSize: 14, fontWeight: 600, color: "#303330" }}>{prov}</span>
               </label>
             ))}
           </div>
 
           <div style={{ marginBottom: 32 }}>
-            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#2D3436", marginBottom: 8 }}>
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>
               API Key (Optional for now)
             </label>
             <textarea
@@ -1049,28 +1052,27 @@ function OnboardingWizard() {
               style={{
                 width: "100%", padding: "14px 18px", borderRadius: 12,
                 border: "1px solid rgba(0,0,0,0.08)", fontSize: 13,
-                fontFamily: "monospace", color: "#2D3436",
-                outline: "none", background: "rgba(255,255,255,0.7)",
+                fontFamily: "monospace", color: "#303330",
+                outline: "none", background: "#ffffff",
                 minHeight: 100, resize: "vertical",
               }}
             />
           </div>
 
           <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" style={{
-            display: "inline-block", fontSize: 12, color: "#218380", background: "none", border: "none",
+            display: "inline-block", fontSize: 12, color: "#3c6663", background: "none", border: "none",
             cursor: "pointer", fontFamily: "inherit", textDecoration: "underline",
             marginBottom: 32,
           }}>How do I get an API Key?</a>
 
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
             <button onClick={() => setStep(2)} style={{
-              padding: "12px 28px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)",
-              background: "rgba(255,255,255,0.6)", color: "#636E72", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => setStep(4)} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: "#218380", color: "white",
+              background: "#3c6663", color: "white",
               fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
             }}>Next</button>
           </div>
@@ -1078,16 +1080,16 @@ function OnboardingWizard() {
       )}
 
       {/* Step 5: Plugins & Permissions */}
-      {step === 6 && (
+      {step === 4 && (
         <div style={{ maxWidth: 600, width: "90%", maxHeight: "90vh", overflow: "auto" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#2D3436", marginBottom: 12 }}>Skills & Access</h1>
+          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>Give your agent the tools they need to interact with your world.</p>
           
           <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
             {(["slack", "email", "calendar", "folders"] as const).map(p => (
-              <div key={p} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.7)", padding: "16px 20px", borderRadius: 12, border: plugins[p] ? "1px solid #218380" : "1px solid rgba(0,0,0,0.08)" }}>
+              <div key={p} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#ffffff", padding: "16px 20px", borderRadius: 12, border: plugins[p] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
                 <div>
-                  <div style={{ fontSize: 15, fontWeight: 600, color: "#2D3436", textTransform: "capitalize" }}>{p} Access</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{p} Access</div>
                   <div style={{ fontSize: 13, color: "#636E72", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p}.</div>
                 </div>
                 <Toggle enabled={plugins[p]} onChange={() => setPlugins(prev => ({ ...prev, [p]: !prev[p] }))} />
@@ -1097,8 +1099,7 @@ function OnboardingWizard() {
 
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
             <button onClick={() => setStep(3)} style={{
-              padding: "12px 28px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)",
-              background: "rgba(255,255,255,0.6)", color: "#636E72", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => {
@@ -1110,7 +1111,7 @@ function OnboardingWizard() {
               }
             }} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: "#218380", color: "white",
+              background: "#3c6663", color: "white",
               fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
             }}>Next</button>
           </div>
@@ -1120,24 +1121,24 @@ function OnboardingWizard() {
       {/* Step 6: Integration Testing */}
       {step === 5 && testPluginIndex >= 0 && testPluginIndex < enabledPlugins.length && (
         <div style={{ maxWidth: 500, width: "90%", textAlign: "center" }}>
-          <h1 style={{ fontSize: 32, fontWeight: 700, color: "#2D3436", marginBottom: 12, textTransform: "capitalize" }}>Test {enabledPlugins[testPluginIndex]}</h1>
+          <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", marginBottom: 12, textTransform: "capitalize" }}>Test {enabledPlugins[testPluginIndex]}</h1>
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>Let's make sure {agentName || "the agent"} can successfully connect.</p>
 
-          <div style={{ background: "rgba(255,255,255,0.7)", padding: 32, borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", marginBottom: 32, minHeight: 180, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#ffffff", padding: 32, borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", marginBottom: 32, minHeight: 180, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             {testStatus === "idle" && (
               <>
-                <div style={{ fontSize: 14, color: "#2D3436", fontWeight: 600, marginBottom: 16 }}>Test Action: Send a test ping to your {enabledPlugins[testPluginIndex]}.</div>
+                <div style={{ fontSize: 14, color: "#303330", fontWeight: 600, marginBottom: 16 }}>Test Action: Send a test ping to your {enabledPlugins[testPluginIndex]}.</div>
                 <button onClick={() => {
                   setTestStatus("testing");
                   setTimeout(() => setTestStatus("success"), 1500);
                 }} style={{
-                  padding: "12px 24px", borderRadius: 12, border: "none", background: "#218380", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
+                  padding: "12px 24px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
                 }}>Run Test</button>
               </>
             )}
             {testStatus === "testing" && (
-              <div style={{ color: "#218380", fontSize: 16, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ display: "inline-block", width: 16, height: 16, border: "3px solid rgba(33,131,128,0.2)", borderTopColor: "#218380", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+              <div style={{ color: "#3c6663", fontSize: 16, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ display: "inline-block", width: 16, height: 16, border: "3px solid rgba(33,131,128,0.2)", borderTopColor: "#3c6663", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
                 Testing connection...
               </div>
             )}
@@ -1161,7 +1162,7 @@ function OnboardingWizard() {
               }
             }} disabled={testStatus !== "success"} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: testStatus === "success" ? "#218380" : "rgba(0,0,0,0.06)",
+              background: testStatus === "success" ? "#3c6663" : "rgba(0,0,0,0.06)",
               color: testStatus === "success" ? "white" : "#B2BEC3",
               fontSize: 14, fontWeight: 600, cursor: testStatus === "success" ? "pointer" : "default",
               fontFamily: "inherit",
@@ -1182,11 +1183,11 @@ function OnboardingWizard() {
           }}>
             {(() => {
               const role = selectedRole ? AGENT_TYPE_INFO[selectedRole] : null;
-              const shellColor = role?.robeColor ?? "#218380";
+              const shellColor = role?.robeColor ?? "#3c6663";
               const accentColor = role?.accentColor ?? "#4A9E96";
               const habitatColor = role?.habitatColor ?? "#BDD5D2";
               const habitatLabel = role?.habitatLabel ?? "The Canopy";
-              const borderColor = role?.color ?? "#218380";
+              const borderColor = role?.color ?? "#3c6663";
               return (
                 <div style={{
                   borderRadius: 14, overflow: "hidden",
@@ -1224,7 +1225,7 @@ function OnboardingWizard() {
               );
             })()}
           </div>
-          <h1 style={{ fontSize: 44, fontWeight: 700, color: "#2D3436", marginBottom: 12, letterSpacing: "-0.02em" }}>
+          <h1 style={{ fontSize: 44, fontWeight: 700, color: "#303330", marginBottom: 12, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif" }}>
             {agentName} is Alive!
           </h1>
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 40, maxWidth: 400, margin: "0 auto 40px" }}>
@@ -1232,9 +1233,9 @@ function OnboardingWizard() {
           </p>
           <button onClick={handleCreateAgent} style={{
             padding: "16px 40px", borderRadius: 16, border: "none",
-            background: "linear-gradient(135deg, #218380, #4A9E96)",
+            background: "linear-gradient(135deg, #3c6663, #b8e6e2)",
             color: "white", fontSize: 16, fontWeight: 600, cursor: "pointer",
-            boxShadow: "0 8px 24px rgba(33,131,128,0.25)",
+            boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
             transition: "all 0.3s ease",
           }}>
             Go to Dashboard
@@ -1262,6 +1263,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 
   const tabs = [
     { id: "overview", label: "Overview", icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
+    { id: "identity", label: "3D Identity", icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
     { id: "personality", label: "Neural Path", icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
     { id: "permissions", label: "Permissions", icon: <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /> },
     { id: "memory", label: "Memory", icon: <path d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M4 7c0-2 1-3 3-3h10c2 0 3 1 3 3M4 7h16M10 11h4" /> },
@@ -1274,7 +1276,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
   );
 
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "'DM Sans', system-ui, sans-serif" }}>
+    <div style={{ display: "flex", height: "100vh", fontFamily: "'Manrope', system-ui, sans-serif" }}>
       {/* ── Left Sidebar ── */}
       <div style={{
         width: 240, padding: "24px 16px", display: "flex", flexDirection: "column", gap: 4,
@@ -1292,7 +1294,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
               <LobsterIcon size={32} shellColor={agent.robeColor} accentColor={agent.accentColor} />
             </div>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#2D3436" }}>Architect View</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>Architect View</div>
               <div style={{ fontSize: 11, color: "#636E72" }}>{agent.name} / {agent.role}</div>
             </div>
           </div>
@@ -1304,9 +1306,9 @@ function ArchitectView({ agent }: { agent: AgentData }) {
             display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
             border: "none", borderRadius: 10, cursor: "pointer", fontSize: 13,
             fontWeight: architectTab === tab.id ? 600 : 400,
-            color: architectTab === tab.id ? "#218380" : "#636E72",
+            color: architectTab === tab.id ? "#3c6663" : "#636E72",
             background: architectTab === tab.id ? "rgba(33,131,128,0.08)" : "transparent",
-            borderLeft: architectTab === tab.id ? "3px solid #218380" : "3px solid transparent",
+            borderLeft: architectTab === tab.id ? "3px solid #3c6663" : "3px solid transparent",
             transition: "all 0.15s ease", fontFamily: "inherit", textAlign: "left", width: "100%",
           }}>
             <SvgIcon size={18}>{tab.icon}</SvgIcon>
@@ -1319,7 +1321,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         {/* Deploy button */}
         <button style={{
           padding: "12px 16px", borderRadius: 12, border: "none", cursor: "pointer",
-          background: "linear-gradient(135deg, #218380, #4A9E96)", color: "white",
+          background: "linear-gradient(135deg, #3c6663, #b8e6e2)", color: "white",
           fontSize: 13, fontWeight: 600, fontFamily: "inherit",
           boxShadow: "0 4px 12px rgba(33,131,128,0.25)",
           transition: "all 0.2s ease",
@@ -1341,6 +1343,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
       {/* ── Main Content ── */}
       <div style={{ flex: 1, overflow: "auto", padding: "32px 40px" }}>
         {architectTab === "overview" && <OverviewTab agent={agent} />}
+        {architectTab === "identity" && <IdentityTab agent={agent} />}
         {architectTab === "personality" && <PersonalityTab agent={agent} />}
         {architectTab === "permissions" && <PermissionsTab agent={agent} />}
         {architectTab === "memory" && <MemoryTab agent={agent} />}
@@ -1358,7 +1361,7 @@ function OverviewTab({ agent }: { agent: AgentData }) {
     <div>
       {/* Header */}
       <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 36, fontWeight: 700, color: "#2D3436", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
+        <h1 style={{ fontSize: 36, fontWeight: 700, color: "#303330", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
           {agent.name}: <span style={{ color: "#636E72", fontWeight: 400 }}>{agent.title}</span>
         </h1>
         <p style={{ fontSize: 15, color: "#636E72", marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
@@ -1376,11 +1379,11 @@ function OverviewTab({ agent }: { agent: AgentData }) {
               background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : "#B2BEC3",
               boxShadow: agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : "none",
             }} />
-            <span style={{ fontSize: 20, fontWeight: 600, color: "#2D3436", textTransform: "capitalize" }}>{agent.currentAction}</span>
+            <span style={{ fontSize: 20, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{agent.currentAction}</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12, fontSize: 11, color: "#636E72" }}>
             <span>Uptime</span>
-            <span style={{ fontWeight: 500, color: "#2D3436" }}>{agent.uptime}</span>
+            <span style={{ fontWeight: 500, color: "#303330" }}>{agent.uptime}</span>
           </div>
         </div>
 
@@ -1389,11 +1392,11 @@ function OverviewTab({ agent }: { agent: AgentData }) {
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
             <div>
               <div style={{ fontSize: 10, color: "#636E72" }}>Weekly Compute</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: "#2D3436" }}>{agent.weeklyCompute}</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: "#303330" }}>{agent.weeklyCompute}</div>
             </div>
             <div>
               <div style={{ fontSize: 10, color: "#636E72" }}>Token Usage</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: "#2D3436" }}>{agent.tokensUsed}</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: "#303330" }}>{agent.tokensUsed}</div>
             </div>
           </div>
           <ProgressBar value={parseFloat(agent.weeklyCompute)} max={0.1} color="#4A9E96" />
@@ -1401,7 +1404,7 @@ function OverviewTab({ agent }: { agent: AgentData }) {
 
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Monthly Spend</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#2D3436" }}>${agent.monthlySpend}</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330" }}>${agent.monthlySpend}</div>
           <div style={{ fontSize: 11, color: "#636E72", marginBottom: 8 }}>of ${agent.spendLimit} limit</div>
           <ProgressBar value={agent.monthlySpend} max={agent.spendLimit} color={agent.monthlySpend > agent.spendLimit * 0.8 ? "#D4A04A" : "#4A9E96"} />
         </div>
@@ -1421,7 +1424,7 @@ function OverviewTab({ agent }: { agent: AgentData }) {
           {agent.permissions.filter(p => ["autonomous", "payments", "ext_network", "file_write"].includes(p.id)).map(p => (
             <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "#2D3436" }}>{p.label}</div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "#303330" }}>{p.label}</div>
                 <div style={{ fontSize: 11, color: "#636E72" }}>{p.description}</div>
               </div>
               <Toggle enabled={p.enabled} onChange={() => useWorldStore.getState().togglePermission(agent.id, p.id)} size="small" />
@@ -1435,19 +1438,73 @@ function OverviewTab({ agent }: { agent: AgentData }) {
 
 // ─── Personality / Neural Path Tab ───────────────────────────────────────────
 
+// ─── 3D Identity Tab ─────────────────────────────────────────────────────────
+
+function IdentityTab({ agent }: { agent: AgentData }) {
+  const { setAgents } = useWorldStore();
+
+  const updateIdentity = (updates: Partial<AgentData["visual_identity"]>) => {
+    setAgents(useWorldStore.getState().agents.map(a =>
+      a.id === agent.id ? { ...a, visual_identity: { ...a.visual_identity, ...updates } } : a
+    ));
+  };
+
+  const handleApplyGeneration = (res: GenerativeResult) => {
+    updateIdentity({
+      baseModelUrl: res.meshyManifest.base !== "none (habitat only)" ? "/models/agent.glb" : agent.visual_identity?.baseModelUrl,
+      accessories: [...(agent.visual_identity?.accessories || []), ...res.meshyManifest.accessories]
+    });
+  };
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 32, height: "100%" }}>
+      {/* Left: 3D Dressing Room */}
+      <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", minHeight: 400, border: "1px solid rgba(0,0,0,0.06)" }}>
+        <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
+          <ambientLight intensity={0.8} color="#F5E6D8" />
+          <directionalLight position={[10, 20, 5]} intensity={1} />
+          <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
+          <group position={[0, -1, 0]}>
+             {/* Studio floor */}
+             <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]}>
+              <planeGeometry args={[10, 10]} />
+              <shadowMaterial transparent opacity={0.2} />
+            </mesh>
+            <GLBAgent 
+               fileUrl={agent.visual_identity?.baseModelUrl || undefined}
+               accessories={agent.visual_identity?.accessories || []}
+               isWorking={agent.status === "thinking" || agent.status === "active"}
+               scale={1.5}
+            />
+          </group>
+        </Canvas>
+        <div style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.8)", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#218380", display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#218380", animation: "pulse 2s infinite" }} />
+          Live Preview
+        </div>
+      </div>
+
+      {/* Right: Generative Studio */}
+      <div style={{ paddingRight: 8, height: "100%", overflow: "hidden" }}>
+        <GenerativeStudio onApply={handleApplyGeneration} />
+      </div>
+    </div>
+  );
+}
+
 function PersonalityTab({ agent }: { agent: AgentData }) {
   const [prompt, setPrompt] = useState(agent.personalityPrompt);
   const [avatarPrompt, setAvatarPrompt] = useState(agent.avatarPrompt);
 
   return (
     <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", margin: "0 0 8px 0" }}>Neural Path</h1>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Neural Path</h1>
       <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>Shape how {agent.name} thinks, acts, and appears.</p>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         {/* Personality Traits */}
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#2D3436", marginBottom: 16 }}>Personality Traits</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 16 }}>Personality Traits</div>
           <div style={{ fontSize: 13, color: "#636E72", fontStyle: "italic" }}>
             This agent's configuration is managed through the Rust backend.
           </div>
@@ -1455,16 +1512,16 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
 
         {/* Personality Prompt */}
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#2D3436", marginBottom: 6 }}>Personality Seed</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Personality Seed</div>
           <div style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>Describe how this agent should behave. This shapes their decision-making and communication style.</div>
           <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={6} style={{
             flex: 1, padding: 12, borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)",
-            background: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "inherit",
-            color: "#2D3436", resize: "none", outline: "none", lineHeight: 1.6,
+            background: "#f4f4f0", fontSize: 13, fontFamily: "inherit",
+            color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
           }} />
           <button style={{
             marginTop: 12, padding: "8px 16px", borderRadius: 8, border: "none",
-            background: "#218380", color: "white", fontSize: 12, fontWeight: 600,
+            background: "#3c6663", color: "white", fontSize: 12, fontWeight: 600,
             cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-end",
           }}>Save Changes</button>
         </div>
@@ -1474,7 +1531,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
       <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, marginTop: 20 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
           <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#2D3436" }}>Avatar Description</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#303330" }}>Avatar Description</div>
             <div style={{ fontSize: 11, color: "#636E72", marginTop: 4 }}>Describe what your agent looks like. Changes to this prompt will regenerate their figure.</div>
           </div>
           <div style={{
@@ -1487,8 +1544,8 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
         </div>
         <textarea value={avatarPrompt} onChange={e => setAvatarPrompt(e.target.value)} rows={3} style={{
           width: "100%", padding: 12, borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)",
-          background: "rgba(255,255,255,0.5)", fontSize: 13, fontFamily: "inherit",
-          color: "#2D3436", resize: "none", outline: "none", lineHeight: 1.6,
+          background: "#f4f4f0", fontSize: 13, fontFamily: "inherit",
+          color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
         }} />
         <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
           <div style={{ display: "flex", gap: 6 }}>
@@ -1502,8 +1559,8 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
           <div style={{ flex: 1 }} />
           <button style={{
             padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.08)",
-            background: "rgba(255,255,255,0.5)", fontSize: 12, fontWeight: 500,
-            cursor: "pointer", fontFamily: "inherit", color: "#2D3436",
+            background: "#f4f4f0", fontSize: 12, fontWeight: 500,
+            cursor: "pointer", fontFamily: "inherit", color: "#303330",
           }}>Regenerate Avatar</button>
         </div>
       </div>
@@ -1524,7 +1581,7 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
 
   return (
     <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", margin: "0 0 8px 0" }}>Permissions</h1>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Permissions</h1>
       <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>
         Granular control over {agent.name}'s capabilities. Changes take effect immediately.
       </p>
@@ -1539,7 +1596,7 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
         </svg>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#2D3436" }}>Shared Container</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Shared Container</div>
           <div style={{ fontSize: 11, color: "#636E72" }}>This agent runs in the shared Gateway. Switch to isolated for OS-level sandboxing.</div>
         </div>
         <div style={{ flex: 1 }} />
@@ -1562,7 +1619,7 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
                 borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none",
               }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#2D3436" }}>{p.label}</div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: "#303330" }}>{p.label}</div>
                   <div style={{ fontSize: 11, color: "#636E72", marginTop: 2 }}>{p.description}</div>
                 </div>
                 <Toggle enabled={p.enabled} onChange={() => toggle(agent.id, p.id)} />
@@ -1588,7 +1645,7 @@ function MemoryTab({ agent }: { agent: AgentData }) {
 
   return (
     <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", margin: "0 0 8px 0" }}>Memory</h1>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Memory</h1>
       <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>
         What {agent.name} has learned and remembers. Memories are versioned and can be pruned.
       </p>
@@ -1597,7 +1654,7 @@ function MemoryTab({ agent }: { agent: AgentData }) {
         {["All", "Learned", "Experience", "Preference"].map(f => (
           <button key={f} style={{
             padding: "6px 14px", borderRadius: 20, border: "1px solid rgba(0,0,0,0.08)",
-            background: f === "All" ? "#218380" : "rgba(255,255,255,0.5)",
+            background: f === "All" ? "#3c6663" : "rgba(255,255,255,0.5)",
             color: f === "All" ? "white" : "#636E72",
             fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: "inherit",
           }}>{f}</button>
@@ -1616,11 +1673,11 @@ function MemoryTab({ agent }: { agent: AgentData }) {
                   }}>{m.type}</span>
                   <span style={{ fontSize: 11, color: "#B2BEC3" }}>{m.when}</span>
                 </div>
-                <div style={{ fontSize: 13, color: "#2D3436", lineHeight: 1.5 }}>{m.text}</div>
+                <div style={{ fontSize: 13, color: "#303330", lineHeight: 1.5 }}>{m.text}</div>
               </div>
               <div style={{ textAlign: "right", marginLeft: 16 }}>
                 <div style={{ fontSize: 10, color: "#636E72" }}>Confidence</div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#2D3436" }}>{Math.round(m.confidence * 100)}%</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#303330" }}>{Math.round(m.confidence * 100)}%</div>
               </div>
             </div>
           </div>
@@ -1635,7 +1692,7 @@ function MemoryTab({ agent }: { agent: AgentData }) {
 function SpendTab({ agent }: { agent: AgentData }) {
   return (
     <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", margin: "0 0 8px 0" }}>Spend & Utilization</h1>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Spend & Utilization</h1>
       <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>
         {agent.name}'s financial activity and resource consumption.
       </p>
@@ -1644,18 +1701,18 @@ function SpendTab({ agent }: { agent: AgentData }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>This Month</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", marginTop: 4 }}>${agent.monthlySpend}</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>${agent.monthlySpend}</div>
           <ProgressBar value={agent.monthlySpend} max={agent.spendLimit} color="#4A9E96" height={6} />
           <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>${agent.spendLimit} monthly limit</div>
         </div>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Auto-Approve Limit</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", marginTop: 4 }}>$25</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>$25</div>
           <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Purchases above this require your approval</div>
         </div>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Active Cards</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", marginTop: 4 }}>0</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>0</div>
           <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Virtual cards currently issued</div>
         </div>
       </div>
@@ -1663,7 +1720,7 @@ function SpendTab({ agent }: { agent: AgentData }) {
       {/* Transaction table */}
       <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden" }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#2D3436" }}>Recent Transactions</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330" }}>Recent Transactions</div>
         </div>
         <div style={{ padding: "20px", textAlign: "center", color: "#636E72", fontSize: 13 }}>
           No transactions yet
@@ -1718,7 +1775,7 @@ function ChatTab({ agent }: { agent: AgentData }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 64px)" }}>
       <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, color: "#2D3436", margin: "0 0 8px 0" }}>Communion</h1>
+        <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Communion</h1>
         <p style={{ fontSize: 14, color: "#636E72" }}>Communicate directly with {agent.name}.</p>
       </div>
 
@@ -1740,9 +1797,9 @@ function ChatTab({ agent }: { agent: AgentData }) {
               <div style={{
                 maxWidth: "70%", padding: "12px 16px", borderRadius: 14,
                 background: msg.sender === "user"
-                  ? "linear-gradient(135deg, #218380, #4A9E96)"
+                  ? "linear-gradient(135deg, #3c6663, #b8e6e2)"
                   : "rgba(255,255,255,0.7)",
-                color: msg.sender === "user" ? "white" : "#2D3436",
+                color: msg.sender === "user" ? "white" : "#303330",
                 fontSize: 13, lineHeight: 1.5,
                 borderBottomRightRadius: msg.sender === "user" ? 4 : 14,
                 borderBottomLeftRadius: msg.sender === "agent" ? 4 : 14,
@@ -1762,7 +1819,7 @@ function ChatTab({ agent }: { agent: AgentData }) {
         {loading && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
-              width: 12, height: 12, borderRadius: "50%", background: "#218380",
+              width: 12, height: 12, borderRadius: "50%", background: "#3c6663",
               animation: "pulse 1.5s ease-in-out infinite",
             }} />
             <span style={{ fontSize: 13, color: "#636E72", fontStyle: "italic" }}>{agent.name} is thinking...</span>
@@ -1782,13 +1839,13 @@ function ChatTab({ agent }: { agent: AgentData }) {
             flex: 1, padding: "14px 18px", borderRadius: 14,
             border: "1px solid rgba(0,0,0,0.08)",
             background: "rgba(255,255,255,0.6)",
-            fontSize: 13, fontFamily: "inherit", color: "#2D3436",
+            fontSize: 13, fontFamily: "inherit", color: "#303330",
             outline: "none", opacity: loading ? 0.6 : 1,
           }}
         />
         <button onClick={handleSendMessage} disabled={!message.trim() || loading} style={{
           padding: "14px 20px", borderRadius: 14, border: "none",
-          background: (message.trim() && !loading) ? "#218380" : "rgba(0,0,0,0.06)",
+          background: (message.trim() && !loading) ? "#3c6663" : "rgba(0,0,0,0.06)",
           color: (message.trim() && !loading) ? "white" : "#B2BEC3",
           fontSize: 13, fontWeight: 600, cursor: (message.trim() && !loading) ? "pointer" : "default",
           fontFamily: "inherit",
@@ -1831,10 +1888,10 @@ function TopNav() {
     }}>
       {/* Logo */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => setActiveView("canopy")}>
-        <LobsterIcon size={28} shellColor="#218380" accentColor="#4A9E96" />
+        <LobsterIcon size={28} shellColor="#3c6663" accentColor="#4A9E96" />
         <span style={{
-          fontSize: 17, fontWeight: 700, color: "#2D3436", letterSpacing: "-0.02em",
-          fontFamily: "'Satoshi', 'DM Sans', system-ui, sans-serif",
+          fontSize: 17, fontWeight: 700, color: "#303330", letterSpacing: "-0.02em",
+          fontFamily: "'Satoshi', 'Manrope', system-ui, sans-serif",
           fontStyle: "italic",
         }}>The Canopy</span>
       </div>
@@ -1846,9 +1903,9 @@ function TopNav() {
             padding: "6px 16px", border: "none", borderRadius: 6, cursor: "pointer",
             fontSize: 12, fontWeight: activeView === item.id ? 700 : 400,
             letterSpacing: "0.04em", textTransform: "uppercase",
-            color: activeView === item.id ? "#2D3436" : "#636E72",
+            color: activeView === item.id ? "#303330" : "#636E72",
             background: "transparent", fontFamily: "inherit",
-            borderBottom: activeView === item.id ? "2px solid #218380" : "2px solid transparent",
+            borderBottom: activeView === item.id ? "2px solid #3c6663" : "2px solid transparent",
             transition: "all 0.15s ease",
           }}>
             {item.label}
@@ -1926,7 +1983,7 @@ function CanopyView() {
               }} />
             </div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#2D3436" }}>{a.name}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>{a.name}</div>
               <div style={{ fontSize: 10, color: "#636E72", textTransform: "capitalize" }}>{a.currentAction}</div>
             </div>
           </div>
@@ -1944,18 +2001,18 @@ function LoadingScreen() {
   return (
     <div style={{
       width: "100vw", height: "100vh",
-      background: "linear-gradient(135deg, #EDE4DB 0%, #F5EEE8 100%)",
+      background: "#faf9f6",
       display: "flex", alignItems: "center", justifyContent: "center",
-      fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
+      fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
       flexDirection: "column", gap: 24,
     }}>
       <div style={{
         animation: "float 3s ease-in-out infinite",
         display: "flex", justifyContent: "center",
       }}>
-        <LobsterIcon size={80} shellColor="#218380" accentColor="#4A9E96" />
+        <LobsterIcon size={80} shellColor="#3c6663" accentColor="#4A9E96" />
       </div>
-      <div style={{ fontSize: 24, fontWeight: 600, color: "#2D3436" }}>
+      <div style={{ fontSize: 24, fontWeight: 600, color: "#303330" }}>
         Waking up the lobsters...
       </div>
       <style>{`
@@ -2038,7 +2095,7 @@ export default function App() {
     <div style={{
       width: "100vw", height: "100vh",
       background: activeView === "canopy" ? "#EDE4DB" : "linear-gradient(180deg, #F5F0EB 0%, #EDE4DB 100%)",
-      fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
+      fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
       overflow: "hidden",
       display: "flex", flexDirection: "column",
     }}>
@@ -2077,7 +2134,7 @@ export default function App() {
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.08); border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(0,0,0,0.15); }
-        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #218380; cursor: pointer; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+        input[type="range"]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #3c6663; cursor: pointer; border: 2px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
         ::placeholder { color: #B2BEC3; }
       `}</style>
     </div>
