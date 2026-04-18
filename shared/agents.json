@@ -19,6 +19,24 @@
     "image": "/agents/Tutor.png",
     "suggest_in_onboarding": true
   },
+  "Assistant": {
+    "description": "Calendar, email & travel logistics — your executive right hand",
+    "color": "#7A9EB5",
+    "robeColor": "#6A8EA5",
+    "accentColor": "#B8D4E8",
+    "habitatColor": "#A8C4D8",
+    "habitatLabel": "The Hub",
+    "suggest_in_onboarding": true
+  },
+  "STR Manager": {
+    "description": "Short-term rental ops — listings, guests & maintenance coordination",
+    "color": "#8EB5A0",
+    "robeColor": "#7AA590",
+    "accentColor": "#C0DDD0",
+    "habitatColor": "#A8CDB8",
+    "habitatLabel": "The Property",
+    "suggest_in_onboarding": true
+  },
   "Interior Designer": {
     "description": "Curates spaces with impeccable style.",
     "color": "#82A4A8",
@@ -27,7 +45,7 @@
     "habitatColor": "#A6C2C5",
     "habitatLabel": "Design",
     "image": "/agents/InteriorDesigner.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Fashion Stylist": {
     "description": "Curates your wardrobe and looks.",
@@ -37,7 +55,7 @@
     "habitatColor": "#D6A3B9",
     "habitatLabel": "Fashion",
     "image": "/agents/FashionStylist.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Therapist": {
     "description": "Listens, guides, and supports your well-being.",
@@ -47,7 +65,7 @@
     "habitatColor": "#EFAFA9",
     "habitatLabel": "Wellness",
     "image": "/agents/Therapist.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Chef": {
     "description": "Plans meals and creates culinary magic.",
@@ -57,7 +75,7 @@
     "habitatColor": "#E8A381",
     "habitatLabel": "Kitchen",
     "image": "/agents/Chef1.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Travel Agent": {
     "description": "Plans itineraries and perfect getaways.",
@@ -67,7 +85,7 @@
     "habitatColor": "#94C9C0",
     "habitatLabel": "Travel",
     "image": "/agents/TravelAgent.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Media Advisor": {
     "description": "Navigates news, entertainment & PR.",
@@ -77,7 +95,7 @@
     "habitatColor": "#7D6288",
     "habitatLabel": "Media",
     "image": "/agents/MediaAdvisor.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Relationship Guru": {
     "description": "Helps you navigate social connections.",
@@ -87,7 +105,7 @@
     "habitatColor": "#EAB3A6",
     "habitatLabel": "Social",
     "image": "/agents/RelationshipGuru.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Kids Coordinator": {
     "description": "Manages schedules, activities & fun.",
@@ -97,10 +115,10 @@
     "habitatColor": "#D8E38E",
     "habitatLabel": "Family",
     "image": "/agents/KidsCoordinator.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Accountant": {
-    "description": "Balances the books & compliance.",
+    "description": "Expense categorization, budgets & tax — books always balanced",
     "color": "#8E9EAA",
     "robeColor": "#8E9EAA",
     "accentColor": "#D7DFE5",
@@ -117,7 +135,7 @@
     "habitatColor": "#EDAA87",
     "habitatLabel": "Strategy",
     "image": "/agents/BusinessStrategist.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Marketing Guru": {
     "description": "Drives traffic, campaigns and virality.",
@@ -127,7 +145,7 @@
     "habitatColor": "#F5CC8E",
     "habitatLabel": "Marketing",
     "image": "/agents/MarketingGuru.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Educator": {
     "description": "Builds curriculums and learning paths.",
@@ -137,7 +155,7 @@
     "habitatColor": "#B6D2AA",
     "habitatLabel": "Education",
     "image": "/agents/Educator.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Artist": {
     "description": "Brings creative visions to life.",
@@ -147,7 +165,7 @@
     "habitatColor": "#E29DA3",
     "habitatLabel": "Creative",
     "image": "/agents/Artist.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Coder": {
     "description": "Writes logic, ships code, squashes bugs.",
@@ -157,7 +175,7 @@
     "habitatColor": "#7472A5",
     "habitatLabel": "Engineering",
     "image": "/agents/Coder.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Architect": {
     "description": "Designs systems and structures.",
@@ -167,7 +185,7 @@
     "habitatColor": "#A9C1E1",
     "habitatLabel": "Architecture",
     "image": "/agents/Architect.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Musician": {
     "description": "Composes, mixes, and scores your life.",
@@ -177,7 +195,7 @@
     "habitatColor": "#535C80",
     "habitatLabel": "Music",
     "image": "/agents/Musician.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Investment Manager": {
     "description": "Grows your portfolio and assets.",
@@ -187,7 +205,7 @@
     "habitatColor": "#7F7AB9",
     "habitatLabel": "Capital",
     "image": "/agents/InvestmentManager.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Trainer": {
     "description": "Pushes your fitness & health goals.",
@@ -197,10 +215,10 @@
     "habitatColor": "#95CBB9",
     "habitatLabel": "Fitness",
     "image": "/agents/Trainer.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Strategist": {
-    "description": "Decision memos, competitive scans & long-range planning",
+    "description": "Competitive analysis, decision memos, quarterly planning",
     "color": "#9A94AC",
     "robeColor": "#9A94AC",
     "accentColor": "#E2DFF0",
@@ -209,7 +227,7 @@
     "suggest_in_onboarding": true
   },
   "Negotiator": {
-    "description": "Deal prep, BATNA analysis & high-stakes conversations",
+    "description": "Deal prep, counter-offer drafts, BATNA analysis",
     "color": "#A8917E",
     "robeColor": "#A8917E",
     "accentColor": "#EDE0D5",
@@ -218,7 +236,7 @@
     "suggest_in_onboarding": true
   },
   "Engineer": {
-    "description": "Code review, architecture decisions & debugging deep-dives",
+    "description": "Code review, architecture sketches, debugging partner",
     "color": "#8AA3B5",
     "robeColor": "#8AA3B5",
     "accentColor": "#D5E5F0",
@@ -227,7 +245,7 @@
     "suggest_in_onboarding": true
   },
   "Editor": {
-    "description": "Prose tightening, structure feedback & developmental edits",
+    "description": "Prose tightening, line edits, style enforcement",
     "color": "#A8967E",
     "robeColor": "#A8967E",
     "accentColor": "#EDE4D5",
@@ -236,7 +254,7 @@
     "suggest_in_onboarding": true
   },
   "Coach": {
-    "description": "Habit tracking, goal-setting & personal reflection partner",
+    "description": "Habit tracking, weekly reviews, reflection prompts",
     "color": "#96A88E",
     "robeColor": "#96A88E",
     "accentColor": "#DFF0D8",
