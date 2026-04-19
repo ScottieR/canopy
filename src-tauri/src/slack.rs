@@ -1,7 +1,6 @@
 use crate::db::Database;
 use crate::keychain;
 use crate::models::{Bridge, BridgeConfig, BridgePermissions, BridgeType};
-use chrono::Utc;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -221,11 +220,11 @@ pub async fn start_slack_oauth(
 
     // Read the HTTP request (blocking, with timeout)
     let code = tokio::task::spawn_blocking(move || {
-        listener.set_read_timeout(Some(timeout))
-            .map_err(|e| format!("Failed to set timeout: {}", e))?;
-
         let (stream, _) = listener.accept()
             .map_err(|e| format!("Failed to accept connection: {}", e))?;
+
+        stream.set_read_timeout(Some(timeout))
+            .map_err(|e| format!("Failed to set timeout: {}", e))?;
 
         let mut buffer = [0u8; 2048];
         let n = std::io::Read::read(&mut &stream, &mut buffer)

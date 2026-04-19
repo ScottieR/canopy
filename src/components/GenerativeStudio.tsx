@@ -3,12 +3,14 @@ import React, { useState, useEffect } from "react";
 export interface GenerativeResult {
   versionId: string;
   userPrompt: string;
-  injectedPrompt: string;
   compiledImageUrl: string;
-  meshyManifest: {
-    base: string;
+  dynamicParams: {
+    color: string;
+    robeColor: string;
+    accentColor: string;
+    habitatColor: string;
+    habitatLabel: string;
     accessories: string[];
-    habitat?: string;
   };
 }
 
@@ -20,46 +22,39 @@ export function GenerativeStudio({ defaultRole, onApply }: { defaultRole?: strin
 
   const activeResult = currentIndex >= 0 ? history[currentIndex] : null;
 
-  // The secret sauce: intercepting the user's prompt and enforcing brand identity
-  const buildInjectedPrompt = (userText: string) => {
-    return `Isometric 3D-rendered lobster character in Monument Valley art style. Rounded bell-shaped body with smooth round head and swept-back antennae. Flat-shaded low-poly faces, soft directional lighting from upper-left. Warm muted pastel palette. No outlines. ${userText}`;
-  };
-
-  const parseMockManifest = (userText: string) => {
-    // Very naive mock parser just to simulate the API splitting output
-    const text = userText.toLowerCase();
-    const isHabitat = text.includes("habitat") || text.includes("world") || text.includes("background");
-    
-    return {
-      base: isHabitat ? "none (habitat only)" : `Standard lobster profile derived from: "${userText.substring(0, 20)}..."`,
-      accessories: text.includes("hat") ? ["/models/tophat.glb"] : text.includes("glasses") ? ["/models/glasses.glb"] : [],
-      habitat: isHabitat ? "Custom Environment" : undefined
-    };
-  };
-
-  const handleGenerate = () => {
+  const handleGenerate = async () => {
     if (!prompt.trim() || isGenerating) return;
     
     setIsGenerating(true);
-    const injected = buildInjectedPrompt(prompt);
-    const manifest = parseMockManifest(prompt);
     
-    // Simulate API delay (Nano Banana Pro / BFL)
-    setTimeout(() => {
+    try {
+      const response = await fetch("http://localhost:3001/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt })
+      });
+      
+      if (!response.ok) throw new Error("Generation failed");
+      
+      const data = await response.json();
+      
       const newResult: GenerativeResult = {
         versionId: `v${history.length + 1}`,
         userPrompt: prompt,
-        injectedPrompt: injected,
-        compiledImageUrl: `https://placehold.co/600x400/218380/FFFFFF?text=Generated+Concept:+${encodeURIComponent(prompt.substring(0, 15))}`,
-        meshyManifest: manifest
+        compiledImageUrl: data.compiledImageUrl,
+        dynamicParams: data.dynamicParams
       };
       
       const newHistory = [...history.slice(0, currentIndex + 1), newResult];
       setHistory(newHistory);
       setCurrentIndex(newHistory.length - 1);
       setPrompt("");
+    } catch (err) {
+      console.error(err);
+      alert("Failed to generate avatar. Make sure backend is running.");
+    } finally {
       setIsGenerating(false);
-    }, 2500); // Mock 2.5s generation time
+    }
   };
 
   const handleRevert = (dir: -1 | 1) => {
@@ -91,24 +86,23 @@ export function GenerativeStudio({ defaultRole, onApply }: { defaultRole?: strin
               </div>
             </div>
             
-            {/* Right: Meshy Manifest */}
+            {/* Right: Dynamic 3D Config */}
             <div style={{ flex: 1, padding: 20, overflow: "auto", background: "rgba(255,255,255,0.6)" }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 16, textTransform: "uppercase", letterSpacing: "0.05em" }}>Meshy Payload</div>
-              <div style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>This structural manifest is isolated and sent to the 3D generation API.</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 16, textTransform: "uppercase", letterSpacing: "0.05em" }}>Dynamic 3D Payload</div>
+              <div style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>Visual parameters interpreted by the backend for the DynamicLobster builder.</div>
               
               <div style={{ background: "#2D3436", color: "#A8B2B7", padding: 16, borderRadius: 12, fontSize: 11, fontFamily: "monospace", overflowX: "auto" }}>
-                <div style={{ color: "#218380", marginBottom: 8 }}>// Base Geometry</div>
-                <div>"base": "{activeResult.meshyManifest.base}"</div>
+                <div style={{ color: "#218380", marginBottom: 8 }}>// Base Colors</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>"color": "{activeResult.dynamicParams.color}" <span style={{ width: 10, height: 10, display: 'inline-block', border: '1px solid #000', backgroundColor: activeResult.dynamicParams.color }}></span></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>"robeColor": "{activeResult.dynamicParams.robeColor}" <span style={{ width: 10, height: 10, display: 'inline-block', border: '1px solid #000', backgroundColor: activeResult.dynamicParams.robeColor }}></span></div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>"accentColor": "{activeResult.dynamicParams.accentColor}" <span style={{ width: 10, height: 10, display: 'inline-block', border: '1px solid #000', backgroundColor: activeResult.dynamicParams.accentColor }}></span></div>
                 
-                <div style={{ color: "#218380", marginTop: 16, marginBottom: 8 }}>// Isolated Accessories</div>
-                <div>"accessories": {JSON.stringify(activeResult.meshyManifest.accessories)}</div>
-                
-                {activeResult.meshyManifest.habitat && (
-                  <>
-                    <div style={{ color: "#218380", marginTop: 16, marginBottom: 8 }}>// Habitat Config</div>
-                    <div>"habitat": "{activeResult.meshyManifest.habitat}"</div>
-                  </>
-                )}
+                <div style={{ color: "#218380", marginTop: 16, marginBottom: 8 }}>// Habitat Config</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>"habitatColor": "{activeResult.dynamicParams.habitatColor}" <span style={{ width: 10, height: 10, display: 'inline-block', border: '1px solid #000', backgroundColor: activeResult.dynamicParams.habitatColor }}></span></div>
+                <div>"habitatLabel": "{activeResult.dynamicParams.habitatLabel}"</div>
+
+                <div style={{ color: "#218380", marginTop: 16, marginBottom: 8 }}>// Accessories</div>
+                <div>"accessories": {JSON.stringify(activeResult.dynamicParams.accessories)}</div>
               </div>
 
               <button onClick={() => onApply(activeResult)} style={{
@@ -125,7 +119,7 @@ export function GenerativeStudio({ defaultRole, onApply }: { defaultRole?: strin
             <div style={{ fontSize: 40, marginBottom: 16 }}>🎨</div>
             <div style={{ fontSize: 18, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Nano Banana Pro Studio</div>
             <div style={{ fontSize: 14, color: "#636E72", maxWidth: 400, lineHeight: 1.5 }}>
-              Describe a personality, role, or accessory. The generator will securely enforce The Canopy's styling and automatically split your 2D concept into a 3D semantic layout.
+              Describe a personality, role, or accessory and we'll create your custom agent.
             </div>
           </div>
         )}

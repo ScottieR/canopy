@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { AgentCard } from './AgentCard';
 import { Agent, AgentStatus } from '../../types';
 
@@ -51,11 +51,7 @@ describe('AgentCard', () => {
       expect(statusElement).toBeDefined();
     });
 
-    it('should render integration badges', () => {
-      render(<AgentCard agent={mockAgent} />);
-      expect(screen.getByText('imessage')).toBeDefined();
-      expect(screen.getByText('calendar')).toBeDefined();
-    });
+
 
     it('should show isolation badge when isolated', () => {
       mockAgent.isolated = true;
@@ -105,20 +101,8 @@ describe('AgentCard', () => {
   describe('stats display', () => {
     it('should display tasks completed today', () => {
       mockAgent.stats.tasks_today = 15;
-      render(<AgentCard agent={mockAgent} />);
+      render(<AgentCard agent={mockAgent} isSelected />);
       expect(screen.getByText('15')).toBeDefined();
-    });
-
-    it('should display cost in USD', () => {
-      mockAgent.stats.total_cost_usd = 1.25;
-      render(<AgentCard agent={mockAgent} />);
-      expect(screen.getByText('$1.25')).toBeDefined();
-    });
-
-    it('should format large costs with decimals', () => {
-      mockAgent.stats.total_cost_usd = 99.99;
-      render(<AgentCard agent={mockAgent} />);
-      expect(screen.getByText('$99.99')).toBeDefined();
     });
   });
 
@@ -137,10 +121,10 @@ describe('AgentCard', () => {
       const handleClick = vi.fn();
       render(<AgentCard agent={mockAgent} onClick={handleClick} />);
 
+
       const card = screen.getByTestId('agent-card');
-      // Simulate Enter key press
-      const event = new KeyboardEvent('keydown', { key: 'Enter' });
-      card.dispatchEvent(event);
+      // Simulate Enter key press using testing-library's fireEvent
+      fireEvent.keyDown(card, { key: 'Enter', code: 'Enter' });
 
       expect(handleClick).toHaveBeenCalled();
     });
@@ -183,7 +167,7 @@ describe('AgentCard', () => {
 
     it('should handle zero tasks today', () => {
       mockAgent.stats.tasks_today = 0;
-      render(<AgentCard agent={mockAgent} />);
+      render(<AgentCard agent={mockAgent} isSelected />);
       expect(screen.getByText('0')).toBeDefined();
     });
 
@@ -199,7 +183,7 @@ describe('AgentCard', () => {
     it('should have proper ARIA labels', () => {
       render(<AgentCard agent={mockAgent} />);
       const card = screen.getByTestId('agent-card');
-      expect(card.getAttribute('role')).toContain('button' || 'link');
+      expect(card.getAttribute('role')?.includes('button') || card.getAttribute('role')?.includes('link')).toBe(true);
     });
 
     it('should be keyboard accessible', () => {

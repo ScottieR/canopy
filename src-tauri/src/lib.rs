@@ -9,6 +9,7 @@ mod imessage;
 mod audit;
 mod voice;
 mod slack;
+mod google;
 
 use tauri::Manager;
 
@@ -20,6 +21,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -71,6 +73,8 @@ pub fn run() {
             openclaw::get_conversation_history,
             openclaw::get_agent_health,
             openclaw::import_agent,
+            openclaw::scan_local_agents,
+            openclaw::import_discovered_agent,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,
@@ -91,6 +95,7 @@ pub fn run() {
             keychain::store_secret_cmd,
             keychain::get_secret_cmd,
             keychain::delete_secret_cmd,
+            keychain::auto_discover_keys_cmd,
             // Payment gateway (deterministic)
             payment::evaluate_purchase,
             payment::get_agent_budget,
@@ -106,6 +111,8 @@ pub fn run() {
             slack::update_allowed_slack_channels,
             slack::start_slack_listener,
             slack::stop_slack_listener,
+            // Google
+            google::start_google_oauth,
             // Voice mode
             voice::get_voice_config,
             voice::update_voice_config,

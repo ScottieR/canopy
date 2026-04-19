@@ -3,6 +3,15 @@
   "productName": "Canopy",
   "version": "0.1.0",
   "identifier": "com.canopy.app",
+  "bundle": {
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
@@ -30,27 +39,7 @@
   },
   "plugins": {
     "shell": {
-      "open": true,
-      "scope": [
-        {
-          "name": "orbstack",
-          "cmd": "orb",
-          "args": true
-        },
-        {
-          "name": "docker",
-          "cmd": "docker",
-          "args": true
-        },
-        {
-          "name": "docker-compose",
-          "cmd": "docker-compose",
-          "args": true
-        }
-      ]
-    },
-    "fs": {
-      "scope": ["$APPDATA/**", "$HOME/.canopy/**"]
+      "open": true
     }
   }
 }

@@ -1,53 +1,75 @@
+import { useMemo } from "react";
 import { AccountantsLabyrinth } from "./AccountantsLabyrinth";
 import { ExecutiveMonolith } from "./ExecutiveMonolith";
 import { EducatorsForum } from "./EducatorsForum";
 import { KidsPlayScape } from "./KidsPlayScape";
+import agentsData from "../../../../shared/agents.json";
+import { GLBAgent } from "./GLBAgent";
+
+// Center Plaza for the 5th agent
+function CenterPlaza({ agent }: { agent: any }) {
+  return (
+    <group position={[0, 0, 0]}>
+      {/* Stepped platform */}
+      <mesh position={[0, 0.4, 0]}>
+        <boxGeometry args={[3.5, 0.8, 3.5]} />
+        <meshStandardMaterial color="#E8C4A2" roughness={0.9} />
+      </mesh>
+      <mesh position={[0, 0.9, 0]}>
+        <boxGeometry args={[2, 0.2, 2]} />
+        <meshStandardMaterial color="#D5A986" roughness={0.9} />
+      </mesh>
+      {agent && (
+        <GLBAgent 
+          position={[0, 1.0, 0]} 
+          scale={1.4} 
+          isWorking={true}
+          baseColor={agent.color} 
+          robeColor={agent.robeColor} 
+          accentColor={agent.accentColor} 
+        />
+      )}
+    </group>
+  );
+}
 
 export function WorldScene() {
+  // Randomly select 5 agents
+  const selectedAgents = useMemo(() => {
+    const allAgents = Object.values(agentsData).filter((a: any) => a.color);
+    const shuffled = [...allAgents].sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, 5);
+  }, []);
+
   return (
     <group position={[0, -1, 0]}>
-      {/* The massive floating island base */}
-      <mesh position={[0, -1, 0]}>
-        {/* Soft greenish-blue earth slice representing the 'world' */}
-        <cylinderGeometry args={[7, 6.5, 2, 64]} />
-        <meshStandardMaterial color="#8AB1A8" roughness={0.8} />
+      {/* The massive floating island base - strict isometric box */}
+      <mesh position={[0, -2, 0]}>
+        <boxGeometry args={[12, 4, 12]} />
+        <meshStandardMaterial color="#8AB1A8" roughness={0.9} />
       </mesh>
 
-      {/* The water / connective bridges */}
-      <mesh position={[0, 0.05, 0]}>
-        <cylinderGeometry args={[6.8, 6.8, 0.1, 64]} />
-        <meshStandardMaterial color="#6ABBB3" roughness={0.2} transparent opacity={0.6} />
-      </mesh>
-      
-      {/* The Base Grid / Executive Plaza placeholder */}
-      <mesh position={[1.5, 0.11, -1.5]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[4, 4, 10, 10]} />
-        <meshStandardMaterial color="#A4E3DF" roughness={0.1} />
-      </mesh>
-      {/* Grid lines for the executive plaza */}
-      <mesh position={[1.5, 0.12, -1.5]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[4, 4, 10, 10]} />
-        <meshBasicMaterial color="#E8FBFA" wireframe={true} transparent opacity={0.5} />
-      </mesh>
+      {/* Center Plaza */}
+      <CenterPlaza agent={selectedAgents[4]} />
 
       {/* The Labyrinth Biome (Left) */}
-      <group position={[-2.5, 0.1, 1]}>
-        <AccountantsLabyrinth />
+      <group position={[-3.5, 0, 1]}>
+        <AccountantsLabyrinth agent={selectedAgents[0]} />
       </group>
 
-      {/* The Executive Monolith (Back Center) */}
-      <group position={[0, 0.1, -2]}>
-        <ExecutiveMonolith />
+      {/* The Executive Monolith (Back Right) */}
+      <group position={[1.5, 0, -3.5]}>
+        <ExecutiveMonolith agent={selectedAgents[1]} />
       </group>
 
-      {/* The Educator's Forum (Right) */}
-      <group position={[3.5, 0.1, -0.5]} rotation={[0, -Math.PI / 4, 0]}>
-        <EducatorsForum />
+      {/* The Educator's Forum (Right Front) */}
+      <group position={[3.5, 0, 1.5]}>
+        <EducatorsForum agent={selectedAgents[2]} />
       </group>
 
-      {/* The Kid's Play-Scape (Front Right) */}
-      <group position={[2.5, 0.1, 3]}>
-        <KidsPlayScape />
+      {/* The Kid's Play-Scape (Front Left) */}
+      <group position={[-1.5, 0, 3.5]}>
+        <KidsPlayScape agent={selectedAgents[3]} />
       </group>
     </group>
   );
