@@ -2,8 +2,6 @@ use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use std::sync::Mutex;
 use chrono::Utc;
 use serde_json::json;
-#[allow(unused_imports)]
-use serde_json::Value;
 use uuid::Uuid;
 use tauri::Manager;
 
@@ -634,7 +632,7 @@ impl Database {
                     detail: row.get(5)?,
                     content_hash: row.get(6)?,
                 })
-            })?
+            })?.collect::<SqlResult<Vec<_>>>()?
         } else {
             stmt.query_map(params![limit as i32], |row| {
                 Ok(AuditEntry {
@@ -646,9 +644,8 @@ impl Database {
                     detail: row.get(5)?,
                     content_hash: row.get(6)?,
                 })
-            })?
-        }
-            .collect::<SqlResult<Vec<_>>>()?;
+            })?.collect::<SqlResult<Vec<_>>>()?
+        };
 
         Ok(entries)
     }
@@ -666,21 +663,23 @@ impl Database {
 
         let budget = stmt.query_row(params![agent_id], |row| {
             let config_json: String = row.get(1)?;
-            let config: AgentBudget = serde_json::from_str(&config_json).unwrap_or_else(|_| {
-                AgentBudget {
-                    agent_id: row.get(0)?,
-                    payments_enabled: false,
-                    auto_approve_threshold_cents: 0,
-                    per_transaction_limit_cents: 0,
-                    daily_limit_cents: 0,
-                    monthly_limit_cents: 0,
-                    allowed_categories: vec![],
-                    daily_spent_cents: row.get(2)?,
-                    monthly_spent_cents: row.get(3)?,
-                    require_approval_new_merchant: false,
-                    require_approval_recurring: false,
-                }
-            });
+            let default_budget = AgentBudget {
+                agent_id: row.get(0)?,
+                payments_enabled: false,
+                auto_approve_threshold_cents: 0,
+                per_transaction_limit_cents: 0,
+                daily_limit_cents: 0,
+                monthly_limit_cents: 0,
+                allowed_categories: vec![],
+                daily_spent_cents: row.get(2)?,
+                monthly_spent_cents: row.get(3)?,
+                require_approval_new_merchant: false,
+                require_approval_recurring: false,
+            };
+            
+            let mut config: AgentBudget = serde_json::from_str(&config_json).unwrap_or(default_budget);
+            config.daily_spent_cents = row.get(2)?;
+            config.monthly_spent_cents = row.get(3)?;
 
             Ok(config)
         }).optional()?;
@@ -972,6 +971,28 @@ mod tests {
     fn test_message_operations() {
         let db = create_test_db();
 
+        let agent = Agent {
+            id: "agent-1".to_string(),
+            name: "Agent 1".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#FF0000".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Agent 1".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+            },
+            integrations: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
+
         let conv_id = db.get_or_create_conversation("agent-1").unwrap();
         assert!(!conv_id.is_empty());
 
@@ -989,6 +1010,28 @@ mod tests {
     #[test]
     fn test_bridge_operations() {
         let db = create_test_db();
+
+        let agent = Agent {
+            id: "agent-1".to_string(),
+            name: "Agent 1".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#FF0000".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Agent 1".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+            },
+            integrations: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
 
         let bridge = Bridge {
             id: "bridge-1".to_string(),
@@ -1038,6 +1081,28 @@ mod tests {
     #[test]
     fn test_budget_operations() {
         let db = create_test_db();
+
+        let agent = Agent {
+            id: "agent-1".to_string(),
+            name: "Agent 1".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#FF0000".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Agent 1".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+            },
+            integrations: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
 
         let budget = AgentBudget {
             agent_id: "agent-1".to_string(),

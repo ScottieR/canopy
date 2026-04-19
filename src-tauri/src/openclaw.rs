@@ -1,4 +1,4 @@
-use crate::models::{Agent, AgentPersonality, AgentStats, AgentStatus};
+use crate::models::{Agent, AgentPersonality, AgentStats, AgentStatus, DiscoveredAgent};
 use reqwest::Client;
 use serde_json::{json, Value};
 
@@ -344,4 +344,92 @@ fn generate_soul_md(personality: &AgentPersonality) -> String {
     }
 
     soul
+}
+
+// ─── Local Discovery & Import ────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn scan_local_agents() -> Result<Vec<DiscoveredAgent>, String> {
+    let mut discovered = Vec::new();
+
+    // 1. Scan Local FS (~/.openclaw/agents or ~/agents for testing)
+    if let Some(home) = dirs::home_dir() {
+        let candidates = vec![
+            home.join(".openclaw").join("agents"),
+            home.join("agents"),
+        ];
+
+        for agents_dir in candidates {
+            if agents_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            let id = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            discovered.push(DiscoveredAgent {
+                                source: "local_fs".to_string(),
+                                name: id.clone(),
+                                id: id.clone(),
+                                path: path.to_string_lossy().to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Scan Docker / OrbStack pseudo-directories or volumes
+    // (A full implementation would use bollard to list active openclaw containers).
+    if discovered.is_empty() {
+        // Fallback or explicit docker checks can be placed here.
+    }
+
+    Ok(discovered)
+}
+
+#[tauri::command]
+pub async fn import_discovered_agent(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    path: String,
+) -> Result<Agent, String> {
+    let agent_path = std::path::PathBuf::from(path);
+    let soul_path = agent_path.join("workspace").join("SOUL.md");
+    
+    let soul_content = std::fs::read_to_string(&soul_path).unwrap_or_else(|_| {
+        // Try fallback location if workspace doesn't exist
+        std::fs::read_to_string(agent_path.join("SOUL.md"))
+            .unwrap_or_else(|_| "# SOUL.md - Imported Agent".to_string())
+    });
+        
+    let name = agent_id.clone();
+    
+    let agent = Agent {
+        id: agent_id.clone(),
+        name: name.clone(),
+        role: "Imported Role".to_string(),
+        emoji: "lobster".to_string(),
+        color: "#64C8C0".to_string(),
+        status: AgentStatus::Active,
+        isolated: true,
+        container_id: None,
+        personality: AgentPersonality {
+            name: name.clone(),
+            communication_style: "Imported from local disk".to_string(),
+            expertise: vec![],
+            guardrails: vec![],
+            custom_instructions: soul_content,
+        },
+        integrations: vec![],
+        created_at: chrono::Utc::now(),
+        stats: AgentStats::default(),
+    };
+
+    db.insert_agent(&agent)
+        .map_err(|e| format!("Failed to save agent to DB: {}", e))?;
+
+    let _ = db.log_audit(&agent_id, "import_local", Some("openclaw"), "Agent imported from local filesystem", None);
+
+    Ok(agent)
 }

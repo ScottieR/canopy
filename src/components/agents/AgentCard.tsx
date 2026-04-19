@@ -1,19 +1,11 @@
 import { useState } from "react";
 
+import { Agent } from "../../types";
+
 interface AgentCardProps {
-  agent: {
-    id: string;
-    name: string;
-    role: string;
-    emoji: string;
-    status: "active" | "thinking" | "sleeping";
-    isolated: boolean;
-    color: string;
-    stats: { tasksToday: number; messagesHandled: number; uptime: string };
-    lastAction: string;
-  };
-  isSelected: boolean;
-  onClick: () => void;
+  agent: Agent & { lastAction?: string };
+  isSelected?: boolean;
+  onClick?: (id: string) => void;
 }
 
 export function AgentCard({ agent, isSelected, onClick }: AgentCardProps) {
@@ -26,7 +18,16 @@ export function AgentCard({ agent, isSelected, onClick }: AgentCardProps) {
 
   return (
     <div
-      onClick={onClick}
+      data-testid="agent-card"
+      onClick={() => onClick?.(agent.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick?.(agent.id);
+        }
+      }}
+      tabIndex={0}
+      role="button"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       className={`
@@ -61,6 +62,7 @@ export function AgentCard({ agent, isSelected, onClick }: AgentCardProps) {
             </span>
             {agent.isolated && (
               <span
+                data-testid="isolation-badge"
                 className="text-[9px] px-1.5 py-0.5 rounded border"
                 style={{
                   background: "rgba(167,139,250,0.1)",
@@ -76,7 +78,8 @@ export function AgentCard({ agent, isSelected, onClick }: AgentCardProps) {
         </div>
         <div className="flex items-center gap-1.5">
           <div
-            className={`w-[7px] h-[7px] rounded-full ${
+            data-testid="status-indicator"
+            className={`w-[7px] h-[7px] rounded-full ${agent.status} ${
               agent.status !== "sleeping" ? "animate-pulse" : ""
             }`}
             style={{
@@ -84,24 +87,30 @@ export function AgentCard({ agent, isSelected, onClick }: AgentCardProps) {
               boxShadow: agent.status !== "sleeping" ? `0 0 8px ${statusColor}` : "none",
             }}
           />
-          <span className="text-[11px] text-canopy-text-muted capitalize">
+          <span
+            className="text-[11px] text-canopy-text-muted capitalize"
+            role="status"
+            aria-live="polite"
+          >
             {agent.isolated ? "isolated" : agent.status}
           </span>
         </div>
       </div>
 
       {/* Last action */}
-      <div className="text-[11px] text-canopy-text-muted/80 leading-relaxed p-2.5 bg-canopy-surface-hover rounded-lg border border-[rgba(52,211,153,0.08)]">
-        {agent.lastAction}
-      </div>
+      {agent.lastAction && (
+        <div className="text-[11px] text-canopy-text-muted/80 leading-relaxed p-2.5 bg-canopy-surface-hover rounded-lg border border-[rgba(52,211,153,0.08)]">
+          {agent.lastAction}
+        </div>
+      )}
 
       {/* Expanded stats */}
       {isSelected && (
         <div className="flex gap-4 mt-3 pt-2.5 border-t border-canopy-border animate-fade-slide-up">
           {[
-            ["Tasks", agent.stats.tasksToday],
-            ["Messages", agent.stats.messagesHandled],
-            ["Uptime", agent.stats.uptime],
+            ["Tasks", agent.stats.tasks_today],
+            ["Messages", agent.stats.messages_handled],
+            ["Uptime", agent.stats.uptime_seconds],
           ].map(([label, val]) => (
             <div key={label as string}>
               <div className="text-base font-semibold" style={{ color: agent.color }}>

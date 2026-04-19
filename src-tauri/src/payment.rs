@@ -153,7 +153,7 @@ mod tests {
             agent_id: agent_id.to_string(),
             payments_enabled: true,
             auto_approve_threshold_cents: 5000,     // $50
-            per_transaction_limit_cents: 20000,     // $200
+            per_transaction_limit_cents: 100000,    // $1000
             daily_limit_cents: 50000,               // $500
             monthly_limit_cents: 200000,            // $2,000
             allowed_categories: vec!["cleaning_supplies".to_string(), "office_supplies".to_string()],
@@ -267,8 +267,9 @@ mod tests {
 
     #[test]
     fn test_under_per_transaction_limit_passes() {
-        let budget = default_budget("agent-1"); // limit: $200
-        let request = purchase_request("agent-1", 19999, "cleaning_supplies");
+        let mut budget = default_budget("agent-1"); // limit: $1000
+        budget.daily_limit_cents = 200000;
+        let request = purchase_request("agent-1", 99999, "cleaning_supplies");
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
@@ -280,8 +281,9 @@ mod tests {
 
     #[test]
     fn test_at_per_transaction_limit_passes() {
-        let budget = default_budget("agent-1"); // limit: $200
-        let request = purchase_request("agent-1", 20000, "cleaning_supplies");
+        let mut budget = default_budget("agent-1"); // limit: $1000
+        budget.daily_limit_cents = 200000;
+        let request = purchase_request("agent-1", 100000, "cleaning_supplies");
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
@@ -293,8 +295,9 @@ mod tests {
 
     #[test]
     fn test_over_per_transaction_limit_denied() {
-        let budget = default_budget("agent-1"); // limit: $200
-        let request = purchase_request("agent-1", 20001, "cleaning_supplies");
+        let mut budget = default_budget("agent-1"); // limit: $1000
+        budget.daily_limit_cents = 200000;
+        let request = purchase_request("agent-1", 100001, "cleaning_supplies");
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {

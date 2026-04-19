@@ -212,3 +212,11 @@ pub enum FlowStatus {
     Pending,
     Paused,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiscoveredAgent {
+    pub source: String,
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}

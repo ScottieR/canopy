@@ -2,9 +2,9 @@ import React, { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import { AccountantLobster } from "./AccountantLobster";
+import { DynamicLobster } from "./DynamicLobster";
 
-export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean }) {
+export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, baseColor, robeColor, accentColor }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, baseColor?: string, robeColor?: string, accentColor?: string }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
   
@@ -34,7 +34,7 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
           <GLBModel url={fileUrl} />
         </React.Suspense>
       ) : (
-        <AccountantLobster position={[0,0,0]} scale={1} />
+        <DynamicLobster position={[0,0,0]} scale={1} baseColor={baseColor} robeColor={robeColor} accentColor={accentColor} />
       )}
 
       {/* Dynamic Accessories System */}
