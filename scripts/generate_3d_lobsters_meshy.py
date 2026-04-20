@@ -11,7 +11,7 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-LOBSTERS = ["Accountant.png", "Assistant.png", "Strategist.png", "Researcher.png", "Tutor.png"]
+LOBSTERS = ["Globe.png"]
 SOURCE_DIR = os.path.join(os.path.dirname(__file__), "../public/agents")
 TARGET_DIR = os.path.join(os.path.dirname(__file__), "../public/models/lobsters")
 
