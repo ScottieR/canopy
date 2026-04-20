@@ -897,7 +897,8 @@ function OnboardingWizard() {
 
       {/* Step 2: Choose Role */}
       {step === 1 && (
-        <div style={{ maxWidth: 900, width: "90%", maxHeight: "90vh", overflow: "auto", padding: "20px 0" }}>
+        <div style={{ maxWidth: 900, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
+          <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
           <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
             Create your first agent
           </h1>
@@ -1014,7 +1015,8 @@ function OnboardingWizard() {
             ))}
           </div>
 
-          <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+          </div>
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(0)} style={{
               padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
@@ -1091,7 +1093,8 @@ function OnboardingWizard() {
 
       {/* Step 3: Name & Personality */}
       {step === 2 && (
-        <div style={{ maxWidth: 600, width: "90%", maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
+          <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
           <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
             Name Your Agent
           </h1>
@@ -1159,7 +1162,8 @@ function OnboardingWizard() {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+          </div>
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(1)} style={{
               padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
@@ -1177,7 +1181,8 @@ function OnboardingWizard() {
 
       {/* Step 4: API Key */}
       {step === 3 && (
-        <div style={{ maxWidth: 600, width: "90%", maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
+          <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
           <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
             Power Up Your Agent
           </h1>
@@ -1201,30 +1206,16 @@ function OnboardingWizard() {
           </div>
 
           <div style={{ marginBottom: 32 }}>
-            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>
-              API Key (Optional for now)
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 16 }}>
+              API Keys
             </label>
-            <textarea
-              value={apiKey}
-              onChange={e => setApiKey(e.target.value)}
-              placeholder="sk-..."
-              style={{
-                width: "100%", padding: "14px 18px", borderRadius: 12,
-                border: "1px solid rgba(0,0,0,0.08)", fontSize: 13,
-                fontFamily: "monospace", color: "#303330",
-                outline: "none", background: "#ffffff",
-                minHeight: 100, resize: "vertical",
-              }}
-            />
+            <div style={{ background: "rgba(0,0,0,0.02)", borderRadius: 16, padding: 16, border: "1px solid rgba(0,0,0,0.05)" }}>
+              <ProvidersVault embedded filterProvider={llmProvider} />
+            </div>
           </div>
 
-          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer" style={{
-            display: "inline-block", fontSize: 12, color: "#3c6663", background: "none", border: "none",
-            cursor: "pointer", fontFamily: "inherit", textDecoration: "underline",
-            marginBottom: 32,
-          }}>How do I get an API Key?</a>
-
-          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+          </div>
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(2)} style={{
               padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
@@ -1240,7 +1231,8 @@ function OnboardingWizard() {
 
       {/* Step 5: Plugins & Permissions */}
       {step === 4 && (
-        <div style={{ maxWidth: 600, width: "90%", maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
+          <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
           <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>Give your agent the tools they need to interact with your world.</p>
           
@@ -1269,8 +1261,17 @@ function OnboardingWizard() {
                     </div>
 
                     {folderAccessType === "specific" && (
-                      <div>
-                        <input type="text" placeholder="/Users/username/Documents/..." value={selectedFolderPath} onChange={e => setSelectedFolderPath(e.target.value)} style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "#ffffff", outline: "none" }} />
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "#ffffff", outline: "none" }} />
+                        <button onClick={async () => {
+                           try {
+                             const { open } = await import('@tauri-apps/plugin-dialog');
+                             const selected = await open({ directory: true, multiple: false });
+                             if (selected) setSelectedFolderPath(selected as string);
+                           } catch (e) {
+                             console.error("No dialog plugin");
+                           }
+                        }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Browse...</button>
                       </div>
                     )}
 
@@ -1288,7 +1289,8 @@ function OnboardingWizard() {
             ))}
           </div>
 
-          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+          </div>
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(3)} style={{
               padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
@@ -1337,7 +1339,8 @@ function OnboardingWizard() {
                          settings: { event_subscriptions: { bot_events: ["message.channels"] }, interactivity: { is_enabled: true }, socket_mode_enabled: true }
                        };
                        const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
-                       if (typeof window !== "undefined") window.open(url, "_blank");
+                       const { open } = await import('@tauri-apps/plugin-shell');
+                       await open(url);
                     }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#3c6663", color: "white", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                       Launch Slack App Setup ✨
                     </button>

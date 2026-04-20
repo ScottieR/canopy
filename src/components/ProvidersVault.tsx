@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
 
-export function ProvidersVault() {
+export function ProvidersVault({ embedded = false, filterProvider }: { embedded?: boolean, filterProvider?: string } = {}) {
   const [keys, setKeys] = useState<Record<string, string>>({});
   const [discoveredKeys, setDiscoveredKeys] = useState<Record<string, string> | null>(null);
   const [showDiscovery, setShowDiscovery] = useState(false);
@@ -73,11 +74,13 @@ export function ProvidersVault() {
   };
 
   return (
-    <div style={{ maxWidth: 800, margin: "0 auto", padding: "40px 20px" }}>
+    <div style={{ maxWidth: 800, margin: "0 auto", padding: embedded ? "0px" : "40px 20px" }}>
+      {!embedded && (
       <div style={{ marginBottom: 40}}>
         <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Providers Vault</h1>
         <p style={{ fontSize: 16, color: "#636E72" }}>Manage the API connections that power your local agents. Keys are saved securely to your macOS Keychain.</p>
       </div>
+      )}
 
       {showDiscovery && discoveredKeys && (
         <div style={{ 
@@ -99,7 +102,7 @@ export function ProvidersVault() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        {providers.map(p => {
+        {providers.filter(p => !filterProvider || p.name === filterProvider || p.id === filterProvider).map(p => {
           const hasKey = !!keys[p.id];
           return (
             <div key={p.id} style={{ 
@@ -122,7 +125,10 @@ export function ProvidersVault() {
                     <p style={{ margin: 0, color: "#636E72", fontSize: 13 }}>{p.description}</p>
                   </div>
                   
-                  <a href={p.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: p.color, textDecoration: "none", fontWeight: 600, display: "flex", alignItems: "center", gap: 4 }}>
+                  <a href={p.url} onClick={async (e) => {
+                    e.preventDefault();
+                    await open(p.url);
+                  }} style={{ fontSize: 12, color: p.color, textDecoration: "none", fontWeight: 600, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
                     Get API Key ↗
                   </a>
                 </div>
