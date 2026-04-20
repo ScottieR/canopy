@@ -850,7 +850,7 @@ function OnboardingWizard() {
             >
               <ambientLight intensity={0.7} color="#F5E6D8" />
               <directionalLight position={[10, 20, 5]} intensity={0.8} />
-              <OrbitControls enableZoom={true} enablePan={true} autoRotate autoRotateSpeed={0.8} minPolarAngle={Math.PI * 0.2} maxPolarAngle={Math.PI * 0.4} />
+              <OrbitControls enableZoom={true} enablePan={true} autoRotate autoRotateSpeed={0.8} />
               <WorldScene />
             </Canvas>
           </div>
