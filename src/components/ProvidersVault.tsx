@@ -29,25 +29,26 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
       }
     }
     setKeys(currentKeys);
+  };
 
-    // If any core provider is missing, try auto discovery
-    if (!currentKeys["openai"] || !currentKeys["anthropic"]) {
-        try {
-            const discovered = await invoke<Record<string, string>>("auto_discover_keys_cmd");
-            
-            // Filter only to those we DON'T currently have linked
-            const newDiscovered: Record<string, string> = {};
-            for (const [k, v] of Object.entries(discovered)) {
-                if (!currentKeys[k]) newDiscovered[k] = v;
-            }
+  const handleScanForKeys = async () => {
+    try {
+      const discovered = await invoke<Record<string, string>>("auto_discover_keys_cmd");
+      
+      const newDiscovered: Record<string, string> = {};
+      for (const [k, v] of Object.entries(discovered)) {
+          if (!keys[k]) newDiscovered[k] = v;
+      }
 
-            if (Object.keys(newDiscovered).length > 0) {
-                setDiscoveredKeys(newDiscovered);
-                setShowDiscovery(true);
-            }
-        } catch (e) {
-            console.error("Auto discovery failed:", e);
-        }
+      if (Object.keys(newDiscovered).length > 0) {
+          setDiscoveredKeys(newDiscovered);
+          setShowDiscovery(true);
+      } else {
+          alert('No new API keys discovered in your system.');
+      }
+    } catch (e) {
+      console.error("Auto discovery failed:", e);
+      alert('Failed to scan for keys. Make sure Canopy has system permissions.');
     }
   };
 
@@ -76,10 +77,26 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
   return (
     <div style={{ maxWidth: 800, margin: "0 auto", padding: embedded ? "0px" : "40px 20px" }}>
       {!embedded && (
-      <div style={{ marginBottom: 40}}>
-        <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Providers Vault</h1>
-        <p style={{ fontSize: 16, color: "#636E72" }}>Manage the API connections that power your local agents. Keys are saved securely to your macOS Keychain.</p>
+      <div style={{ marginBottom: 40, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Providers Vault</h1>
+          <p style={{ fontSize: 16, color: "#636E72" }}>Manage the API connections that power your local agents. Keys are saved securely to your macOS Keychain.</p>
+        </div>
+        <button onClick={handleScanForKeys} style={{ background: "#f4f4f0", color: "#303330", border: "1px solid rgba(0,0,0,0.1)", padding: "10px 16px", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
+          Auto-Scan Keys
+        </button>
       </div>
+      )}
+
+      {embedded && (
+        <div style={{ marginBottom: 24, padding: 16, background: "rgba(33,131,128,0.05)", borderRadius: 12, border: "1px solid rgba(33,131,128,0.15)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div style={{ fontSize: 13, color: "#303330", lineHeight: 1.5, flex: 1, paddingRight: 24 }}>
+            <strong>Save time:</strong> Canopy can securely scan your developer environment to auto-discover API keys. macOS will prompt for access permissions.
+          </div>
+          <button onClick={handleScanForKeys} style={{ background: "#3c6663", color: "white", border: "none", padding: "10px 16px", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontSize: 13, whiteSpace: "nowrap" }}>
+            Scan Environment
+          </button>
+        </div>
       )}
 
       {showDiscovery && discoveredKeys && (

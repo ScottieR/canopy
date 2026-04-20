@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 mod docker;
 mod openclaw;
 mod keychain;
@@ -22,6 +24,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -53,6 +56,25 @@ pub fn run() {
                     }
                 }
             });
+            
+            // Sync pricing asynchronously from Admin Oracle
+            tauri::async_runtime::spawn(async move {
+                tracing::info!("Attempting to fetch remote LLM pricing sync...");
+                if let Ok(resp) = reqwest::get("http://localhost:3001/api/pricing").await {
+                    if let Ok(pricing_json) = resp.json::<std::collections::HashMap<String, serde_json::Value>>().await {
+                        let mut registry = models::PRICING_REGISTRY.write().unwrap();
+                        for (model_name, costs) in pricing_json {
+                            let cost_in = costs.get("in").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            let cost_out = costs.get("out").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                            registry.insert(model_name, (cost_in, cost_out));
+                        }
+                        tracing::info!("Synced dynamic LLM pricing rules into registry.");
+                    }
+                } else {
+                    tracing::warn!("Failed to fetch pricing from admin oracle, retaining local fallbacks.");
+                }
+            });
+
             Ok(())
         })
         // Agent management commands

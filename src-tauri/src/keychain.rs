@@ -27,6 +27,23 @@ pub fn delete_secret_internal(key: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Helper: Get an agent's API key with fallback to the global provider key
+pub fn get_agent_api_key(agent_id: &str, provider_id: &str) -> Result<String, String> {
+    // 1. Check agent-specific override
+    let agent_key = format!("agent_{}_api_key", agent_id);
+    if let Ok(key) = get_secret(&agent_key) {
+        return Ok(key);
+    }
+    
+    // 2. Fall back to global provider key
+    let global_key = format!("{}_API_KEY", provider_id.to_uppercase());
+    if let Ok(key) = get_secret(&global_key) {
+        return Ok(key);
+    }
+    
+    Err(format!("No API key found for agent {} or provider {}", agent_id, provider_id))
+}
+
 // ─── Tauri Commands (take owned Strings for IPC deserialization) ────────────
 
 #[tauri::command]
