@@ -40,6 +40,12 @@
   "plugins": {
     "shell": {
       "open": true
+    },
+    "updater": {
+      "endpoints": [
+        "https://releases.canopy.com/{{target}}/{{current_version}}"
+      ],
+      "pubkey": "UPDATE_WITH_YOUR_ED25519_PUBLIC_KEY"
     }
   }
 }

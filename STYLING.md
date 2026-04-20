@@ -24,9 +24,14 @@ This concept art grid is THE definitive visual reference for the entire app. Eve
 - Proportions: head is ~30% of body width, body tapers gently at the base
 - Eyes: simple, round, slightly recessed — minimal but expressive
 
-**Habitat environments (one per archetype):**
-Each archetype lives in a distinct isometric micro-world that communicates their role
-at a glance. These habitats inform both the 3D world zones AND image generation prompts.
+**Habitat environments (The Floating Terrarium Slice):**
+The overarching 3D layout is a **floating isometric slice of earth** (a diorama or terrarium), rather than a globe. This "slice" aesthetic presents a cross-section of the ground (showing layers of dirt or architecture) and provides a clean, 2D-like grid across the top surface.
+Each archetype lives in a distinct micro-world on this surface that communicates their role at a glance. As users add agents, the terrarium slice expands outwardly (e.g., adding a hexagonal tile or widening a disc) to accommodate them.
+
+**The "No Pedestal" Rule:**
+Agents must be placed **directly onto the habitat surface**. Do not place agents on pedestals, stands, or geometric bases. Grounding them directly in the "dirt" or floor integrates them into the ecosystem, making them feel like living inhabitants rather than static museum artifacts. Their accessories should be scattered around them organically.
+
+These habitats inform both the 3D world zones AND image generation prompts.
 
 | Panel | Archetype | Habitat | Key visual elements | Shell tint |
 |-------|-----------|---------|-------------------|------------|
@@ -224,7 +229,7 @@ Agent glow: 0 0 0 3px rgba(255,255,255,0.6), 0 0 12px {color}40
 
 ---
 
-## 8. Animation
+## 8. Animation & 3D Performance
 
 ### CSS Keyframes
 
@@ -245,14 +250,16 @@ Agent glow: 0 0 0 3px rgba(255,255,255,0.6), 0 0 12px {color}40
 }
 ```
 
-### 3D World Animation
+### 3D World Animation (State-Driven & Performant)
 
-- Agent movement: steering behavior with velocity damping, speed ~0.5–0.65 units/sec
-- Idle bob: `sin(t * 1.5) * 0.01` vertical
-- Walk bob: `|sin(t * 6)| * 0.04` vertical
-- Antenna sway: `sin(t * 2) * 0.08` z-rotation, `sin(t * 1.5) * 0.05` x-rotation
-- Think bubbles: 3 spheres with sinusoidal float
-- Transition timing: `all 0.15s ease` (nav), `all 0.3s ease` (cards, buttons)
+To preserve a high frame rate (60FPS+) when rendering multiple unique agent geometry and materials on the terrarium slice, we employ **Event-Driven Animation (State Machines)** rather than continuous physical calculations in `useFrame`:
+
+- **Idle / Sleeping Mode:** By default, agents that are not actively computing tasks are "asleep" or idle. Continuous `useFrame` math for bobbing or swaying must be disabled or dramatically throttled. They should be static or use an extremely slow, minimal breathing tween (`@react-spring/three`).
+- **Active / Processing Mode:** When the user initiates a task with a specific agent, that agent transitions to an active state. Only the active agent runs its full animation loop (e.g., furiously digging, sorting papers, or bobbing).
+- **Tactile Micro-interactions:** If a user physically interacts with (taps/clicks) an agent, use a quick tween-based animation (like a squishy physics bounce or a puff of dust kicking up). Avoid complex skeletal recalculations; transform scale and position properties directly.
+- **Antenna Sway:** Keep math simple: `sin(t * 1.5)` over a throttled clock.
+- **Lighting Limits:** Avoid computing shadows from multiple agent-specific point lights. Rely on a single HemisphereLight for global softness and a single DirectionalLight casting the canonical upper-left shadow isometric style across the whole terrarium slice.
+- **Transition timing:** `all 0.15s ease` (nav), `all 0.3s ease` (cards, buttons)
 
 ---
 
@@ -305,6 +312,18 @@ Isometric micro-environment in Monument Valley art style. [HABITAT_DESCRIPTION].
 architecture with soft pastel coloring, [BACKGROUND_TINT] tint. Warm muted lighting,
 gentle shadows. A [SHELL_COLOR] lobster character stands within the environment, scaled
 to ~40% of frame height. Low-poly 3D render, flat-shaded, no outlines.
+```
+
+### Base prompt template (terrarium ivy base)
+
+```
+Isometric micro-environment base in Monument Valley art style. A floating, thick cross-section
+slice of earth consisting of a gorgeous pile of lush ivy and moss, draping organically and
+hanging freely down in a couple of places below the bottom of the earth slice. The top surface
+of the earth slice must be completely flat and empty, with NO buildings, NO architecture, and
+NO structures. Purely natural soil and ivy. Soft pastel green tint. Warm muted lighting, gentle
+shadows. Low-poly 3D render, flat-shaded, no outlines. Studio quality, centered composition on
+a light warm background.
 ```
 
 ### Per-archetype prompt fragments

@@ -9,6 +9,7 @@ import RAW_AGENT_TYPE_INFO from "../shared/agents.json";
 import { GLBAgent } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
+import { UpdateManager } from "./components/shared/UpdateManager";
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CANOPY — Monument Valley Isometric World + Architect Agent Detail
@@ -43,10 +44,10 @@ function OrganicLobsterBody({ robeMat, headColor }: { robeMat: THREE.Material, h
 
 export function LobsterIcon({ size = 48, className = "" }: { size?: number, shellColor?: string, accentColor?: string, className?: string }) {
   return (
-    <img 
-      src="/agents/default.jpg" 
-      alt="Lobster Agent" 
-      style={{ width: size, height: size, objectFit: "contain" }} 
+    <img
+      src="/app-icon.png"
+      alt="Lobster Agent"
+      style={{ width: size, height: size, objectFit: "contain" }}
       className={className}
     />
   );
@@ -178,22 +179,21 @@ const DEFAULT_PERMISSIONS: Permission[] = [
 
 const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean }>;
 
-function getRecommendedModel(role: string) {
-  const heavyRoles = ["Researcher", "Coder", "Architect", "Financial", "Accountant", "Business Strategist", "Investment Manager"];
-  if (heavyRoles.includes(role)) {
-    return { provider: "Anthropic", model: "Claude 3.5 Sonnet (Powerful & Deep)" };
-  }
-  return { provider: "OpenAI", model: "GPT-4o-mini (Fast & Light)" };
-}
-
 function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record<string, any> = AGENT_TYPE_INFO) {
   const info = agentTypeInfo[role] || {};
   let basePrompt = "";
   
+  const personaName = name ? name : "Agent";
+
   if (!role || role === "Custom") {
-    basePrompt = `You are ${name ? name : 'a custom AI agent'}. Your primary objective is to execute instructions cleanly and effectively. Always maintain a helpful tone.`;
+    basePrompt = info.defaultPrompt || `You are ${personaName}. Your primary objective is to execute instructions cleanly and effectively. Maintain a helpful and analytical tone.`;
+    basePrompt = basePrompt.replace("You are a highly capable and adaptable AI agent", `You are ${personaName}`);
   } else {
-    basePrompt = `You are ${name ? name : 'a'} ${role} agent. Your primary objective is to ${info?.description?.toLowerCase() || 'assist the user'}. Make decisions efficiently and always maintain a professional tone.`;
+    if (info.defaultPrompt) {
+        basePrompt = info.defaultPrompt.replace("You are", `You are ${personaName},`);
+    } else {
+        basePrompt = `You are ${personaName}, an expert acting in the capacity of a ${role}. As a specialized agent, you must execute your duties meticulously, draw upon your deep domain knowledge, and provide structured, high-signal outputs. Avoid conversational fluff.`;
+    }
   }
 
   // Inject Library References
@@ -201,7 +201,7 @@ function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record
   if (library.length > 0) {
     const cultural = library.filter((b: any) => b.mode === "Cultural Reference");
     const expertise = library.filter((b: any) => b.mode === "Deep Expertise");
-    
+
     if (cultural.length > 0) {
       basePrompt += `\n\nCultural References: You are intimately familiar with the themes, plots, and quotes of the following works: ${cultural.map((b: any) => `"${b.title}" by ${b.author}`).join(', ')}. Use these as stylistic references or metaphors when appropriate to add flavor to your responses.`;
     }
@@ -277,42 +277,42 @@ function useCardinalMaterial(lit: string, shadow: string, top: string) {
   }), [lit, shadow, top]);
 }
 
-function IsoBlock({ position, size = [1,1,1], lit = "#D4A574", shadow = "#B88A5E", top = "#E8C9A0" }: { position: [number,number,number]; size?: [number,number,number]; lit?: string; shadow?: string; top?: string }) {
+function IsoBlock({ position, size = [1, 1, 1], lit = "#D4A574", shadow = "#B88A5E", top = "#E8C9A0" }: { position: [number, number, number]; size?: [number, number, number]; lit?: string; shadow?: string; top?: string }) {
   const m = useCardinalMaterial(lit, shadow, top);
   return <mesh position={position} material={m}><boxGeometry args={size} /></mesh>;
 }
 
-function Column({ position, height = 1.5, color = "#C4A0C9" }: { position: [number,number,number]; height?: number; color?: string }) {
+function Column({ position, height = 1.5, color = "#C4A0C9" }: { position: [number, number, number]; height?: number; color?: string }) {
   return (<group position={position}>
-    <mesh position={[0,height/2,0]}><cylinderGeometry args={[0.08,0.1,height,6]} /><meshStandardMaterial color={color} flatShading /></mesh>
-    <mesh position={[0,height+0.05,0]}><boxGeometry args={[0.25,0.1,0.25]} /><meshStandardMaterial color={color} flatShading /></mesh>
+    <mesh position={[0, height / 2, 0]}><cylinderGeometry args={[0.08, 0.1, height, 6]} /><meshStandardMaterial color={color} flatShading /></mesh>
+    <mesh position={[0, height + 0.05, 0]}><boxGeometry args={[0.25, 0.1, 0.25]} /><meshStandardMaterial color={color} flatShading /></mesh>
   </group>);
 }
 
-function Arch({ position, rotation = [0,0,0], scale = 1, lit = "#9EB4C7", shadow = "#7E98AD", top = "#BED0DE" }: { position: [number,number,number]; rotation?: [number,number,number]; scale?: number; lit?: string; shadow?: string; top?: string }) {
+function Arch({ position, rotation = [0, 0, 0], scale = 1, lit = "#9EB4C7", shadow = "#7E98AD", top = "#BED0DE" }: { position: [number, number, number]; rotation?: [number, number, number]; scale?: number; lit?: string; shadow?: string; top?: string }) {
   const m = useCardinalMaterial(lit, shadow, top);
   return (<group position={position} rotation={rotation as any} scale={scale}>
-    <mesh position={[-0.6,0.5,0]} material={m}><boxGeometry args={[0.3,1,0.3]} /></mesh>
-    <mesh position={[0.6,0.5,0]} material={m}><boxGeometry args={[0.3,1,0.3]} /></mesh>
-    <mesh position={[0,1.1,0]} material={m}><boxGeometry args={[1.5,0.25,0.3]} /></mesh>
-    <mesh position={[0,1.35,0]} material={m}><boxGeometry args={[1.1,0.15,0.35]} /></mesh>
+    <mesh position={[-0.6, 0.5, 0]} material={m}><boxGeometry args={[0.3, 1, 0.3]} /></mesh>
+    <mesh position={[0.6, 0.5, 0]} material={m}><boxGeometry args={[0.3, 1, 0.3]} /></mesh>
+    <mesh position={[0, 1.1, 0]} material={m}><boxGeometry args={[1.5, 0.25, 0.3]} /></mesh>
+    <mesh position={[0, 1.35, 0]} material={m}><boxGeometry args={[1.1, 0.15, 0.35]} /></mesh>
   </group>);
 }
 
-function Stairs({ position, rotation = [0,0,0], steps = 5, lit = "#D4A574", shadow = "#B88A5E", top = "#E8C9A0" }: { position: [number,number,number]; rotation?: [number,number,number]; steps?: number; lit?: string; shadow?: string; top?: string }) {
+function Stairs({ position, rotation = [0, 0, 0], steps = 5, lit = "#D4A574", shadow = "#B88A5E", top = "#E8C9A0" }: { position: [number, number, number]; rotation?: [number, number, number]; steps?: number; lit?: string; shadow?: string; top?: string }) {
   const m = useCardinalMaterial(lit, shadow, top);
   return (<group position={position} rotation={rotation as any}>
-    {Array.from({ length: steps }).map((_,i) => <mesh key={i} position={[0,i*0.15,i*0.25]} material={m}><boxGeometry args={[0.8,0.15,0.25]} /></mesh>)}
+    {Array.from({ length: steps }).map((_, i) => <mesh key={i} position={[0, i * 0.15, i * 0.25]} material={m}><boxGeometry args={[0.8, 0.15, 0.25]} /></mesh>)}
   </group>);
 }
 
-function GeometricPlant({ position, height = 0.5, color = "#6B8E5A" }: { position: [number,number,number]; height?: number; color?: string }) {
+function GeometricPlant({ position, height = 0.5, color = "#6B8E5A" }: { position: [number, number, number]; height?: number; color?: string }) {
   const ref = useRef<THREE.Group>(null);
   useFrame(({ clock }) => { if (ref.current) ref.current.rotation.z = Math.sin(clock.getElapsedTime() * 0.8 + position[0]) * 0.03; });
   return (<group ref={ref} position={position}>
-    <mesh position={[0,height*0.3,0]}><cylinderGeometry args={[0.02,0.03,height*0.6,4]} /><meshStandardMaterial color="#B5A898" flatShading /></mesh>
-    <mesh position={[0,height*0.6,0]}><octahedronGeometry args={[height*0.25,0]} /><meshStandardMaterial color={color} flatShading /></mesh>
-    <mesh position={[0,height*0.8,0]}><octahedronGeometry args={[height*0.18,0]} /><meshStandardMaterial color={color} flatShading /></mesh>
+    <mesh position={[0, height * 0.3, 0]}><cylinderGeometry args={[0.02, 0.03, height * 0.6, 4]} /><meshStandardMaterial color="#B5A898" flatShading /></mesh>
+    <mesh position={[0, height * 0.6, 0]}><octahedronGeometry args={[height * 0.25, 0]} /><meshStandardMaterial color={color} flatShading /></mesh>
+    <mesh position={[0, height * 0.8, 0]}><octahedronGeometry args={[height * 0.18, 0]} /><meshStandardMaterial color={color} flatShading /></mesh>
   </group>);
 }
 
@@ -324,28 +324,28 @@ function Water() {
     uniforms: { t: { value: 0 } },
   }), []);
   useFrame(({ clock }) => { mat.uniforms.t.value = clock.getElapsedTime(); });
-  return <mesh position={[0,-0.6,0]} rotation={[-Math.PI/2,0,0]} material={mat}><planeGeometry args={[20,20,32,32]} /></mesh>;
+  return <mesh position={[0, -0.6, 0]} rotation={[-Math.PI / 2, 0, 0]} material={mat}><planeGeometry args={[20, 20, 32, 32]} /></mesh>;
 }
 
 function FloatingMotes({ count = 20 }: { count?: number }) {
   const ref = useRef<THREE.InstancedMesh>(null);
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const motes = useMemo(() => Array.from({ length: count }).map(() => ({
-    x: (Math.random()-0.5)*12, y: Math.random()*3-0.3, z: (Math.random()-0.5)*12,
-    s: 0.1+Math.random()*0.2, p: Math.random()*Math.PI*2, sz: 0.02+Math.random()*0.03,
+    x: (Math.random() - 0.5) * 12, y: Math.random() * 3 - 0.3, z: (Math.random() - 0.5) * 12,
+    s: 0.1 + Math.random() * 0.2, p: Math.random() * Math.PI * 2, sz: 0.02 + Math.random() * 0.03,
   })), [count]);
   useFrame(({ clock }) => {
     if (!ref.current) return;
     const t = clock.getElapsedTime();
     motes.forEach((m, i) => {
-      dummy.position.set(m.x+Math.sin(t*m.s+m.p)*0.5, m.y+Math.sin(t*m.s*1.3+m.p)*0.3, m.z+Math.cos(t*m.s*0.7+m.p)*0.5);
-      dummy.scale.setScalar(m.sz*(0.8+Math.sin(t*2+m.p)*0.2));
+      dummy.position.set(m.x + Math.sin(t * m.s + m.p) * 0.5, m.y + Math.sin(t * m.s * 1.3 + m.p) * 0.3, m.z + Math.cos(t * m.s * 0.7 + m.p) * 0.5);
+      dummy.scale.setScalar(m.sz * (0.8 + Math.sin(t * 2 + m.p) * 0.2));
       dummy.updateMatrix();
       ref.current!.setMatrixAt(i, dummy.matrix);
     });
     ref.current.instanceMatrix.needsUpdate = true;
   });
-  return <instancedMesh ref={ref} args={[undefined, undefined, count]}><sphereGeometry args={[1,6,6]} /><meshBasicMaterial color="#F5E6D8" transparent opacity={0.4} /></instancedMesh>;
+  return <instancedMesh ref={ref} args={[undefined, undefined, count]}><sphereGeometry args={[1, 6, 6]} /><meshBasicMaterial color="#F5E6D8" transparent opacity={0.4} /></instancedMesh>;
 }
 
 function AgentCharacter({ agent }: { agent: AgentData }) {
@@ -399,8 +399,8 @@ function AgentCharacter({ agent }: { agent: AgentData }) {
       onPointerOver={e => { e.stopPropagation(); setHoveredAgent(agent.id); document.body.style.cursor = 'pointer'; }}
       onPointerOut={() => { setHoveredAgent(null); document.body.style.cursor = 'default'; }}
     >
-      {isHovered && <mesh position={[0,0.01,0]} rotation={[-Math.PI/2,0,0]}><ringGeometry args={[0.3,0.38,24]} /><meshBasicMaterial color="#83C5BE" transparent opacity={0.5} /></mesh>}
-      
+      {isHovered && <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[0.3, 0.38, 24]} /><meshBasicMaterial color="#83C5BE" transparent opacity={0.5} /></mesh>}
+
       {/* 3D Body rendered from exact Lathe */}
       <OrganicLobsterBody robeMat={robeMat} headColor={headColor} />
 
@@ -409,25 +409,25 @@ function AgentCharacter({ agent }: { agent: AgentData }) {
       <ClawArm side={1} color={agent.accentColor} id={agent.id} />
 
       {/* Antennae — dynamic swept stalks */}
-      <AntennaStalk base={[-0.05,0.65,-0.02]} h={0.24} c={0.2} color={agent.accentColor} id={agent.id} />
-      <AntennaStalk base={[0.05,0.65,-0.02]} h={0.24} c={-0.2} color={agent.accentColor} id={agent.id} />
+      <AntennaStalk base={[-0.05, 0.65, -0.02]} h={0.24} c={0.2} color={agent.accentColor} id={agent.id} />
+      <AntennaStalk base={[0.05, 0.65, -0.02]} h={0.24} c={-0.2} color={agent.accentColor} id={agent.id} />
 
       {agent.status === "thinking" && <ThinkBubbles color={agent.accentColor} />}
     </group>
   );
 }
 
-function AntennaStalk({ base, h, c, color, id }: { base: [number,number,number]; h: number; c: number; color: string; id: string }) {
+function AntennaStalk({ base, h, c, color, id }: { base: [number, number, number]; h: number; c: number; color: string; id: string }) {
   const ref = useRef<THREE.Group>(null);
-  useFrame(({ clock }) => { 
-    if (!ref.current) return; 
-    const t = clock.getElapsedTime(); 
-    ref.current.rotation.z = Math.sin(t*2+id.length)*0.08+c; 
-    ref.current.rotation.x = -0.1 + Math.sin(t*1.5+id.length*0.7)*0.05; 
+  useFrame(({ clock }) => {
+    if (!ref.current) return;
+    const t = clock.getElapsedTime();
+    ref.current.rotation.z = Math.sin(t * 2 + id.length) * 0.08 + c;
+    ref.current.rotation.x = -0.1 + Math.sin(t * 1.5 + id.length * 0.7) * 0.05;
   });
   return (<group ref={ref} position={base}>
-    <mesh position={[0,h/2,0]}><cylinderGeometry args={[0.008,0.012,h,6]} /><meshStandardMaterial color={color} /></mesh>
-    <mesh position={[0,h,0]}><sphereGeometry args={[0.03, 12, 12]} /><meshStandardMaterial color={color} /></mesh>
+    <mesh position={[0, h / 2, 0]}><cylinderGeometry args={[0.008, 0.012, h, 6]} /><meshStandardMaterial color={color} /></mesh>
+    <mesh position={[0, h, 0]}><sphereGeometry args={[0.03, 12, 12]} /><meshStandardMaterial color={color} /></mesh>
   </group>);
 }
 
@@ -456,58 +456,58 @@ function ClawArm({ side, color, id }: { side: number; color: string; id: string 
 
 function ThinkBubbles({ color }: { color: string }) {
   const ref = useRef<THREE.Group>(null);
-  useFrame(({ clock }) => { if (!ref.current) return; const t = clock.getElapsedTime(); ref.current.children.forEach((c,i) => { c.position.y = 0.8+Math.sin(t*2+i*1.5)*0.1+i*0.08; c.position.x = Math.sin(t*1.5+i*2)*0.08; c.position.z = Math.cos(t*1.2+i*2)*0.08; }); });
-  return (<group ref={ref}>{[0,1,2].map(i => <mesh key={i}><sphereGeometry args={[0.02,6,6]} /><meshBasicMaterial color={color} transparent opacity={0.5} /></mesh>)}</group>);
+  useFrame(({ clock }) => { if (!ref.current) return; const t = clock.getElapsedTime(); ref.current.children.forEach((c, i) => { c.position.y = 0.8 + Math.sin(t * 2 + i * 1.5) * 0.1 + i * 0.08; c.position.x = Math.sin(t * 1.5 + i * 2) * 0.08; c.position.z = Math.cos(t * 1.2 + i * 2) * 0.08; }); });
+  return (<group ref={ref}>{[0, 1, 2].map(i => <mesh key={i}><sphereGeometry args={[0.02, 6, 6]} /><meshBasicMaterial color={color} transparent opacity={0.5} /></mesh>)}</group>);
 }
 
 function WorldArchitecture() {
   return (<group>
     {/* Base Platform */}
-    <IsoBlock position={[0,-0.25,0]} size={[10,0.5,10]} lit="#D1C4B4" shadow="#B5A898" top="#E8DDD0" />
-    
+    <IsoBlock position={[0, -0.25, 0]} size={[10, 0.5, 10]} lit="#D1C4B4" shadow="#B5A898" top="#E8DDD0" />
+
     {/* Plaza (Center) with fountain */}
-    <mesh position={[0,0.05,0]}><cylinderGeometry args={[0.5,0.6,0.1,8]} /><meshStandardMaterial color="#83C5BE" flatShading /></mesh>
-    <mesh position={[0,0.15,0]}><cylinderGeometry args={[0.15,0.15,0.3,6]} /><meshStandardMaterial color="#9EB4C7" flatShading /></mesh>
+    <mesh position={[0, 0.05, 0]}><cylinderGeometry args={[0.5, 0.6, 0.1, 8]} /><meshStandardMaterial color="#83C5BE" flatShading /></mesh>
+    <mesh position={[0, 0.15, 0]}><cylinderGeometry args={[0.15, 0.15, 0.3, 6]} /><meshStandardMaterial color="#9EB4C7" flatShading /></mesh>
 
     {/* Executive's Axis (Assistant) - [4, 1.5, -2] - Teal */}
-    <IsoBlock position={[4,0.5,-2]} size={[2,1.5,2]} lit="#64C8C0" shadow="#4AA8A1" top="#81DCD5" />
-    <IsoBlock position={[4,1.75,-2]} size={[1.2,1,1.2]} lit="#64C8C0" shadow="#4AA8A1" top="#81DCD5" />
+    <IsoBlock position={[4, 0.5, -2]} size={[2, 1.5, 2]} lit="#64C8C0" shadow="#4AA8A1" top="#81DCD5" />
+    <IsoBlock position={[4, 1.75, -2]} size={[1.2, 1, 1.2]} lit="#64C8C0" shadow="#4AA8A1" top="#81DCD5" />
     {/* Floating Data Screens */}
-    <mesh position={[3.3,2.5,-1.5]} rotation={[0,Math.PI/4,0]}><boxGeometry args={[1,0.6,0.05]} /><meshBasicMaterial color="#81DCD5" transparent opacity={0.6} /></mesh>
-    <mesh position={[4.5,2.0,-1.3]} rotation={[0,-Math.PI/6,0]}><boxGeometry args={[0.8,0.5,0.05]} /><meshBasicMaterial color="#81DCD5" transparent opacity={0.6} /></mesh>
+    <mesh position={[3.3, 2.5, -1.5]} rotation={[0, Math.PI / 4, 0]}><boxGeometry args={[1, 0.6, 0.05]} /><meshBasicMaterial color="#81DCD5" transparent opacity={0.6} /></mesh>
+    <mesh position={[4.5, 2.0, -1.3]} rotation={[0, -Math.PI / 6, 0]}><boxGeometry args={[0.8, 0.5, 0.05]} /><meshBasicMaterial color="#81DCD5" transparent opacity={0.6} /></mesh>
 
     {/* Accountant's Labyrinth (Financial) - [-3, 0.5, -2] - Peach/Salmon */}
-    <Stairs position={[-2,0,-1]} rotation={[0,-Math.PI/2,0]} steps={5} />
-    <IsoBlock position={[-3,0.25,-2]} size={[2.5,0.5,2.5]} lit="#F39B88" shadow="#D87F6C" top="#FFAF9F" />
-    <IsoBlock position={[-3.5,0.75,-2.5]} size={[1,0.5,1]} lit="#F39B88" shadow="#D87F6C" top="#FFAF9F" />
-    <IsoBlock position={[-2.5,0.75,-2.5]} size={[0.5,0.8,0.5]} lit="#F39B88" shadow="#D87F6C" top="#FFAF9F" />
-    <Stairs position={[-2.5,0.5,-3]} rotation={[0,0,0]} steps={3} />
+    <Stairs position={[-2, 0, -1]} rotation={[0, -Math.PI / 2, 0]} steps={5} />
+    <IsoBlock position={[-3, 0.25, -2]} size={[2.5, 0.5, 2.5]} lit="#F39B88" shadow="#D87F6C" top="#FFAF9F" />
+    <IsoBlock position={[-3.5, 0.75, -2.5]} size={[1, 0.5, 1]} lit="#F39B88" shadow="#D87F6C" top="#FFAF9F" />
+    <IsoBlock position={[-2.5, 0.75, -2.5]} size={[0.5, 0.8, 0.5]} lit="#F39B88" shadow="#D87F6C" top="#FFAF9F" />
+    <Stairs position={[-2.5, 0.5, -3]} rotation={[0, 0, 0]} steps={3} />
 
     {/* Strategist's Terrace (STR Manager) - [3, 2.5, -4] - Slate/Navy */}
-    <IsoBlock position={[3,1.25,-4]} size={[2,2.5,2]} lit="#718096" shadow="#4A5568" top="#A0AEC0" />
+    <IsoBlock position={[3, 1.25, -4]} size={[2, 2.5, 2]} lit="#718096" shadow="#4A5568" top="#A0AEC0" />
     {/* Overlook railings */}
-    <Column position={[2.1,2.6,-3.1]} height={0.3} color="#A0AEC0" />
-    <Column position={[3.9,2.6,-3.1]} height={0.3} color="#A0AEC0" />
-    <Column position={[2.1,2.6,-4.9]} height={0.3} color="#A0AEC0" />
-    <Column position={[3.9,2.6,-4.9]} height={0.3} color="#A0AEC0" />
-    <IsoBlock position={[3,2.6,-4]} size={[1.8,0.05,1.8]} lit="#718096" shadow="#4A5568" top="#A0AEC0" transparent opacity={0.3} />
+    <Column position={[2.1, 2.6, -3.1]} height={0.3} color="#A0AEC0" />
+    <Column position={[3.9, 2.6, -3.1]} height={0.3} color="#A0AEC0" />
+    <Column position={[2.1, 2.6, -4.9]} height={0.3} color="#A0AEC0" />
+    <Column position={[3.9, 2.6, -4.9]} height={0.3} color="#A0AEC0" />
+    <IsoBlock position={[3, 2.6, -4]} size={[1.8, 0.05, 1.8]} lit="#718096" shadow="#4A5568" top="#A0AEC0" transparent opacity={0.3} />
 
     {/* Scientist's Sanctuary (Researcher) - [0, 1.0, -4] - Sage Green */}
-    <IsoBlock position={[0,0.5,-4]} size={[2.5,1,2.5]} lit="#8FBC8F" shadow="#6E9C6E" top="#AADBAA" />
+    <IsoBlock position={[0, 0.5, -4]} size={[2.5, 1, 2.5]} lit="#8FBC8F" shadow="#6E9C6E" top="#AADBAA" />
     {/* Lab Flasks */}
-    <mesh position={[-0.6,1.4,-4]}><cylinderGeometry args={[0.15,0.3,0.8,8]} /><meshStandardMaterial color="#AADBAA" flatShading transparent opacity={0.7} /></mesh>
-    <mesh position={[0.5,1.3,-4.2]}><sphereGeometry args={[0.35,8,8]} /><meshStandardMaterial color="#8FBC8F" flatShading transparent opacity={0.7} /></mesh>
-    <mesh position={[0,1.2,-3.5]}><cylinderGeometry args={[0.1,0.1,0.4,8]} /><meshStandardMaterial color="#AADBAA" flatShading transparent opacity={0.7} /></mesh>
+    <mesh position={[-0.6, 1.4, -4]}><cylinderGeometry args={[0.15, 0.3, 0.8, 8]} /><meshStandardMaterial color="#AADBAA" flatShading transparent opacity={0.7} /></mesh>
+    <mesh position={[0.5, 1.3, -4.2]}><sphereGeometry args={[0.35, 8, 8]} /><meshStandardMaterial color="#8FBC8F" flatShading transparent opacity={0.7} /></mesh>
+    <mesh position={[0, 1.2, -3.5]}><cylinderGeometry args={[0.1, 0.1, 0.4, 8]} /><meshStandardMaterial color="#AADBAA" flatShading transparent opacity={0.7} /></mesh>
 
     {/* Educator's Enclave (Tutor) - [-3, 0, 3] - Soft Purple */}
-    <IsoBlock position={[-3,0,3]} size={[3.5,0.4,3.5]} lit="#B892FF" shadow="#9670D8" top="#D4B3FF" />
-    <Arch position={[-2,0.4,3]} rotation={[0,Math.PI/2,0]} scale={1.2} />
-    <Arch position={[-3,0.4,2]} scale={1.2} />
-    <Arch position={[-3,0.4,4]} scale={1.2} />
+    <IsoBlock position={[-3, 0, 3]} size={[3.5, 0.4, 3.5]} lit="#B892FF" shadow="#9670D8" top="#D4B3FF" />
+    <Arch position={[-2, 0.4, 3]} rotation={[0, Math.PI / 2, 0]} scale={1.2} />
+    <Arch position={[-3, 0.4, 2]} scale={1.2} />
+    <Arch position={[-3, 0.4, 4]} scale={1.2} />
     {/* Trees & Study objects */}
-    <GeometricPlant position={[-3.8,0.2,3.8]} height={0.7} color="#B892FF" />
-    <GeometricPlant position={[-2.4,0.2,4.2]} height={0.5} color="#9670D8" />
-    <IsoBlock position={[-3.5,0.35,2.5]} size={[0.6,0.3,0.6]} lit="#D1C4B4" shadow="#B5A898" top="#E8DDD0" />
+    <GeometricPlant position={[-3.8, 0.2, 3.8]} height={0.7} color="#B892FF" />
+    <GeometricPlant position={[-2.4, 0.2, 4.2]} height={0.5} color="#9670D8" />
+    <IsoBlock position={[-3.5, 0.35, 2.5]} size={[0.6, 0.3, 0.6]} lit="#D1C4B4" shadow="#B5A898" top="#E8DDD0" />
   </group>);
 }
 
@@ -518,7 +518,7 @@ function SkyGradient() {
     uniforms: { t: { value: 0 } }, side: THREE.BackSide, depthWrite: false,
   }), []);
   useFrame(({ clock }) => { mat.uniforms.t.value = clock.getElapsedTime(); });
-  return <mesh material={mat}><sphereGeometry args={[50,16,16]} /></mesh>;
+  return <mesh material={mat}><sphereGeometry args={[50, 16, 16]} /></mesh>;
 }
 
 function CanopyScene() {
@@ -526,18 +526,18 @@ function CanopyScene() {
   const setSelected = useWorldStore(s => s.setSelectedAgent);
   return (<>
     <ambientLight intensity={0.6} color="#F5E6D8" />
-    <directionalLight position={[5,10,3]} intensity={0.8} />
-    <directionalLight position={[-3,5,-2]} intensity={0.2} color="#C8D8E8" />
+    <directionalLight position={[5, 10, 3]} intensity={0.8} />
+    <directionalLight position={[-3, 5, -2]} intensity={0.2} color="#C8D8E8" />
     <SkyGradient />
     <Water />
     <FloatingMotes count={25} />
     <group>
-      <IsoBlock position={[0,-0.8,0]} size={[10,0.6,10]} lit="#C4B8A8" shadow="#A89C8C" top="#D8CCC0" />
-      <IsoBlock position={[0,-1.5,0]} size={[8,0.8,8]} lit="#B8ACA0" shadow="#9C9088" top="#CCC0B4" />
+      <IsoBlock position={[0, -0.8, 0]} size={[10, 0.6, 10]} lit="#C4B8A8" shadow="#A89C8C" top="#D8CCC0" />
+      <IsoBlock position={[0, -1.5, 0]} size={[8, 0.8, 8]} lit="#B8ACA0" shadow="#9C9088" top="#CCC0B4" />
       <WorldArchitecture />
       {agents.map(a => <AgentCharacter key={a.id} agent={a} />)}
     </group>
-    <mesh position={[0,-2,0]} rotation={[-Math.PI/2,0,0]} visible={false} onClick={() => setSelected(null)}><planeGeometry args={[100,100]} /></mesh>
+    <mesh position={[0, -2, 0]} rotation={[-Math.PI / 2, 0, 0]} visible={false} onClick={() => setSelected(null)}><planeGeometry args={[100, 100]} /></mesh>
   </>);
 }
 
@@ -591,16 +591,19 @@ function OnboardingWizard() {
   const [agentName, setAgentName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [personalityPrompt, setPersonalityPrompt] = useState("");
-  const [llmProvider, setLlmProvider] = useState<"OpenAI"|"Google Gemini"|"Anthropic"|"">("");
+  const [recentlyRead, setRecentlyRead] = useState<string[]>([]);
+  const [customBookInput, setCustomBookInput] = useState("");
+  const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "">("");
+  const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[] } | null>(null);
-  
+
   const [plugins, setPlugins] = useState<Record<string, boolean>>({ slack: false, imessage: false, email: false, calendar: false, folders: false });
   const [folderAccessType, setFolderAccessType] = useState<"specific" | "all">("specific");
   const [selectedFolderPath, setSelectedFolderPath] = useState("");
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
-  const [testStatus, setTestStatus] = useState<"idle"|"testing"|"success"|"error">("idle");
-  const enabledPlugins = Object.entries(plugins).filter(([k,v]) => v).map(([k]) => k);
-  
+  const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const enabledPlugins = Object.entries(plugins).filter(([k, v]) => v).map(([k]) => k);
+
   const [slackAppToken, setSlackAppToken] = useState("");
   const [slackBotToken, setSlackBotToken] = useState("");
   const [slackWorkspaceMsg, setSlackWorkspaceMsg] = useState("");
@@ -609,11 +612,46 @@ function OnboardingWizard() {
   const [imessageThreads, setIMessageThreads] = useState<any[]>([]);
   const [selectedIMessageThreads, setSelectedIMessageThreads] = useState<string[]>([]);
   const [imessageAccessLevel, setImessageAccessLevel] = useState<"read-only" | "read-send">("read-only");
-  
+
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
   const [discoveredAgents, setDiscoveredAgents] = useState<DiscoveredAgent[]>([]);
   const [isDeployingImport, setIsDeployingImport] = useState(false);
+
+  useEffect(() => {
+    let unlisten: any;
+    (async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        unlisten = await listen('slack-connected', (event: any) => {
+          setSlackWorkspaceMsg(`Connected to ${event.payload.workspace}`);
+          setTestStatus("success");
+        });
+      } catch (e) {
+        console.log("No tauri event API natively available", e);
+      }
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const [modelStrategies, setModelStrategies] = useState<any>(null);
+  useEffect(() => {
+    fetch('http://localhost:3001/api/models')
+      .then(res => res.json())
+      .then(data => setModelStrategies(data))
+      .catch(err => console.warn("Failed to fetch model strategies proxy:", err));
+  }, []);
+
+  const getDynamicRecommendedModel = (role: string) => {
+    if (!modelStrategies || !modelStrategies.strategies) return { provider: "OpenAI", model: "GPT-4o-mini (Fast & Light)", id: "gpt-4o-mini" };
+    const { strategies, models } = modelStrategies;
+    const isHeavy = strategies.heavy.includes(role);
+    const targetId = isHeavy ? strategies.defaultHeavyModel : strategies.defaultLightModel;
+    const match = models.find((m: any) => m.id === targetId);
+    return { provider: match?.provider || "OpenAI", model: `${match?.name} (${match?.description})`, id: match?.id };
+  };
 
   const startImportFlow = async () => {
     setStep(1.8);
@@ -631,11 +669,11 @@ function OnboardingWizard() {
     setIsDeployingImport(true);
     try {
       if (typeof invoke === 'function') {
-        const newAgentData = await invoke("import_discovered_agent", { 
-           agentId: a.id,
-           path: a.path
+        const newAgentData = await invoke("import_discovered_agent", {
+          agentId: a.id,
+          path: a.path
         }) as Agent;
-        
+
         const roleInfo = agentTypeInfo["Custom"] || agentTypeInfo[Object.keys(agentTypeInfo)[0]];
         const enrichedAgent: AgentData = {
           ...newAgentData,
@@ -704,7 +742,10 @@ function OnboardingWizard() {
     });
   const handleRoleSelect = (roleKey: string) => {
     setSelectedRole(roleKey);
-    setLlmProvider(getRecommendedModel(roleKey).provider as any);
+    setLlmProvider(getDynamicRecommendedModel(roleKey).provider as any);
+    setApiKeyMode("hidden");
+    setApiKey("");
+    setRecentlyRead([]);
     setPersonalityPrompt(getDefaultPersonality(roleKey, agentName, agentTypeInfo));
   };
 
@@ -713,6 +754,11 @@ function OnboardingWizard() {
 
     try {
       const roleInfo = agentTypeInfo[selectedRole];
+      let finalPrompt = personalityPrompt;
+      if (recentlyRead.length > 0) {
+        finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
+      }
+      
       let newAgentData: Agent;
       try {
         if (typeof invoke === 'function') {
@@ -720,7 +766,7 @@ function OnboardingWizard() {
             name: agentName,
             role: selectedRole,
             emoji: "agent",
-            personality: personalityPrompt,
+            personality: finalPrompt,
             isolated: false,
           }) as Agent;
 
@@ -733,29 +779,29 @@ function OnboardingWizard() {
 
           if (plugins.imessage && selectedIMessageThreads.length > 0) {
             await invoke("update_allowed_imessage_threads", {
-               agentId: newAgentData.id,
-               chatIdentifiers: selectedIMessageThreads
+              agentId: newAgentData.id,
+              chatIdentifiers: selectedIMessageThreads
             });
           }
 
           if (plugins.folders && selectedFolderPath) {
-             const bridgeConfig = {
-                scope: { allowed_paths: [selectedFolderPath] },
-                expires_at: null,
-                push_enabled: false
-             };
-             await invoke("update_bridge_config", {
-                bridgeId: `${newAgentData.id}-files`,
-                config: bridgeConfig
-             });
+            const bridgeConfig = {
+              scope: { allowed_paths: [selectedFolderPath] },
+              expires_at: null,
+              push_enabled: false
+            };
+            await invoke("update_bridge_config", {
+              bridgeId: `${newAgentData.id}-files`,
+              config: bridgeConfig
+            });
           }
 
           if (googleTokens) {
             if (googleTokens.refresh_token) {
-               await invoke("store_secret_cmd", { key: `google_refresh_${newAgentData.id}`, value: googleTokens.refresh_token });
+              await invoke("store_secret_cmd", { key: `google_refresh_${newAgentData.id}`, value: googleTokens.refresh_token });
             }
             if (googleTokens.access_token) {
-               await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
+              await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
             }
           }
         } else {
@@ -774,7 +820,7 @@ function OnboardingWizard() {
           container_id: null,
           personality: {
             name: agentName,
-            communication_style: personalityPrompt,
+            communication_style: finalPrompt,
             expertise: [],
             guardrails: [],
             custom_instructions: ""
@@ -812,7 +858,7 @@ function OnboardingWizard() {
         recentSpend: [],
         chatLog: [],
         memories: [],
-        personalityPrompt: personalityPrompt || `${agentName} is a ${selectedRole.toLowerCase()} agent — reliable, sharp, and always working.`,
+        personalityPrompt: finalPrompt || `${agentName} is a ${selectedRole.toLowerCase()} agent — reliable, sharp, and always working.`,
         avatarPrompt: `Isometric 3D-rendered agent character in Monument Valley art style. Rounded bell-shaped body with ${roleInfo?.robeColor || "#888"} shell, smooth round head, two swept-back antennae with bulbous ${roleInfo?.accentColor || "#ccc"} tips, small expressive claws at sides. Flat-shaded low-poly faces, soft directional lighting from upper-left. Warm muted pastel palette. No outlines. Ref: agent-style-grid.png`,
         visual_identity: customIdentity || {
           baseModelUrl: null,
@@ -857,18 +903,18 @@ function OnboardingWizard() {
 
           <div style={{ textAlign: "center", maxWidth: 640, zIndex: 1, position: "relative", pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center" }}>
             <div style={{
-              background: "#ffffff", padding: "8px 16px", borderRadius: 20, 
-              fontSize: 12, fontWeight: 700, color: "#3c6663", backdropFilter: "blur(8px)", 
+              background: "#ffffff", padding: "8px 16px", borderRadius: 20,
+              fontSize: 12, fontWeight: 700, color: "#3c6663", backdropFilter: "blur(8px)",
               display: "flex", alignItems: "center", gap: 8, marginBottom: 40,
               boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
             }}>
               <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3c6663", display: "inline-block", animation: "pulse 2s infinite" }} />
               Interactive Habitat (Drag to rotate)
             </div>
-            
-            <div style={{ 
-              background: "radial-gradient(ellipse at center, rgba(237,228,219,0.9) 0%, rgba(237,228,219,0) 70%)", 
-              padding: "40px", borderRadius: "50%" 
+
+            <div style={{
+              background: "radial-gradient(ellipse at center, rgba(237,228,219,0.9) 0%, rgba(237,228,219,0) 70%)",
+              padding: "40px", borderRadius: "50%"
             }}>
               <h1 style={{ fontSize: 56, fontWeight: 700, color: "#303330", marginBottom: 16, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif", textShadow: "0 4px 32px rgba(48,51,48,0.06)" }}>
                 Welcome to The Canopy
@@ -876,8 +922,8 @@ function OnboardingWizard() {
               <p style={{ fontSize: 20, color: "#4A5568", marginBottom: 40, lineHeight: 1.6, maxWidth: 400, margin: "0 auto 40px", textShadow: "0 2px 8px rgba(255,255,255,0.8)" }}>
                 Your agents live here. Let's set up your first one!
               </p>
-              <button 
-                onClick={() => setStep(1)} 
+              <button
+                onClick={() => setStep(1)}
                 style={{
                   pointerEvents: "auto",
                   padding: "18px 48px", borderRadius: 16, border: "none",
@@ -899,121 +945,121 @@ function OnboardingWizard() {
       {step === 1 && (
         <div style={{ maxWidth: 900, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
-            Create your first agent
-          </h1>
-          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, textAlign: "center" }}>
-            You can create additional agents later
-          </p>
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
+              Create your first agent
+            </h1>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, textAlign: "center" }}>
+              You can create additional agents later
+            </p>
 
-          <div style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 32 }}>
-             <button onClick={() => handleRoleSelect("Custom")} style={{
-               padding: "12px 24px", borderRadius: 12, background: "rgba(255,255,255,0.8)", border: selectedRole === "Custom" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", color: "#303330", fontSize: 14, fontWeight: 600, cursor: "pointer"
-             }}>+ Create Custom Agent</button>
-             <button onClick={startImportFlow} style={{
-               padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px dashed rgba(0,0,0,0.2)", color: "#636E72", fontSize: 14, fontWeight: 600, cursor: "pointer"
-             }}>↓ Import Agent</button>
-          </div>
+            <div style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 32 }}>
+              <button onClick={() => handleRoleSelect("Custom")} style={{
+                padding: "12px 24px", borderRadius: 12, background: "rgba(255,255,255,0.8)", border: selectedRole === "Custom" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", color: "#303330", fontSize: 14, fontWeight: 600, cursor: "pointer"
+              }}>+ Create Custom Agent</button>
+              <button onClick={startImportFlow} style={{
+                padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px dashed rgba(0,0,0,0.2)", color: "#636E72", fontSize: 14, fontWeight: 600, cursor: "pointer"
+              }}>↓ Import Agent</button>
+            </div>
 
-          <div style={{
-            display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16,
-            marginBottom: 40,
-          }}>
-            {roleTypes.map(role => (
-              <div key={role.key} style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#303330", textAlign: "center", marginBottom: 8 }}>
-                  {role.key}
-                </div>
-                <div
-                  onClick={() => handleRoleSelect(role.key)}
-                  style={{
-                    borderRadius: 10,
-                    cursor: "pointer",
-                    overflow: "hidden",
-                    border: selectedRole === role.key
-                      ? `2px solid ${role.color}`
-                      : "1px solid rgba(177,178,175,0.10)",
-                    transition: "all 0.25s ease",
-                    transform: selectedRole === role.key
-                      ? "scale(1.05) translateY(-4px)"
-                      : "scale(1)",
-                    boxShadow: selectedRole === role.key
-                      ? `5px 5px 0 ${role.color}45, 0 14px 32px rgba(0,0,0,0.13)`
-                      : "0 4px 24px rgba(48,51,48,0.06)",
-                  }}
-                >
-                {/* ── Habitat stage (isometric diorama area) ── */}
-                <div style={{
-                  background: role.image ? "transparent" : `linear-gradient(160deg, ${role.habitatColor} 0%, ${role.habitatColor}CC 100%)`,
-                  padding: role.image ? 0 : "22px 10px 14px",
-                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end",
-                  minHeight: 120, position: "relative",
-                  width: "100%", aspectRatio: role.image ? "auto" : "auto",
-                }}>
-                  {role.image ? (
-                    <img src={role.image} alt={role.key} style={{ width: "100%", height: "auto", display: "block", objectFit: "cover" }} />
-                  ) : (
-                    <>
-                      {/* Habitat label badge */}
-                      <div style={{
-                        position: "absolute", top: 8, left: 8,
-                        fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
-                        color: role.robeColor, textTransform: "uppercase",
-                        background: "rgba(255,255,255,0.55)", borderRadius: 4,
-                        padding: "2px 6px",
-                      }}>{role.habitatLabel}</div>
-                      {/* Isometric ground shadow beneath lobster */}
-                      <div style={{
-                        position: "absolute", bottom: 10, width: 48, height: 12,
-                        borderRadius: "50%",
-                        background: `radial-gradient(ellipse at center, ${role.robeColor}30 0%, transparent 70%)`,
-                      }} />
-                      <LobsterIcon size={72} shellColor={role.robeColor} accentColor={role.accentColor} />
-                    </>
-                  )}
-                </div>
-                {/* ── Label strip ── */}
-                {!role.image && (
-                <div style={{
-                  background: selectedRole === role.key
-                    ? `${role.color}18`
-                    : "rgba(255,255,255,0.96)",
-                  padding: "9px 12px 10px",
-                  borderTop: selectedRole === role.key
-                    ? `1px solid ${role.color}40`
-                    : "1px solid rgba(177,178,175,0.10)",
-                }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
+            <div style={{
+              display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16,
+              marginBottom: 40,
+            }}>
+              {roleTypes.map(role => (
+                <div key={role.key} style={{ display: "flex", flexDirection: "column" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#303330", textAlign: "center", marginBottom: 8 }}>
                     {role.key}
                   </div>
-                  <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.4, textAlign: "center" }}>
-                    {role.description}
+                  <div
+                    onClick={() => handleRoleSelect(role.key)}
+                    style={{
+                      borderRadius: 10,
+                      cursor: "pointer",
+                      overflow: "hidden",
+                      border: selectedRole === role.key
+                        ? `2px solid ${role.color}`
+                        : "1px solid rgba(177,178,175,0.10)",
+                      transition: "all 0.25s ease",
+                      transform: selectedRole === role.key
+                        ? "scale(1.05) translateY(-4px)"
+                        : "scale(1)",
+                      boxShadow: selectedRole === role.key
+                        ? `5px 5px 0 ${role.color}45, 0 14px 32px rgba(0,0,0,0.13)`
+                        : "0 4px 24px rgba(48,51,48,0.06)",
+                    }}
+                  >
+                    {/* ── Habitat stage (isometric diorama area) ── */}
+                    <div style={{
+                      background: role.image ? "transparent" : `linear-gradient(160deg, ${role.habitatColor} 0%, ${role.habitatColor}CC 100%)`,
+                      padding: role.image ? 0 : "22px 10px 14px",
+                      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end",
+                      minHeight: 120, position: "relative",
+                      width: "100%", aspectRatio: role.image ? "auto" : "auto",
+                    }}>
+                      {role.image ? (
+                        <img src={role.image} alt={role.key} style={{ width: "100%", height: "auto", display: "block", objectFit: "cover" }} />
+                      ) : (
+                        <>
+                          {/* Habitat label badge */}
+                          <div style={{
+                            position: "absolute", top: 8, left: 8,
+                            fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+                            color: role.robeColor, textTransform: "uppercase",
+                            background: "rgba(255,255,255,0.55)", borderRadius: 4,
+                            padding: "2px 6px",
+                          }}>{role.habitatLabel}</div>
+                          {/* Isometric ground shadow beneath lobster */}
+                          <div style={{
+                            position: "absolute", bottom: 10, width: 48, height: 12,
+                            borderRadius: "50%",
+                            background: `radial-gradient(ellipse at center, ${role.robeColor}30 0%, transparent 70%)`,
+                          }} />
+                          <LobsterIcon size={72} shellColor={role.robeColor} accentColor={role.accentColor} />
+                        </>
+                      )}
+                    </div>
+                    {/* ── Label strip ── */}
+                    {!role.image && (
+                      <div style={{
+                        background: selectedRole === role.key
+                          ? `${role.color}18`
+                          : "rgba(255,255,255,0.96)",
+                        padding: "9px 12px 10px",
+                        borderTop: selectedRole === role.key
+                          ? `1px solid ${role.color}40`
+                          : "1px solid rgba(177,178,175,0.10)",
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
+                          {role.key}
+                        </div>
+                        <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.4, textAlign: "center" }}>
+                          {role.description}
+                        </div>
+                      </div>
+                    )}
+                    {role.image && (
+                      <div style={{
+                        background: selectedRole === role.key
+                          ? `${role.color}18`
+                          : "rgba(255,255,255,0.96)",
+                        padding: "8px 10px",
+                        borderTop: selectedRole === role.key
+                          ? `1px solid ${role.color}40`
+                          : "1px solid rgba(177,178,175,0.10)",
+                        borderBottomLeftRadius: 10, borderBottomRightRadius: 10
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
+                          {role.key}
+                        </div>
+                        <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.3, textAlign: "center" }}>
+                          {role.description}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
-                )}
-                {role.image && (
-                <div style={{
-                  background: selectedRole === role.key
-                    ? `${role.color}18`
-                    : "rgba(255,255,255,0.96)",
-                  padding: "8px 10px",
-                  borderTop: selectedRole === role.key
-                    ? `1px solid ${role.color}40`
-                    : "1px solid rgba(177,178,175,0.10)",
-                  borderBottomLeftRadius: 10, borderBottomRightRadius: 10
-                }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
-                    {role.key}
-                  </div>
-                  <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.3, textAlign: "center" }}>
-                    {role.description}
-                  </div>
-                </div>
-                )}
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
@@ -1044,12 +1090,12 @@ function OnboardingWizard() {
               Back
             </button>
           </div>
-          
+
           <div style={{ flex: 1, overflow: "hidden" }}>
-             <GenerativeStudio onApply={(res) => {
-                setCustomIdentity({ baseModelUrl: null, accessories: res.dynamicParams.accessories, dynamicColors: res.dynamicParams });
-                setStep(2);
-             }} />
+            <GenerativeStudio onApply={(res) => {
+              setCustomIdentity({ baseModelUrl: null, accessories: res.dynamicParams.accessories, dynamicColors: res.dynamicParams });
+              setStep(2);
+            }} />
           </div>
         </div>
       )}
@@ -1095,72 +1141,122 @@ function OnboardingWizard() {
       {step === 2 && (
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
-            Name Your Agent
-          </h1>
-          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
-            Give them an identity
-          </p>
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
+              Name Your Agent
+            </h1>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
+              Give them an identity
+            </p>
 
-          <div style={{ marginBottom: 32 }}>
-            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>Agent Name</label>
-            <input
-              value={agentName}
-              onChange={e => setAgentName(e.target.value)}
-              placeholder="e.g., Atlas, Nova, Sage..."
-              style={{
-                width: "100%", padding: "14px 18px", borderRadius: 12,
-                fontSize: 15,
-                fontFamily: "inherit", color: "#303330",
-                outline: "none", background: "#ffffff",
-              }}
-            />
-          </div>
+            <div style={{ marginBottom: 32 }}>
+              <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>Agent Name</label>
+              <input
+                value={agentName}
+                onChange={e => setAgentName(e.target.value)}
+                placeholder="e.g., Atlas, Nova, Sage..."
+                style={{
+                  width: "100%", padding: "14px 18px", borderRadius: 12,
+                  fontSize: 15,
+                  fontFamily: "inherit", color: "#303330",
+                  outline: "none", background: "#ffffff",
+                }}
+              />
+            </div>
 
-          {selectedRole && agentTypeInfo[selectedRole] && (
-            <div style={{
-              background: "#f4f4f0", padding: 20, borderRadius: 16, marginBottom: 32,
-              display: "flex", gap: 16, alignItems: "flex-start", backdropFilter: "blur(4px)",
-            }}>
-              {agentTypeInfo[selectedRole].image ? (
-                <img src={agentTypeInfo[selectedRole].image} alt={selectedRole} style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover" }} />
-              ) : (
-                <LobsterIcon size={48} shellColor={agentTypeInfo[selectedRole].robeColor} accentColor={agentTypeInfo[selectedRole].accentColor} />
-              )}
-              <div>
-                <div style={{ fontSize: 16, fontWeight: 600, color: "#303330", marginBottom: 4 }}>
-                  {agentName || "Your Agent"} the {selectedRole}
+            {selectedRole && agentTypeInfo[selectedRole] && (
+              <div style={{
+                background: "#f4f4f0", padding: 20, borderRadius: 16, marginBottom: 32,
+                display: "flex", gap: 16, alignItems: "flex-start", backdropFilter: "blur(4px)",
+              }}>
+                {agentTypeInfo[selectedRole].image ? (
+                  <img src={agentTypeInfo[selectedRole].image} alt={selectedRole} style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover" }} />
+                ) : (
+                  <LobsterIcon size={48} shellColor={agentTypeInfo[selectedRole].robeColor} accentColor={agentTypeInfo[selectedRole].accentColor} />
+                )}
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: "#303330", marginBottom: 4 }}>
+                    {agentName || "Your Agent"} the {selectedRole}
+                  </div>
+                  <div style={{ fontSize: 13, color: "#636E72", lineHeight: 1.5 }}>
+                    {agentTypeInfo[selectedRole].description}
+                  </div>
                 </div>
-                <div style={{ fontSize: 13, color: "#636E72", lineHeight: 1.5 }}>
-                  {agentTypeInfo[selectedRole].description}
+              </div>
+            )}
+
+            <div style={{ background: "#f4f4f0", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
+              <h3 style={{ fontSize: 16, color: "#303330", margin: "0 0 4px 0" }}>Agent Personality</h3>
+              <p style={{ fontSize: 13, color: "#636E72", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
+
+              <textarea
+                value={personalityPrompt}
+                onChange={e => setPersonalityPrompt(e.target.value)}
+                rows={4}
+                style={{
+                  width: "100%", padding: "12px 16px", borderRadius: 12, resize: "vertical",
+                  fontSize: 14, lineHeight: 1.5,
+                  fontFamily: "inherit", color: "#303330", background: "#ffffff",
+                  outline: "none"
+                }}
+              />
+
+              <div style={{ marginTop: 24 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Recently Read</label>
+                <p style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>This gives your agent even more personality. Feel free to pick books unrelated to their job for a creative twist!</p>
+                
+                {recentlyRead.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+                    {recentlyRead.map(book => (
+                       <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                          {book}
+                          <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
+                       </div>
+                    ))}
+                  </div>
+                )}
+
+                {agentTypeInfo[selectedRole || "Custom"]?.suggestedBooks?.length > 0 && (
+                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+                      {agentTypeInfo[selectedRole || "Custom"].suggestedBooks.filter((b: string) => !recentlyRead.includes(b)).map((book: string) => (
+                        <div key={book} onClick={() => setRecentlyRead([...recentlyRead, book])} style={{ padding: "4px 10px", background: "rgba(0,0,0,0.05)", color: "#303330", borderRadius: 16, fontSize: 11, cursor: "pointer", border: "1px solid rgba(0,0,0,0.1)", transition: "all 0.2s ease" }}>
+                           + {book}
+                        </div>
+                      ))}
+                   </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8 }}>
+                   {(() => {
+                     const handleAddCustomBook = () => {
+                        const title = customBookInput.trim();
+                        if (title) {
+                            setRecentlyRead([...recentlyRead, title]);
+                            setCustomBookInput("");
+                            if (selectedRole && selectedRole !== "Custom") {
+                                fetch('http://localhost:3001/api/agents/add-suggestion', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ role: selectedRole, bookTitle: title })
+                                }).catch(e => console.warn("Failed to suggest book to backend", e));
+                            }
+                        }
+                     };
+                     return (
+                       <>
+                         <input 
+                           value={customBookInput} 
+                           onChange={e => setCustomBookInput(e.target.value)} 
+                           placeholder="Type a custom book title..." 
+                           style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }} 
+                           onKeyDown={e => { if (e.key === "Enter") handleAddCustomBook(); }}
+                         />
+                         <button onClick={handleAddCustomBook} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+                       </>
+                     );
+                   })()}
                 </div>
               </div>
             </div>
-          )}
-
-          <div style={{ background: "#f4f4f0", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
-            <h3 style={{ fontSize: 16, color: "#303330", margin: "0 0 4px 0" }}>Agent Personality</h3>
-            <p style={{ fontSize: 13, color: "#636E72", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
-            
-            <textarea
-              value={personalityPrompt}
-              onChange={e => setPersonalityPrompt(e.target.value)}
-              rows={4}
-              style={{
-                width: "100%", padding: "12px 16px", borderRadius: 12, resize: "vertical",
-                fontSize: 14, lineHeight: 1.5,
-                fontFamily: "inherit", color: "#303330", background: "#ffffff",
-                outline: "none"
-              }}
-            />
-            
-            <div style={{ marginTop: 24 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Initial Training Books</label>
-                <div style={{ border: "1px dashed rgba(0,0,0,0.2)", borderRadius: 8, padding: "16px", textAlign: "center", color: "#636E72", fontSize: 12, cursor: "pointer", background: "rgba(255,255,255,0.3)" }}>
-                  Click to attach PDFs or URLs
-                </div>
-            </div>
-          </div>
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
@@ -1183,36 +1279,115 @@ function OnboardingWizard() {
       {step === 3 && (
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
-            Power Up Your Agent
-          </h1>
-          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
-            Provide an LLM API key so your agent can think.
-          </p>
-          
-          {selectedRole && (
-            <div style={{ marginBottom: 24, fontSize: 14, color: "#303330", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
-              Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getRecommendedModel(selectedRole).model}</strong> model.
-            </div>
-          )}
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
+              Power Up Your Agent
+            </h1>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
+              Provide an LLM API key so your agent can think.
+            </p>
 
-          <div style={{ marginBottom: 24, display: "flex", gap: 12 }}>
-            {["OpenAI", "Google Gemini", "Anthropic"].map(prov => (
-              <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "#ffffff", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
-                <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => setLlmProvider(prov as any)} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: "#303330" }}>{prov}</span>
+            {selectedRole && (
+              <div style={{ marginBottom: 24, fontSize: 14, color: "#303330", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
+                Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.
+              </div>
+            )}
+
+            <div style={{ marginBottom: 24, display: "flex", gap: 12 }}>
+              {["OpenAI", "Google Gemini", "Anthropic"].map(prov => (
+                <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "#ffffff", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
+                  <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => { setLlmProvider(prov as any); setApiKeyMode("hidden"); setApiKey(""); }} />
+                  <span style={{ fontSize: 14, fontWeight: 600, color: "#303330" }}>{prov}</span>
+                </label>
+              ))}
+            </div>
+
+            <div style={{ marginBottom: 32 }}>
+              <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 16 }}>
+                API Key Setup
               </label>
-            ))}
-          </div>
 
-          <div style={{ marginBottom: 32 }}>
-            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 16 }}>
-              API Keys
-            </label>
-            <div style={{ background: "rgba(0,0,0,0.02)", borderRadius: 16, padding: 16, border: "1px solid rgba(0,0,0,0.05)" }}>
-              <ProvidersVault embedded filterProvider={llmProvider} />
+              <div style={{ display: "flex", gap: 16, flexDirection: "column" }}>
+                <button onClick={async () => {
+                  if (!llmProvider) return;
+                  setApiKeyMode("scan");
+                  try {
+                    const providerMap: any = { "OpenAI": "OPENAI", "Google Gemini": "GEMINI", "Anthropic": "ANTHROPIC" };
+                    const provId = providerMap[llmProvider] + "_API_KEY";
+                    const secret = await invoke<string>("get_secret_cmd", { key: provId });
+                    if (secret) setApiKey(secret);
+                    else alert("No existing key found in keychain.");
+                  } catch (e) {
+                    alert("No existing key found in keychain.");
+                  }
+                }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: !llmProvider ? "1px solid rgba(0,0,0,0.1)" : "1px solid #3c6663", background: "rgba(60,102,99,0.05)", color: !llmProvider ? "#B2BEC3" : "#3c6663", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
+                  Scan for existing API key
+                </button>
+                <div style={{ textAlign: "center", fontSize: 12, color: "#636E72", margin: "-6px 0" }}>— or —</div>
+                <button onClick={async () => {
+                  if (!llmProvider) return;
+                  setApiKeyMode("manual");
+
+                  try {
+                    const providerMap: any = { "OpenAI": "openai", "Google Gemini": "gemini", "Anthropic": "anthropic" };
+                    const providerId = providerMap[llmProvider];
+
+                    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                    const windowLabel = 'providerCompanion_' + Date.now();
+                    const companionWindow = new WebviewWindow(windowLabel, {
+                      url: '/index.html?companion=' + providerId,
+                      title: 'Agent Guide',
+                      width: 380,
+                      height: 800,
+                      x: window.screen.availWidth - 400,
+                      y: 50,
+                      alwaysOnTop: true,
+                      decorations: false,
+                      transparent: true,
+                    });
+
+                    const launchBrowser = async () => {
+                      const urls: any = {
+                        "OpenAI": "https://platform.openai.com/api-keys",
+                        "Google Gemini": "https://aistudio.google.com/app/apikey",
+                        "Anthropic": "https://console.anthropic.com/settings/keys"
+                      };
+                      const { open } = await import('@tauri-apps/plugin-shell');
+                      await open(urls[llmProvider]);
+                    };
+
+                    companionWindow.once('tauri://created', launchBrowser);
+                    companionWindow.once('tauri://error', (e) => {
+                      console.error("Window creation error", e);
+                      launchBrowser();
+                    });
+                  } catch (e) {
+                    console.error("Failed to spawn companion", e);
+                    // Fallback
+                    const urls: any = {
+                      "OpenAI": "https://platform.openai.com/api-keys",
+                      "Google Gemini": "https://aistudio.google.com/app/apikey",
+                      "Anthropic": "https://console.anthropic.com/settings/keys"
+                    };
+                    const { open } = await import('@tauri-apps/plugin-shell');
+                    await open(urls[llmProvider]);
+                  }
+                }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: "none", background: !llmProvider ? "rgba(0,0,0,0.06)" : "#3c6663", color: !llmProvider ? "#B2BEC3" : "white", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
+                  Set up new API key ✨
+                </button>
+              </div>
+
+              {apiKeyMode !== "hidden" && (
+                <div style={{ marginTop: 24 }}>
+                  <input
+                    type="password"
+                    placeholder={`Paste your ${llmProvider || ""} API Key here`}
+                    value={apiKey}
+                    onChange={e => setApiKey(e.target.value)}
+                    style={{ width: "100%", padding: "14px 16px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)", fontSize: 14, fontFamily: "monospace", outline: "none" }}
+                  />
+                </div>
+              )}
             </div>
-          </div>
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
@@ -1233,61 +1408,61 @@ function OnboardingWizard() {
       {step === 4 && (
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
-          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>Give your agent the tools they need to interact with your world.</p>
-          
-          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
-            {(["slack", "email", "calendar", "folders"] as const).map(p => (
-              <div key={p} style={{ display: "flex", flexDirection: "column" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#ffffff", padding: "16px 20px", borderRadius: plugins[p] && p === "folders" ? "12px 12px 0 0" : 12, border: plugins[p] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{p} Access</div>
-                    <div style={{ fontSize: 13, color: "#636E72", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p}.</div>
-                  </div>
-                  <Toggle enabled={plugins[p]} onChange={() => setPlugins(prev => ({ ...prev, [p]: !prev[p] }))} />
-                </div>
-                {p === "folders" && plugins.folders && (
-                  <div style={{ padding: "16px 20px", background: "rgba(255,255,255,0.6)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 12 }}>Select Folder Scope</div>
-                    <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#303330", cursor: "pointer" }}>
-                        <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} />
-                        Specific Folder
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#303330", cursor: "pointer" }}>
-                        <input type="radio" checked={folderAccessType === "all"} onChange={() => setFolderAccessType("all")} />
-                        All Folders
-                      </label>
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>Give your agent the tools they need to interact with your world.</p>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
+              {(["slack", "email", "calendar", "folders"] as const).map(p => (
+                <div key={p} style={{ display: "flex", flexDirection: "column" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#ffffff", padding: "16px 20px", borderRadius: plugins[p] && p === "folders" ? "12px 12px 0 0" : 12, border: plugins[p] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
+                    <div>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{p} Access</div>
+                      <div style={{ fontSize: 13, color: "#636E72", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p}.</div>
                     </div>
-
-                    {folderAccessType === "specific" && (
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "#ffffff", outline: "none" }} />
-                        <button onClick={async () => {
-                           try {
-                             const { open } = await import('@tauri-apps/plugin-dialog');
-                             const selected = await open({ directory: true, multiple: false });
-                             if (selected) setSelectedFolderPath(selected as string);
-                           } catch (e) {
-                             console.error("No dialog plugin");
-                           }
-                        }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Browse...</button>
-                      </div>
-                    )}
-
-                    {folderAccessType === "all" && (
-                      <div style={{ display: "flex", gap: 10, background: "rgba(212,160,74,0.15)", padding: "12px 16px", borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
-                        <span style={{ fontSize: 18 }}>⚠️</span>
-                        <div style={{ fontSize: 12, color: "#A87212", lineHeight: 1.4 }}>
-                          <strong>Not recommended.</strong> Granting access to all folders poses a security risk. Your agent will be able to read and modify any file on your system.
-                        </div>
-                      </div>
-                    )}
+                    <Toggle enabled={plugins[p]} onChange={() => setPlugins(prev => ({ ...prev, [p]: !prev[p] }))} />
                   </div>
-                )}
-              </div>
-            ))}
-          </div>
+                  {p === "folders" && plugins.folders && (
+                    <div style={{ padding: "16px 20px", background: "rgba(255,255,255,0.6)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 12 }}>Select Folder Scope</div>
+                      <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#303330", cursor: "pointer" }}>
+                          <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} />
+                          Specific Folder
+                        </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#303330", cursor: "pointer" }}>
+                          <input type="radio" checked={folderAccessType === "all"} onChange={() => setFolderAccessType("all")} />
+                          All Folders
+                        </label>
+                      </div>
+
+                      {folderAccessType === "specific" && (
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "#ffffff", outline: "none" }} />
+                          <button onClick={async () => {
+                            try {
+                              const { open } = await import('@tauri-apps/plugin-dialog');
+                              const selected = await open({ directory: true, multiple: false });
+                              if (selected) setSelectedFolderPath(selected as string);
+                            } catch (e) {
+                              console.error("No dialog plugin");
+                            }
+                          }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Browse...</button>
+                        </div>
+                      )}
+
+                      {folderAccessType === "all" && (
+                        <div style={{ display: "flex", gap: 10, background: "rgba(212,160,74,0.15)", padding: "12px 16px", borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
+                          <span style={{ fontSize: 18 }}>⚠️</span>
+                          <div style={{ fontSize: 12, color: "#A87212", lineHeight: 1.4 }}>
+                            <strong>Not recommended.</strong> Granting access to all folders poses a security risk. Your agent will be able to read and modify any file on your system.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
@@ -1320,247 +1495,268 @@ function OnboardingWizard() {
           <div style={{ background: "#ffffff", padding: 32, borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", marginBottom: 32, minHeight: 180, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             {testStatus === "idle" && enabledPlugins[testPluginIndex] === "slack" && (
               <div style={{ width: "100%", textAlign: "left" }}>
-                 <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Connect to Slack</div>
-                 <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
-                    Canopy connects locally via Socket Mode. Setup is now 3 easy steps!
-                 </div>
-                 
-                 {/* Step 1 */}
-                 <div style={{ marginBottom: 20, padding: 16, background: "rgba(33,131,128,0.05)", borderRadius: 12, border: "1px solid rgba(33,131,128,0.15)" }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>1. Create your Sandbox App</div>
-                    <div style={{ fontSize: 12, color: "#636E72", marginBottom: 12, lineHeight: 1.4 }}>
-                       Click below to launch Slack's app wizard. Select your workspace, and we've pre-filled the rest! Click <strong>Create</strong>.
-                    </div>
-                    <button onClick={async () => {
-                       const manifest = {
-                         display_information: { name: agentName || "Sloane", description: "Your Canopy Agent", background_color: "#3c6663" },
-                         features: { bot_user: { display_name: agentName || "Sloane", always_online: true } },
-                         oauth_config: { scopes: { bot: ["channels:history", "channels:read", "chat:write", "users:read"] } },
-                         settings: { event_subscriptions: { bot_events: ["message.channels"] }, interactivity: { is_enabled: true }, socket_mode_enabled: true }
-                       };
-                       const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
-                       const { open } = await import('@tauri-apps/plugin-shell');
-                       await open(url);
-                    }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#3c6663", color: "white", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                      Launch Slack App Setup ✨
-                    </button>
-                 </div>
+                <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Connect to Slack</div>
+                <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
+                  Canopy connects locally via Socket Mode. Setup is now 3 easy steps!
+                </div>
 
-                 {/* Step 2 */}
-                 <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 4 }}>2. Provide App-Level Token</div>
-                    <div style={{ fontSize: 12, color: "#636E72", marginBottom: 8, lineHeight: 1.4 }}>
-                       In the Slack portal, scroll down to <strong>App-Level Tokens</strong>, generate one named Canopy, and paste it here.
-                    </div>
-                    <input type="password" value={slackAppToken} onChange={e => setSlackAppToken(e.target.value)} placeholder="xapp-1-..." style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
-                 </div>
-                 
-                 {/* Step 3 */}
-                 <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 4 }}>3. Provide Bot User Token</div>
-                    <div style={{ fontSize: 12, color: "#636E72", marginBottom: 8, lineHeight: 1.4 }}>
-                       Click <strong>Install App</strong> on the left sidebar, authorize the app, and paste the Bot User OAuth Token here.
-                    </div>
-                    <input type="password" value={slackBotToken} onChange={e => setSlackBotToken(e.target.value)} placeholder="xoxb-..." style={{ width: "100%", padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
-                 </div>
-                 
-                 <div style={{ textAlign: "center", marginTop: 24 }}>
-                   <button onClick={async () => {
-                     if (!slackAppToken || !slackBotToken) return;
-                     setTestStatus("testing");
-                     try {
-                        if (typeof invoke === 'function') {
-                          await invoke("store_secret_cmd", { key: "slack-app-token", value: slackAppToken });
-                          await invoke("store_secret_cmd", { key: "slack-bot-token", value: slackBotToken });
-                          const res: any = await invoke("check_slack_connection");
-                          if (res.connected) {
-                            setSlackWorkspaceMsg(`Connected to ${res.workspace_name} as ${res.bot_name}`);
-                            setTestStatus("success");
-                          } else {
-                            setTestStatus("error");
+                <div style={{ marginBottom: 20, padding: 24, textAlign: "center", background: "rgba(33,131,128,0.05)", borderRadius: 12, border: "1px solid rgba(33,131,128,0.15)" }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#303330", marginBottom: 12 }}>Open the Side-by-Side Guide</div>
+                  <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20, lineHeight: 1.5 }}>
+                    We'll open an always-on-top companion window alongside Slack to walk you through pasting your tokens step-by-step.
+                  </div>
+                  <button onClick={async () => {
+                    try {
+                      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+
+                      const windowLabel = 'slackCompanion_' + Date.now();
+                      const companionWindow = new WebviewWindow(windowLabel, {
+                        url: '/index.html?companion=slack',
+                        title: 'Agent Guide',
+                        width: 380,
+                        height: 800,
+                        x: window.screen.availWidth - 400,
+                        y: 50,
+                        alwaysOnTop: true,
+                        decorations: false,
+                        transparent: true,
+                      });
+
+                      const launchBrowser = async () => {
+                        const manifest = {
+                          display_information: { name: agentName || "Sloane", description: selectedRole ? `Your ${selectedRole} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
+                          features: {
+                              app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+                              bot_user: { display_name: agentName || "Sloane", always_online: true }
+                          },
+                          oauth_config: { 
+                              scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] }, 
+                              pkce_enabled: false 
+                          },
+                          settings: { 
+                              event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] }, 
+                              interactivity: { is_enabled: true }, 
+                              org_deploy_enabled: false, 
+                              socket_mode_enabled: true, 
+                              token_rotation_enabled: false, 
+                              is_mcp_enabled: false 
                           }
-                        } else {
-                          setTimeout(() => { setTestStatus("success"); setSlackWorkspaceMsg("Mock Connected"); }, 1000);
+                        };
+                        const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
+                        const { open } = await import('@tauri-apps/plugin-shell');
+                        await open(url);
+                      };
+
+                      companionWindow.once('tauri://created', launchBrowser);
+                      companionWindow.once('tauri://error', (e) => {
+                        console.error("Window creation error", e);
+                        launchBrowser();
+                      });
+                    } catch (e) {
+                      console.error("Failed to spawn companion", e);
+                      // Fallback
+                      const manifest = {
+                        display_information: { name: agentName || "Sloane", description: selectedRole ? `Your ${selectedRole} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
+                        features: {
+                            app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+                            bot_user: { display_name: agentName || "Sloane", always_online: true }
+                        },
+                        oauth_config: { 
+                            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] }, 
+                            pkce_enabled: false 
+                        },
+                        settings: { 
+                            event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] }, 
+                            interactivity: { is_enabled: true }, 
+                            org_deploy_enabled: false, 
+                            socket_mode_enabled: true, 
+                            token_rotation_enabled: false, 
+                            is_mcp_enabled: false 
                         }
-                     } catch(e) {
-                        console.error(e);
-                        setTestStatus("error");
-                     }
-                   }} style={{
-                     padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: (slackAppToken && slackBotToken) ? "pointer" : "default", transition: "all 0.2s", opacity: (slackAppToken && slackBotToken) ? 1 : 0.5
-                   }}>Connect to Slack Workspace</button>
-                 </div>
+                      };
+                      const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
+                      const { open } = await import('@tauri-apps/plugin-shell');
+                      await open(url);
+                    }
+                  }} style={{ padding: "12px 24px", borderRadius: 8, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", boxShadow: "0 4px 12px rgba(60,102,99,0.3)" }}>
+                    Launch Slack Setup ✨
+                  </button>
+                </div>
+
+                <div style={{ textAlign: "center", marginTop: 24, fontSize: 12, color: "#636E72" }}>
+                  Listening for credentials from companion window...
+                </div>
               </div>
             )}
 
             {testStatus === "idle" && enabledPlugins[testPluginIndex] === "imessage" && (
               <div style={{ width: "100%", textAlign: "left" }}>
-                 <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>iMessage Bridge</div>
-                 <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
-                    Canopy reads iMessage directly from macOS. Keep your texts local.
-                 </div>
+                <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>iMessage Bridge</div>
+                <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
+                  Canopy reads iMessage directly from macOS. Keep your texts local.
+                </div>
 
-                 {fullDiskAccessGranted === false && (
-                    <div style={{ padding: 16, background: "rgba(229,62,62,0.05)", borderRadius: 12, border: "1px solid rgba(229,62,62,0.15)", marginBottom: 20 }}>
-                       <div style={{ fontSize: 13, fontWeight: 700, color: "#E53E3E", marginBottom: 8 }}>Full Disk Access Required</div>
-                       <div style={{ fontSize: 12, color: "#636E72", marginBottom: 12, lineHeight: 1.4 }}>
-                          macOS blocks access to iMessage. Please go to <strong>System Settings &gt; Privacy &amp; Security &gt; Full Disk Access</strong> and allow Canopy/development terminal.
-                       </div>
+                {fullDiskAccessGranted === false && (
+                  <div style={{ padding: 16, background: "rgba(229,62,62,0.05)", borderRadius: 12, border: "1px solid rgba(229,62,62,0.15)", marginBottom: 20 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#E53E3E", marginBottom: 8 }}>Full Disk Access Required</div>
+                    <div style={{ fontSize: 12, color: "#636E72", marginBottom: 12, lineHeight: 1.4 }}>
+                      macOS blocks access to iMessage. Please go to <strong>System Settings &gt; Privacy &amp; Security &gt; Full Disk Access</strong> and allow Canopy/development terminal.
                     </div>
-                 )}
+                  </div>
+                )}
 
-                 {fullDiskAccessGranted === true && (
-                   <>
-                     <div style={{ marginBottom: 20 }}>
-                       <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Access Level</div>
-                       <div style={{ display: "flex", gap: 16 }}>
-                         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                           <input type="radio" checked={imessageAccessLevel === "read-only"} onChange={() => setImessageAccessLevel("read-only")} /> Read-only
-                         </label>
-                         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                           <input type="radio" checked={imessageAccessLevel === "read-send"} onChange={() => setImessageAccessLevel("read-send")} /> Read + Send
-                         </label>
-                       </div>
-                     </div>
+                {fullDiskAccessGranted === true && (
+                  <>
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Access Level</div>
+                      <div style={{ display: "flex", gap: 16 }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                          <input type="radio" checked={imessageAccessLevel === "read-only"} onChange={() => setImessageAccessLevel("read-only")} /> Read-only
+                        </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                          <input type="radio" checked={imessageAccessLevel === "read-send"} onChange={() => setImessageAccessLevel("read-send")} /> Read + Send
+                        </label>
+                      </div>
+                    </div>
 
-                     <div style={{ marginBottom: 20 }}>
-                       <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Allowed Conversations</div>
-                       <div style={{ border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, maxHeight: 160, overflowY: "auto", background: "#f9f9f9" }}>
-                         {imessageThreads.length === 0 ? (
-                           <div style={{ padding: 16, fontSize: 13, color: "#636E72", textAlign: "center" }}>Loading threads...</div>
-                         ) : (
-                           imessageThreads.map(thread => (
-                             <label key={thread.chat_identifier} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid rgba(0,0,0,0.05)", cursor: "pointer" }}>
-                               <input type="checkbox" 
-                                 checked={selectedIMessageThreads.includes(thread.chat_identifier)}
-                                 onChange={(e) => {
-                                   if (e.target.checked) setSelectedIMessageThreads([...selectedIMessageThreads, thread.chat_identifier]);
-                                   else setSelectedIMessageThreads(selectedIMessageThreads.filter(id => id !== thread.chat_identifier));
-                                 }}
-                               />
-                               <div style={{ fontSize: 13, color: "#303330" }}>
-                                 {thread.display_name || thread.chat_identifier} 
-                                 <span style={{ color: "#636E72", fontSize: 11, marginLeft: 6 }}>({thread.message_count} msgs)</span>
-                               </div>
-                             </label>
-                           ))
-                         )}
-                       </div>
-                     </div>
-                   </>
-                 )}
-                 
-                 <div style={{ textAlign: "center", marginTop: 24 }}>
-                   <button onClick={async () => {
-                     setTestStatus("testing");
-                     try {
-                        if (typeof invoke === 'function') {
-                          if (fullDiskAccessGranted !== true) {
-                            const isGranted = await invoke("check_full_disk_access");
-                            setFullDiskAccessGranted(isGranted as boolean);
-                            if (isGranted) {
-                               const threads = await invoke("list_imessage_threads");
-                               setIMessageThreads(threads as any[]);
-                               setTestStatus("idle"); // reset so they can pick threads safely
-                               return;
-                            } else {
-                               setTestStatus("error");
-                               return;
-                            }
+                    <div style={{ marginBottom: 20 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Allowed Conversations</div>
+                      <div style={{ border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, maxHeight: 160, overflowY: "auto", background: "#f9f9f9" }}>
+                        {imessageThreads.length === 0 ? (
+                          <div style={{ padding: 16, fontSize: 13, color: "#636E72", textAlign: "center" }}>Loading threads...</div>
+                        ) : (
+                          imessageThreads.map(thread => (
+                            <label key={thread.chat_identifier} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid rgba(0,0,0,0.05)", cursor: "pointer" }}>
+                              <input type="checkbox"
+                                checked={selectedIMessageThreads.includes(thread.chat_identifier)}
+                                onChange={(e) => {
+                                  if (e.target.checked) setSelectedIMessageThreads([...selectedIMessageThreads, thread.chat_identifier]);
+                                  else setSelectedIMessageThreads(selectedIMessageThreads.filter(id => id !== thread.chat_identifier));
+                                }}
+                              />
+                              <div style={{ fontSize: 13, color: "#303330" }}>
+                                {thread.display_name || thread.chat_identifier}
+                                <span style={{ color: "#636E72", fontSize: 11, marginLeft: 6 }}>({thread.message_count} msgs)</span>
+                              </div>
+                            </label>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                <div style={{ textAlign: "center", marginTop: 24 }}>
+                  <button onClick={async () => {
+                    setTestStatus("testing");
+                    try {
+                      if (typeof invoke === 'function') {
+                        if (fullDiskAccessGranted !== true) {
+                          const isGranted = await invoke("check_full_disk_access");
+                          setFullDiskAccessGranted(isGranted as boolean);
+                          if (isGranted) {
+                            const threads = await invoke("list_imessage_threads");
+                            setIMessageThreads(threads as any[]);
+                            setTestStatus("idle"); // reset so they can pick threads safely
+                            return;
                           } else {
-                             // Already granted, user hits Save
-                             if (selectedIMessageThreads.length === 0) {
-                               alert("Please select at least one thread to grant to your agent.");
-                               setTestStatus("idle");
-                               return;
-                             }
-                             setTestStatus("success");
+                            setTestStatus("error");
+                            return;
                           }
                         } else {
-                          // mock success
-                          if (fullDiskAccessGranted !== true) {
-                            setTimeout(() => {
-                              setFullDiskAccessGranted(true);
-                              setIMessageThreads([{ chat_identifier: "123", display_name: "Mom", message_count: 422 }]);
-                              setTestStatus("idle");
-                            }, 1000);
-                          } else {
-                            setTimeout(() => { setTestStatus("success"); }, 1000);
+                          // Already granted, user hits Save
+                          if (selectedIMessageThreads.length === 0) {
+                            alert("Please select at least one thread to grant to your agent.");
+                            setTestStatus("idle");
+                            return;
                           }
+                          setTestStatus("success");
                         }
-                     } catch(e) {
-                        console.error(e);
-                        setTestStatus("error");
-                        setFullDiskAccessGranted(false);
-                     }
-                   }} style={{
-                     padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
-                   }}>
-                     {fullDiskAccessGranted === true ? "Save Integration" : "Check Access & Load Threads"}
-                   </button>
-                 </div>
+                      } else {
+                        // mock success
+                        if (fullDiskAccessGranted !== true) {
+                          setTimeout(() => {
+                            setFullDiskAccessGranted(true);
+                            setIMessageThreads([{ chat_identifier: "123", display_name: "Mom", message_count: 422 }]);
+                            setTestStatus("idle");
+                          }, 1000);
+                        } else {
+                          setTimeout(() => { setTestStatus("success"); }, 1000);
+                        }
+                      }
+                    } catch (e) {
+                      console.error(e);
+                      setTestStatus("error");
+                      setFullDiskAccessGranted(false);
+                    }
+                  }} style={{
+                    padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
+                  }}>
+                    {fullDiskAccessGranted === true ? "Save Integration" : "Check Access & Load Threads"}
+                  </button>
+                </div>
               </div>
             )}
 
             {testStatus === "idle" && enabledPlugins[testPluginIndex] === "folders" && (
               <div style={{ width: "100%", textAlign: "left" }}>
-                 <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Folder Permissions</div>
-                 <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
-                    Select a local folder on your Mac for the agent to have complete read/write access to.
-                 </div>
+                <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Folder Permissions</div>
+                <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
+                  Select a local folder on your Mac for the agent to have complete read/write access to.
+                </div>
 
-                 <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Access Type</div>
-                    <div style={{ display: "flex", gap: 16 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                        <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} /> Specific Folder
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                        <input type="radio" checked={folderAccessType === "all"} onChange={() => {
-                          if (window.confirm("WARNING: Are you sure you want to grant this agent access to your entire hard drive?")) {
-                            setFolderAccessType("all");
-                            setSelectedFolderPath("/");
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Access Type</div>
+                  <div style={{ display: "flex", gap: 16 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                      <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} /> Specific Folder
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                      <input type="radio" checked={folderAccessType === "all"} onChange={() => {
+                        if (window.confirm("WARNING: Are you sure you want to grant this agent access to your entire hard drive?")) {
+                          setFolderAccessType("all");
+                          setSelectedFolderPath("/");
+                        }
+                      }} /> Entire Hard Drive
+                    </label>
+                  </div>
+                </div>
+
+                {folderAccessType === "specific" && (
+                  <div style={{ marginBottom: 20 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Mapped Directory</div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input type="text" readOnly value={selectedFolderPath} placeholder="No folder selected..." style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} />
+                      <button onClick={async () => {
+                        try {
+                          const { open } = await import('@tauri-apps/plugin-dialog');
+                          const selected = await open({ directory: true, multiple: false });
+                          if (selected) {
+                            setSelectedFolderPath(selected as string);
                           }
-                        }} /> Entire Hard Drive
-                      </label>
+                        } catch (e) {
+                          console.error(e);
+                          // Mock fallback for browser
+                          setSelectedFolderPath("/Users/mock/Documents");
+                        }
+                      }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                        Browse Finder...
+                      </button>
                     </div>
-                 </div>
+                  </div>
+                )}
 
-                 {folderAccessType === "specific" && (
-                   <div style={{ marginBottom: 20 }}>
-                     <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Mapped Directory</div>
-                     <div style={{ display: "flex", gap: 8 }}>
-                       <input type="text" readOnly value={selectedFolderPath} placeholder="No folder selected..." style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} />
-                       <button onClick={async () => {
-                         try {
-                           const { open } = await import('@tauri-apps/plugin-dialog');
-                           const selected = await open({ directory: true, multiple: false });
-                           if (selected) {
-                             setSelectedFolderPath(selected as string);
-                           }
-                         } catch (e) {
-                           console.error(e);
-                           // Mock fallback for browser
-                           setSelectedFolderPath("/Users/mock/Documents");
-                         }
-                       }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                         Browse Finder...
-                       </button>
-                     </div>
-                   </div>
-                 )}
-                 
-                 <div style={{ textAlign: "center", marginTop: 24 }}>
-                   <button onClick={() => {
-                     if (folderAccessType === "specific" && !selectedFolderPath) {
-                       alert("Please select a folder map.");
-                       return;
-                     }
-                     setTestStatus("success");
-                   }} style={{
-                     padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: (folderAccessType === "all" || selectedFolderPath) ? "pointer" : "default", transition: "all 0.2s", opacity: (folderAccessType === "all" || selectedFolderPath) ? 1 : 0.5
-                   }}>Save Access Map</button>
-                 </div>
+                <div style={{ textAlign: "center", marginTop: 24 }}>
+                  <button onClick={() => {
+                    if (folderAccessType === "specific" && !selectedFolderPath) {
+                      alert("Please select a folder map.");
+                      return;
+                    }
+                    setTestStatus("success");
+                  }} style={{
+                    padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: (folderAccessType === "all" || selectedFolderPath) ? "pointer" : "default", transition: "all 0.2s", opacity: (folderAccessType === "all" || selectedFolderPath) ? 1 : 0.5
+                  }}>Save Access Map</button>
+                </div>
               </div>
             )}
 
@@ -1576,8 +1772,8 @@ function OnboardingWizard() {
                     if (typeof invoke === 'function') {
                       let tokens = await invoke("start_google_oauth", { scopes: [enabledPlugins[testPluginIndex]] });
                       if (tokens) {
-                         // Merge tokens if they are authorizing multiple times (so we don't overwrite refresh token)
-                         setGoogleTokens((prev: any) => ({ ...prev, ...tokens as any }));
+                        // Merge tokens if they are authorizing multiple times (so we don't overwrite refresh token)
+                        setGoogleTokens((prev: any) => ({ ...prev, ...tokens as any }));
                       }
                       setTestStatus("success");
                     } else {
@@ -1585,13 +1781,13 @@ function OnboardingWizard() {
                       setTimeout(() => setTestStatus("success"), 2000);
                     }
                   } catch (e) {
-                     console.error("Google OAuth error:", e);
-                     setTestStatus("error");
+                    console.error("Google OAuth error:", e);
+                    setTestStatus("error");
                   }
                 }} style={{
                   padding: "12px 24px", borderRadius: 12, border: "none", background: "white", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, margin: "0 auto", border: "1px solid rgba(0,0,0,0.1)", boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
                 }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                  <svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
                   Connect {enabledPlugins[testPluginIndex] === "email" ? "Gmail" : "Google Calendar"}
                 </button>
               </div>
@@ -1630,14 +1826,14 @@ function OnboardingWizard() {
                 <span style={{ fontSize: 32, display: "block", marginBottom: 8 }}>✅</span>
                 Connected successfully!
                 {enabledPlugins[testPluginIndex] === "slack" && slackWorkspaceMsg && (
-                   <div style={{ fontSize: 13, color: "#636E72", marginTop: 8, fontWeight: 400 }}>{slackWorkspaceMsg}</div>
+                  <div style={{ fontSize: 13, color: "#636E72", marginTop: 8, fontWeight: 400 }}>{slackWorkspaceMsg}</div>
                 )}
               </div>
             )}
           </div>
 
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-             <button onClick={() => {
+            <button onClick={() => {
               if (testStatus === "success") {
                 if (testPluginIndex < enabledPlugins.length - 1) {
                   setTestPluginIndex(testPluginIndex + 1);
@@ -1890,18 +2086,26 @@ function OverviewTab({ agent }: { agent: AgentData }) {
               <div style={{ fontSize: 20, fontWeight: 600, color: "#303330" }}>{agent.weeklyCompute}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: "#636E72" }}>Token Usage</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: "#303330" }}>{agent.tokensUsed}</div>
+              <div style={{ fontSize: 10, color: "#636E72" }}>Tokens Mined</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: "#303330" }}>
+                {(() => {
+                  const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
+                  if (totalTokens === 0) return agent.tokensUsed || "0k";
+                  if (totalTokens > 1000000) return (totalTokens / 1000000).toFixed(1) + "M";
+                  if (totalTokens > 1000) return (totalTokens / 1000).toFixed(1) + "k";
+                  return totalTokens;
+                })()}
+              </div>
             </div>
           </div>
           <ProgressBar value={parseFloat(agent.weeklyCompute)} max={0.1} color="#4A9E96" />
         </div>
 
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Monthly Spend</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330" }}>${agent.monthlySpend}</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Cost (Active)</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330" }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
           <div style={{ fontSize: 11, color: "#636E72", marginBottom: 8 }}>of ${agent.spendLimit} limit</div>
-          <ProgressBar value={agent.monthlySpend} max={agent.spendLimit} color={agent.monthlySpend > agent.spendLimit * 0.8 ? "#D4A04A" : "#4A9E96"} />
+          <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color={(agent.stats?.total_cost_usd || agent.monthlySpend || 0) > agent.spendLimit * 0.8 ? "#D4A04A" : "#4A9E96"} />
         </div>
       </div>
 
@@ -1946,12 +2150,12 @@ function IdentityTab({ agent }: { agent: AgentData }) {
 
   const handleApplyGeneration = (res: GenerativeResult) => {
     setAgents(useWorldStore.getState().agents.map(a =>
-      a.id === agent.id ? { 
-        ...a, 
+      a.id === agent.id ? {
+        ...a,
         color: res.dynamicParams.color || a.color,
         robeColor: res.dynamicParams.robeColor || a.robeColor,
         accentColor: res.dynamicParams.accentColor || a.accentColor,
-        visual_identity: { ...a.visual_identity, accessories: [...(a.visual_identity?.accessories || []), ...res.dynamicParams.accessories] } 
+        visual_identity: { ...a.visual_identity, accessories: [...(a.visual_identity?.accessories || []), ...res.dynamicParams.accessories] }
       } : a
     ));
   };
@@ -1965,16 +2169,16 @@ function IdentityTab({ agent }: { agent: AgentData }) {
           <directionalLight position={[10, 20, 5]} intensity={1} />
           <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
           <group position={[0, -1, 0]}>
-             {/* Studio floor */}
-             <mesh rotation={[-Math.PI/2, 0, 0]} position={[0, 0.01, 0]}>
+            {/* Studio floor */}
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
               <planeGeometry args={[10, 10]} />
               <shadowMaterial transparent opacity={0.2} />
             </mesh>
-            <GLBAgent 
-               fileUrl={agent.visual_identity?.baseModelUrl || undefined}
-               accessories={agent.visual_identity?.accessories || []}
-               isWorking={agent.status === "thinking" || agent.status === "active"}
-               scale={1.5}
+            <GLBAgent
+              fileUrl={agent.visual_identity?.baseModelUrl || undefined}
+              accessories={agent.visual_identity?.accessories || []}
+              isWorking={agent.status === "thinking" || agent.status === "active"}
+              scale={1.5}
             />
           </group>
         </Canvas>
@@ -2192,6 +2396,34 @@ function MemoryTab({ agent }: { agent: AgentData }) {
 // ─── Spend Tab ───────────────────────────────────────────────────────────────
 
 function SpendTab({ agent }: { agent: AgentData }) {
+  const [overrideKey, setOverrideKey] = useState("");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+
+  useEffect(() => {
+    if (typeof invoke === 'function') {
+      invoke("get_secret_cmd", { key: `agent_${agent.id}_api_key` })
+        .then(k => setOverrideKey(k as string))
+        .catch(() => { }); // expected if not set
+    }
+  }, [agent.id]);
+
+  const saveOverride = async () => {
+    setSaveStatus("loading");
+    try {
+      if (typeof invoke === 'function') {
+        if (overrideKey.trim()) {
+          await invoke("store_secret_cmd", { key: `agent_${agent.id}_api_key`, value: overrideKey.trim() });
+        } else {
+          await invoke("delete_secret_cmd", { key: `agent_${agent.id}_api_key` });
+        }
+      }
+      setSaveStatus("success");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch (e) {
+      setSaveStatus("error");
+    }
+  };
+
   return (
     <div>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Spend & Utilization</h1>
@@ -2203,8 +2435,8 @@ function SpendTab({ agent }: { agent: AgentData }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>This Month</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>${agent.monthlySpend}</div>
-          <ProgressBar value={agent.monthlySpend} max={agent.spendLimit} color="#4A9E96" height={6} />
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
+          <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color="#4A9E96" height={6} />
           <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>${agent.spendLimit} monthly limit</div>
         </div>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
@@ -2220,12 +2452,35 @@ function SpendTab({ agent }: { agent: AgentData }) {
       </div>
 
       {/* Transaction table */}
-      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden" }}>
+      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", marginBottom: 24 }}>
         <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#303330" }}>Recent Transactions</div>
         </div>
         <div style={{ padding: "20px", textAlign: "center", color: "#636E72", fontSize: 13 }}>
           No transactions yet
+        </div>
+      </div>
+
+      {/* Advanced Provider Configuration */}
+      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 20 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>Agent-Specific API Key</div>
+        <div style={{ fontSize: 12, color: "#636E72", marginBottom: 16 }}>
+          Override the global API vault. Useful for isolating billing or restricting usage explicitly for this agent. Keep empty to use defaults.
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <input
+            type="password"
+            placeholder="sk-..."
+            value={overrideKey}
+            onChange={(e) => setOverrideKey(e.target.value)}
+            style={{ padding: "10px 14px", flex: 1, borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "rgba(255,255,255,0.7)" }}
+          />
+          <button onClick={saveOverride} disabled={saveStatus === "loading"} style={{
+            padding: "10px 20px", borderRadius: 8, border: "none", cursor: "pointer",
+            background: "#3c6663", color: "white", fontWeight: 600, fontSize: 13, minWidth: 100
+          }}>
+            {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Override"}
+          </button>
         </div>
       </div>
     </div>
@@ -2513,7 +2768,7 @@ function LoadingScreen() {
         animation: "float 3s ease-in-out infinite",
         display: "flex", justifyContent: "center",
       }}>
-        <LobsterIcon size={80} shellColor="#3c6663" accentColor="#4A9E96" />
+        <img src="/app-icon.png" alt="Canopy Logo" style={{ width: 80, height: 80, objectFit: "contain" }} />
       </div>
       <div style={{ fontSize: 24, fontWeight: 600, color: "#303330" }}>
         Waking up the lobsters...
@@ -2526,10 +2781,209 @@ function LoadingScreen() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COMPANION GUIDE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function CompanionGuide({ type }: { type: string }) {
+  const [step, setStep] = useState(0);
+  const [tokens, setTokens] = useState<Record<string, string>>({});
+  const [status, setStatus] = useState<"idle"|"saving"|"success"|"error">("idle");
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [step, status]);
+
+  const config = {
+    openai: {
+      title: "OpenAI Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an OpenAI API Key so your agent can think. Let's get started!",
+      steps: [
+        { text: "First, make sure you are securely logged into your OpenAI developer account on the left." },
+        { text: "Look for the button that says 'Create new secret key' near the top right, and click it." },
+        { text: "In the window that pops up, name it 'Canopy' and click 'Create secret key'." },
+        { text: "Awesome! Now copy that long key (it usually starts with 'sk-proj...'), paste it securely below, and hit Save.", input: { key: "OPENAI_API_KEY", placeholder: "sk-proj-..." } }
+      ]
+    },
+    anthropic: {
+      title: "Anthropic Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an Anthropic API Key so your agent can think. Let's get started!",
+      steps: [
+        { text: "First, make sure you are securely logged into the Anthropic Console on the left." },
+        { text: "Click the black 'Create Key' button near the top right of the screen." },
+        { text: "Name the key 'Canopy' so you remember what it's for, and click 'Create'." },
+        { text: "Perfect! Now securely copy that key (it starts with 'sk-ant...'), paste it below, and hit Save.", input: { key: "ANTHROPIC_API_KEY", placeholder: "sk-ant-..." } }
+      ]
+    },
+    gemini: {
+      title: "Google Gemini Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating a Google Gemini API Key so your agent can think. Let's get started!",
+      steps: [
+        { text: "First, make sure you are securely logged into Google AI Studio on the left." },
+        { text: "Click the blue 'Create API key' button in the center (or top right, depending on your window size)." },
+        { text: "Select your project from the dropdown (or create a new one) and generate the key." },
+        { text: "Great! Securely copy the generated key, paste it below, and hit Save.", input: { key: "GEMINI_API_KEY", placeholder: "AIzaSy..." } }
+      ]
+    },
+    slack: {
+      title: "Slack Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! Let's wire up your Canopy agent to Slack. We do this using secure Socket Mode which keeps all data on your local machine.",
+      steps: [
+        { text: "I've already attached an App Manifest for you! Scroll down to the bottom of the page and click the green 'Create' button." },
+        { text: "Great. Now, on the left sidebar, click on 'Socket Mode' under Settings." },
+        { text: "Toggle 'Enable Socket Mode' to ON. A modal will pop up." },
+        { text: "Name the token 'canopy-app-token' and click Generate. Copy the xapp-... token and paste it here.", input: { key: "SLACK_APP_TOKEN", placeholder: "xapp-..." } },
+        { text: "Almost done! Now click 'OAuth & Permissions' on the left sidebar." },
+        { text: "Click the 'Install to Workspace' button and click Allow." },
+        { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "SLACK_BOT_TOKEN", placeholder: "xoxb-..." } }
+      ]
+    }
+  }[type] || null;
+
+  if (!config) return <div style={{ padding: 20 }}>Unknown configuration. You can close this window.</div>;
+
+  const currentStepData = config.steps[step];
+
+  const handleAction = async () => {
+    if (currentStepData.input) {
+      if (!tokens[currentStepData.input.key]) return;
+      
+      // If it's a keychain save
+      setStatus("saving");
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke("store_secret_cmd", { key: currentStepData.input.key, value: tokens[currentStepData.input.key].trim() });
+        
+        // If there are more steps, just advance
+        if (step < config.steps.length - 1) {
+            setStep(step + 1);
+            setStatus("idle");
+        } else {
+            // Signal completion
+            setStatus("success");
+            
+            // If it was Slack, we need to immediately test the connection so App.tsx can show it's connected
+            if (type === "slack") {
+               // Fire an event letting the main window know to test connection
+               const { emit } = await import('@tauri-apps/api/event');
+               await emit('slack-credentials-saved');
+            }
+            
+            setTimeout(async () => {
+              try {
+                const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                await getCurrentWindow().close();
+              } catch(e) {}
+            }, 2000);
+        }
+      } catch (e) {
+        console.error(e);
+        setStatus("error");
+      }
+    } else {
+      if (step < config.steps.length - 1) setStep(step + 1);
+    }
+  };
+
+  return (
+    <div style={{
+       width: "100%", height: "100%", display: "flex", flexDirection: "column",
+       background: "rgba(255,255,255,0.85)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+       borderLeft: "1px solid rgba(0,0,0,0.1)", fontFamily: "'Manrope', system-ui, sans-serif"
+    }}>
+      <div data-tauri-drag-region style={{
+         padding: "16px 20px", display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid rgba(0,0,0,0.06)",
+         background: "linear-gradient(to right, rgba(237,228,219,0.5), rgba(255,255,255,0.4))",
+         cursor: "grab"
+      }}>
+         <LobsterIcon size={32} shellColor="#3c6663" accentColor="#D9B08C" className="pulse-slow" />
+         <div>
+            <div data-tauri-drag-region style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>{config.title}</div>
+            <div data-tauri-drag-region style={{ fontSize: 11, color: "#636E72" }}>Companion Walkthrough</div>
+         </div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
+         {/* Intro */}
+         <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
+            <img src={config.avatar} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+            <div style={{ background: "#ffffff", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, color: "#303330", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+               {config.intro}
+            </div>
+         </div>
+
+         {config.steps.slice(0, step + 1).map((s, i) => (
+             <React.Fragment key={i}>
+                <div style={{ display: "flex", gap: 12, alignItems: "flex-end", animation: "slideIn 0.3s ease" }}>
+                   <div style={{ width: 28, flexShrink: 0 }} />
+                   <div style={{ width: "100%", background: i === step ? "#3c6663" : "#ffffff", color: i === step ? "white" : "#303330", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
+                      {s.text}
+                      {s.input && i === step && (
+                         <div style={{ marginTop: 12 }}>
+                           <input
+                             autoFocus
+                             type="password"
+                             placeholder={s.input.placeholder}
+                             value={tokens[s.input.key] || ""}
+                             onChange={e => setTokens({ ...tokens, [s.input.key]: e.target.value })}
+                             style={{
+                                width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8,
+                                border: "1px solid rgba(255,255,255,0.3)", background: "rgba(0,0,0,0.2)", color: "white", outline: "none", fontSize: 13, fontFamily: "monospace"
+                             }}
+                           />
+                         </div>
+                      )}
+                   </div>
+                </div>
+
+                {/* User advancement bubble */}
+                {i === step && status === "idle" && (
+                     <div style={{ display: "flex", justifyContent: "flex-end", animation: "slideIn 0.3s ease 0.5s backwards" }}>
+                        <button onClick={handleAction} disabled={s.input && !tokens[s.input.key]} style={{
+                           padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "#303330", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
+                        }}>
+                           {s.input ? "Save & Continue" : "I've done this ->"}
+                        </button>
+                     </div>
+                )}
+             </React.Fragment>
+         ))}
+
+         {status === "saving" && (
+            <div style={{ textAlign: "center", fontSize: 13, color: "#636E72", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
+         )}
+         {status === "success" && (
+            <div style={{ textAlign: "center", animation: "slideIn 0.3s ease" }}>
+               <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+               <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663" }}>Saved successfully!</div>
+               <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Validating connection & closing...</div>
+            </div>
+         )}
+
+         <div ref={bottomRef} style={{ height: 20 }} />
+      </div>
+
+      <style>{`
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        /* hide scrollbar */
+        ::-webkit-scrollbar { width: 0px; background: transparent; }
+      `}</style>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
+  const isCompanion = new URLSearchParams(window.location.search).get('companion');
+  if (isCompanion) {
+    return <CompanionGuide type={isCompanion} />;
+  }
+
   const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents } = useWorldStore();
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
@@ -2593,7 +3047,7 @@ export default function App() {
             };
           });
           setAgents(enrichedAgents);
-          
+
           const hash = window.location.hash.replace('#/', '').replace('#', '');
           const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault"];
           if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
@@ -2632,6 +3086,7 @@ export default function App() {
       overflow: "hidden",
       display: "flex", flexDirection: "column",
     }}>
+      <UpdateManager />
       {activeView !== "onboarding" && <TopNav />}
 
       {activeView === "loading" && <LoadingScreen />}

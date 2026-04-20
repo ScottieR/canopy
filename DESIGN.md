@@ -6,6 +6,8 @@
 This design system is not a utility; it is an atmosphere. Inspired by the impossible geometries and meditative pacing of *Monument Valley*, we are moving away from the "flatness" of modern SaaS to create a digital space that feels three-dimensional, hushed, and intentional. 
  
 We break the "template" look through **intentional asymmetry** and **tonal depth**. Rather than a standard 12-column grid that dictates rigid placement, we treat the screen as a canvas where elements lean into one another. We utilize overlapping surfaces and varying heights to create a sense of discovery. This is "High-Art Minimalism"—where every pixel serves a poetic purpose.
+
+**The Isometric Terrarium:** As the literal anchor of our High-Art Minimalism, the 3D ecosystem exists as a floating, isometric cross-section of earth (a slice). This grounds our digital agents into a tactile diorama space, emphasizing readability and god-game interactions over complex camera manipulation. This creates predictable UI visibility (no agents hidden behind a sphere) while feeling exceptionally premium.
  
 ---
  

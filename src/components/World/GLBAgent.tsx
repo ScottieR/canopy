@@ -2,7 +2,6 @@ import React, { useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import { DynamicLobster } from "./DynamicLobster";
 
 export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, baseColor, robeColor, accentColor }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, baseColor?: string, robeColor?: string, accentColor?: string }) {
   const groupRef = useRef<THREE.Group>(null);
@@ -27,14 +26,17 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     <group position={position as [number,number,number]} scale={scale} ref={groupRef}>
       {/* 
         If a user supplies a valid .glb url (e.g. from Meshy), it renders the raw static Mesh perfectly.
-        If NO URL is supplied, we peacefully fallback to the code-based AccountantLobster so the app doesn't crash! 
+        If NO URL is supplied, we peacefully render a simple fallback.
       */}
       {fileUrl ? (
         <React.Suspense fallback={null}>
           <GLBModel url={fileUrl} />
         </React.Suspense>
       ) : (
-        <DynamicLobster position={[0,0,0]} scale={1} baseColor={baseColor} robeColor={robeColor} accentColor={accentColor} />
+        <mesh position={[0, 0.5, 0]}>
+           <cylinderGeometry args={[0.3, 0.4, 1, 16]} />
+           <meshStandardMaterial color={robeColor || "#CCC"} />
+        </mesh>
       )}
 
       {/* Dynamic Accessories System */}
@@ -59,7 +61,37 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
 
 function GLBModel({ url }: { url: string }) {
   const { scene } = useGLTF(url);
-  // Clone the scene so we can instance the exact same GLB repeatedly across the map without conflicts
-  const clonedScene = scene.clone();
+  
+  const clonedScene = React.useMemo(() => {
+    // Clone the scene so we can instance the exact same GLB repeatedly
+    const clone = scene.clone();
+    
+    // Meshy generators crop and scale unpredictably based on the source image.
+    // We compute the exact bounding box of the geometry and mathematically force 
+    // it into a perfectly normalized 1.0 target height.
+    const box = new THREE.Box3().setFromObject(clone);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    
+    if (size.y > 0) {
+       const scaleFactor = 1.0 / size.y;
+       clone.scale.setScalar(scaleFactor);
+       
+       // Recompute bounds after scale to anchor it properly
+       const scaledBox = new THREE.Box3().setFromObject(clone);
+       const center = new THREE.Vector3();
+       scaledBox.getCenter(center);
+       
+       // Center X and Z so it doesn't drift sideways
+       clone.position.x = -center.x;
+       clone.position.z = -center.z;
+       // Firmly anchor the absolute lowest pixel (its feet) strictly to y=0.
+       // This prevents random models from sinking into the ground.
+       clone.position.y = -scaledBox.min.y;
+    }
+
+    return clone;
+  }, [scene]);
+
   return <primitive object={clonedScene} />;
 }

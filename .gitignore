@@ -4,3 +4,5 @@ dist-preview/
 .DS_Store
 *.local
 src-tauri/target/
+public/models/lobsters/FlatIvyBase.glb
+public/models/lobsters/IvyBase.glb

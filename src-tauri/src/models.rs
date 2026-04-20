@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use std::collections::HashMap;
+use std::sync::RwLock;
+use lazy_static::lazy_static;
+
+lazy_static! {
+    pub static ref PRICING_REGISTRY: RwLock<HashMap<String, (f64, f64)>> = RwLock::new(HashMap::new());
+}
 
 // ─── Agent Models ────────────────────────────────────────────────────────────
 
@@ -44,7 +51,38 @@ pub struct AgentStats {
     pub messages_handled: u32,
     pub uptime_seconds: u64,
     pub total_cost_usd: f64,
+    #[serde(default)]
+    pub total_tokens_in: u64,
+    #[serde(default)]
+    pub total_tokens_out: u64,
 }
+
+impl AgentStats {
+    pub fn record_usage(&mut self, model: &str, in_tokens: u64, out_tokens: u64) {
+        self.total_tokens_in += in_tokens;
+        self.total_tokens_out += out_tokens;
+        
+        let registry = PRICING_REGISTRY.read().unwrap();
+        let (cost_in_per_m, cost_out_per_m) = if let Some(&costs) = registry.get(model) {
+            costs
+        } else {
+            // Fallback rules if the sync hasn't occurred or model is missing
+            match model {
+                "claude-3-5-sonnet" | "claude-3-5-sonnet-20240620" => (3.00, 15.00),
+                "gpt-4o-mini" => (0.15, 0.60),
+                "gpt-4o" => (5.00, 15.00),
+                "gemini-1.5-pro" => (3.50, 10.50),
+                "gemini-1.5-flash" => (0.35, 1.05),
+                _ => (1.00, 5.00), // generic fallback
+            }
+        };
+        
+        let cost_in = (in_tokens as f64 / 1_000_000.0) * cost_in_per_m;
+        let cost_out = (out_tokens as f64 / 1_000_000.0) * cost_out_per_m;
+        self.total_cost_usd += cost_in + cost_out;
+    }
+}
+
 
 // ─── Container Models ────────────────────────────────────────────────────────
 
