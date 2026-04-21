@@ -23,6 +23,7 @@ pub struct Agent {
     pub personality: AgentPersonality,
     pub capabilities: AgentCapabilities,
     pub integrations: Vec<String>,
+    pub memories: Vec<AgentMemory>,
     pub created_at: DateTime<Utc>,
     pub stats: AgentStats,
 }
@@ -44,6 +45,7 @@ pub struct AgentPersonality {
     pub expertise: Vec<String>,
     pub guardrails: Vec<String>,
     pub custom_instructions: String,
+    pub active_model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +75,16 @@ impl Default for AgentCapabilities {
             spend_auto: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMemory {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub memory_type: String, // "learned", "experience", "preference", "context"
+    pub text: String,
+    pub when: String,
+    pub confidence: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -287,4 +299,31 @@ pub struct DiscoveredAgent {
     pub id: String,
     pub name: String,
     pub path: String,
+}
+
+// ─── Global Configuration ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserProfile {
+    pub name: String,
+    pub email: String,
+    pub phone: String,
+    pub timezone: String,
+    pub working_hours: String,
+    pub communication_tone: String,
+    pub global_directives: String,
+}
+
+impl Default for UserProfile {
+    fn default() -> Self {
+        Self {
+            name: "Admin".to_string(),
+            email: "".to_string(),
+            phone: "".to_string(),
+            timezone: "UTC".to_string(),
+            working_hours: "9:00 AM - 5:00 PM".to_string(),
+            communication_tone: "Professional".to_string(),
+            global_directives: "Always cite your sources and optimize for safety.".to_string(),
+        }
+    }
 }

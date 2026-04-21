@@ -95,34 +95,44 @@ pub fn evaluate_purchase(
 }
 
 #[tauri::command]
-pub fn get_agent_budget(agent_id: String) -> Result<AgentBudget, String> {
-    // TODO: Load from persistent store
-    // Return default budget for now
-    Ok(AgentBudget {
-        agent_id,
-        payments_enabled: false, // Off by default — user must opt in
-        auto_approve_threshold_cents: 5000,     // $50
-        per_transaction_limit_cents: 20000,     // $200
-        daily_limit_cents: 50000,               // $500
-        monthly_limit_cents: 200000,            // $2,000
-        allowed_categories: vec![],
-        daily_spent_cents: 0,
-        monthly_spent_cents: 0,
-        require_approval_new_merchant: true,
-        require_approval_recurring: true,
-    })
+pub fn get_agent_budget(
+    agent_id: String,
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<AgentBudget, String> {
+    let mut config = state.get_budget(&agent_id)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| AgentBudget {
+            agent_id: agent_id.clone(),
+            payments_enabled: false,
+            auto_approve_threshold_cents: 5000,
+            per_transaction_limit_cents: 20000,
+            daily_limit_cents: 50000,
+            monthly_limit_cents: 200000,
+            allowed_categories: vec![],
+            daily_spent_cents: 0,
+            monthly_spent_cents: 0,
+            require_approval_new_merchant: true,
+            require_approval_recurring: true,
+        });
+        
+    Ok(config)
 }
 
 #[tauri::command]
-pub fn update_agent_budget(budget: AgentBudget) -> Result<AgentBudget, String> {
-    // TODO: Persist to store
+pub fn update_agent_budget(
+    budget: AgentBudget,
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<AgentBudget, String> {
+    state.upsert_budget(&budget).map_err(|e| e.to_string())?;
     Ok(budget)
 }
 
 #[tauri::command]
-pub fn get_purchase_history(agent_id: String) -> Result<Vec<PurchaseRecord>, String> {
-    // TODO: Load from persistent store
-    Ok(vec![])
+pub fn get_purchase_history(
+    agent_id: String,
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<Vec<PurchaseRecord>, String> {
+    state.get_purchase_history(&agent_id, 50).map_err(|e| e.to_string())
 }
 
 // ─── Virtual Card Integration (Stripe Issuing) ────────

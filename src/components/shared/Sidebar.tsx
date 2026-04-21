@@ -2,11 +2,11 @@ import { NavLink, useLocation } from "react-router-dom";
 import { CanopyIcon } from "./CanopyIcon";
 
 const navItems = [
-  { path: "/", icon: "🏠", label: "Dashboard" },
-  { path: "/integrations", icon: "🔗", label: "Integrations", badge: "6" },
-  { path: "/data-flows", icon: "🔄", label: "Data Flows", badge: "2" },
-  { path: "/payments", icon: "💳", label: "Payments" },
-  { path: "/security", icon: "🛡️", label: "Security" },
+  { path: "/", icon: "🏠", label: "The Habitat" },
+  { path: "/integrations", icon: "🔗", label: "Connected Apps", badge: "6" },
+  { path: "/data-flows", icon: "🔄", label: "Routines", badge: "2" },
+  { path: "/payments", icon: "💳", label: "Agent Budget" },
+  { path: "/security", icon: "🛡️", label: "Guardrails" },
 ];
 
 export function Sidebar() {
@@ -51,16 +51,7 @@ export function Sidebar() {
 
       <div className="flex-1" />
 
-      {/* OrbStack status */}
-      <div className="px-3 py-2.5 bg-canopy-surface-hover rounded-lg border border-canopy-border">
-        <div className="flex items-center gap-1.5 mb-1">
-          <div className="w-1.5 h-1.5 rounded-full bg-canopy-active" />
-          <span className="text-[10px] text-canopy-text-muted">OrbStack</span>
-        </div>
-        <div className="text-[10px] text-canopy-sleeping">
-          4 containers · 1.2 GB RAM
-        </div>
-      </div>
+
 
       {/* Settings */}
       <NavLink

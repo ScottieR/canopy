@@ -29,7 +29,8 @@
         "resizable": true,
         "decorations": true,
         "transparent": false,
-        "titleBarStyle": "Overlay"
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "macOSPrivateApi": true,

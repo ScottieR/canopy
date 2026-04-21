@@ -99,6 +99,12 @@ impl Database {
             [],
         );
 
+        // Migration: Add memories feature
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN memories_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+
         // Create conversations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS conversations (
@@ -184,6 +190,15 @@ impl Database {
             [],
         )?;
 
+        // Create global_config table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS global_config (
+                key TEXT PRIMARY KEY,
+                value_json TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         // Create indexes for common queries
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)", [])?;
@@ -193,6 +208,36 @@ impl Database {
         conn.execute("CREATE INDEX IF NOT EXISTS idx_purchase_history_agent ON purchase_history(agent_id)", [])?;
 
         tracing::debug!("Database migrations completed");
+        Ok(())
+    }
+
+    // ─── Global Config Operations ────────────────────────────────────────────
+
+    pub fn get_user_profile(&self) -> SqlResult<UserProfile> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value_json FROM global_config WHERE key = 'user_profile'")?;
+        
+        let json_str: String = match stmt.query_row([], |row| row.get(0)) {
+            Ok(val) => val,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(UserProfile::default()),
+            Err(e) => return Err(e),
+        };
+
+        let profile: UserProfile = serde_json::from_str(&json_str)
+            .unwrap_or_else(|_| UserProfile::default());
+        Ok(profile)
+    }
+
+    pub fn save_user_profile(&self, profile: &UserProfile) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let value_json = serde_json::to_string(profile)
+            .unwrap_or_else(|_| "{}".to_string());
+        
+        conn.execute(
+            "INSERT INTO global_config (key, value_json) VALUES ('user_profile', ?1)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            params![value_json],
+        )?;
         Ok(())
     }
 
@@ -212,11 +257,14 @@ impl Database {
             .unwrap_or_else(|_| "{}".to_string());
         let status_str = status_to_string(&agent.status);
 
+        let memories_json = serde_json::to_string(&agent.memories)
+            .unwrap_or_else(|_| "[]".to_string());
+            
         conn.execute(
             "INSERT INTO agents
                 (id, name, role, emoji, color, status, isolated, container_id,
-                 personality_json, capabilities_json, integrations_json, created_at, stats_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 &agent.id,
                 &agent.name,
@@ -231,6 +279,7 @@ impl Database {
                 integrations_json,
                 agent.created_at.to_rfc3339(),
                 stats_json,
+                memories_json,
             ],
         )?;
 
@@ -243,7 +292,7 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, capabilities_json, integrations_json, created_at, stats_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json
              FROM agents WHERE id = ?1",
         )?;
 
@@ -254,6 +303,7 @@ impl Database {
             let integrations_json: String = row.get(10)?;
             let stats_json: String = row.get(12)?;
             let created_at_str: String = row.get(11)?;
+            let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -267,6 +317,7 @@ impl Database {
                 personality: serde_json::from_str(&personality_json).unwrap_or_default(),
                 capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
                 integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
+                memories: serde_json::from_str(&memories_json).unwrap_or_default(),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
                     .unwrap_or_else(|_| chrono::DateTime::default())
                     .with_timezone(&Utc),
@@ -283,7 +334,7 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, capabilities_json, integrations_json, created_at, stats_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json
              FROM agents ORDER BY created_at DESC",
         )?;
 
@@ -294,6 +345,7 @@ impl Database {
             let integrations_json: String = row.get(10)?;
             let stats_json: String = row.get(12)?;
             let created_at_str: String = row.get(11)?;
+            let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -307,6 +359,7 @@ impl Database {
                 personality: serde_json::from_str(&personality_json).unwrap_or_default(),
                 capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
                 integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
+                memories: serde_json::from_str(&memories_json).unwrap_or_default(),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
                     .unwrap_or_else(|_| chrono::DateTime::default())
                     .with_timezone(&Utc),
@@ -330,14 +383,16 @@ impl Database {
             .unwrap_or_else(|_| "[]".to_string());
         let stats_json = serde_json::to_string(&agent.stats)
             .unwrap_or_else(|_| "{}".to_string());
+        let memories_json = serde_json::to_string(&agent.memories)
+            .unwrap_or_else(|_| "[]".to_string());
         let status_str = status_to_string(&agent.status);
 
         conn.execute(
             "UPDATE agents
              SET name = ?1, role = ?2, emoji = ?3, color = ?4, status = ?5,
                  isolated = ?6, container_id = ?7, personality_json = ?8,
-                 capabilities_json = ?9, integrations_json = ?10, stats_json = ?11
-             WHERE id = ?12",
+                 capabilities_json = ?9, integrations_json = ?10, stats_json = ?11, memories_json = ?12
+             WHERE id = ?13",
             params![
                 &agent.name,
                 &agent.role,
@@ -350,6 +405,7 @@ impl Database {
                 capabilities_json,
                 integrations_json,
                 stats_json,
+                memories_json,
                 &agent.id,
             ],
         )?;
@@ -524,6 +580,35 @@ impl Database {
         )?;
 
         let bridges = stmt.query_map(params![agent_id], |row| {
+            let bridge_type_str: String = row.get(3)?;
+            let config_json: String = row.get(5)?;
+            let permissions_json: String = row.get(6)?;
+
+            Ok(Bridge {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                name: row.get(2)?,
+                bridge_type: serde_json::from_str(&bridge_type_str).unwrap_or(BridgeType::Custom),
+                enabled: row.get(4)?,
+                config: serde_json::from_str(&config_json).unwrap_or_default(),
+                permissions: serde_json::from_str(&permissions_json).unwrap_or_default(),
+            })
+        })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(bridges)
+    }
+
+    /// List all bridges globally across the platform
+    pub fn list_all_bridges(&self) -> SqlResult<Vec<Bridge>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, name, bridge_type, enabled, config_json, permissions_json
+             FROM bridges",
+        )?;
+
+        let bridges = stmt.query_map([], |row| {
             let bridge_type_str: String = row.get(3)?;
             let config_json: String = row.get(5)?;
             let permissions_json: String = row.get(6)?;
