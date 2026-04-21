@@ -8,7 +8,7 @@ import React from "react";
 // Initiate early network fetching for high-priority onboarding assets so the 3D world loads instantly,
 // avoiding the piecemeal "pop-in" effect as React mounts individual components.
 useGLTF.preload("/models/lobsters/FlatIvyBase.opt.glb?v=sloppy-120k");
-["Accountant", "Assistant", "Strategist", "Researcher", "Tutor"].forEach(role => {
+["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].forEach(role => {
   useGLTF.preload(`/models/lobsters/${role}.glb`);
 });
 
@@ -38,19 +38,31 @@ function TerrariumBase() {
   return <primitive object={clonedScene} scale={1.8} position={[0, -0.2, 0]} />;
 }
 
-export function WorldScene() {
-  // Hard code 5 agents that have Meshy models
+export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId }: { agents?: any[], onAgentClick?: (id: string) => void, onAgentHover?: (id: string | null) => void, hoveredAgentId?: string | null }) {
+  // Use passed agents or fallback to the hardcoded demo set
   const selectedAgents = useMemo(() => {
-    const keys = ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor"];
-    return keys.map((key) => {
+    // These are the specific roles we physically possess GLB models for
+    const knownGlbs = ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"];
+    
+    if (agents && agents.length > 0) {
+      return agents.map(agent => {
+        const hasModel = knownGlbs.includes(agent.role);
+        return {
+          ...agent,
+          fileUrl: agent.fileUrl || (hasModel ? `/models/lobsters/${agent.role}.glb` : null)
+        };
+      });
+    }
+    return knownGlbs.map((key) => {
       const agent = (agentsData as any)[key];
       return {
         ...agent,
         id: key, // ensure ID is the name for the file
-        fileUrl: `/models/lobsters/${key}.glb`
+        fileUrl: `/models/lobsters/${key}.glb`,
+        status: "active"
       };
     });
-  }, []);
+  }, [agents]);
 
   // Compute Ulam Spiral layout coordinates for the tiled surface
   const TILE_GAP = 2.3; // Space between tile centers
@@ -89,9 +101,13 @@ export function WorldScene() {
       {/* Agents and their 1:1 Terrarium Tiles */}
       {selectedAgents.map((agent: any, index) => {
         const pos = points[index];
+        const isHovered = hoveredAgentId === agent.id;
 
         return (
           <group key={agent.id || index} position={pos.toArray()}>
+            {/* Hover Indicator Ring */}
+            {isHovered && <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[1.2, 1.4, 32]} /><meshBasicMaterial color="#83C5BE" transparent opacity={0.6} /></mesh>}
+
             {/* 
                    Tile the monolithic base out beneath each agent 
                 */}
@@ -106,6 +122,9 @@ export function WorldScene() {
             <AgentNeighborhood
               agent={agent}
               position={[0, LOBSTER_ELEVATION_OFFSET, 0]}
+              onClick={() => onAgentClick?.(agent.id)}
+              onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
+              onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
             />
           </group>
         );

@@ -74,7 +74,7 @@ export function GenerativeStudio({ defaultRole, onApply }: { defaultRole?: strin
           <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             <div style={{ width: 48, height: 48, border: "4px solid rgba(33,131,128,0.2)", borderTopColor: "#218380", borderRadius: "50%", animation: "spin 1s linear infinite", marginBottom: 16 }} />
             <div style={{ fontSize: 16, fontWeight: 700, color: "#218380" }}>Nano Banana Pro is thinking...</div>
-            <div style={{ fontSize: 12, color: "#636E72", marginTop: 8, fontStyle: "italic", maxWidth: "80%", textAlign: "center" }}>Applying Monument Valley heuristics to "{prompt}"...</div>
+            <div style={{ fontSize: 12, color: "#636E72", marginTop: 8, fontStyle: "italic", maxWidth: "80%", textAlign: "center" }}>Applying Canopy architectural aesthetics to "{prompt}"...</div>
           </div>
         ) : activeResult ? (
           <div style={{ display: "flex", height: "100%" }}>
