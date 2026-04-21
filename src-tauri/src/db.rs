@@ -93,6 +93,12 @@ impl Database {
             [],
         )?;
 
+        // Migration: Add capabilities layer for Zero-Trust architecture
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '{}'",
+            [],
+        );
+
         // Create conversations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS conversations (
@@ -198,6 +204,8 @@ impl Database {
 
         let personality_json = serde_json::to_string(&agent.personality)
             .unwrap_or_else(|_| "{}".to_string());
+        let capabilities_json = serde_json::to_string(&agent.capabilities)
+            .unwrap_or_else(|_| "{}".to_string());
         let integrations_json = serde_json::to_string(&agent.integrations)
             .unwrap_or_else(|_| "[]".to_string());
         let stats_json = serde_json::to_string(&agent.stats)
@@ -207,8 +215,8 @@ impl Database {
         conn.execute(
             "INSERT INTO agents
                 (id, name, role, emoji, color, status, isolated, container_id,
-                 personality_json, integrations_json, created_at, stats_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 personality_json, capabilities_json, integrations_json, created_at, stats_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 &agent.id,
                 &agent.name,
@@ -219,6 +227,7 @@ impl Database {
                 agent.isolated,
                 &agent.container_id,
                 personality_json,
+                capabilities_json,
                 integrations_json,
                 agent.created_at.to_rfc3339(),
                 stats_json,
@@ -234,16 +243,17 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, integrations_json, created_at, stats_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json
              FROM agents WHERE id = ?1",
         )?;
 
         let agent = stmt.query_row(params![id], |row| {
             let status_str: String = row.get(5)?;
             let personality_json: String = row.get(8)?;
-            let integrations_json: String = row.get(9)?;
-            let stats_json: String = row.get(11)?;
-            let created_at_str: String = row.get(10)?;
+            let capabilities_json: String = row.get(9)?;
+            let integrations_json: String = row.get(10)?;
+            let stats_json: String = row.get(12)?;
+            let created_at_str: String = row.get(11)?;
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -255,6 +265,7 @@ impl Database {
                 isolated: row.get(6)?,
                 container_id: row.get(7)?,
                 personality: serde_json::from_str(&personality_json).unwrap_or_default(),
+                capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
                 integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
                     .unwrap_or_else(|_| chrono::DateTime::default())
@@ -272,16 +283,17 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, integrations_json, created_at, stats_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json
              FROM agents ORDER BY created_at DESC",
         )?;
 
         let agents = stmt.query_map([], |row| {
             let status_str: String = row.get(5)?;
             let personality_json: String = row.get(8)?;
-            let integrations_json: String = row.get(9)?;
-            let stats_json: String = row.get(11)?;
-            let created_at_str: String = row.get(10)?;
+            let capabilities_json: String = row.get(9)?;
+            let integrations_json: String = row.get(10)?;
+            let stats_json: String = row.get(12)?;
+            let created_at_str: String = row.get(11)?;
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -293,6 +305,7 @@ impl Database {
                 isolated: row.get(6)?,
                 container_id: row.get(7)?,
                 personality: serde_json::from_str(&personality_json).unwrap_or_default(),
+                capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
                 integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
                     .unwrap_or_else(|_| chrono::DateTime::default())
@@ -311,6 +324,8 @@ impl Database {
 
         let personality_json = serde_json::to_string(&agent.personality)
             .unwrap_or_else(|_| "{}".to_string());
+        let capabilities_json = serde_json::to_string(&agent.capabilities)
+            .unwrap_or_else(|_| "{}".to_string());
         let integrations_json = serde_json::to_string(&agent.integrations)
             .unwrap_or_else(|_| "[]".to_string());
         let stats_json = serde_json::to_string(&agent.stats)
@@ -321,8 +336,8 @@ impl Database {
             "UPDATE agents
              SET name = ?1, role = ?2, emoji = ?3, color = ?4, status = ?5,
                  isolated = ?6, container_id = ?7, personality_json = ?8,
-                 integrations_json = ?9, stats_json = ?10
-             WHERE id = ?11",
+                 capabilities_json = ?9, integrations_json = ?10, stats_json = ?11
+             WHERE id = ?12",
             params![
                 &agent.name,
                 &agent.role,
@@ -332,6 +347,7 @@ impl Database {
                 agent.isolated,
                 &agent.container_id,
                 personality_json,
+                capabilities_json,
                 integrations_json,
                 stats_json,
                 &agent.id,

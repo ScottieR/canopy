@@ -21,6 +21,7 @@ pub struct Agent {
     pub isolated: bool,
     pub container_id: Option<String>,
     pub personality: AgentPersonality,
+    pub capabilities: AgentCapabilities,
     pub integrations: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub stats: AgentStats,
@@ -43,6 +44,35 @@ pub struct AgentPersonality {
     pub expertise: Vec<String>,
     pub guardrails: Vec<String>,
     pub custom_instructions: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentCapabilities {
+    pub ext_network: bool,
+    pub int_network: bool,
+    pub autonomous: bool,
+    pub scheduled: bool,
+    pub memory_write: bool,
+    pub file_read: bool,
+    pub file_write: bool,
+    pub payments: bool,
+    pub spend_auto: bool,
+}
+
+impl Default for AgentCapabilities {
+    fn default() -> Self {
+        Self {
+            ext_network: false,
+            int_network: false,
+            autonomous: false,
+            scheduled: true,      // QOL: Standard cron features allowed by default
+            memory_write: true,   // QOL: Agents can remember by default
+            file_read: false,
+            file_write: false,
+            payments: false,
+            spend_auto: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

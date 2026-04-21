@@ -16,12 +16,21 @@ pub struct DockerManager {
 impl DockerManager {
     /// Connect to Docker via OrbStack's socket
     pub async fn init() -> Result<Self> {
-        // OrbStack uses the standard Docker socket
-        let docker = Docker::connect_with_socket_defaults()
-            .context("Failed to connect to Docker. Is OrbStack running?")?;
+        let mut docker = Docker::connect_with_socket_defaults().unwrap_or_else(|_| {
+            let home = dirs::home_dir().unwrap_or_default();
+            let orb_sock = home.join(".orbstack/run/docker.sock");
+            Docker::connect_with_socket(&orb_sock.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION).unwrap()
+        });
+
+        if docker.ping().await.is_err() {
+            let home = dirs::home_dir().unwrap_or_default();
+            let orb_sock = home.join(".orbstack/run/docker.sock");
+            docker = Docker::connect_with_socket(&orb_sock.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION)
+                .context("Failed to connect to OrbStack explicitly")?;
+        }
 
         // Verify connection
-        docker.ping().await.context("Docker ping failed")?;
+        docker.ping().await.context("Docker ping failed. Is OrbStack running?")?;
         tracing::info!("Connected to Docker engine");
 
         Ok(Self { docker })
@@ -111,8 +120,7 @@ pub async fn get_container_status(
 /// Generate the docker-compose.yml for the shared gateway
 fn generate_compose_file(data_dir: &PathBuf) -> String {
     format!(
-        r#"version: '3.8'
-services:
+        r#"services:
   canopy-gateway:
     image: ghcr.io/openclaw/openclaw:latest
     container_name: canopy-gateway
@@ -121,13 +129,13 @@ services:
       - "com.canopy.managed=true"
       - "com.canopy.type=shared-gateway"
     ports:
-      - "18789:18789"
-      - "18790:18790"
-      - "18791:18791"
+      - "18799:18789"
+      - "18800:18790"
+      - "18801:18791"
     volumes:
-      - {data}/openclaw-state:/root/.openclaw
-      - {data}/openclaw-workspace:/root/openclaw/workspace
-      - {data}/config/openclaw.json:/root/.openclaw/openclaw.json:ro
+      - {data}/openclaw-state:/home/node/.openclaw
+      - {data}/openclaw-workspace:/home/node/openclaw/workspace
+      # - {data}/config/openclaw.json:/home/node/.openclaw/openclaw.json:ro
     environment:
       - NODE_ENV=production
     healthcheck:
@@ -151,8 +159,7 @@ volumes:
 /// Generate docker-compose for an isolated agent container
 pub fn generate_isolated_compose(agent_id: &str, data_dir: &PathBuf, host_port: u16) -> String {
     format!(
-        r#"version: '3.8'
-services:
+        r#"services:
   canopy-isolated-{id}:
     image: ghcr.io/openclaw/openclaw:latest
     container_name: canopy-isolated-{id}
@@ -164,9 +171,9 @@ services:
     ports:
       - "{port}:18789"
     volumes:
-      - {data}/isolated/{id}/state:/root/.openclaw
-      - {data}/isolated/{id}/workspace:/root/openclaw/workspace
-      - {data}/isolated/{id}/config/openclaw.json:/root/.openclaw/openclaw.json:ro
+      - {data}/isolated/{id}/state:/home/node/.openclaw
+      - {data}/isolated/{id}/workspace:/home/node/openclaw/workspace
+      # - {data}/isolated/{id}/config/openclaw.json:/home/node/.openclaw/openclaw.json:ro
     environment:
       - NODE_ENV=production
     networks:
@@ -204,7 +211,15 @@ pub async fn start_gateway() -> Result<String, String> {
     let compose_path = data_dir.join("docker-compose.yml");
     std::fs::write(&compose_path, compose).map_err(|e| e.to_string())?;
 
-    let output = tokio::process::Command::new("docker-compose")
+    let mut cmd = tokio::process::Command::new("docker-compose");
+    
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let orbstack_sock = home_dir.join(".orbstack/run/docker.sock");
+    if orbstack_sock.exists() {
+        cmd.env("DOCKER_HOST", format!("unix://{}", orbstack_sock.display()));
+    }
+
+    let output = cmd
         .args(["-f", &compose_path.to_string_lossy(), "up", "-d"])
         .output()
         .await
@@ -226,7 +241,14 @@ pub async fn stop_gateway() -> Result<String, String> {
 
     let compose_path = data_dir.join("docker-compose.yml");
 
-    let output = tokio::process::Command::new("docker-compose")
+    let mut cmd = tokio::process::Command::new("docker-compose");
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let orbstack_sock = home_dir.join(".orbstack/run/docker.sock");
+    if orbstack_sock.exists() {
+        cmd.env("DOCKER_HOST", format!("unix://{}", orbstack_sock.display()));
+    }
+
+    let output = cmd
         .args(["-f", &compose_path.to_string_lossy(), "down"])
         .output()
         .await

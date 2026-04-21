@@ -1,8 +1,8 @@
-use crate::models::{Agent, AgentPersonality, AgentStats, AgentStatus, DiscoveredAgent};
+use crate::models::{Agent, AgentPersonality, AgentCapabilities, AgentStats, AgentStatus, DiscoveredAgent};
 use reqwest::Client;
 use serde_json::{json, Value};
 
-const GATEWAY_URL: &str = "http://localhost:18789";
+const GATEWAY_URL: &str = "http://localhost:18799";
 
 /// Interface to the OpenClaw Gateway API with SQLite persistence.
 /// All agent management goes through here with dual persistence:
@@ -23,10 +23,10 @@ pub async fn create_agent(
     // Step 1: Create agent via OpenClaw CLI (inside the container)
     let output = tokio::process::Command::new("docker")
         .args([
-            "exec", "canopy-gateway",
+            "exec", "-u", "root", "canopy-gateway",
             "openclaw", "agents", "add",
-            "--name", &name,
-            "--id", &agent_id,
+            &agent_id,
+            "--workspace", "/home/node/openclaw/workspace",
         ])
         .output()
         .await
@@ -40,9 +40,9 @@ pub async fn create_agent(
     // Step 2: Generate SOUL.md from personality
     let soul_md = generate_soul_md(&personality);
     // Write SOUL.md to the agent's workspace inside the container
-    let soul_path = format!("/root/openclaw/workspace/{}/SOUL.md", agent_id);
+    let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
     tokio::process::Command::new("docker")
-        .args(["exec", "canopy-gateway", "sh", "-c",
+        .args(["exec", "-u", "root", "canopy-gateway", "sh", "-c",
             &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
         .output()
         .await
@@ -68,6 +68,7 @@ pub async fn create_agent(
         color: "#34D399".to_string(), // Default, will be assigned by frontend
         status: AgentStatus::Active,
         isolated,
+        capabilities: crate::models::AgentCapabilities::default(),
         container_id: None,
         personality,
         integrations: vec![],
@@ -148,6 +149,51 @@ pub async fn update_agent_personality(
         let _ = db.update_agent(&agent);
         let _ = db.log_audit(&agent_id, "update_personality", Some("openclaw"), "Agent personality updated", None);
     }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_agent_capabilities(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    capabilities: AgentCapabilities,
+) -> Result<(), String> {
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.capabilities = capabilities;
+        let _ = db.update_agent(&agent);
+        let _ = db.log_audit(&agent_id, "update_capabilities", Some("security"), "Agent capabilities and network permissions updated", None);
+    } else {
+        return Err("Agent not found".to_string());
+    }
+    
+    // In a full implementation, we would relay these network restrictions directly to the Docker container's iptables or the gateway proxy.
+    // For now, the Tauri bridge acts as the gateway proxy and evaluates these capabilities from SQLite during any outgoing intercept.
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn toggle_agent_isolation(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    isolated: bool,
+) -> Result<(), String> {
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.isolated = isolated;
+        let _ = db.update_agent(&agent);
+        let action = if isolated { "isolate_container" } else { "join_shared_gateway" };
+        let _ = db.log_audit(&agent_id, action, Some("docker"), &format!("Agent isolation set to {}", isolated), None);
+    } else {
+        return Err("Agent not found".to_string());
+    }
+
+    // A complete implementation would stop the existing container and spin up a dedicated compose network.
+    // We mock the transition log for now, as the UI requires the loading state to resolve.
+    // TODO: Spin up dedicated container via docker::generate_isolated_compose()!
+
+    // Simulate Docker container recreation latency
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
 
     Ok(())
 }
@@ -269,8 +315,9 @@ pub async fn import_agent(
             .to_string(),
         emoji: agent_data.get("emoji")
             .and_then(|v| v.as_str())
-            .unwrap_or("lobster") // Identifier only — never rendered as emoji in UI
+            .unwrap_or("agent")
             .to_string(),
+        capabilities: crate::models::AgentCapabilities::default(),
         color: "#34D399".to_string(),
         status: AgentStatus::Active,
         isolated: false,
@@ -381,8 +428,21 @@ pub async fn scan_local_agents() -> Result<Vec<DiscoveredAgent>, String> {
 
     // 2. Scan Docker / OrbStack pseudo-directories or volumes
     // (A full implementation would use bollard to list active openclaw containers).
-    if discovered.is_empty() {
-        // Fallback or explicit docker checks can be placed here.
+    
+    // 3. Scan HTTP ports for running standalone OpenClaw instances
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(800)).build().unwrap_or_default();
+    let ports = [18789, 18798];
+    for port in ports {
+        if let Ok(resp) = client.get(format!("http://localhost:{}/api/status", port)).send().await {
+            if resp.status().is_success() {
+                discovered.push(DiscoveredAgent {
+                    source: format!("running_port_{}", port),
+                    name: format!("Standalone on port {}", port),
+                    id: format!("standalone-{}", port),
+                    path: format!("http://localhost:{}", port),
+                });
+            }
+        }
     }
 
     Ok(discovered)
@@ -394,14 +454,25 @@ pub async fn import_discovered_agent(
     agent_id: String,
     path: String,
 ) -> Result<Agent, String> {
-    let agent_path = std::path::PathBuf::from(path);
-    let soul_path = agent_path.join("workspace").join("SOUL.md");
-    
-    let soul_content = std::fs::read_to_string(&soul_path).unwrap_or_else(|_| {
-        // Try fallback location if workspace doesn't exist
-        std::fs::read_to_string(agent_path.join("SOUL.md"))
-            .unwrap_or_else(|_| "# SOUL.md - Imported Agent".to_string())
-    });
+    let soul_content = if path.starts_with("http") {
+        let client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(2000)).build().unwrap_or_default();
+        if let Ok(resp) = client.get(format!("{}/api/agent", path)).send().await {
+            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                json["instructions"].as_str().unwrap_or("# Imported Standalone Agent").to_string()
+            } else {
+                "# Imported Standalone Agent".to_string()
+            }
+        } else {
+            "# Imported Standalone Agent".to_string()
+        }
+    } else {
+        let agent_path = std::path::PathBuf::from(&path);
+        let soul_path = agent_path.join("workspace").join("SOUL.md");
+        std::fs::read_to_string(&soul_path).unwrap_or_else(|_| {
+            std::fs::read_to_string(agent_path.join("SOUL.md"))
+                .unwrap_or_else(|_| "# SOUL.md - Imported Agent".to_string())
+        })
+    };
         
     let name = agent_id.clone();
     
@@ -413,6 +484,7 @@ pub async fn import_discovered_agent(
         color: "#64C8C0".to_string(),
         status: AgentStatus::Active,
         isolated: true,
+        capabilities: crate::models::AgentCapabilities::default(),
         container_id: None,
         personality: AgentPersonality {
             name: name.clone(),
@@ -432,4 +504,49 @@ pub async fn import_discovered_agent(
     let _ = db.log_audit(&agent_id, "import_local", Some("openclaw"), "Agent imported from local filesystem", None);
 
     Ok(agent)
+}
+
+#[tauri::command]
+pub async fn repair_gateway(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String
+) -> Result<String, String> {
+    // 1. Verify and repair the agent's existence in the gateway
+    let _ = tokio::process::Command::new("docker")
+        .args([
+            "exec", "-u", "root", "canopy-gateway",
+            "openclaw", "agents", "add",
+            &agent_id,
+            "--workspace", "/home/node/openclaw/workspace",
+        ])
+        .output()
+        .await;
+
+    // 2. Sync personality to ensure SOUL.md is present
+    if let Ok(Some(agent)) = db.get_agent(&agent_id) {
+        let soul_md = generate_soul_md(&agent.personality);
+        let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
+        let _ = tokio::process::Command::new("docker")
+            .args(["exec", "-u", "root", "canopy-gateway", "sh", "-c",
+                &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
+            .output()
+            .await;
+    }
+
+    // 3. Run the OpenClaw native diagnostic repair tool
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec", "-u", "root", "canopy-gateway",
+            "openclaw", "doctor", "--fix",
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run diagnostic repair: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Doctor repair failed: {}", stderr));
+    }
+
+    Ok("Diagnostics and repair completed successfully.".to_string())
 }

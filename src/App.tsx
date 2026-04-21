@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback, useEffect } from "react";
+import React, { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls, OrthographicCamera } from "@react-three/drei";
 import * as THREE from "three";
@@ -10,6 +10,15 @@ import { GLBAgent } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
 import { UpdateManager } from "./components/shared/UpdateManager";
+
+let gatewayBootPromise: Promise<any> | null = null;
+const safeStartGateway = async () => {
+  if (!gatewayBootPromise) {
+    gatewayBootPromise = invoke("start_gateway");
+    gatewayBootPromise.catch(() => { gatewayBootPromise = null; });
+  }
+  return gatewayBootPromise;
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CANOPY — Monument Valley Isometric World + Architect Agent Detail
@@ -42,10 +51,12 @@ function OrganicLobsterBody({ robeMat, headColor }: { robeMat: THREE.Material, h
   );
 }
 
-export function LobsterIcon({ size = 48, className = "" }: { size?: number, shellColor?: string, accentColor?: string, className?: string }) {
+export function LobsterIcon({ size = 48, className = "", role, agentImage }: { size?: number, shellColor?: string, accentColor?: string, className?: string, role?: string, agentImage?: string | null }) {
+  const info = role ? (RAW_AGENT_TYPE_INFO as any)[role] : null;
+  const imageSrc = agentImage || (info?.image) || "/agents/Custom.png";
   return (
     <img
-      src="/app-icon.png"
+      src={imageSrc}
       alt="Lobster Agent"
       style={{ width: size, height: size, objectFit: "contain" }}
       className={className}
@@ -70,6 +81,17 @@ interface Agent {
     expertise: string[];
     guardrails: string[];
     custom_instructions: string;
+  };
+  capabilities: {
+    ext_network: boolean;
+    int_network: boolean;
+    autonomous: boolean;
+    scheduled: boolean;
+    memory_write: boolean;
+    file_read: boolean;
+    file_write: boolean;
+    payments: boolean;
+    spend_auto: boolean;
   };
   integrations: string[];
   created_at: string;
@@ -149,6 +171,7 @@ interface WorldState {
   updateAgentAction: (id: string, action: string) => void;
   setAgents: (agents: AgentData[]) => void;
   addAgent: (agent: AgentData) => void;
+  toggleIsolation: (agentId: string) => void;
 }
 
 // ─── World Zones ─────────────────────────────────────────────────────────────
@@ -164,12 +187,12 @@ const ZONES = {
 // ─── Default Permissions ──────────────────────────────────────────────────────
 
 const DEFAULT_PERMISSIONS: Permission[] = [
-  { id: "ext_network", label: "External Network", description: "Allow outbound API calls and web access", enabled: true, category: "network" },
-  { id: "int_network", label: "Internal Network", description: "Communicate with other agents via data handoffs", enabled: true, category: "network" },
+  { id: "ext_network", label: "External Network", description: "Allow outbound API calls and web access", enabled: false, category: "network" },
+  { id: "int_network", label: "Internal Network", description: "Communicate with other agents via data handoffs", enabled: false, category: "network" },
   { id: "autonomous", label: "Autonomous Execution", description: "Run tasks without manual approval", enabled: false, category: "execution" },
   { id: "scheduled", label: "Scheduled Tasks", description: "Execute on cron schedules", enabled: true, category: "execution" },
   { id: "memory_write", label: "Memory Write", description: "Store long-term data and learnings", enabled: true, category: "data" },
-  { id: "file_read", label: "File System Read", description: "Read files in scoped directories", enabled: true, category: "data" },
+  { id: "file_read", label: "File System Read", description: "Read files in scoped directories", enabled: false, category: "data" },
   { id: "file_write", label: "File System Write", description: "Create and modify files", enabled: false, category: "data" },
   { id: "payments", label: "Payment Authorization", description: "Request virtual cards for purchases", enabled: false, category: "financial" },
   { id: "spend_auto", label: "Auto-Approve Under Limit", description: "Auto-approve purchases under threshold", enabled: false, category: "financial" },
@@ -246,6 +269,9 @@ const useWorldStore = create<WorldState>((set) => ({
     set((state) => ({ agents: state.agents.map((a) => (a.id === id ? { ...a, currentAction: action } : a)) })),
   setAgents: (agents) => set({ agents }),
   addAgent: (agent) => set((state) => ({ agents: [...state.agents, agent] })),
+  toggleIsolation: (agentId) => set((state) => ({
+    agents: state.agents.map((a) => a.id === agentId ? { ...a, isolated: !a.isolated } : a)
+  })),
 }));
 
 // ─── Utility AI ──────────────────────────────────────────────────────────────
@@ -524,6 +550,15 @@ function SkyGradient() {
 function CanopyScene() {
   const agents = useWorldStore(s => s.agents);
   const setSelected = useWorldStore(s => s.setSelectedAgent);
+  const setHoveredAgent = useWorldStore(s => s.setHoveredAgent);
+  const hoveredAgent = useWorldStore(s => s.hoveredAgent);
+  const setActiveView = useWorldStore(s => s.setActiveView);
+
+  const handleAgentClick = (id: string) => {
+    setSelected(id);
+    setActiveView("architect");
+  };
+
   return (<>
     <ambientLight intensity={0.6} color="#F5E6D8" />
     <directionalLight position={[5, 10, 3]} intensity={0.8} />
@@ -531,12 +566,14 @@ function CanopyScene() {
     <SkyGradient />
     <Water />
     <FloatingMotes count={25} />
-    <group>
-      <IsoBlock position={[0, -0.8, 0]} size={[10, 0.6, 10]} lit="#C4B8A8" shadow="#A89C8C" top="#D8CCC0" />
-      <IsoBlock position={[0, -1.5, 0]} size={[8, 0.8, 8]} lit="#B8ACA0" shadow="#9C9088" top="#CCC0B4" />
-      <WorldArchitecture />
-      {agents.map(a => <AgentCharacter key={a.id} agent={a} />)}
-    </group>
+    
+    <WorldScene 
+      agents={agents} 
+      onAgentClick={handleAgentClick} 
+      onAgentHover={setHoveredAgent}
+      hoveredAgentId={hoveredAgent}
+    />
+
     <mesh position={[0, -2, 0]} rotation={[-Math.PI / 2, 0, 0]} visible={false} onClick={() => setSelected(null)}><planeGeometry args={[100, 100]} /></mesh>
   </>);
 }
@@ -586,7 +623,10 @@ function ProgressBar({ value, max = 1, color = "#3c6663", height = 4 }: { value:
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function OnboardingWizard() {
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(-1);
+  const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "starting" | "ready">("checking");
+  const [engineError, setEngineError] = useState("");
+  
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [agentName, setAgentName] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -615,8 +655,77 @@ function OnboardingWizard() {
 
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
+  useEffect(() => {
+    const setupListener = async () => {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const unlisten = await listen('companion-finished', async (e: any) => {
+          const { type, key } = e.payload;
+          if (key) {
+             setApiKey(key);
+             if (type === "gemini") setLlmProvider("Google Gemini");
+             else if (type === "openai") setLlmProvider("OpenAI");
+             else if (type === "anthropic") setLlmProvider("Anthropic");
+             else if (type === "xai") setLlmProvider("xAI Grok");
+             setApiKeyMode("manual");
+          }
+          
+          try {
+             const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+             const w = await getCurrentWebviewWindow().getByLabel?.('companion'); // Wait, getCurrent() isn't what we want. We need the WebviewWindow class.
+             // Actually wait, let me just let CompanionGuide emit the event, and then we'll try to let CompanionGuide close itself properly, BUT I'll also add a fallback close here.
+             // It's safer to just import the constructor and use getByLabel.
+          } catch(err) {}
+          
+          try {
+            const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+            const w = WebviewWindow.getByLabel('companion');
+            if (w) await w.close();
+          } catch(err) {
+            try {
+              const { Window } = await import('@tauri-apps/api/window');
+              const w2 = Window.getByLabel('companion');
+              if (w2) await w2.close();
+            } catch(e2) {}
+          }
+        });
+        return unlisten;
+      } catch(e) { return () => {}; }
+    };
+    let unlistenFn: any;
+    setupListener().then(f => unlistenFn = f);
+    return () => { if (unlistenFn) unlistenFn(); };
+  }, []);
   const [discoveredAgents, setDiscoveredAgents] = useState<DiscoveredAgent[]>([]);
   const [isDeployingImport, setIsDeployingImport] = useState(false);
+  const [createAgentError, setCreateAgentError] = useState("");
+  const [isCreatingAgent, setIsCreatingAgent] = useState(false);
+
+  useEffect(() => {
+    if (step === -1) {
+      const checkEngine = async () => {
+        try {
+          if (typeof invoke === 'function') {
+            const isInstalled = await invoke("check_orbstack_installed");
+            if (isInstalled) {
+              setEngineStatus("starting");
+              await safeStartGateway();
+              setEngineStatus("ready");
+              setStep(0);
+            } else {
+              setEngineStatus("missing");
+            }
+          } else {
+            setStep(0);
+          }
+        } catch (e) {
+          setEngineError(e as string);
+          setEngineStatus("missing");
+        }
+      };
+      checkEngine();
+    }
+  }, [step]);
 
   useEffect(() => {
     let unlisten: any;
@@ -752,6 +861,8 @@ function OnboardingWizard() {
   const handleCreateAgent = async () => {
     if (!selectedRole || !agentName.trim()) return;
 
+    setIsCreatingAgent(true);
+    setCreateAgentError("");
     try {
       const roleInfo = agentTypeInfo[selectedRole];
       let finalPrompt = personalityPrompt;
@@ -766,7 +877,13 @@ function OnboardingWizard() {
             name: agentName,
             role: selectedRole,
             emoji: "agent",
-            personality: finalPrompt,
+            personality: {
+              name: agentName,
+              communication_style: roleInfo.description,
+              expertise: [],
+              guardrails: [],
+              custom_instructions: finalPrompt
+            },
             isolated: false,
           }) as Agent;
 
@@ -808,32 +925,9 @@ function OnboardingWizard() {
           throw new Error("Tauri invoke not found");
         }
       } catch (err) {
-        console.warn("Backend not available, using mock agent data:", err);
-        newAgentData = {
-          id: `mock-${Date.now()}`,
-          name: agentName,
-          role: selectedRole,
-          emoji: "agent",
-          color: roleInfo.color,
-          status: "active",
-          isolated: false,
-          container_id: null,
-          personality: {
-            name: agentName,
-            communication_style: finalPrompt,
-            expertise: [],
-            guardrails: [],
-            custom_instructions: ""
-          },
-          integrations: [],
-          created_at: new Date().toISOString(),
-          stats: {
-            tasks_today: 0,
-            messages_handled: 0,
-            uptime_seconds: 0,
-            total_cost_usd: 0,
-          },
-        };
+        setCreateAgentError(`Agent Engine failed to persist: ${err}`);
+        setIsCreatingAgent(false);
+        return; // Halt creation, do not generate ghost agents
       }
 
       const enrichedAgent: AgentData = {
@@ -868,8 +962,11 @@ function OnboardingWizard() {
 
       addAgent(enrichedAgent);
       setActiveView("canopy");
+      setIsCreatingAgent(false);
     } catch (error) {
       console.error("Failed to setup agent context:", error);
+      setCreateAgentError(error.toString());
+      setIsCreatingAgent(false);
     }
   };
 
@@ -883,6 +980,71 @@ function OnboardingWizard() {
       fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
       overflow: "hidden",
     }}>
+      {/* Step -1: Engine Boot */}
+      {/* Step -1: Engine Boot */}
+      {step === -1 && (
+        <>
+          {(engineStatus === "checking" || engineStatus === "starting" || engineStatus === "ready") && !engineError ? (
+            <LoadingScreen />
+          ) : (
+            <div style={{ textAlign: "center", maxWidth: 480, display: "flex", flexDirection: "column", alignItems: "center", padding: "40px" }}>
+              
+              <div style={{
+                width: 80, height: 80, borderRadius: "50%", background: "#F5E6D8",
+                display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 24,
+                boxShadow: "0 8px 32px rgba(245, 230, 216, 0.4)"
+              }}>
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#3c6663" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                </svg>
+              </div>
+
+              <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", marginBottom: 16, fontFamily: "'Noto Serif', Georgia, serif" }}>
+                Missing Local Engine
+              </h1>
+
+              <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, lineHeight: 1.6 }}>
+                Canopy needs OrbStack installed locally to orchestrate your private agents. Without it, your agents won't actually be able to retain memory.
+              </p>
+
+              <button
+                onClick={async () => {
+                  setEngineStatus("checking");
+                  try {
+                    await invoke("install_orbstack");
+                    const installed = await invoke("check_orbstack_installed");
+                    if (installed) {
+                      setEngineStatus("starting");
+                      await invoke("start_gateway");
+                      setStep(0);
+                    } else {
+                      setEngineStatus("missing");
+                    }
+                  } catch (e) {
+                    setEngineError(e as string);
+                    setEngineStatus("missing");
+                  }
+                }}
+                style={{
+                  padding: "16px 32px", borderRadius: 12, border: "none",
+                  background: "#3c6663", color: "white", fontSize: 16, fontWeight: 600,
+                  cursor: "pointer", boxShadow: "0 4px 12px rgba(60,102,99,0.2)",
+                  transition: "all 0.2s ease"
+                }}
+              >
+                {engineError?.includes("start gateway") || engineError?.includes("allocated") ? "Retry Connection" : "Install Embedded Engine"}
+              </button>
+
+              {engineError && (
+                <div style={{ marginTop: 24, padding: "16px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 14 }}>
+                  {engineError}
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
       {/* Step 1: Welcome */}
       {step === 0 && (
         <>
@@ -1292,8 +1454,8 @@ function OnboardingWizard() {
               </div>
             )}
 
-            <div style={{ marginBottom: 24, display: "flex", gap: 12 }}>
-              {["OpenAI", "Google Gemini", "Anthropic"].map(prov => (
+            <div style={{ marginBottom: 24, display: "flex", flexWrap: "wrap", gap: 12 }}>
+              {["OpenAI", "Google Gemini", "Anthropic", "xAI Grok"].map(prov => (
                 <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "#ffffff", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
                   <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => { setLlmProvider(prov as any); setApiKeyMode("hidden"); setApiKey(""); }} />
                   <span style={{ fontSize: 14, fontWeight: 600, color: "#303330" }}>{prov}</span>
@@ -1311,7 +1473,7 @@ function OnboardingWizard() {
                   if (!llmProvider) return;
                   setApiKeyMode("scan");
                   try {
-                    const providerMap: any = { "OpenAI": "OPENAI", "Google Gemini": "GEMINI", "Anthropic": "ANTHROPIC" };
+                    const providerMap: any = { "OpenAI": "OPENAI", "Google Gemini": "GEMINI", "Anthropic": "ANTHROPIC", "xAI Grok": "XAI" };
                     const provId = providerMap[llmProvider] + "_API_KEY";
                     const secret = await invoke<string>("get_secret_cmd", { key: provId });
                     if (secret) setApiKey(secret);
@@ -1328,7 +1490,7 @@ function OnboardingWizard() {
                   setApiKeyMode("manual");
 
                   try {
-                    const providerMap: any = { "OpenAI": "openai", "Google Gemini": "gemini", "Anthropic": "anthropic" };
+                    const providerMap: any = { "OpenAI": "openai", "Google Gemini": "gemini", "Anthropic": "anthropic", "xAI Grok": "xai" };
                     const providerId = providerMap[llmProvider];
 
                     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
@@ -1349,7 +1511,8 @@ function OnboardingWizard() {
                       const urls: any = {
                         "OpenAI": "https://platform.openai.com/api-keys",
                         "Google Gemini": "https://aistudio.google.com/app/apikey",
-                        "Anthropic": "https://console.anthropic.com/settings/keys"
+                        "Anthropic": "https://console.anthropic.com/settings/keys",
+                        "xAI Grok": "https://console.x.ai/"
                       };
                       const { open } = await import('@tauri-apps/plugin-shell');
                       await open(urls[llmProvider]);
@@ -1366,7 +1529,8 @@ function OnboardingWizard() {
                     const urls: any = {
                       "OpenAI": "https://platform.openai.com/api-keys",
                       "Google Gemini": "https://aistudio.google.com/app/apikey",
-                      "Anthropic": "https://console.anthropic.com/settings/keys"
+                      "Anthropic": "https://console.anthropic.com/settings/keys",
+                      "xAI Grok": "https://console.x.ai/"
                     };
                     const { open } = await import('@tauri-apps/plugin-shell');
                     await open(urls[llmProvider]);
@@ -1917,14 +2081,23 @@ function OnboardingWizard() {
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 40, maxWidth: 400, margin: "0 auto 40px" }}>
             Your agent is ready. Drop them into The Canopy and watch them work.
           </p>
-          <button onClick={handleCreateAgent} style={{
+          
+          {createAgentError && (
+            <div style={{ marginBottom: 24, padding: "16px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 14 }}>
+              <strong style={{ display: "block", marginBottom: 4 }}>Creation Failed</strong>
+              {createAgentError}
+            </div>
+          )}
+
+          <button onClick={handleCreateAgent} disabled={isCreatingAgent} style={{
             padding: "16px 40px", borderRadius: 16, border: "none",
-            background: "linear-gradient(135deg, #3c6663, #b8e6e2)",
-            color: "white", fontSize: 16, fontWeight: 600, cursor: "pointer",
+            background: createAgentError ? "#E53E3E" : "linear-gradient(135deg, #3c6663, #b8e6e2)",
+            color: "white", fontSize: 16, fontWeight: 600, cursor: isCreatingAgent ? "not-allowed" : "pointer",
             boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
             transition: "all 0.3s ease",
+            opacity: isCreatingAgent ? 0.7 : 1
           }}>
-            Go to Dashboard
+            {isCreatingAgent ? "Deploying..." : (createAgentError ? "Retry Deployment" : "Go to Dashboard")}
           </button>
         </div>
       )}
@@ -1962,7 +2135,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
   );
 
   return (
-    <div style={{ display: "flex", height: "100vh", fontFamily: "'Manrope', system-ui, sans-serif" }}>
+    <div style={{ display: "flex", flex: 1, minHeight: 0, fontFamily: "'Manrope', system-ui, sans-serif" }}>
       {/* ── Left Sidebar ── */}
       <div style={{
         width: 240, padding: "24px 16px", display: "flex", flexDirection: "column", gap: 4,
@@ -1977,11 +2150,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
               boxShadow: `0 0 0 3px rgba(255,255,255,0.6), 0 0 12px ${agent.robeColor}40`,
               background: `${agent.robeColor}15`,
             }}>
-              {agent.image ? (
-                <img src={agent.image} alt={agent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              ) : (
-                <LobsterIcon size={32} shellColor={agent.robeColor} accentColor={agent.accentColor} />
-              )}
+              <LobsterIcon size={36} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
             </div>
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>Architect View</div>
@@ -2020,6 +2189,30 @@ function ArchitectView({ agent }: { agent: AgentData }) {
           Deploy Agent
         </button>
 
+        <button 
+          onClick={async () => {
+             const btn = document.getElementById('diag-btn-text');
+             if(btn) btn.innerText = "Running Diagnostics...";
+             try {
+                if (typeof invoke === 'function') {
+                   const res = await invoke("repair_gateway", { agentId: agent.id });
+                   if(btn) btn.innerText = "Config Repaired!";
+                }
+             } catch(e) {
+                if(btn) btn.innerText = "Repair Failed";
+             }
+             setTimeout(() => { if(btn) btn.innerText = "Run Diagnostics"; }, 3000);
+          }}
+          style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          padding: "10px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 12, cursor: "pointer",
+          background: "rgba(255,255,255,0.5)", color: "#218380", fontSize: 12, fontFamily: "inherit",
+          fontWeight: 600, marginTop: 4, transition: "all 0.2s ease"
+        }}>
+          <SvgIcon size={14}><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><circle cx="12" cy="12" r="3"></circle></SvgIcon>
+          <span id="diag-btn-text">Run Diagnostics</span>
+        </button>
+
         <button onClick={() => setActiveView("canopy")} style={{
           display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
           padding: "8px", border: "none", borderRadius: 8, cursor: "pointer",
@@ -2032,7 +2225,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
       </div>
 
       {/* ── Main Content ── */}
-      <div style={{ flex: 1, overflow: "auto", padding: "32px 40px" }}>
+      <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}>
         {architectTab === "overview" && <OverviewTab agent={agent} />}
         {architectTab === "identity" && <IdentityTab agent={agent} />}
         {architectTab === "personality" && <PersonalityTab agent={agent} />}
@@ -2160,10 +2353,13 @@ function IdentityTab({ agent }: { agent: AgentData }) {
     ));
   };
 
+  const [avatarPrompt, setAvatarPrompt] = useState(agent.avatarPrompt);
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 32, height: "100%" }}>
-      {/* Left: 3D Dressing Room */}
-      <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", minHeight: 400, border: "1px solid rgba(0,0,0,0.06)" }}>
+      {/* Left: 3D Dressing Room & Avatar Settings */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+        <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", minHeight: 400, border: "1px solid rgba(0,0,0,0.06)" }}>
         <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
           <ambientLight intensity={0.8} color="#F5E6D8" />
           <directionalLight position={[10, 20, 5]} intensity={1} />
@@ -2175,7 +2371,7 @@ function IdentityTab({ agent }: { agent: AgentData }) {
               <shadowMaterial transparent opacity={0.2} />
             </mesh>
             <GLBAgent
-              fileUrl={agent.visual_identity?.baseModelUrl || undefined}
+              fileUrl={agent.visual_identity?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
               accessories={agent.visual_identity?.accessories || []}
               isWorking={agent.status === "thinking" || agent.status === "active"}
               scale={1.5}
@@ -2188,7 +2384,46 @@ function IdentityTab({ agent }: { agent: AgentData }) {
         </div>
       </div>
 
-      {/* Right: Generative Studio */}
+      {/* Avatar Customization */}
+      <div style={{ background: "rgba(255,255,255,0.3)", padding: 24, borderRadius: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#303330" }}>Avatar Configuration</div>
+            <div style={{ fontSize: 11, color: "#636E72", marginTop: 4 }}>Static fallback thumbnail and base coloration.</div>
+          </div>
+          <div style={{
+            width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg, ${agent.robeColor}20, ${agent.accentColor}30)`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            border: "2px dashed rgba(0,0,0,0.08)",
+          }}>
+            <LobsterIcon size={48} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
+          </div>
+        </div>
+        <textarea value={avatarPrompt} onChange={e => setAvatarPrompt(e.target.value)} rows={2} style={{
+          width: "100%", padding: 12, borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)",
+          background: "rgba(255,255,255,0.7)", fontSize: 13, fontFamily: "inherit",
+          color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
+        }} />
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {["#8B6AAE", "#4A9E96", "#D47A54", "#5B88A6", "#C4785A", "#6B8E5A"].map(c => (
+              <button key={c} onClick={() => updateIdentity({})} style={{
+                width: 24, height: 24, borderRadius: "50%", background: c, border: c === agent.robeColor ? "2px solid #2D3436" : "2px solid transparent",
+                cursor: "pointer", transition: "all 0.15s ease",
+              }} />
+            ))}
+          </div>
+          <div style={{ flex: 1 }} />
+          <button style={{
+            padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.08)",
+            background: "white", fontSize: 12, fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit", color: "#303330",
+          }}>Update Image</button>
+        </div>
+      </div>
+    </div>
+
+    {/* Right: Generative Studio */}
       <div style={{ paddingRight: 8, height: "100%", overflow: "hidden" }}>
         <GenerativeStudio onApply={handleApplyGeneration} />
       </div>
@@ -2197,8 +2432,13 @@ function IdentityTab({ agent }: { agent: AgentData }) {
 }
 
 function PersonalityTab({ agent }: { agent: AgentData }) {
-  const [prompt, setPrompt] = useState(agent.personalityPrompt);
-  const [avatarPrompt, setAvatarPrompt] = useState(agent.avatarPrompt);
+  const initialFullPrompt = agent.personalityPrompt || "";
+  const [base, booksStr] = initialFullPrompt.split("\n\nRecently Read Books: You have recently read the following books and found them very interesting: ");
+  const initialBooks = booksStr ? booksStr.replace(".", "").split(", ").filter(Boolean) : [];
+
+  const [prompt, setPrompt] = useState(base);
+  const [recentlyRead, setRecentlyRead] = useState<string[]>(initialBooks);
+  const [customBookInput, setCustomBookInput] = useState("");
 
   return (
     <div>
@@ -2206,11 +2446,42 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
       <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>Shape how {agent.name} thinks, acts, and appears.</p>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        {/* Personality Traits */}
-        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 16 }}>Personality Traits</div>
-          <div style={{ fontSize: 13, color: "#636E72", fontStyle: "italic" }}>
-            This agent's configuration is managed through the Rust backend.
+        {/* Training Books */}
+        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Training Books</div>
+          <div style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>These books are injected into the agent's context to subtly shift their default decision making.</div>
+          
+          <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+              {recentlyRead.length === 0 && <span style={{ fontSize: 12, color: "#636E72", fontStyle: "italic" }}>No books assigned.</span>}
+              {recentlyRead.map(book => (
+                 <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                    {book}
+                    <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
+                 </div>
+              ))}
+            </div>
+            
+            <div style={{ display: "flex", gap: 8 }}>
+               <input 
+                 value={customBookInput} 
+                 onChange={e => setCustomBookInput(e.target.value)} 
+                 placeholder="Type a custom book title..." 
+                 style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }} 
+                 onKeyDown={e => { 
+                   if (e.key === "Enter" && customBookInput.trim()) { 
+                     setRecentlyRead([...recentlyRead, customBookInput.trim()]); 
+                     setCustomBookInput(""); 
+                   } 
+                 }}
+               />
+               <button onClick={() => {
+                 if (customBookInput.trim()) { 
+                   setRecentlyRead([...recentlyRead, customBookInput.trim()]); 
+                   setCustomBookInput(""); 
+                 }
+               }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+            </div>
           </div>
         </div>
 
@@ -2223,52 +2494,38 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
             background: "#f4f4f0", fontSize: 13, fontFamily: "inherit",
             color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
           }} />
-          <button style={{
+          <button 
+            onClick={async () => {
+              const btn = document.getElementById('save-pers-btn');
+              if(btn) btn.innerText = "Saving...";
+              try {
+                if(typeof invoke === 'function') {
+                  let finalPrompt = prompt;
+                  if (recentlyRead.length > 0) {
+                    finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
+                  }
+                  await invoke("update_agent_personality", { 
+                    agentId: agent.id, 
+                    personality: { ...agent.personality, custom_instructions: finalPrompt } 
+                  });
+                  if(btn) btn.innerText = "Saved!";
+                }
+              } catch(e) {
+                if(btn) btn.innerText = "Error";
+              }
+              setTimeout(() => { if(btn) btn.innerText = "Save Changes"; }, 2000);
+            }}
+            id="save-pers-btn"
+            style={{
             marginTop: 12, padding: "8px 16px", borderRadius: 8, border: "none",
             background: "#3c6663", color: "white", fontSize: 12, fontWeight: 600,
             cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-end",
+            transition: "all 0.2s ease"
           }}>Save Changes</button>
         </div>
       </div>
 
-      {/* Avatar Customization */}
-      <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, marginTop: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#303330" }}>Avatar Description</div>
-            <div style={{ fontSize: 11, color: "#636E72", marginTop: 4 }}>Describe what your agent looks like. Changes to this prompt will regenerate their figure.</div>
-          </div>
-          <div style={{
-            width: 80, height: 80, borderRadius: 16, background: `linear-gradient(135deg, ${agent.robeColor}20, ${agent.accentColor}30)`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            border: "2px dashed rgba(0,0,0,0.08)",
-          }}>
-            <LobsterIcon size={56} shellColor={agent.robeColor} accentColor={agent.accentColor} />
-          </div>
-        </div>
-        <textarea value={avatarPrompt} onChange={e => setAvatarPrompt(e.target.value)} rows={3} style={{
-          width: "100%", padding: 12, borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)",
-          background: "#f4f4f0", fontSize: 13, fontFamily: "inherit",
-          color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
-        }} />
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            {["#8B6AAE", "#4A9E96", "#D47A54", "#5B88A6", "#C4785A", "#6B8E5A"].map(c => (
-              <button key={c} style={{
-                width: 24, height: 24, borderRadius: "50%", background: c, border: c === agent.robeColor ? "2px solid #2D3436" : "2px solid transparent",
-                cursor: "pointer", transition: "all 0.15s ease",
-              }} />
-            ))}
-          </div>
-          <div style={{ flex: 1 }} />
-          <button style={{
-            padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.08)",
-            background: "#f4f4f0", fontSize: 12, fontWeight: 500,
-            cursor: "pointer", fontFamily: "inherit", color: "#303330",
-          }}>Regenerate Avatar</button>
-        </div>
       </div>
-    </div>
   );
 }
 
@@ -2304,11 +2561,31 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           <div style={{ fontSize: 11, color: "#636E72" }}>This agent runs in the shared Gateway. Switch to isolated for OS-level sandboxing.</div>
         </div>
         <div style={{ flex: 1 }} />
-        <button style={{
+        <button 
+          id="isolate-btn"
+          onClick={async () => {
+            const btn = document.getElementById('isolate-btn');
+            const wasIsolated = agent.isolated;
+            if(btn) btn.innerText = "Rebooting...";
+            try {
+              if (typeof invoke === 'function') {
+                await invoke("toggle_agent_isolation", {
+                  agentId: agent.id,
+                  isolated: !wasIsolated
+                });
+                useWorldStore.getState().toggleIsolation(agent.id);
+              }
+            } catch(e) {
+              console.error("Failed isolation toggle", e);
+            } finally {
+              if(btn) btn.innerText = !wasIsolated ? "Join Shared" : "Isolate";
+            }
+          }}
+          style={{
           padding: "6px 14px", borderRadius: 8, border: "1px solid #6B6BAE",
-          background: "transparent", color: "#6B6BAE", fontSize: 12, fontWeight: 600,
-          cursor: "pointer", fontFamily: "inherit",
-        }}>Isolate</button>
+          background: agent.isolated ? "#6B6BAE" : "transparent", color: agent.isolated ? "white" : "#6B6BAE", fontSize: 12, fontWeight: 600,
+          cursor: "pointer", fontFamily: "inherit", transition: "all 0.2s"
+        }}>{agent.isolated ? "Un-Isolate" : "Isolate"}</button>
       </div>
 
       {categories.map(cat => (
@@ -2326,7 +2603,20 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
                   <div style={{ fontSize: 13, fontWeight: 500, color: "#303330" }}>{p.label}</div>
                   <div style={{ fontSize: 11, color: "#636E72", marginTop: 2 }}>{p.description}</div>
                 </div>
-                <Toggle enabled={p.enabled} onChange={() => toggle(agent.id, p.id)} />
+                <Toggle enabled={p.enabled} onChange={async () => {
+                   toggle(agent.id, p.id);
+                   try {
+                     if (typeof invoke === 'function') {
+                       const newPerms = agent.permissions.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x);
+                       const capabilitiesObj: any = {};
+                       newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                       await invoke("update_agent_capabilities", {
+                         agentId: agent.id,
+                         capabilities: capabilitiesObj
+                       });
+                     }
+                   } catch(e) { console.error("Failed to update capabilities", e); }
+                }} />
               </div>
             ))}
           </div>
@@ -2398,6 +2688,7 @@ function MemoryTab({ agent }: { agent: AgentData }) {
 function SpendTab({ agent }: { agent: AgentData }) {
   const [overrideKey, setOverrideKey] = useState("");
   const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [hasPaymentsSetup, setHasPaymentsSetup] = useState(false);
 
   useEffect(() => {
     if (typeof invoke === 'function') {
@@ -2431,35 +2722,58 @@ function SpendTab({ agent }: { agent: AgentData }) {
         {agent.name}'s financial activity and resource consumption.
       </p>
 
-      {/* Budget overview */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>This Month</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
-          <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color="#4A9E96" height={6} />
-          <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>${agent.spendLimit} monthly limit</div>
+      {/* Budget overview - Hidden until setup */}
+      {!hasPaymentsSetup ? (
+        <div style={{ ...glass(0.5), padding: 40, borderRadius: 16, textAlign: "center", marginBottom: 24, border: "1px dashed rgba(33,131,128,0.3)" }}>
+          <div style={{
+            width: 64, height: 64, borderRadius: "50%", background: "rgba(33,131,128,0.1)", color: "#218380",
+            display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px"
+          }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" /></svg>
+          </div>
+          <h2 style={{ fontSize: 20, color: "#303330", marginBottom: 8, marginTop: 0 }}>Establish Financial Framework</h2>
+          <p style={{ fontSize: 14, color: "#636E72", maxWidth: 400, margin: "0 auto 24px" }}>
+            Connect a corporate card or digital wallet to issue virtual budgets and track utilization across all your agents.
+          </p>
+          <button onClick={() => setHasPaymentsSetup(true)} style={{
+            padding: "12px 24px", borderRadius: 12, border: "none", cursor: "pointer",
+            background: "#218380", color: "white", fontSize: 14, fontWeight: 600,
+            boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
+          }}>
+            Set Up Payment Source
+          </button>
         </div>
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Auto-Approve Limit</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>$25</div>
-          <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Purchases above this require your approval</div>
-        </div>
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Active Cards</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>0</div>
-          <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Virtual cards currently issued</div>
-        </div>
-      </div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
+            <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>This Month</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
+              <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color="#4A9E96" height={6} />
+              <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>${agent.spendLimit} monthly limit</div>
+            </div>
+            <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Auto-Approve Limit</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>$25</div>
+              <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Purchases above this require your approval</div>
+            </div>
+            <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Active Cards</div>
+              <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>0</div>
+              <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Virtual cards currently issued</div>
+            </div>
+          </div>
 
-      {/* Transaction table */}
-      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", marginBottom: 24 }}>
-        <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330" }}>Recent Transactions</div>
-        </div>
-        <div style={{ padding: "20px", textAlign: "center", color: "#636E72", fontSize: 13 }}>
-          No transactions yet
-        </div>
-      </div>
+          <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", marginBottom: 24 }}>
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#303330" }}>Recent Transactions</div>
+            </div>
+            <div style={{ padding: "20px", textAlign: "center", color: "#636E72", fontSize: 13 }}>
+              No transactions yet
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Advanced Provider Configuration */}
       <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 20 }}>
@@ -2530,7 +2844,7 @@ function ChatTab({ agent }: { agent: AgentData }) {
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 64px)" }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Communion</h1>
         <p style={{ fontSize: 14, color: "#636E72" }}>Communicate directly with {agent.name}.</p>
@@ -2733,7 +3047,7 @@ function CanopyView() {
             borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
           }}>
             <div style={{ width: 24, height: 24, position: "relative" }}>
-              <LobsterIcon size={24} shellColor={a.robeColor} accentColor={a.accentColor} />
+              <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
               <div style={{
                 position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
                 background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : "#B2BEC3",
@@ -2784,7 +3098,7 @@ function LoadingScreen() {
 // COMPANION GUIDE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function CompanionGuide({ type }: { type: string }) {
+export function CompanionGuide({ type }: { type: string }) {
   const [step, setStep] = useState(0);
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<"idle"|"saving"|"success"|"error">("idle");
@@ -2802,6 +3116,16 @@ function CompanionGuide({ type }: { type: string }) {
         { text: "Look for the button that says 'Create new secret key' near the top right, and click it." },
         { text: "In the window that pops up, name it 'Canopy' and click 'Create secret key'." },
         { text: "Awesome! Now copy that long key (it usually starts with 'sk-proj...'), paste it securely below, and hit Save.", input: { key: "OPENAI_API_KEY", placeholder: "sk-proj-..." } }
+      ]
+    },
+    xai: {
+      title: "xAI Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an xAI API Key so your agent can tap into Grok. Let's get started!",
+      steps: [
+        { text: "First, make sure you are securely logged into the xAI Developer Console on the left." },
+        { text: "Click to generate a new API Key and name it something memorable like 'Canopy'." },
+        { text: "Perfect! Now securely copy that key, paste it below, and hit Save.", input: { key: "XAI_API_KEY", placeholder: "xai-..." } }
       ]
     },
     anthropic: {
@@ -2834,10 +3158,10 @@ function CompanionGuide({ type }: { type: string }) {
         { text: "I've already attached an App Manifest for you! Scroll down to the bottom of the page and click the green 'Create' button." },
         { text: "Great. Now, on the left sidebar, click on 'Socket Mode' under Settings." },
         { text: "Toggle 'Enable Socket Mode' to ON. A modal will pop up." },
-        { text: "Name the token 'canopy-app-token' and click Generate. Copy the xapp-... token and paste it here.", input: { key: "SLACK_APP_TOKEN", placeholder: "xapp-..." } },
+        { text: "Name the token 'canopy-app-token' and click Generate. Copy the xapp-... token and paste it here.", input: { key: "slack-app-token", placeholder: "xapp-..." } },
         { text: "Almost done! Now click 'OAuth & Permissions' on the left sidebar." },
         { text: "Click the 'Install to Workspace' button and click Allow." },
-        { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "SLACK_BOT_TOKEN", placeholder: "xoxb-..." } }
+        { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } }
       ]
     }
   }[type] || null;
@@ -2864,18 +3188,28 @@ function CompanionGuide({ type }: { type: string }) {
             // Signal completion
             setStatus("success");
             
-            // If it was Slack, we need to immediately test the connection so App.tsx can show it's connected
-            if (type === "slack") {
-               // Fire an event letting the main window know to test connection
+            try {
                const { emit } = await import('@tauri-apps/api/event');
-               await emit('slack-credentials-saved');
-            }
+               await emit('companion-finished', { type, key: tokens[currentStepData.input.key] });
+               
+               // If it was Slack, we need to immediately test the connection so App.tsx can show it's connected
+               if (type === "slack") {
+                  await emit('slack-credentials-saved');
+                  const { invoke } = await import('@tauri-apps/api/core');
+                  await invoke("start_slack_listener").catch(() => {});
+               }
+            } catch(evtErr) {}
             
             setTimeout(async () => {
               try {
-                const { getCurrentWindow } = await import('@tauri-apps/api/window');
-                await getCurrentWindow().close();
-              } catch(e) {}
+                 const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                 await getCurrentWebviewWindow().close();
+              } catch (e) {
+                 try {
+                     const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                     await getCurrentWindow().close();
+                 } catch(e2) {}
+              }
             }, 2000);
         }
       } catch (e) {
@@ -2889,23 +3223,34 @@ function CompanionGuide({ type }: { type: string }) {
 
   return (
     <div style={{
-       width: "100%", height: "100%", display: "flex", flexDirection: "column",
+       width: "100%", height: "100vh", display: "flex", flexDirection: "column",
        background: "rgba(255,255,255,0.85)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
        borderLeft: "1px solid rgba(0,0,0,0.1)", fontFamily: "'Manrope', system-ui, sans-serif"
     }}>
-      <div data-tauri-drag-region style={{
-         padding: "16px 20px", display: "flex", alignItems: "center", gap: 12, borderBottom: "1px solid rgba(0,0,0,0.06)",
-         background: "linear-gradient(to right, rgba(237,228,219,0.5), rgba(255,255,255,0.4))",
-         cursor: "grab"
-      }}>
-         <LobsterIcon size={32} shellColor="#3c6663" accentColor="#D9B08C" className="pulse-slow" />
-         <div>
-            <div data-tauri-drag-region style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>{config.title}</div>
-            <div data-tauri-drag-region style={{ fontSize: 11, color: "#636E72" }}>Companion Walkthrough</div>
+       <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", width: "100%", background: "linear-gradient(to right, #EDE4DB, #F5E6D8)", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+         <div data-tauri-drag-region style={{
+            flex: 1, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12,
+            cursor: "grab"
+         }}>
+            <LobsterIcon size={32} shellColor="#3c6663" accentColor="#D9B08C" className="pulse-slow" style={{ pointerEvents: "none" }} />
+            <div style={{ pointerEvents: "none" }}>
+               <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>{config.title}</div>
+               <div style={{ fontSize: 11, color: "#636E72" }}>Companion Walkthrough</div>
+            </div>
          </div>
-      </div>
+         <div style={{ padding: "0 20px", cursor: "pointer", opacity: 0.5, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
+             try {
+                const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                await getCurrentWebviewWindow().close();
+             } catch(e) {
+                // fallback for older Tauri
+                const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                await getCurrentWindow().close();
+             }
+         }}>✕</div>
+       </div>
 
-      <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
+       <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
          {/* Intro */}
          <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
             <img src={config.avatar} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
@@ -2920,8 +3265,12 @@ function CompanionGuide({ type }: { type: string }) {
                    <div style={{ width: 28, flexShrink: 0 }} />
                    <div style={{ width: "100%", background: i === step ? "#3c6663" : "#ffffff", color: i === step ? "white" : "#303330", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
                       {s.text}
-                      {s.input && i === step && (
+                   {s.input && i === step && (
                          <div style={{ marginTop: 12 }}>
+                           <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, lineHeight: 1.4, color: "#f8f9fa", background: "rgba(0,0,0,0.15)", padding: "8px 12px", borderRadius: 8 }}>
+                             <span style={{ marginRight: 6 }}>🔒</span>
+                             macOS will securely ask for your password to lock this in the system Keychain.
+                           </div>
                            <input
                              autoFocus
                              type="password"
@@ -2979,11 +3328,6 @@ function CompanionGuide({ type }: { type: string }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
-  const isCompanion = new URLSearchParams(window.location.search).get('companion');
-  if (isCompanion) {
-    return <CompanionGuide type={isCompanion} />;
-  }
-
   const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents } = useWorldStore();
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
@@ -3012,6 +3356,17 @@ export default function App() {
   }, [activeView]);
 
   useEffect(() => {
+    const bootSilentServices = async () => {
+      try {
+        if (typeof invoke === 'function') {
+          // Unintrusively attempt to start the background orchestration gateway
+          await safeStartGateway().catch((e) => console.log("Gateway boot bypassed:", e));
+          await invoke("start_slack_listener").catch(() => {});
+        }
+      } catch(e) {}
+    };
+    bootSilentServices();
+
     const loadAgents = async () => {
       try {
         const loadedAgents = await invoke("list_agents") as Agent[];
@@ -3038,11 +3393,14 @@ export default function App() {
               weeklyCompute: "0.000",
               monthlySpend: Math.floor(agent.stats.total_cost_usd),
               spendLimit: 200,
-              permissions: DEFAULT_PERMISSIONS.map(p => ({ ...p })),
+              permissions: DEFAULT_PERMISSIONS.map(p => ({ 
+                ...p, 
+                enabled: agent.capabilities ? (agent.capabilities as any)[p.id] : p.enabled 
+              })),
               recentSpend: [],
               chatLog: [],
               memories: [],
-              personalityPrompt: `${agent.name} is a ${agent.role.toLowerCase()} lobster — reliable, sharp, and always working.`,
+              personalityPrompt: agent.personality?.custom_instructions || `${agent.name} is a ${agent.role.toLowerCase()} lobster — reliable, sharp, and always working.`,
               avatarPrompt: `A Monument Valley-style lobster with a ${roleInfo.robeColor} shell, round eyes, and swaying antennae.`,
             };
           });

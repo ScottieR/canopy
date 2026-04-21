@@ -22,19 +22,28 @@ export function SlackCompanion() {
     
     try {
       if (typeof invoke === "function") {
-        await invoke("store_secret_cmd", { key: "slack-app-token", value: slackAppToken });
-        await invoke("store_secret_cmd", { key: "slack-bot-token", value: slackBotToken });
+        await invoke("store_batch_secrets_cmd", { 
+          secrets: {
+            "slack-app-token": slackAppToken,
+            "slack-bot-token": slackBotToken
+          }
+        });
         const res: any = await invoke("check_slack_connection");
         
         if (res.connected) {
           setTestStatus("success");
           // Tell the main window we succeeded!
           await emit("slack-connected", { workspace: res.workspace_name });
+          await invoke("start_slack_listener").catch(e => console.warn(e));
           
-          // Auto close this window after a short delay
           setTimeout(async () => {
-             const { getCurrentWindow } = await import("@tauri-apps/api/window");
-             await getCurrentWindow().close();
+             try {
+                const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                await getCurrentWebviewWindow().close();
+             } catch (e) {
+                const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                await getCurrentWindow().close();
+             }
           }, 3000);
         } else {
           setTestStatus("error");
@@ -64,12 +73,17 @@ export function SlackCompanion() {
       overflowY: "auto",
       overflowX: "hidden"
     }}>
-      {/* Title Bar Drag Area (Allows moving the frameless window if we enable it) */}
-      <div data-tauri-drag-region style={{ height: 40, width: "100%", background: "transparent", WebkitAppRegion: "drag", position: "sticky", top: 0, zIndex: 10 } as any}>
-        <div style={{ position: "absolute", right: 16, top: 12, cursor: "pointer", opacity: 0.5, fontSize: 16, zIndex: 20 }} onClick={async () => {
-          const { getCurrentWindow } = await import("@tauri-apps/api/window");
-          await getCurrentWindow().close();
-        }}>✕</div>
+      <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", width: "100%", height: 40 }}>
+         <div data-tauri-drag-region style={{ flex: 1, WebkitAppRegion: "drag", cursor: "grab" }} />
+         <div style={{ padding: "0 16px", cursor: "pointer", opacity: 0.5, fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
+             try {
+                const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                await getCurrentWebviewWindow().close();
+             } catch (e) {
+                const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                await getCurrentWindow().close();
+             }
+         }}>✕</div>
       </div>
 
       <div style={{ padding: "0 24px 32px 24px", flex: 1, display: "flex", flexDirection: "column" }}>
@@ -121,8 +135,13 @@ export function SlackCompanion() {
             value={slackAppToken} 
             onChange={e => setSlackAppToken(e.target.value)} 
             placeholder="xapp-..." 
-            style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} 
+            style={{ width: "100%", padding: "12px", borderRadius: 8, border: (slackAppToken.trim() && !slackAppToken.trim().startsWith("xapp-")) ? "1px solid #E53E3E" : "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} 
           />
+          {slackAppToken.trim() && !slackAppToken.trim().startsWith("xapp-") && (
+            <div style={{ marginTop: 6, fontSize: 11, color: "#E53E3E", fontWeight: 500 }}>
+              Token must start with 'xapp-'
+            </div>
+          )}
         </div>
 
         {/* Step 3 */}
@@ -139,8 +158,13 @@ export function SlackCompanion() {
             value={slackBotToken} 
             onChange={e => setSlackBotToken(e.target.value)} 
             placeholder="xoxb-..." 
-            style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} 
+            style={{ width: "100%", padding: "12px", borderRadius: 8, border: (slackBotToken.trim() && !slackBotToken.trim().startsWith("xoxb-")) ? "1px solid #E53E3E" : "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} 
           />
+          {slackBotToken.trim() && !slackBotToken.trim().startsWith("xoxb-") && (
+            <div style={{ marginTop: 6, fontSize: 11, color: "#E53E3E", fontWeight: 500 }}>
+              Token must start with 'xoxb-'
+            </div>
+          )}
         </div>
 
         {errorMsg && (
@@ -155,9 +179,12 @@ export function SlackCompanion() {
            </div>
         )}
 
+        <div style={{ fontSize: 11, color: "#636E72", opacity: 0.8, marginBottom: 12, textAlign: "center", lineHeight: 1.4, padding: "0 16px" }}>
+          🔒 Note: macOS will ask for your password to securely lock these tokens in your system Keychain.
+        </div>
         <button 
           onClick={handleConnect}
-          disabled={!slackAppToken || !slackBotToken || testStatus === "testing" || testStatus === "success"}
+          disabled={!slackAppToken.trim().startsWith("xapp-") || !slackBotToken.trim().startsWith("xoxb-") || testStatus === "testing" || testStatus === "success"}
           style={{
             marginTop: "auto",
             width: "100%",

@@ -1,29 +1,53 @@
 use keyring::Entry;
+use std::collections::HashMap;
 
 const SERVICE_NAME: &str = "com.canopy.app";
+const VAULT_KEY: &str = "canopy_vault_v2";
 
 /// Secure credential storage via macOS Keychain.
 /// Agents never see raw tokens — the bridge layer injects them.
 
+fn get_vault() -> HashMap<String, String> {
+    let entry = match Entry::new(SERVICE_NAME, VAULT_KEY) {
+        Ok(e) => e,
+        Err(_) => return HashMap::new(),
+    };
+    if let Ok(json_str) = entry.get_password() {
+        serde_json::from_str(&json_str).unwrap_or_default()
+    } else {
+        HashMap::new()
+    }
+}
+
+fn save_vault(vault: &HashMap<String, String>) -> Result<(), String> {
+    let entry = Entry::new(SERVICE_NAME, VAULT_KEY).map_err(|e| e.to_string())?;
+    let json_str = serde_json::to_string(vault).map_err(|e| e.to_string())?;
+    entry.set_password(&json_str).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Internal helper: store a secret (callable from other Rust modules)
 pub fn store_secret(key: &str, value: &str) -> Result<(), String> {
-    let entry = Entry::new(SERVICE_NAME, key).map_err(|e| e.to_string())?;
-    entry.set_password(value).map_err(|e| e.to_string())?;
+    let mut vault = get_vault();
+    vault.insert(key.to_string(), value.to_string());
+    save_vault(&vault)?;
     tracing::info!("Stored secret: {}", key);
     Ok(())
 }
 
 /// Internal helper: get a secret (callable from other Rust modules)
 pub fn get_secret(key: &str) -> Result<String, String> {
-    let entry = Entry::new(SERVICE_NAME, key).map_err(|e| e.to_string())?;
-    entry.get_password().map_err(|e| format!("Secret '{}' not found: {}", key, e))
+    let vault = get_vault();
+    vault.get(key).cloned().ok_or_else(|| format!("Secret '{}' not found: {}", key, key))
 }
 
 /// Internal helper: delete a secret (callable from other Rust modules)
 pub fn delete_secret_internal(key: &str) -> Result<(), String> {
-    let entry = Entry::new(SERVICE_NAME, key).map_err(|e| e.to_string())?;
-    entry.delete_password().map_err(|e| e.to_string())?;
-    tracing::info!("Deleted secret: {}", key);
+    let mut vault = get_vault();
+    if vault.remove(key).is_some() {
+        save_vault(&vault)?;
+        tracing::info!("Deleted secret: {}", key);
+    }
     Ok(())
 }
 
@@ -49,6 +73,16 @@ pub fn get_agent_api_key(agent_id: &str, provider_id: &str) -> Result<String, St
 #[tauri::command]
 pub fn store_secret_cmd(key: String, value: String) -> Result<(), String> {
     store_secret(&key, &value)
+}
+
+#[tauri::command]
+pub fn store_batch_secrets_cmd(secrets: std::collections::HashMap<String, String>) -> Result<(), String> {
+    let mut vault = get_vault();
+    for (key, value) in secrets {
+        vault.insert(key, value);
+    }
+    save_vault(&vault)?;
+    Ok(())
 }
 
 #[tauri::command]

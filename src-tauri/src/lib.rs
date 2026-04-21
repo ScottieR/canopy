@@ -90,6 +90,8 @@ pub fn run() {
             openclaw::list_agents,
             openclaw::get_agent,
             openclaw::update_agent_personality,
+            openclaw::update_agent_capabilities,
+            openclaw::toggle_agent_isolation,
             openclaw::delete_agent,
             openclaw::send_message,
             openclaw::get_conversation_history,
@@ -97,6 +99,7 @@ pub fn run() {
             openclaw::import_agent,
             openclaw::scan_local_agents,
             openclaw::import_discovered_agent,
+            openclaw::repair_gateway,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,
@@ -115,6 +118,7 @@ pub fn run() {
             imessage::stop_imessage_watcher,
             // Keychain
             keychain::store_secret_cmd,
+            keychain::store_batch_secrets_cmd,
             keychain::get_secret_cmd,
             keychain::delete_secret_cmd,
             keychain::auto_discover_keys_cmd,
@@ -123,6 +127,7 @@ pub fn run() {
             payment::get_agent_budget,
             payment::update_agent_budget,
             payment::get_purchase_history,
+            payment::issue_virtual_card,
             // Slack integration
             slack::start_slack_oauth,
             slack::check_slack_connection,
@@ -152,6 +157,15 @@ pub fn run() {
             audit::export_audit_log,
             audit::get_security_alerts,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Canopy");
+        .build(tauri::generate_context!())
+        .expect("error while building Canopy")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Reopen { .. } = event {
+                use tauri::Manager;
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        });
 }
