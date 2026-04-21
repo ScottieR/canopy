@@ -4,6 +4,16 @@ use serde_json::{json, Value};
 
 const GATEWAY_URL: &str = "http://localhost:18799";
 
+pub fn get_docker_command() -> tokio::process::Command {
+    if let Some(home) = dirs::home_dir() {
+        let orb_docker = home.join(".orbstack/bin/docker");
+        if orb_docker.exists() {
+            return tokio::process::Command::new(orb_docker);
+        }
+    }
+    tokio::process::Command::new("docker")
+}
+
 /// Interface to the OpenClaw Gateway API with SQLite persistence.
 /// All agent management goes through here with dual persistence:
 /// 1. Docker containers for runtime
@@ -20,10 +30,15 @@ pub async fn create_agent(
 ) -> Result<Agent, String> {
     let agent_id = format!("agent-{}", name.to_lowercase().replace(' ', "-"));
 
+    // Step 0: Ensure structural configurations are met so the gateway setup sequence doesn't fail uniquely in the headless docker host
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"]).output().await;
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.memorySearch.enabled", "false"]).output().await;
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.token", "canopy_internal_token_2026"]).output().await;
+
     // Step 1: Create agent via OpenClaw CLI (inside the container)
-    let output = tokio::process::Command::new("docker")
+    let output = get_docker_command()
         .args([
-            "exec", "-u", "root", "canopy-gateway",
+            "exec", "-u", "node", "canopy-gateway",
             "openclaw", "agents", "add",
             &agent_id,
             "--workspace", "/home/node/openclaw/workspace",
@@ -34,22 +49,24 @@ pub async fn create_agent(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to create agent: {}", stderr));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+        return Err(format!("Failed to create agent: {}", combined));
     }
 
     // Step 2: Generate SOUL.md from personality
     let soul_md = generate_soul_md(&personality);
     // Write SOUL.md to the agent's workspace inside the container
     let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
-    tokio::process::Command::new("docker")
-        .args(["exec", "-u", "root", "canopy-gateway", "sh", "-c",
+    get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
             &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
         .output()
         .await
         .map_err(|e| format!("Failed to write SOUL.md: {}", e))?;
 
     // Step 3: Set identity (emoji, avatar)
-    tokio::process::Command::new("docker")
+    get_docker_command()
         .args([
             "exec", "canopy-gateway",
             "openclaw", "agents", "set-identity",
@@ -72,6 +89,7 @@ pub async fn create_agent(
         container_id: None,
         personality,
         integrations: vec![],
+        memories: vec![],
         created_at: chrono::Utc::now(),
         stats: AgentStats::default(),
     };
@@ -101,6 +119,7 @@ pub async fn list_agents(
     let client = Client::new();
     if let Ok(resp) = client
         .get(format!("{}/api/status", GATEWAY_URL))
+        .header("Authorization", "Bearer canopy_internal_token_2026")
         .send()
         .await
     {
@@ -130,11 +149,11 @@ pub async fn update_agent_personality(
     personality: AgentPersonality,
 ) -> Result<(), String> {
     let soul_md = generate_soul_md(&personality);
-    let soul_path = format!("/root/openclaw/workspace/{}/SOUL.md", agent_id);
+    let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
 
-    let output = tokio::process::Command::new("docker")
-        .args(["exec", "canopy-gateway", "sh", "-c",
-            &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
+    let output = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
+            &format!("mkdir -p $(dirname {}) && cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_path, soul_md)])
         .output()
         .await
         .map_err(|e| format!("Failed to update SOUL.md: {}", e))?;
@@ -150,6 +169,34 @@ pub async fn update_agent_personality(
         let _ = db.log_audit(&agent_id, "update_personality", Some("openclaw"), "Agent personality updated", None);
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_agent_integrations(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    integrations: Vec<String>,
+) -> Result<(), String> {
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.integrations = integrations;
+        let _ = db.update_agent(&agent);
+        let _ = db.log_audit(&agent_id, "update_integrations", None, "Agent integrations updated", None);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_agent_memories(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    memories: Vec<crate::models::AgentMemory>,
+) -> Result<(), String> {
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.memories = memories;
+        let _ = db.update_agent(&agent);
+        let _ = db.log_audit(&agent_id, "update_memories", None, "Agent memories updated", None);
+    }
     Ok(())
 }
 
@@ -204,7 +251,7 @@ pub async fn delete_agent(
     agent_id: String,
 ) -> Result<(), String> {
     // Step 1: Remove from OpenClaw container
-    let output = tokio::process::Command::new("docker")
+    let output = get_docker_command()
         .args([
             "exec", "canopy-gateway",
             "openclaw", "agents", "remove",
@@ -230,42 +277,75 @@ pub async fn delete_agent(
     Ok(())
 }
 
+pub async fn send_message_internal(
+    db: &crate::db::Database,
+    agent_id: &str,
+    message: &str,
+) -> Result<Value, String> {
+    // Step 1: Get or create conversation
+    let conv_id = db.get_or_create_conversation(agent_id)
+        .map_err(|e| format!("Failed to get conversation: {}", e))?;
+
+    // Step 2: Log user message to DB
+    let _ = db.insert_message(&conv_id, "user", message);
+
+    // Step 3: Send via native OpenClaw CLI
+    let output = get_docker_command()
+        .args([
+            "exec", "canopy-gateway", 
+            "openclaw", "agent", 
+            "--agent", agent_id, 
+            "--message", message, 
+            "--json"
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to send message: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    if !output.status.success() {
+        let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+        if combined.is_empty() {
+            combined = format!("OpenClaw execution failed silently with status code: {}", output.status);
+        }
+        return Err(combined);
+    }
+    
+    // Check if it's valid JSON
+    let body = match serde_json::from_str::<Value>(&stdout) {
+        Ok(json) => json,
+        Err(_) => {
+            // It might be plaintext fallback.
+            json!({
+                "response": stdout.trim()
+            })
+        }
+    };
+
+    // Extract response text and log assistant message
+    let response_text = body.get("response")
+        .and_then(|v| v.as_str())
+        .or_else(|| body.get("content").and_then(|v| v.as_str()))
+        .unwrap_or(&body.to_string())
+        .to_string();
+
+    let _ = db.insert_message(&conv_id, "assistant", &response_text);
+
+    // Step 5: Log audit event
+    let _ = db.log_audit(agent_id, "send_message", Some("openclaw"), "Message sent to agent", None);
+
+    Ok(json!({ "response": response_text }))
+}
+
 #[tauri::command]
 pub async fn send_message(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     message: String,
 ) -> Result<Value, String> {
-    // Step 1: Get or create conversation
-    let conv_id = db.get_or_create_conversation(&agent_id)
-        .map_err(|e| format!("Failed to get conversation: {}", e))?;
-
-    // Step 2: Log user message to DB
-    let _ = db.insert_message(&conv_id, "user", &message);
-
-    // Step 3: Send to OpenClaw API
-    let client = Client::new();
-    let resp = client
-        .post(format!("{}/api/sessions/main/messages", GATEWAY_URL))
-        .json(&json!({
-            "agentId": agent_id,
-            "message": message,
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("Failed to send message: {}", e))?;
-
-    let body = resp.json::<Value>().await.map_err(|e| e.to_string())?;
-
-    // Step 4: Extract response text and log assistant message
-    if let Some(response_text) = body.get("response").and_then(|v| v.as_str()) {
-        let _ = db.insert_message(&conv_id, "assistant", response_text);
-    }
-
-    // Step 5: Log audit event
-    let _ = db.log_audit(&agent_id, "send_message", Some("openclaw"), "Message sent to agent", None);
-
-    Ok(body)
+    send_message_internal(&*db, &agent_id, &message).await
 }
 
 #[tauri::command]
@@ -295,6 +375,7 @@ pub async fn import_agent(
     let client = Client::new();
     let resp = client
         .get(format!("{}/api/agents/{}", GATEWAY_URL, openclaw_agent_id))
+        .header("Authorization", "Bearer canopy_internal_token_2026")
         .send()
         .await
         .map_err(|e| format!("Failed to query gateway: {}", e))?;
@@ -328,8 +409,10 @@ pub async fn import_agent(
             expertise: vec![],
             guardrails: vec![],
             custom_instructions: String::new(),
+            active_model: None,
         },
         integrations: vec![],
+        memories: vec![],
         created_at: chrono::Utc::now(),
         stats: AgentStats::default(),
     };
@@ -349,6 +432,7 @@ pub async fn get_agent_health(agent_id: String) -> Result<Value, String> {
     let client = Client::new();
     let resp = client
         .get(format!("{}/health/stats", GATEWAY_URL))
+        .header("Authorization", "Bearer canopy_internal_token_2026")
         .send()
         .await
         .map_err(|e| format!("Health check failed: {}", e))?;
@@ -359,17 +443,72 @@ pub async fn get_agent_health(agent_id: String) -> Result<Value, String> {
 
 #[tauri::command]
 pub async fn check_agent_status(agent_id: String) -> Result<String, String> {
-    // Specifically verify if the agent's environment is functionally responding
-    let client = Client::new();
-    let resp = client
-        .get(format!("{}/api/agents/{}", GATEWAY_URL, agent_id))
-        .send()
-        .await;
-        
-    match resp {
-        Ok(res) if res.status().is_success() => Ok("active".to_string()),
-        _ => Ok("error".to_string()), // If connection refused or 404
+    let output = get_docker_command()
+        .args(["exec", "canopy-gateway", "openclaw", "agents", "list", "--json"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to check status: {}", e))?;
+
+    if !output.status.success() {
+        return Ok("error".to_string());
     }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if let Ok(agents) = serde_json::from_str::<Value>(&stdout) {
+        if let Some(agents_arr) = agents.as_array() {
+            if agents_arr.iter().any(|a| a.get("id").and_then(|i| i.as_str()) == Some(&agent_id)) {
+                return Ok("active".to_string());
+            }
+        }
+    }
+
+    Ok("offline".to_string())
+}
+
+#[tauri::command]
+pub async fn sync_credentials(
+    agent_id: String,
+    keys: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let mut auth_profile = serde_json::Map::new();
+
+    for (k, v) in keys {
+        if v.trim().is_empty() { continue; }
+        let provider = match k.as_str() {
+            "ANTHROPIC_API_KEY" => "anthropic",
+            "OPENAI_API_KEY" => "openai",
+            "GEMINI_API_KEY" => "gemini",
+            "XAI_API_KEY" => "xai",
+            _ => continue,
+        };
+        auth_profile.insert(
+            provider.to_string(),
+            json!({ "apiKey": v })
+        );
+    }
+
+    if auth_profile.is_empty() {
+        return Ok(()); // Nothing to sync
+    }
+
+    let auth_json = serde_json::to_string(&auth_profile).unwrap();
+    let filepath = format!("/home/node/.openclaw/agents/{}/agent/auth-profiles.json", agent_id);
+
+    let output = get_docker_command()
+        .args([
+            "exec", "-u", "node", "canopy-gateway", "sh", "-c",
+            &format!("mkdir -p $(dirname {}) && cat > {} << 'AUTHEOF'\n{}\nAUTHEOF", filepath, filepath, auth_json)
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to write auth profile: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Docker exec failed: {}", err));
+    }
+
+    Ok(())
 }
 
 // ─── SOUL.md Generation ──────────────────────────────────────────────────────
@@ -446,9 +585,11 @@ pub async fn scan_local_agents() -> Result<Vec<DiscoveredAgent>, String> {
     
     // 3. Scan HTTP ports for running standalone OpenClaw instances
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(800)).build().unwrap_or_default();
-    let ports = [18789, 18798];
+    let ports = [18789, 18798, 18799];
     for port in ports {
-        if let Ok(resp) = client.get(format!("http://localhost:{}/api/status", port)).send().await {
+        if let Ok(resp) = client.get(format!("http://localhost:{}/api/status", port))
+            .header("Authorization", "Bearer canopy_internal_token_2026")
+            .send().await {
             if resp.status().is_success() {
                 discovered.push(DiscoveredAgent {
                     source: format!("running_port_{}", port),
@@ -471,7 +612,9 @@ pub async fn import_discovered_agent(
 ) -> Result<Agent, String> {
     let soul_content = if path.starts_with("http") {
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(2000)).build().unwrap_or_default();
-        if let Ok(resp) = client.get(format!("{}/api/agent", path)).send().await {
+        if let Ok(resp) = client.get(format!("{}/api/agent", path))
+            .header("Authorization", "Bearer canopy_internal_token_2026")
+            .send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 json["instructions"].as_str().unwrap_or("# Imported Standalone Agent").to_string()
             } else {
@@ -507,8 +650,10 @@ pub async fn import_discovered_agent(
             expertise: vec![],
             guardrails: vec![],
             custom_instructions: soul_content,
+            active_model: None,
         },
         integrations: vec![],
+        memories: vec![],
         created_at: chrono::Utc::now(),
         stats: AgentStats::default(),
     };
@@ -527,41 +672,186 @@ pub async fn repair_gateway(
     agent_id: String
 ) -> Result<String, String> {
     // 1. Verify and repair the agent's existence in the gateway
-    let _ = tokio::process::Command::new("docker")
+    let add_output = get_docker_command()
         .args([
-            "exec", "-u", "root", "canopy-gateway",
+            "exec", "-u", "node", "canopy-gateway",
             "openclaw", "agents", "add",
             &agent_id,
             "--workspace", "/home/node/openclaw/workspace",
         ])
         .output()
-        .await;
+        .await
+        .map_err(|e| format!("Failed to execute docker: {}", e))?;
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr);
+        let stdout = String::from_utf8_lossy(&add_output.stdout);
+        let combined = format!("{}\n{}", stdout, stderr);
+        
+        if !combined.to_lowercase().contains("already exists") {
+            return Err(format!("OpenClaw agents add failed:\n{}", combined.trim()));
+        }
+        // If it already exists, that's fine—we can move forward to repairing it!
+    }
 
     // 2. Sync personality to ensure SOUL.md is present
     if let Ok(Some(agent)) = db.get_agent(&agent_id) {
         let soul_md = generate_soul_md(&agent.personality);
         let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
-        let _ = tokio::process::Command::new("docker")
-            .args(["exec", "-u", "root", "canopy-gateway", "sh", "-c",
+        let _ = get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
                 &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
             .output()
             .await;
     }
 
-    // 3. Run the OpenClaw native diagnostic repair tool
-    let output = tokio::process::Command::new("docker")
+    // 2.5. Inject missing structural OpenClaw configurations into the container
+    let _ = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"])
+        .output()
+        .await;
+
+    let _ = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.memorySearch.enabled", "false"])
+        .output()
+        .await;
+
+    let _ = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.token", "canopy_internal_token_2026"])
+        .output()
+        .await;
+
+    // 2.7. Prune any stray or corrupted memory transcripts from failed restarts (both main and the specific agent)
+    let _ = get_docker_command()
         .args([
-            "exec", "-u", "root", "canopy-gateway",
+            "exec", "-u", "node", "canopy-gateway",
+            "openclaw", "sessions", "cleanup",
+            "--store", "/home/node/.openclaw/agents/main/sessions/sessions.json",
+            "--enforce", "--fix-missing",
+        ])
+        .output()
+        .await;
+
+    let _ = get_docker_command()
+        .args([
+            "exec", "-u", "node", "canopy-gateway",
+            "openclaw", "sessions", "cleanup",
+            "--store", &format!("/home/node/.openclaw/agents/{}/sessions/sessions.json", agent_id),
+            "--enforce", "--fix-missing",
+        ])
+        .output()
+        .await;
+
+    // 2.8. Force the entire container supervisor to restart so it natively reloads the newly assigned tokens and permissions
+    let _ = get_docker_command()
+        .args(["restart", "canopy-gateway"])
+        .output()
+        .await;
+
+    // Small delay to let the websocket server bind
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+    // 3. Run the OpenClaw native diagnostic repair tool
+    let output = get_docker_command()
+        .args([
+            "exec", "-u", "node", "canopy-gateway",
             "openclaw", "doctor", "--fix",
         ])
         .output()
         .await
         .map_err(|e| format!("Failed to run diagnostic repair: {}", e))?;
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined_logs = format!("{}\n{}", stdout, stderr);
+
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Doctor repair failed: {}", stderr));
+        return Err(format!("Doctor repair failed:\n{}", combined_logs));
     }
 
-    Ok("Diagnostics and repair completed successfully.".to_string())
+    Ok(format!("Diagnostics and repair completed.\nLogs:\n{}", combined_logs))
+}
+
+#[tauri::command]
+pub async fn update_agent_model(
+    agent_id: String,
+    model: String,
+) -> Result<(), String> {
+    let node_script = format!(
+        "const fs = require('fs'); const data = JSON.parse(fs.readFileSync('/home/node/.openclaw/openclaw.json', 'utf8')); data.agents.list = data.agents.list.map(a => a.id === '{}' ? {{ ...a, model: '{}' }} : a); fs.writeFileSync('/home/node/.openclaw/openclaw.json', JSON.stringify(data, null, 2));",
+        agent_id, model
+    );
+    
+    let output = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &node_script])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to update OpenClaw model config: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Docker config overwrite failed: {}", err));
+    }
+
+    // Restart the gateway container fully so the openclaw.json changes propagate into the boot.
+    let output2 = get_docker_command()
+        .args(["restart", "canopy-gateway"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to restart Canopy Gateway: {}", e))?;
+
+    if !output2.status.success() {
+        let err = String::from_utf8_lossy(&output2.stderr);
+        return Err(format!("Gateway restart failed: {}", err));
+    }
+
+    Ok(())
+}
+#[tauri::command]
+pub async fn approve_slack_pairing(
+    code: String,
+) -> Result<String, String> {
+    let output = get_docker_command()
+        .args([
+            "exec", "-u", "node", "canopy-gateway", "openclaw", "pairing", "approve", "slack", &code
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run pairing command: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+
+    if !output.status.success() {
+        if combined.is_empty() {
+            combined = format!("OpenClaw execution failed silently with status code: {}", output.status);
+        }
+        return Err(combined);
+    }
+
+    Ok(combined)
+}
+
+#[tauri::command]
+pub fn get_user_profile(
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<crate::models::UserProfile, String> {
+    state.get_user_profile().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_user_profile(
+    profile: crate::models::UserProfile,
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<(), String> {
+    state.save_user_profile(&profile).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_global_audit_log(
+    limit: Option<u32>,
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<Vec<crate::db::AuditEntry>, String> {
+    state.get_audit_log(None, limit.unwrap_or(100)).map_err(|e| e.to_string())
 }

@@ -5,9 +5,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use tauri::Emitter;
+use tauri::Manager;
 use tauri::State;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
@@ -112,64 +111,6 @@ struct ConnectionsOpenResponse {
     ok: bool,
     url: Option<String>,
     error: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SlackEnvelope {
-    envelope_id: String,
-    payload: Value,
-    #[allow(dead_code)]
-    accepts_response_payload: bool,
-    #[allow(dead_code)]
-    retry_num: Option<u32>,
-    #[allow(dead_code)]
-    retry_reason: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SlackEventPayload {
-    event: Option<SlackEvent>,
-    #[serde(rename = "type")]
-    payload_type: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct SlackEvent {
-    #[serde(rename = "type")]
-    event_type: String,
-    channel: Option<String>,
-    user: Option<String>,
-    text: Option<String>,
-    ts: Option<String>,
-    thread_ts: Option<String>,
-}
-
-// ============================================================================
-// Global State
-// ============================================================================
-
-pub struct SlackListenerState {
-    running: Arc<AtomicBool>,
-}
-
-impl SlackListenerState {
-    fn new() -> Self {
-        Self {
-            running: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    fn is_running(&self) -> bool {
-        self.running.load(Ordering::SeqCst)
-    }
-
-    fn set_running(&self, running: bool) {
-        self.running.store(running, Ordering::SeqCst);
-    }
-}
-
-lazy_static::lazy_static! {
-    static ref SLACK_LISTENER: Arc<RwLock<Option<SlackListenerState>>> = Arc::new(RwLock::new(None));
 }
 
 // ============================================================================
@@ -597,171 +538,65 @@ pub async fn check_slack_connection() -> Result<SlackConnectionStatus, String> {
 
 /// Start listening for Slack events via Socket Mode
 #[tauri::command]
-pub async fn start_slack_listener(
-    app: tauri::AppHandle,
-) -> Result<String, String> {
-    let listener = SLACK_LISTENER.read().await;
-    if listener.is_some() && listener.as_ref().unwrap().is_running() {
-        return Err("Slack listener already running".to_string());
-    }
-    drop(listener);
+pub async fn start_slack_listener() -> Result<String, String> {
+    let app_token = keychain::get_secret("slack-app-token")
+        .map_err(|_| "Slack App Token not set in keychain".to_string())?;
+        
+    let bot_token = keychain::get_secret("slack-bot-token")
+        .map_err(|_| "Slack Bot Token not set in keychain".to_string())?;
 
-    let state = SlackListenerState::new();
-    state.set_running(true);
+    if app_token.trim().is_empty() { return Err("Slack App Token is blank".to_string()); }
+    if bot_token.trim().is_empty() { return Err("Slack Bot Token is blank".to_string()); }
 
-    let running_flag = state.running.clone();
-
-    let mut listener = SLACK_LISTENER.write().await;
-    *listener = Some(state);
-    drop(listener);
-
-    let app_clone = app.clone();
-
-    tokio::spawn(async move {
-        if let Err(e) = run_slack_listener(app_clone, running_flag).await {
-            error!("Slack listener error: {}", e);
-        }
-    });
-
-    info!("Slack listener started");
-    Ok("Slack listener started".to_string())
-}
-
-async fn run_slack_listener(
-    app: tauri::AppHandle,
-    running: Arc<AtomicBool>,
-) -> Result<(), String> {
-    loop {
-        if !running.load(Ordering::SeqCst) {
-            info!("Slack listener stopped");
-            break;
-        }
-
-        // Get app-level token for Socket Mode
-        let app_token = keychain::get_secret("slack-app-token")
-            .map_err(|e| format!("Failed to get app token: {}", e))?;
-
-        // Get WSS URL
-        let wss_url = get_wss_url(&app_token).await?;
-
-        // Connect to WebSocket
-        if let Err(e) = connect_socket_mode(&wss_url, &app, &running).await {
-            warn!("WebSocket error: {}, reconnecting in 5s...", e);
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-            continue;
-        }
-    }
-
-    Ok(())
-}
-
-async fn get_wss_url(app_token: &str) -> Result<String, String> {
-    let client = Client::new();
-    let response: ConnectionsOpenResponse = client
-        .post(&format!("{}/apps.connections.open", SLACK_API_BASE))
-        .bearer_auth(app_token)
-        .send()
+    let output = crate::openclaw::get_docker_command()
+        .args([
+            "exec", "-u", "node", "canopy-gateway",
+            "openclaw", "channels", "add",
+            "--channel", "slack",
+            "--bot-token", bot_token.trim(),
+            "--app-token", app_token.trim()
+        ])
+        .output()
         .await
-        .map_err(|e| format!("Failed to get WSS URL: {}", e))?
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse WSS response: {}", e))?;
+        .map_err(|e| format!("Failed to initiate OpenClaw Slack bridge: {}", e))?;
 
-    if !response.ok {
-        let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
-        return Err(format!("Failed to open connection: {}", error));
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+        if combined.is_empty() {
+            combined = format!("Container crashed silently natively with exit code: {}", output.status);
+        }
+        error!("OpenClaw channels native error: {}", combined);
+        return Err(format!("OpenClaw natively failed to connect Slack channel: {}", combined));
     }
 
-    response.url.ok_or_else(|| "No URL in response".to_string())
-}
-
-async fn connect_socket_mode(
-    wss_url: &str,
-    app: &tauri::AppHandle,
-    running: &Arc<AtomicBool>,
-) -> Result<(), String> {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::connect_async;
-    use tokio_tungstenite::tungstenite::Message;
-
-    let (ws_stream, _) = connect_async(wss_url)
-        .await
-        .map_err(|e| format!("WebSocket connection failed: {}", e))?;
-
-    info!("Connected to Slack Socket Mode");
-
-    let (mut write, mut read) = ws_stream.split();
-
-    // Handle incoming messages
-    while let Some(msg_result) = read.next().await {
-        if !running.load(Ordering::SeqCst) {
-            break;
-        }
-
-        match msg_result {
-            Ok(msg) => {
-                if let Ok(text) = msg.to_text() {
-                    if let Ok(envelope) = serde_json::from_str::<SlackEnvelope>(text) {
-                        // Acknowledge envelope
-                        let ack = json!({
-                            "envelope_id": envelope.envelope_id,
-                        });
-
-                        let _ = write.send(Message::Text(ack.to_string())).await;
-
-                        // Process payload
-                        if let Ok(payload) = serde_json::from_value::<SlackEventPayload>(
-                            envelope.payload.clone(),
-                        ) {
-                            if payload.payload_type == Some("events_api".to_string()) {
-                                if let Some(event) = payload.event {
-                                    if event.event_type == "message" {
-                                        if let (Some(channel), Some(user), Some(text), Some(ts)) =
-                                            (event.channel, event.user, event.text, event.ts)
-                                        {
-                                            let message = SlackMessage {
-                                                ts,
-                                                channel_id: channel,
-                                                user,
-                                                text,
-                                                thread_ts: event.thread_ts,
-                                            };
-
-                                            debug!("Slack message received: {:?}", message);
-                                            let _ = app.emit(
-                                                "slack://new-message",
-                                                &message,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("WebSocket error: {}", e);
-                return Err(format!("WebSocket error: {}", e));
-            }
-        }
-    }
-
-    Ok(())
+    info!("Slack listener natively linked inside Docker successfully.");
+    Ok("Slack OpenClaw Bridge linked".to_string())
 }
 
 /// Stop listening for Slack events
 #[tauri::command]
 pub async fn stop_slack_listener() -> Result<(), String> {
-    let mut listener = SLACK_LISTENER.write().await;
-    if let Some(state) = listener.as_ref() {
-        state.set_running(false);
-        *listener = None;
-        info!("Slack listener stopped");
-        Ok(())
-    } else {
-        Err("Slack listener not running".to_string())
+    let output = crate::openclaw::get_docker_command()
+        .args([
+            "exec", "-u", "node", "canopy-gateway",
+            "openclaw", "channels", "remove",
+            "--channel", "slack"
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to remove OpenClaw Slack bridge: {}", e))?;
+        
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+        warn!("Failed to seamlessly tear down Slack channel in OpenClaw: {}", combined);
     }
+
+    info!("Slack listener natively disabled in OpenClaw.");
+    Ok(())
 }
 
 // ============================================================================

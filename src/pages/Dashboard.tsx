@@ -17,6 +17,10 @@ interface Agent {
     messages_handled: number;
     uptime_seconds: number;
     total_cost_usd: number;
+    custom_metrics?: {
+      label: string;
+      value: string | number;
+    }[];
   };
 }
 

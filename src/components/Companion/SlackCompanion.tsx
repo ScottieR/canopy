@@ -35,15 +35,12 @@ export function SlackCompanion() {
           // Tell the main window we succeeded!
           await emit("slack-connected", { workspace: res.workspace_name });
           await invoke("start_slack_listener").catch(e => console.warn(e));
-          
           setTimeout(async () => {
              try {
-                const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                await emit("companion-finished", { type: "slack", key: null });
+                const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                 await getCurrentWebviewWindow().close();
-             } catch (e) {
-                const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                await getCurrentWindow().close();
-             }
+             } catch(e) {}
           }, 3000);
         } else {
           setTestStatus("error");
@@ -64,7 +61,7 @@ export function SlackCompanion() {
   };
 
   return (
-    <div style={{
+    <div data-tauri-drag-region style={{
       width: "100%", height: "100vh",
       background: "linear-gradient(to bottom, #faf9f6, #f0eee9)",
       fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
@@ -73,15 +70,23 @@ export function SlackCompanion() {
       overflowY: "auto",
       overflowX: "hidden"
     }}>
-      <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", width: "100%", height: 40 }}>
-         <div data-tauri-drag-region style={{ flex: 1, WebkitAppRegion: "drag", cursor: "grab" }} />
-         <div style={{ padding: "0 16px", cursor: "pointer", opacity: 0.5, fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
+      <div style={{ position: "sticky", top: 0, zIndex: 9999, display: "flex", width: "100%", height: 32 }}>
+         <div data-tauri-drag-region 
+              style={{ flex: 1, cursor: "grab", WebkitAppRegion: "drag", height: "100%" }} 
+              onPointerDown={async () => {
+                 try {
+                     const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                     await getCurrentWebviewWindow().startDragging();
+                 } catch(e) {}
+              }}
+         />
+         <div style={{ padding: "0 16px", cursor: "pointer", opacity: 0.8, fontSize: 18, fontWeight: 'bold', display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000 }} onClick={async () => {
              try {
-                const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                // Definitively close THIS exact window directly from the inside rather than relying on a global event listener sweep.
+                const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                 await getCurrentWebviewWindow().close();
              } catch (e) {
-                const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                await getCurrentWindow().close();
+                console.error("Direct close failed", e);
              }
          }}>✕</div>
       </div>

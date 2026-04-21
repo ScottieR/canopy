@@ -106,13 +106,14 @@ export function AgentCard({ agent, isSelected, onClick }: AgentCardProps) {
 
       {/* Expanded stats */}
       {isSelected && (
-        <div className="flex gap-4 mt-3 pt-2.5 border-t border-canopy-border animate-fade-slide-up">
+        <div className="flex gap-4 mt-3 pt-2.5 border-t border-canopy-border animate-fade-slide-up flex-wrap">
           {[
             ["Tasks", agent.stats.tasks_today],
             ["Messages", agent.stats.messages_handled],
-            ["Uptime", agent.stats.uptime_seconds],
+            ["Uptime", `${agent.stats.uptime_seconds}s`],
+            ...(agent.stats.custom_metrics ? agent.stats.custom_metrics.map(m => [m.label, m.value]) : [])
           ].map(([label, val]) => (
-            <div key={label as string}>
+            <div key={label as string} className="min-w-[60px]">
               <div className="text-base font-semibold" style={{ color: agent.color }}>
                 {val}
               </div>

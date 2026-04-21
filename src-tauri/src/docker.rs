@@ -139,14 +139,14 @@ fn generate_compose_file(data_dir: &PathBuf) -> String {
     environment:
       - NODE_ENV=production
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:18789/api/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:18789/status"]
       interval: 30s
       timeout: 10s
       retries: 3
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 2G
 
 volumes:
   openclaw-state:
@@ -179,14 +179,14 @@ pub fn generate_isolated_compose(agent_id: &str, data_dir: &PathBuf, host_port: 
     networks:
       - isolated-{id}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:18789/api/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:18789/status"]
       interval: 30s
       timeout: 10s
       retries: 3
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 2G
 
 networks:
   isolated-{id}:
@@ -196,6 +196,16 @@ networks:
         data = data_dir.display(),
         port = host_port
     )
+}
+
+pub fn get_docker_compose_command() -> tokio::process::Command {
+    if let Some(home) = dirs::home_dir() {
+        let orb_compose = home.join(".orbstack/bin/docker-compose");
+        if orb_compose.exists() {
+            return tokio::process::Command::new(orb_compose);
+        }
+    }
+    tokio::process::Command::new("docker-compose")
 }
 
 #[tauri::command]
@@ -211,7 +221,7 @@ pub async fn start_gateway() -> Result<String, String> {
     let compose_path = data_dir.join("docker-compose.yml");
     std::fs::write(&compose_path, compose).map_err(|e| e.to_string())?;
 
-    let mut cmd = tokio::process::Command::new("docker-compose");
+    let mut cmd = get_docker_compose_command();
     
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let orbstack_sock = home_dir.join(".orbstack/run/docker.sock");
@@ -241,7 +251,7 @@ pub async fn stop_gateway() -> Result<String, String> {
 
     let compose_path = data_dir.join("docker-compose.yml");
 
-    let mut cmd = tokio::process::Command::new("docker-compose");
+    let mut cmd = get_docker_compose_command();
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
     let orbstack_sock = home_dir.join(".orbstack/run/docker.sock");
     if orbstack_sock.exists() {

@@ -30,6 +30,10 @@ describe('AgentCard', () => {
         messages_handled: 12,
         uptime_seconds: 3600,
         total_cost_usd: 0.45,
+        custom_metrics: [
+          { label: "Bugs Fixed", value: 12 },
+          { label: "Speed", value: "Fast" }
+        ]
       },
     };
   });
@@ -103,6 +107,14 @@ describe('AgentCard', () => {
       mockAgent.stats.tasks_today = 15;
       render(<AgentCard agent={mockAgent} isSelected />);
       expect(screen.getByText('15')).toBeDefined();
+    });
+
+    it('should display custom metrics if provided', () => {
+      render(<AgentCard agent={mockAgent} isSelected />);
+      expect(screen.getByText('Bugs Fixed')).toBeDefined();
+      expect(screen.getByText('12')).toBeDefined();
+      expect(screen.getByText('Speed')).toBeDefined();
+      expect(screen.getByText('Fast')).toBeDefined();
     });
   });
 

@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { WorldScene } from "./components/World/WorldScene";
 import RAW_AGENT_TYPE_INFO from "../shared/agents.json";
-import { GLBAgent } from "./components/World/GLBAgent";
+import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
 import { UpdateManager } from "./components/shared/UpdateManager";
@@ -100,6 +100,10 @@ interface Agent {
     messages_handled: number;
     uptime_seconds: number;
     total_cost_usd: number;
+    custom_metrics?: {
+      label: string;
+      value: string | number;
+    }[];
   };
 }
 
@@ -159,11 +163,11 @@ interface WorldState {
   agents: AgentData[];
   selectedAgent: string | null;
   hoveredAgent: string | null;
-  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault";
+  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "profile";
   architectTab: string;
   setSelectedAgent: (id: string | null) => void;
   setHoveredAgent: (id: string | null) => void;
-  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library") => void;
+  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "profile") => void;
   setArchitectTab: (tab: string) => void;
   togglePermission: (agentId: string, permissionId: string) => void;
   updateAgentPosition: (id: string, pos: [number, number, number]) => void;
@@ -172,6 +176,8 @@ interface WorldState {
   setAgents: (agents: AgentData[]) => void;
   addAgent: (agent: AgentData) => void;
   toggleIsolation: (agentId: string) => void;
+  theme: "light" | "dark";
+  toggleTheme: () => void;
 }
 
 // ─── World Zones ─────────────────────────────────────────────────────────────
@@ -196,6 +202,8 @@ const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "file_write", label: "File System Write", description: "Create and modify files", enabled: false, category: "data" },
   { id: "payments", label: "Payment Authorization", description: "Request virtual cards for purchases", enabled: false, category: "financial" },
   { id: "spend_auto", label: "Auto-Approve Under Limit", description: "Auto-approve purchases under threshold", enabled: false, category: "financial" },
+  { id: "imessage", label: "iMessage Interception", description: "Read and reply to text messages", enabled: false, category: "network" },
+  { id: "photos", label: "Apple Photos", description: "Access local photo library database", enabled: false, category: "data" },
 ];
 
 // ─── Agent Type Mappings ──────────────────────────────────────────────────────
@@ -241,6 +249,20 @@ function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record
   return basePrompt;
 }
 
+export function injectPrincipalContext(basePrompt: string, profile: UserProfile | null) {
+  if (!profile || profile.name === "Admin" && !profile.global_directives) return basePrompt;
+  
+  let principal = `\n\n=== PRINCIPAL CONTEXT ===\nYou are acting on behalf of ${profile.name}.`;
+  if (profile.email) principal += `\nEmail: ${profile.email}`;
+  if (profile.phone) principal += `\nPhone: ${profile.phone}`;
+  if (profile.timezone) principal += `\nTimezone: ${profile.timezone}`;
+  if (profile.working_hours) principal += `\nWorking Hours: ${profile.working_hours}`;
+  if (profile.communication_tone) principal += `\nRequired Tone: ${profile.communication_tone}`;
+  if (profile.global_directives) principal += `\nGLOBAL DIRECTIVES: ${profile.global_directives}`;
+  
+  return basePrompt + principal;
+}
+
 // ─── Store ───────────────────────────────────────────────────────────────────
 
 const useWorldStore = create<WorldState>((set) => ({
@@ -249,6 +271,8 @@ const useWorldStore = create<WorldState>((set) => ({
   hoveredAgent: null,
   activeView: "loading",
   architectTab: "overview",
+  theme: "light",
+  toggleTheme: () => set((state) => ({ theme: state.theme === "light" ? "dark" : "light" })),
   setSelectedAgent: (id) => set({ selectedAgent: id }),
   setHoveredAgent: (id) => set({ hoveredAgent: id }),
   setActiveView: (view) => set({ activeView: view }),
@@ -623,6 +647,8 @@ function ProgressBar({ value, max = 1, color = "#3c6663", height = 4 }: { value:
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function OnboardingWizard() {
+  const { agents } = useWorldStore();
+  const initialStepTarget = agents.length > 0 ? 1 : 0;
   const [step, setStep] = useState(-1);
   const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "starting" | "ready">("checking");
   const [engineError, setEngineError] = useState("");
@@ -637,7 +663,7 @@ function OnboardingWizard() {
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[] } | null>(null);
 
-  const [plugins, setPlugins] = useState<Record<string, boolean>>({ slack: false, imessage: false, email: false, calendar: false, folders: false });
+  const [plugins, setPlugins] = useState<Record<string, boolean>>({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
   const [folderAccessType, setFolderAccessType] = useState<"specific" | "all">("specific");
   const [selectedFolderPath, setSelectedFolderPath] = useState("");
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
@@ -659,8 +685,8 @@ function OnboardingWizard() {
     const setupListener = async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
-        const unlisten = await listen('companion-finished', async (e: any) => {
-          const { type, key } = e.payload;
+        const unlisten1 = await listen('companion-finished', async (e: any) => {
+          const { type, key } = e.payload || {};
           if (key) {
              setApiKey(key);
              if (type === "gemini") setLlmProvider("Google Gemini");
@@ -669,27 +695,33 @@ function OnboardingWizard() {
              else if (type === "xai") setLlmProvider("xAI Grok");
              setApiKeyMode("manual");
           }
-          
           try {
-             const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-             const w = await getCurrentWebviewWindow().getByLabel?.('companion'); // Wait, getCurrent() isn't what we want. We need the WebviewWindow class.
-             // Actually wait, let me just let CompanionGuide emit the event, and then we'll try to let CompanionGuide close itself properly, BUT I'll also add a fallback close here.
-             // It's safer to just import the constructor and use getByLabel.
-          } catch(err) {}
-          
-          try {
-            const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-            const w = WebviewWindow.getByLabel('companion');
-            if (w) await w.close();
+             // Use Tauri V2 getAllWebviewWindows to grab all labeled instances regardless of their dynamic Date.now() tail
+             const { getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow');
+             const windows = await getAllWebviewWindows();
+             for (const w of windows) {
+                if (w.label.toLowerCase().includes('companion')) {
+                   await w.close().catch(console.warn);
+                }
+             }
           } catch(err) {
-            try {
-              const { Window } = await import('@tauri-apps/api/window');
-              const w2 = Window.getByLabel('companion');
-              if (w2) await w2.close();
-            } catch(e2) {}
+             console.error("Failed to close companions automatically:", err);
           }
         });
-        return unlisten;
+
+        const unlisten2 = await listen('close-companion', async () => {
+          try {
+             const { getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow');
+             const windows = await getAllWebviewWindows();
+             for (const w of windows) {
+                if (w.label.toLowerCase().includes('companion')) {
+                   await w.close().catch(console.warn);
+                }
+             }
+          } catch(err) {}
+        });
+
+        return () => { unlisten1(); unlisten2(); };
       } catch(e) { return () => {}; }
     };
     let unlistenFn: any;
@@ -711,12 +743,12 @@ function OnboardingWizard() {
               setEngineStatus("starting");
               await safeStartGateway();
               setEngineStatus("ready");
-              setStep(0);
+              setStep(initialStepTarget);
             } else {
               setEngineStatus("missing");
             }
           } else {
-            setStep(0);
+            setStep(initialStepTarget);
           }
         } catch (e) {
           setEngineError(e as string);
@@ -760,6 +792,17 @@ function OnboardingWizard() {
     const targetId = isHeavy ? strategies.defaultHeavyModel : strategies.defaultLightModel;
     const match = models.find((m: any) => m.id === targetId);
     return { provider: match?.provider || "OpenAI", model: `${match?.name} (${match?.description})`, id: match?.id };
+  };
+
+  const getProviderRecommendedModel = (role: string, targetProvider: string) => {
+    if (!modelStrategies || !modelStrategies.strategies) return { model: "Standard Model" };
+    const { strategies, models } = modelStrategies;
+    const isHeavy = strategies.heavy.includes(role);
+    const options = models.filter((m: any) => m.provider === targetProvider && m.strategy === (isHeavy ? "heavy" : "light"));
+    if (options.length > 0) return { model: `${options[0].name} (${options[0].description})` };
+    const fallbacks = models.filter((m: any) => m.provider === targetProvider);
+    if (fallbacks.length > 0) return { model: `${fallbacks[0].name} (${fallbacks[0].description})` };
+    return { model: "Standard Model" };
   };
 
   const startImportFlow = async () => {
@@ -868,6 +911,15 @@ function OnboardingWizard() {
       let finalPrompt = personalityPrompt;
       if (recentlyRead.length > 0) {
         finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
+      }
+      
+      try {
+        if (typeof invoke === 'function') {
+          const profile: any = await invoke("get_user_profile");
+          finalPrompt = injectPrincipalContext(finalPrompt, profile);
+        }
+      } catch (e) {
+        console.error("Failed to inject principal context:", e);
       }
       
       let newAgentData: Agent;
@@ -1108,10 +1160,10 @@ function OnboardingWizard() {
         <div style={{ maxWidth: 900, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
             <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
-              Create your first agent
+              {agents.length > 0 ? "Add another agent" : "Create your first agent"}
             </h1>
             <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, textAlign: "center" }}>
-              You can create additional agents later
+              {agents.length > 0 ? "How should we grow the team?" : "You can create additional agents later"}
             </p>
 
             <div style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 32 }}>
@@ -1125,7 +1177,7 @@ function OnboardingWizard() {
 
             <div style={{
               display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16,
-              marginBottom: 40,
+              padding: "16px 8px", marginBottom: 24,
             }}>
               {roleTypes.map(role => (
                 <div key={role.key} style={{ display: "flex", flexDirection: "column" }}>
@@ -1314,7 +1366,14 @@ function OnboardingWizard() {
               <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>Agent Name</label>
               <input
                 value={agentName}
-                onChange={e => setAgentName(e.target.value)}
+                onChange={e => {
+                   const oldName = agentName || "Agent";
+                   const newName = e.target.value;
+                   setAgentName(newName);
+                   if (personalityPrompt.includes(oldName)) {
+                      setPersonalityPrompt(personalityPrompt.replaceAll(oldName, newName || "Agent"));
+                   }
+                }}
                 placeholder="e.g., Atlas, Nova, Sage..."
                 style={{
                   width: "100%", padding: "14px 18px", borderRadius: 12,
@@ -1450,7 +1509,11 @@ function OnboardingWizard() {
 
             {selectedRole && (
               <div style={{ marginBottom: 24, fontSize: 14, color: "#303330", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
-                Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.
+                 {llmProvider && llmProvider !== getDynamicRecommendedModel(selectedRole).provider ? (
+                   <>Since you selected <strong>{llmProvider}</strong> for the <strong>{selectedRole}</strong> role, we recommend using <strong>{getProviderRecommendedModel(selectedRole, llmProvider).model}</strong>.</>
+                 ) : (
+                   <>Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.</>
+                 )}
               </div>
             )}
 
@@ -1573,15 +1636,17 @@ function OnboardingWizard() {
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
             <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
-            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>Give your agent the tools they need to interact with your world.</p>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, lineHeight: 1.5 }}>
+              Give your agent the tools they need to interact with your world. We'll configure granular security bounds for these connections — like specific folders, email labels, and message threads — on the next screen.
+            </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
-              {(["slack", "email", "calendar", "folders"] as const).map(p => (
+              {(["slack", "email", "calendar", "folders", "imessage", "photos"] as const).map(p => (
                 <div key={p} style={{ display: "flex", flexDirection: "column" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#ffffff", padding: "16px 20px", borderRadius: plugins[p] && p === "folders" ? "12px 12px 0 0" : 12, border: plugins[p] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
                     <div>
-                      <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{p} Access</div>
-                      <div style={{ fontSize: 13, color: "#636E72", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p}.</div>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", textTransform: p === "imessage" || p === "photos" ? "none" : "capitalize" }}>{p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p} Access</div>
+                      <div style={{ fontSize: 13, color: "#636E72", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p}.</div>
                     </div>
                     <Toggle enabled={plugins[p]} onChange={() => setPlugins(prev => ({ ...prev, [p]: !prev[p] }))} />
                   </div>
@@ -1761,11 +1826,36 @@ function OnboardingWizard() {
                 </div>
 
                 {fullDiskAccessGranted === false && (
-                  <div style={{ padding: 16, background: "rgba(229,62,62,0.05)", borderRadius: 12, border: "1px solid rgba(229,62,62,0.15)", marginBottom: 20 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#E53E3E", marginBottom: 8 }}>Full Disk Access Required</div>
-                    <div style={{ fontSize: 12, color: "#636E72", marginBottom: 12, lineHeight: 1.4 }}>
-                      macOS blocks access to iMessage. Please go to <strong>System Settings &gt; Privacy &amp; Security &gt; Full Disk Access</strong> and allow Canopy/development terminal.
+                  <div style={{ padding: "20px", background: "#f8f9fa", borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)", marginBottom: 20, animation: "slideIn 0.3s ease" }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Permission Required</div>
+                    <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20, lineHeight: 1.5 }}>
+                      macOS blocks access to iMessage databases by default. To securely connect this, please toggle Canopy <strong>on</strong> in your System Settings under <strong>Full Disk Access</strong>.
                     </div>
+                    
+                    <div style={{ background: "#ffffff", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid rgba(0,0,0,0.08)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", marginBottom: 20 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #3c6663, #2a4745)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 18, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>C</div>
+                        <div style={{ fontSize: 15, fontWeight: 600, color: "#1D1D1F" }}>Canopy</div>
+                      </div>
+                      <div style={{ position: "relative" }}>
+                         <div style={{ width: 51, height: 31, background: "#34C759", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: 2, boxSizing: "border-box", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.1)" }}>
+                           <div style={{ width: 27, height: 27, background: "white", borderRadius: "50%", boxShadow: "0 2px 4px rgba(0,0,0,0.2), 0 1px 1px rgba(0,0,0,0.1)" }} />
+                         </div>
+                         <div style={{ position: "absolute", top: -4, left: -4, right: -4, bottom: -4, border: "2px solid #007AFF", borderRadius: 24, animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }} />
+                      </div>
+                    </div>
+
+                    <button onClick={async () => {
+                       try {
+                          const { open } = await import("@tauri-apps/plugin-shell");
+                          await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+                       } catch (e) {
+                          console.error("Failed to open System Settings", e);
+                       }
+                    }} style={{ width: "100%", padding: "14px 16px", background: "#3c6663", color: "white", border: "none", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
+                      Open System Settings
+                    </button>
+                    <div style={{ fontSize: 12, color: "#a0aab2", marginTop: 12, textAlign: "center" }}>Click <b>Run Test</b> below once you've flipped the system toggle!</div>
                   </div>
                 )}
 
@@ -2119,15 +2209,17 @@ function OnboardingWizard() {
 
 function ArchitectView({ agent }: { agent: AgentData }) {
   const { setActiveView, architectTab, setArchitectTab, togglePermission } = useWorldStore();
+  const [showDangerZone, setShowDangerZone] = useState(false);
 
   const tabs = [
     { id: "overview", label: "Overview", icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
+    { id: "chat", label: "Chat", icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
     { id: "identity", label: "3D Identity", icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
     { id: "personality", label: "Neural Path", icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
     { id: "permissions", label: "Permissions", icon: <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /> },
+    { id: "connections", label: "Connections", icon: <path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /> },
     { id: "memory", label: "Memory", icon: <path d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M4 7c0-2 1-3 3-3h10c2 0 3 1 3 3M4 7h16M10 11h4" /> },
     { id: "spend", label: "Spend", icon: <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" /> },
-    { id: "chat", label: "Communion", icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
   ];
 
   const SvgIcon = ({ children, size = 20 }: { children: React.ReactNode; size?: number }) => (
@@ -2185,16 +2277,61 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 
         <div style={{ flex: 1 }} />
 
-        {/* Deploy button */}
-        <button style={{
-          padding: "12px 16px", borderRadius: 12, border: "none", cursor: "pointer",
-          background: "linear-gradient(135deg, #3c6663, #b8e6e2)", color: "white",
-          fontSize: 13, fontWeight: 600, fontFamily: "inherit",
-          boxShadow: "0 4px 12px rgba(33,131,128,0.25)",
-          transition: "all 0.2s ease",
-        }}>
-          Deploy Agent
-        </button>
+        {/* Danger Zone */}
+        <div style={{ padding: "10px 0", borderTop: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", gap: 8, position: "relative" }}>
+          <button 
+            onClick={() => setShowDangerZone(!showDangerZone)}
+            style={{ background: "transparent", border: "none", color: "#B2BEC3", cursor: "pointer", textAlign: "right", padding: "4px 8px" }}
+          >
+             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: showDangerZone ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
+                <polyline points="18 15 12 9 6 15"></polyline>
+             </svg>
+          </button>
+          
+          {showDangerZone && (
+            <div style={{
+               background: "#fff", borderRadius: 12, padding: 12, border: "1px solid #f2bdbd", boxShadow: "0 4px 12px rgba(198,40,40,0.08)"
+            }}>
+               <div style={{ fontSize: 10, fontWeight: 800, color: "#C62828", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.05em" }}>Danger Zone</div>
+               <button 
+                  onClick={async () => {
+                     // Pause disables execution permissions locally and backend
+                     const { invoke } = await import('@tauri-apps/api/core');
+                     const newPerms = agent.permissions.map(p => 
+                        (p.id === "autonomous" || p.id === "scheduled") ? { ...p, enabled: false } : p
+                     );
+                     
+                     const capabilitiesObj: any = {};
+                     newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                     useWorldStore.getState().setAgents(
+                        useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, permissions: newPerms } as AgentData : a)
+                     );
+                     await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+                  }}
+                  style={{ width: "100%", padding: "8px 12px", background: "#f9f9f9", color: "#636E72", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6 }}
+               >
+                  Pause Agent
+               </button>
+               <button 
+                  onClick={async () => {
+                     const isConfirmed = window.confirm(`Are you absolutely sure you want to permanently delete ${agent.name}? This cannot be undone.`);
+                     if (!isConfirmed) return;
+                     try {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        await invoke("delete_agent", { agentId: agent.id });
+                        useWorldStore.getState().setAgents(useWorldStore.getState().agents.filter(a => a.id !== agent.id));
+                        useWorldStore.getState().setActiveView("canopy");
+                     } catch(e) {
+                        alert("Failed to delete agent: " + e);
+                     }
+                  }}
+                  style={{ width: "100%", padding: "8px 12px", background: "#fdeaea", color: "#C62828", border: "1px solid #f2bdbd", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+               >
+                  Delete Agent
+               </button>
+            </div>
+          )}
+        </div>
 
         <button 
           onClick={async () => {
@@ -2202,6 +2339,18 @@ function ArchitectView({ agent }: { agent: AgentData }) {
              if(btn) btn.innerText = "Running Diagnostics...";
              try {
                 if (typeof invoke === 'function') {
+                   const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
+                   const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
+                   const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
+                   const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
+                   
+                   await invoke("sync_credentials", { agentId: agent.id, keys: {
+                       "ANTHROPIC_API_KEY": String(anthropic || ""),
+                       "OPENAI_API_KEY": String(openai || ""),
+                       "GEMINI_API_KEY": String(gemini || ""),
+                       "XAI_API_KEY": String(xai || "")
+                   }}).catch((err) => console.error("Sync credentials failed:", err));
+
                    const res = await invoke("repair_gateway", { agentId: agent.id });
                    if(btn) btn.innerText = "Config Repaired!";
                 }
@@ -2237,6 +2386,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         {architectTab === "identity" && <IdentityTab agent={agent} />}
         {architectTab === "personality" && <PersonalityTab agent={agent} />}
         {architectTab === "permissions" && <PermissionsTab agent={agent} />}
+        {architectTab === "connections" && <ConnectionsTab agent={agent} />}
         {architectTab === "memory" && <MemoryTab agent={agent} />}
         {architectTab === "spend" && <SpendTab agent={agent} />}
         {architectTab === "chat" && <ChatTab agent={agent} />}
@@ -2245,39 +2395,270 @@ function ArchitectView({ agent }: { agent: AgentData }) {
   );
 }
 
+// ─── Connections Tab ─────────────────────────────────────────────────────────
+
+function ConnectionsTab({ agent }: { agent: AgentData }) {
+  const initialEmail = agent.integrations.find(s => s.startsWith("email_"))?.replace("email_", "") || "oauth_read";
+  const initialCalendar = agent.integrations.find(s => s.startsWith("calendar_"))?.replace("calendar_", "") || "oauth_read";
+  const initialStrategy = agent.integrations.find(s => s.startsWith("strategy_"))?.replace("strategy_", "") || "secure";
+
+  const [strategy, setStrategy] = useState(initialStrategy);
+  const [emailSetting, setEmailSetting] = useState(initialEmail);
+  const [calendarSetting, setCalendarSetting] = useState(initialCalendar);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+
+  useEffect(() => {
+    if (strategy === "lockdown") {
+      setEmailSetting("dedicated");
+      setCalendarSetting("dedicated");
+    } else if (strategy === "secure") {
+      setEmailSetting("oauth_read");
+      setCalendarSetting("oauth_read");
+    } else if (strategy === "yolo") {
+      setEmailSetting("oauth_write");
+      setCalendarSetting("oauth_write");
+    }
+  }, [strategy]);
+
+  const openCompanion = async (type: string) => {
+    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+    new WebviewWindow('companion', {
+      url: `/?companion=${type}`,
+      width: 400,
+      height: 750,
+      alwaysOnTop: true,
+      titleBarStyle: 'overlay'
+    });
+  };
+
+  const saveConnections = async () => {
+    setSaveStatus("loading");
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const newIntegrations = [
+        `strategy_${strategy}`,
+        `email_${emailSetting}`,
+        `calendar_${calendarSetting}`
+      ];
+      await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+      // Update global state
+      useWorldStore.getState().setAgents(
+         useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+      );
+      setSaveStatus("success");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch(e) {
+      console.error(e);
+      setSaveStatus("error");
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: 800, margin: "0 auto", paddingBottom: 60, width: "100%" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 40 }}>
+        <div>
+          <h2 style={{ fontSize: 24, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Connections & Permissions</h2>
+          <p style={{ fontSize: 14, color: "#636E72", lineHeight: 1.5 }}>
+            Manage how this agent connects to external services. You can set a global strategy or customize individually.
+          </p>
+        </div>
+        <button onClick={saveConnections} disabled={saveStatus === "loading"} style={{
+          padding: "10px 24px", borderRadius: 12, border: "none", cursor: "pointer",
+          background: "#3c6663", color: "white", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
+        }}>
+          {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Integrations"}
+        </button>
+      </div>
+
+      <div style={{ marginBottom: 40 }}>
+        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "#B2BEC3", marginBottom: 16 }}>Global Connection Strategy</h3>
+        <div style={{ display: "flex", gap: 12 }}>
+          {/* Lockdown */}
+          <button onClick={() => setStrategy("lockdown")} style={{
+            flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+            border: strategy === "lockdown" ? "2px solid #2E7D32" : "1px solid rgba(0,0,0,0.06)",
+            background: strategy === "lockdown" ? "#e8f5e9" : "white",
+          }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#2E7D32", marginBottom: 4 }}>Total Lock Down</div>
+            <div style={{ fontSize: 12, color: strategy === "lockdown" ? "#1B5E20" : "#636E72" }}>Agent uses isolated, dedicated sandbox accounts.</div>
+          </button>
+          
+          {/* Secure */}
+          <button onClick={() => setStrategy("secure")} style={{
+            flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+            border: strategy === "secure" ? "2px solid #00ACC1" : "1px solid rgba(0,0,0,0.06)",
+            background: strategy === "secure" ? "#e0f7fa" : "white",
+          }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#00ACC1", marginBottom: 4 }}>Secure Power</div>
+            <div style={{ fontSize: 12, color: strategy === "secure" ? "#006064" : "#636E72" }}>Read-only OAuth access to your real accounts.</div>
+          </button>
+
+          {/* YOLO */}
+          <button onClick={() => setStrategy("yolo")} style={{
+            flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+            border: strategy === "yolo" ? "2px solid #C62828" : "1px solid rgba(0,0,0,0.06)",
+            background: strategy === "yolo" ? "#fdeaea" : "white",
+          }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#C62828", marginBottom: 4 }}>YOLO Mode ⚠️</div>
+            <div style={{ fontSize: 12, color: strategy === "yolo" ? "#b71c1c" : "#636E72" }}>Full Read/Write access to user accounts.</div>
+          </button>
+        </div>
+      </div>
+
+      <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "#B2BEC3", marginBottom: 16 }}>Function Settings</h3>
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        
+        {/* Email */}
+        <div style={{ padding: 24, background: "white", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
+          <div style={{ width: "30%" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Email Access</div>
+            <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Interact with email.</div>
+          </div>
+          <div style={{ flex: 1, padding: "0 20px" }}>
+            <select value={emailSetting} onChange={(e) => {
+              setEmailSetting(e.target.value);
+              setStrategy("custom");
+            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "#f9f9f9", fontSize: 14 }}>
+              <option value="dedicated">Dedicated Agent Account (IMAP Forwarded)</option>
+              <option value="oauth_read">User's Real Email via OAuth (Read-Only)</option>
+              <option value="oauth_write">User's Real Email via OAuth (Read/Write ⚠️)</option>
+            </select>
+          </div>
+          <div style={{ width: 120, textAlign: "right" }}>
+            <button onClick={() => openCompanion(`email_${emailSetting}`)} style={{ padding: "8px 16px", background: "#303330", color: "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Connect</button>
+          </div>
+        </div>
+
+        {/* Calendar */}
+        <div style={{ padding: 24, background: "white", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
+          <div style={{ width: "30%" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Calendar Access</div>
+            <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Schedule & reading events.</div>
+          </div>
+          <div style={{ flex: 1, padding: "0 20px" }}>
+            <select value={calendarSetting} onChange={(e) => {
+              setCalendarSetting(e.target.value);
+              setStrategy("custom");
+            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "#f9f9f9", fontSize: 14 }}>
+              <option value="dedicated">Dedicated Sandbox Calendar (Isolated)</option>
+              <option value="oauth_read">User's Real Calendar via OAuth (Read-Only)</option>
+              <option value="oauth_write">User's Real Calendar via OAuth (Read/Write ⚠️)</option>
+            </select>
+          </div>
+          <div style={{ width: 120, textAlign: "right" }}>
+             <button onClick={() => {
+                if (calendarSetting !== "dedicated") {
+                   openCompanion(`calendar_${calendarSetting}`);
+                } else {
+                   alert("Dedicated Calendar is provisioned automatically locally. No credentials needed!");
+                }
+             }} style={{ padding: "8px 16px", background: calendarSetting === "dedicated" ? "#e0e0e0" : "#303330", color: calendarSetting === "dedicated" ? "#888" : "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: calendarSetting === "dedicated" ? "default" : "pointer" }}>
+               {calendarSetting === "dedicated" ? "Active" : "Connect"}
+             </button>
+          </div>
+        </div>
+
+        {/* App Integrations section */}
+        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "#B2BEC3", marginBottom: 16, marginTop: 24 }}>App Integrations</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Slack */}
+          <div style={{ padding: 24, background: "white", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
+            <div style={{ width: "30%" }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Slack</div>
+              <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Work chat & agent interaction.</div>
+            </div>
+            <div style={{ flex: 1, padding: "0 20px" }}>
+              <select value="socket" disabled style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "#f9f9f9", fontSize: 14, cursor: "not-allowed", color: "#636E72" }}>
+                <option value="socket">Private Socket Mode (Local-Only)</option>
+              </select>
+            </div>
+            <div style={{ width: 140, textAlign: "right", display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+               <button onClick={() => openCompanion('slack')} style={{ padding: "8px 16px", background: "#303330", color: "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer", width: "100%" }}>
+                 Connect
+               </button>
+               <div
+                 onClick={async () => {
+                   const code = window.prompt("Enter the 8-character pairing code from Slack:");
+                   if (code && code.trim() !== "") {
+                     try {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        await invoke("approve_slack_pairing", { code: code.trim() });
+                        alert("Slack pairing successful! The agent will now respond in Slack.");
+                     } catch(e) {
+                        alert("Failed to pair: " + String(e));
+                     }
+                   }
+                 }}
+                 style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
+               >
+                 Enter Pair Code ↗
+               </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  );
+}
+
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
 function OverviewTab({ agent }: { agent: AgentData }) {
+  const [repairError, setRepairError] = useState<string | null>(null);
+
   return (
     <div>
       {agent.status === "error" && (
-        <div style={{ background: "#fcf3f3", border: "1px solid #f2bdbd", borderRadius: 16, padding: 24, marginBottom: 32, display: "flex", gap: 20, alignItems: "center" }}>
-          <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#E57373", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Agent Environment Offline</div>
-            <div style={{ fontSize: 13, color: "#636E72" }}>The OpenClaw setup failed or the local Docker container unexpectedly stopped.</div>
-          </div>
-          <button 
-            id="repair-openclaw-btn"
-            onClick={async () => {
-              const btn = document.getElementById('repair-openclaw-btn');
-              if(btn) btn.innerText = "Rebuilding...";
-              try {
-                if (typeof invoke === 'function') {
-                  const res = await invoke("repair_gateway", { agentId: agent.id });
-                  if(btn) btn.innerText = "Repaired!";
+        <div style={{ background: "#fcf3f3", border: "1px solid #f2bdbd", borderRadius: 16, padding: 24, marginBottom: 32 }}>
+          <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+            <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#E57373", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Agent Environment Offline</div>
+              <div style={{ fontSize: 13, color: "#636E72" }}>The OpenClaw setup failed or the local Docker container unexpectedly stopped.</div>
+            </div>
+            <button 
+              id="repair-openclaw-btn"
+              onClick={async () => {
+                const btn = document.getElementById('repair-openclaw-btn');
+                if(btn) btn.innerText = "Rebuilding...";
+                setRepairError(null);
+                try {
+                  if (typeof invoke === 'function') {
+                    const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
+                    const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
+                    const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
+                    const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
+                    
+                    await invoke("sync_credentials", { agentId: agent.id, keys: {
+                        "ANTHROPIC_API_KEY": String(anthropic || ""),
+                        "OPENAI_API_KEY": String(openai || ""),
+                        "GEMINI_API_KEY": String(gemini || ""),
+                        "XAI_API_KEY": String(xai || "")
+                    }}).catch((err) => console.error("Sync credentials failed:", err));
+
+                    const res = await invoke("repair_gateway", { agentId: agent.id });
+                    if(btn) btn.innerText = "Repaired!";
+                    setRepairError(String(res));
+                  }
+                } catch(e) {
+                  if(btn) btn.innerText = "Failed";
+                  setRepairError(String(e));
+                  console.error("Openclaw repair failed:", e);
                 }
-              } catch(e) {
-                if(btn) btn.innerText = "Failed";
-                console.error("Openclaw repair failed:", e);
-              }
-              setTimeout(() => { if(btn) btn.innerText = "Re-Initialize Setup"; }, 2000);
-            }}
-            style={{ padding: "10px 20px", borderRadius: 10, background: "#E57373", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "all 0.2s ease" }}>
-            Re-Initialize Setup
-          </button>
+                setTimeout(() => { if(btn) btn.innerText = "Re-Initialize Setup"; }, 2000);
+              }}
+              style={{ padding: "10px 20px", borderRadius: 10, background: "#E57373", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "all 0.2s ease" }}>
+              Re-Initialize Setup
+            </button>
+          </div>
+          {repairError && (
+            <div style={{ padding: 16, borderRadius: 12, background: "rgba(229,115,115,0.1)", border: "1px solid rgba(229,115,115,0.3)", color: "#c62828", fontSize: 11, marginTop: 20, whiteSpace: "pre-wrap", fontFamily: "'Geist Mono', monospace", maxHeight: 200, overflowY: "auto" }}>
+              {repairError}
+            </div>
+          )}
         </div>
       )}
 
@@ -2294,14 +2675,14 @@ function OverviewTab({ agent }: { agent: AgentData }) {
       {/* Status + Stats row */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Active State</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Current State</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 10, height: 10, borderRadius: "50%",
               background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#B2BEC3",
               boxShadow: agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
             }} />
-            <span style={{ fontSize: 20, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{agent.currentAction}</span>
+            <span style={{ fontSize: 20, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{agent.status === "error" ? "Offline" : agent.currentAction}</span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12, fontSize: 11, color: "#636E72" }}>
             <span>Uptime</span>
@@ -2341,7 +2722,7 @@ function OverviewTab({ agent }: { agent: AgentData }) {
       </div>
 
       {/* Core Nature + Permissions quick view */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr", gap: 16 }}>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 16 }}>Core Nature</div>
           <div style={{ fontSize: 12, color: "#636E72", fontStyle: "italic", lineHeight: 1.5 }}>
@@ -2360,6 +2741,11 @@ function OverviewTab({ agent }: { agent: AgentData }) {
               <Toggle enabled={p.enabled} onChange={() => useWorldStore.getState().togglePermission(agent.id, p.id)} size="small" />
             </div>
           ))}
+        </div>
+
+        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16, display: "flex", flexDirection: "column", maxHeight: 300 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 16 }}>Quick Comms</div>
+          <ChatTab agent={agent} compact={true} />
         </div>
       </div>
     </div>
@@ -2394,33 +2780,65 @@ function IdentityTab({ agent }: { agent: AgentData }) {
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 32, height: "100%" }}>
-      {/* Left: 3D Dressing Room */}
-      <div style={{ display: "flex", flexDirection: "column" }}>
-        <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 1, border: "1px solid rgba(0,0,0,0.06)" }}>
-        <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
-          <ambientLight intensity={0.8} color="#F5E6D8" />
-          <directionalLight position={[10, 20, 5]} intensity={1} />
-          <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
-          <group position={[0, -1, 0]}>
-            {/* Studio floor */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
-              <planeGeometry args={[10, 10]} />
-              <shadowMaterial transparent opacity={0.2} />
-            </mesh>
-            <GLBAgent
-              fileUrl={agent.visual_identity?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
-              accessories={agent.visual_identity?.accessories || []}
-              isWorking={agent.status === "thinking" || agent.status === "active"}
-              scale={1.5}
-            />
-          </group>
-        </Canvas>
-        <div style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.8)", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#218380", display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#218380", animation: "pulse 2s infinite" }} />
-          Live Preview
+      {/* Left: 3D Dressing Room Areas */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        
+        {/* Area 1: Base Lobster & Accessories */}
+        <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 300 }}>
+          <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
+            <ambientLight intensity={0.8} color="#F5E6D8" />
+            <directionalLight position={[10, 20, 5]} intensity={1} />
+            <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
+            <group position={[0, -1, 0]}>
+              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
+                <planeGeometry args={[10, 10]} />
+                <shadowMaterial transparent opacity={0.2} />
+              </mesh>
+              <GLBAgent
+                fileUrl={agent.visual_identity?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
+                accessories={agent.visual_identity?.accessories || []}
+                isWorking={agent.status === "thinking" || agent.status === "active"}
+                scale={1.5}
+              />
+            </group>
+          </Canvas>
+          <div style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.8)", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#218380", display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#218380", animation: "pulse 2s infinite" }} />
+            Core Agent
+          </div>
+        </div>
+
+        {/* Lower row: Standalone Assets */}
+        <div style={{ display: "flex", gap: 16, flex: 1, minHeight: 180 }}>
+          
+          {/* Area 2: Standalone Accessories Rack */}
+          <div style={{ flex: 1, background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
+            <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 90 }}>
+              <ambientLight intensity={0.8} />
+              <directionalLight position={[10, 20, 5]} intensity={1} />
+              <OrbitControls autoRotate autoRotateSpeed={2.5} enablePan={false} />
+              {agent.visual_identity?.accessories && agent.visual_identity.accessories.length > 0 ? (
+                 <SingleGLB url={agent.visual_identity.accessories[0]} />
+              ) : (
+                 <mesh><boxGeometry args={[0.5,0.5,0.5]}/><meshStandardMaterial wireframe color="#cccccc" /></mesh>
+              )}
+            </Canvas>
+            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "#636E72" }}>Component</div>
+          </div>
+
+          {/* Area 3: Pedestal Habitat */}
+          <div style={{ flex: 1, background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
+             <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 70 }}>
+                <ambientLight intensity={0.8} />
+                <directionalLight position={[10, 20, 5]} intensity={1} />
+                <OrbitControls autoRotate autoRotateSpeed={1} enablePan={false} />
+                <Pedestal color={agent.color || "#C8D8E8"} />
+             </Canvas>
+             <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "#636E72" }}>Habitat Platform</div>
+          </div>
+
         </div>
       </div>
-    </div>
 
     {/* Right: Generative Studio */}
       <div style={{ paddingRight: 8, height: "100%", overflow: "hidden" }}>
@@ -2438,11 +2856,188 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
   const [prompt, setPrompt] = useState(base);
   const [recentlyRead, setRecentlyRead] = useState<string[]>(initialBooks);
   const [customBookInput, setCustomBookInput] = useState("");
+  const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+
+  const [modelStrategies, setModelStrategies] = useState<any>(null);
+  useEffect(() => {
+    fetch('http://localhost:3001/api/models')
+      .then(res => res.json())
+      .then(data => setModelStrategies(data))
+      .catch(err => { /* quiet */ });
+  }, []);
+
+  const getDynamicRecommendedModel = () => {
+    if (!modelStrategies || !modelStrategies.strategies) return { provider: "OpenAI", model: "GPT-4o-mini (Fast & Light)", id: "gpt-4o-mini" };
+    const { strategies, models } = modelStrategies;
+    const isHeavy = strategies.heavy.includes(agent.role);
+    
+    let forceProvider = null;
+    let availableKeys = Object.entries(keys).filter(([_, val]) => val && val.trim().length > 0).map(([k]) => k);
+    if (availableKeys.length === 1) {
+      if (availableKeys[0] === "Gemini") forceProvider = "Google Gemini";
+      else forceProvider = availableKeys[0];
+    }
+    
+    let match = null;
+    if (forceProvider) {
+       let provModels = models.filter((m: any) => m.provider === forceProvider);
+       match = provModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"));
+       if (!match && provModels.length > 0) match = provModels[0];
+    }
+    
+    if (!match) {
+       const targetId = isHeavy ? strategies.defaultHeavyModel : strategies.defaultLightModel;
+       match = models.find((m: any) => m.id === targetId);
+    }
+    
+    return { provider: match?.provider || "OpenAI", model: `${match?.name} (${match?.description})`, id: match?.id };
+  };
+
+  const [keys, setKeys] = useState<{ [provider: string]: string }>({
+    "OpenAI": "", "Anthropic": "", "Gemini": "", "Grok": ""
+  });
+  const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+
+  const defaultModelInfo = getDynamicRecommendedModel();
+
+  useEffect(() => {
+    if (typeof invoke === 'function') {
+      const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
+      providers.forEach(prov => {
+        invoke("get_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` })
+          .then(k => setKeys(prev => ({ ...prev, [prov]: k as string })))
+          .catch(() => {});
+      });
+    }
+  }, [agent.id]);
+
+  const saveOverrides = async () => {
+    setSaveStatus("loading");
+    try {
+      if (typeof invoke === 'function') {
+        const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
+        for (const prov of providers) {
+          const val = keys[prov];
+          try {
+            if (val && val.trim()) {
+              await invoke("store_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key`, value: val.trim() });
+            } else {
+              await invoke("delete_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` });
+            }
+          } catch(err) {
+            // macOS keychain might throw if the key doesn't exist to delete. Ignore gracefully.
+          }
+        }
+        
+        const finalModel = selectedModel || defaultModelInfo?.id || "gpt-4o-mini";
+        
+        let litellmPrefix = "";
+        if (modelStrategies && modelStrategies.models) {
+            let match = modelStrategies.models.find((m: any) => m.id === finalModel);
+            if (match) {
+                if (match.provider === "OpenAI") litellmPrefix = "openai/";
+                if (match.provider === "Anthropic") litellmPrefix = "anthropic/";
+                if (match.provider === "Google Gemini") litellmPrefix = "gemini/";
+                if (match.provider === "Grok") litellmPrefix = "xai/";
+            }
+        }
+        // Synchronize updated keys directly to OpenClaw's auth-profiles.json layer
+        let mappedKeys: Record<string, string> = {};
+        if (keys["OpenAI"]) mappedKeys["OPENAI_API_KEY"] = keys["OpenAI"];
+        if (keys["Anthropic"]) mappedKeys["ANTHROPIC_API_KEY"] = keys["Anthropic"];
+        if (keys["Gemini"]) mappedKeys["GEMINI_API_KEY"] = keys["Gemini"];
+        if (keys["Grok"]) mappedKeys["XAI_API_KEY"] = keys["Grok"];
+        
+        await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys });
+
+        // Always push personality state to SQLite. If they choose default, it saves as "" cleanly.
+        await invoke("update_agent_personality", {
+            agentId: agent.id, 
+            personality: { ...agent.personality, active_model: selectedModel }
+        });
+        // Explicitly format model for LiteLLM schema and force update OpenClaw.
+        await invoke("update_agent_model", { agentId: agent.id, model: litellmPrefix + finalModel });
+      }
+      setSaveStatus("success");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch (e) {
+      console.error(e);
+      setSaveStatus("error");
+    }
+  };
 
   return (
     <div>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Neural Path</h1>
       <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>Shape how {agent.name} thinks, acts, and appears.</p>
+
+      {/* Advanced Provider Configuration */}
+      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 24, marginBottom: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", marginBottom: 4 }}>Cognitive Engines (LLM)</div>
+            <div style={{ fontSize: 13, color: "#636E72" }}>
+              Override the global API vault for explicitly isolating this agent. Keep empty to use standard globals.
+            </div>
+          </div>
+          <div style={{ textAlign: "right", background: "rgba(33,131,128,0.1)", padding: "12px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Core Model Override</div>
+            <select
+                value={selectedModel}
+                onChange={e => setSelectedModel(e.target.value)}
+                style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "white", color: "#303330", cursor: "pointer", width: 220 }}
+            >
+                <option value="">Strategy: {defaultModelInfo.model}</option>
+                <optgroup label="Available Engines">
+                  {modelStrategies?.models?.map((m: any) => (
+                    <option key={m.id} value={m.id}>{m.name} ({m.provider})</option>
+                  ))}
+                </optgroup>
+            </select>
+          </div>
+        </div>
+        
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+          {["OpenAI", "Anthropic", "Gemini", "Grok"].map(prov => (
+            <div key={prov}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div style={{ fontSize: 12, fontWeight: 500, color: "#303330" }}>{prov} API Key</div>
+                  <div 
+                     style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
+                     onClick={async () => {
+                         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                         new WebviewWindow('companion', {
+                           url: `/?companion=${prov.toLowerCase()}`,
+                           width: 400,
+                           height: 750,
+                           alwaysOnTop: true,
+                           titleBarStyle: 'overlay'
+                         });
+                     }}
+                  >
+                     Setup Guide ↗
+                  </div>
+              </div>
+              <input
+                type="password"
+                placeholder={prov === "Anthropic" ? "sk-ant-..." : "sk-..."}
+                value={keys[prov]}
+                onChange={(e) => setKeys(prev => ({ ...prev, [prov]: e.target.value }))}
+                style={{ padding: "10px 14px", width: "100%", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "rgba(255,255,255,0.7)" }}
+              />
+            </div>
+          ))}
+        </div>
+        
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={saveOverrides} disabled={saveStatus === "loading"} style={{
+            padding: "10px 24px", borderRadius: 8, border: "none", cursor: "pointer",
+            background: "#3c6663", color: "white", fontWeight: 600, fontSize: 13, minWidth: 120
+          }}>
+            {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Overrides"}
+          </button>
+        </div>
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         {/* Training Books */}
@@ -2532,11 +3127,32 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
 
 function PermissionsTab({ agent }: { agent: AgentData }) {
   const toggle = useWorldStore(s => s.togglePermission);
-  const categories = [
-    { id: "network", label: "Network Access", desc: "Control what this agent can reach externally and internally." },
-    { id: "execution", label: "Execution", desc: "Control when and how this agent can act autonomously." },
-    { id: "data", label: "Data Access", desc: "Control what files and memory this agent can read or modify." },
-    { id: "financial", label: "Financial", desc: "Control payment capabilities and spending authorization." },
+  const buckets = [
+    {
+      id: "lockdown",
+      label: "Lockdown (Safe Defaults)",
+      desc: "Recommended for all agents. Capabilities that pose no external security risk.",
+      color: "#2E7D32",
+      bg: "#e8f5e9",
+      permissions: ["int_network", "scheduled", "memory_write", "file_read"]
+    },
+    {
+      id: "secure",
+      label: "Secure (Scoped Context)",
+      desc: "Best practice for agents that need to browse or mutate local workspaces safely.",
+      color: "#00ACC1",
+      bg: "#e0f7fa",
+      permissions: ["ext_network", "file_write", "payments", "imessage", "photos"]
+    },
+    {
+      id: "yolo",
+      label: "YOLO Mode (High Risk ⚠️)",
+      desc: "Autonomy and financial risk. Could act unpredictably if manipulated via prompt injection.",
+      color: "#C62828",
+      bg: "#fdeaea",
+      permissions: ["autonomous", "spend_auto"],
+      isYolo: true
+    }
   ];
 
   return (
@@ -2587,40 +3203,49 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
         }}>{agent.isolated ? "Un-Isolate" : "Isolate"}</button>
       </div>
 
-      {categories.map(cat => (
-        <div key={cat.id} style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 4 }}>{cat.label}</div>
-          <div style={{ fontSize: 12, color: "#636E72", marginBottom: 12 }}>{cat.desc}</div>
-          <div style={{ ...glass(0.5), borderRadius: 14, overflow: "hidden" }}>
-            {agent.permissions.filter(p => p.category === cat.id).map((p, i, arr) => (
-              <div key={p.id} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "14px 20px",
-                borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none",
-              }}>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#303330" }}>{p.label}</div>
-                  <div style={{ fontSize: 11, color: "#636E72", marginTop: 2 }}>{p.description}</div>
+      {buckets.map(bucket => {
+        const bucketPerms = agent.permissions.filter(p => bucket.permissions.includes(p.id));
+        if (bucketPerms.length === 0) return null;
+        return (
+          <div key={bucket.id} style={{ marginBottom: 32 }}>
+            <div style={{
+               padding: "12px 16px", background: bucket.bg, borderTopLeftRadius: 14, borderTopRightRadius: 14,
+               borderBottom: `2px solid ${bucket.color}`, display: "flex", flexDirection: "column"
+            }}>
+               <div style={{ fontSize: 14, fontWeight: 800, color: bucket.color, marginBottom: 4 }}>{bucket.label}</div>
+               <div style={{ fontSize: 12, color: bucket.isYolo ? "#b71c1c" : "#636E72", fontWeight: bucket.isYolo ? 600 : 400 }}>{bucket.desc}</div>
+            </div>
+            <div style={{ ...glass(0.5), borderBottomLeftRadius: 14, borderBottomRightRadius: 14, overflow: "hidden" }}>
+              {bucketPerms.map((p, i, arr) => (
+                <div key={p.id} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "14px 20px",
+                  borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none",
+                }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330" }}>{p.label}</div>
+                    <div style={{ fontSize: 11, color: "#636E72", marginTop: 4 }}>{p.description}</div>
+                  </div>
+                  <Toggle enabled={p.enabled} onChange={async () => {
+                     toggle(agent.id, p.id);
+                     try {
+                       if (typeof invoke === 'function') {
+                         const newPerms = agent.permissions.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x);
+                         const capabilitiesObj: any = {};
+                         newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                         await invoke("update_agent_capabilities", {
+                           agentId: agent.id,
+                           capabilities: capabilitiesObj
+                         });
+                       }
+                     } catch(e) { console.error("Failed to update capabilities", e); }
+                  }} />
                 </div>
-                <Toggle enabled={p.enabled} onChange={async () => {
-                   toggle(agent.id, p.id);
-                   try {
-                     if (typeof invoke === 'function') {
-                       const newPerms = agent.permissions.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x);
-                       const capabilitiesObj: any = {};
-                       newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                       await invoke("update_agent_capabilities", {
-                         agentId: agent.id,
-                         capabilities: capabilitiesObj
-                       });
-                     }
-                   } catch(e) { console.error("Failed to update capabilities", e); }
-                }} />
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -2629,8 +3254,55 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
 
 function MemoryTab({ agent }: { agent: AgentData }) {
   const memories = agent.memories || [];
+  const { setAgents } = useWorldStore();
+  const [newMemoryText, setNewMemoryText] = useState("");
+  const [newMemoryType, setNewMemoryType] = useState("learned");
+  const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
 
   const typeColors: Record<string, string> = { learned: "#4A9E96", experience: "#5B88A6", preference: "#8B6AAE", context: "#D4A04A" };
+
+  const handleCreateMemory = async () => {
+    if (!newMemoryText.trim()) return;
+    setSaveStatus("loading");
+    try {
+      const newMem = {
+        id: Math.random().toString(36).substring(7),
+        type: newMemoryType,
+        text: newMemoryText.trim(),
+        when: new Date().toISOString(),
+        confidence: 1.0
+      };
+      
+      const updatedMemories = [newMem, ...memories];
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke("update_agent_memories", { agentId: agent.id, memories: updatedMemories });
+      
+      setAgents(useWorldStore.getState().agents.map(a => 
+        a.id === agent.id ? { ...a, memories: updatedMemories } as AgentData : a
+      ));
+      
+      setNewMemoryText("");
+      setSaveStatus("success");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch(err) {
+      console.error(err);
+      setSaveStatus("error");
+    }
+  };
+
+  const handleDeleteMemory = async (memId: string) => {
+    try {
+      const updatedMemories = memories.filter(m => m.id !== memId);
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke("update_agent_memories", { agentId: agent.id, memories: updatedMemories });
+      
+      setAgents(useWorldStore.getState().agents.map(a => 
+        a.id === agent.id ? { ...a, memories: updatedMemories } as AgentData : a
+      ));
+    } catch(err) {
+      console.error(err);
+    }
+  };
 
   return (
     <div>
@@ -2650,14 +3322,39 @@ function MemoryTab({ agent }: { agent: AgentData }) {
         ))}
       </div>
 
+      <div style={{ ...glass(0.5), padding: 20, borderRadius: 16, marginBottom: 24 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 12 }}>Inject Manual Core Memory</div>
+        <div style={{ display: "flex", gap: 12 }}>
+          <select value={newMemoryType} onChange={e => setNewMemoryType(e.target.value)} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", outline: "none" }}>
+            <option value="learned">Learned Fact</option>
+            <option value="experience">Experience</option>
+            <option value="preference">Preference</option>
+            <option value="context">Context</option>
+          </select>
+          <input 
+             value={newMemoryText} 
+             onChange={e => setNewMemoryText(e.target.value)}
+             onKeyDown={e => e.key === "Enter" && handleCreateMemory()}
+             placeholder="e.g. Only use the main branch for deployment." 
+             style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", outline: "none", fontSize: 13 }}
+          />
+          <button onClick={handleCreateMemory} disabled={saveStatus === "loading" || !newMemoryText.trim()} style={{
+            padding: "10px 20px", borderRadius: 8, border: "none", background: !newMemoryText.trim() ? "rgba(0,0,0,0.05)" : "#3c6663", 
+            color: !newMemoryText.trim() ? "#A0A0A0" : "white", fontWeight: 600, cursor: !newMemoryText.trim() ? "not-allowed" : "pointer"
+          }}>
+            {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : "Inject"}
+          </button>
+        </div>
+      </div>
+
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {memories.length === 0 ? (
           <div style={{ padding: "40px 20px", textAlign: "center", color: "#636E72", fontSize: 14 }}>
             {agent.name} doesn't have any memories yet.<br />Memories are formed asynchronously as the agent works.
           </div>
         ) : (
-          memories.map((m, i) => (
-            <div key={i} style={{ ...glass(0.5), padding: "16px 20px", borderRadius: 14, borderLeft: `3px solid ${typeColors[m.type]}` }}>
+          memories.map((m: any, i: number) => (
+            <div key={m.id || i} style={{ ...glass(0.5), padding: "16px 20px", borderRadius: 14, borderLeft: `3px solid ${typeColors[m.type] || typeColors["learned"]}` }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{ flex: 1 }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
@@ -2671,7 +3368,8 @@ function MemoryTab({ agent }: { agent: AgentData }) {
                 </div>
                 <div style={{ textAlign: "right", marginLeft: 16 }}>
                   <div style={{ fontSize: 10, color: "#636E72" }}>Confidence</div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "#303330" }}>{Math.round(m.confidence * 100)}%</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>{Math.round((m.confidence || 1.0) * 100)}%</div>
+                  <button onClick={() => handleDeleteMemory(m.id)} style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.5 }}>🗑️</button>
                 </div>
               </div>
             </div>
@@ -2685,127 +3383,185 @@ function MemoryTab({ agent }: { agent: AgentData }) {
 // ─── Spend Tab ───────────────────────────────────────────────────────────────
 
 function SpendTab({ agent }: { agent: AgentData }) {
-  const [overrideKey, setOverrideKey] = useState("");
-  const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [hasPaymentsSetup, setHasPaymentsSetup] = useState(false);
+  const [budget, setBudget] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (typeof invoke === 'function') {
-      invoke("get_secret_cmd", { key: `agent_${agent.id}_api_key` })
-        .then(k => setOverrideKey(k as string))
-        .catch(() => { }); // expected if not set
-    }
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const budgetRes = await invoke('get_agent_budget', { agentId: agent.id });
+        setBudget(budgetRes);
+        const historyRes: any = await invoke('get_purchase_history', { agentId: agent.id });
+        setHistory(Array.isArray(historyRes) ? historyRes : []);
+      } catch (e) {
+        console.error("Failed to load spend data", e);
+      }
+      setLoading(false);
+    };
+    fetchData();
   }, [agent.id]);
 
-  const saveOverride = async () => {
-    setSaveStatus("loading");
+  const handleSave = async () => {
+    if (!budget) return;
+    setSaving(true);
     try {
-      if (typeof invoke === 'function') {
-        if (overrideKey.trim()) {
-          await invoke("store_secret_cmd", { key: `agent_${agent.id}_api_key`, value: overrideKey.trim() });
-        } else {
-          await invoke("delete_secret_cmd", { key: `agent_${agent.id}_api_key` });
-        }
-      }
-      setSaveStatus("success");
-      setTimeout(() => setSaveStatus("idle"), 2000);
+       const { invoke } = await import('@tauri-apps/api/core');
+       await invoke('update_agent_budget', { budget });
+       setTimeout(() => setSaving(false), 800);
     } catch (e) {
-      setSaveStatus("error");
+       console.error("Failed to save budget", e);
+       setSaving(false);
     }
   };
 
+  const updateProp = (key: string, val: any) => {
+    if (!budget) return;
+    setBudget({ ...budget, [key]: val });
+  };
+
+  if (loading) return <div style={{ color: "#636E72", fontSize: 14 }}>Loading financial data...</div>;
+  if (!budget) return <div style={{ color: "#636E72", fontSize: 14 }}>Failed to map budget pipeline...</div>;
+
   return (
-    <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Spend & Utilization</h1>
-      <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>
-        {agent.name}'s financial activity and resource consumption.
-      </p>
-
-      {/* Budget overview - Hidden until setup */}
-      {!hasPaymentsSetup ? (
-        <div style={{ ...glass(0.5), padding: 40, borderRadius: 16, textAlign: "center", marginBottom: 24, border: "1px dashed rgba(33,131,128,0.3)" }}>
-          <div style={{
-            width: 64, height: 64, borderRadius: "50%", background: "rgba(33,131,128,0.1)", color: "#218380",
-            display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px"
-          }}>
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18" /></svg>
-          </div>
-          <h2 style={{ fontSize: 20, color: "#303330", marginBottom: 8, marginTop: 0 }}>Establish Financial Framework</h2>
-          <p style={{ fontSize: 14, color: "#636E72", maxWidth: 400, margin: "0 auto 24px" }}>
-            Connect a corporate card or digital wallet to issue virtual budgets and track utilization across all your agents.
-          </p>
-          <button onClick={() => setHasPaymentsSetup(true)} style={{
-            padding: "12px 24px", borderRadius: 12, border: "none", cursor: "pointer",
-            background: "#218380", color: "white", fontSize: 14, fontWeight: 600,
-            boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
-          }}>
-            Set Up Payment Source
-          </button>
+    <div style={{ paddingBottom: 64 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24 }}>
+        <div>
+           <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Financial Guardrails</h1>
+           <p style={{ fontSize: 14, color: "#636E72", margin: 0 }}>
+             Manage limits and capabilities for {agent.name}'s autonomous spending.
+           </p>
         </div>
-      ) : (
-        <>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
-            <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>This Month</div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
-              <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color="#4A9E96" height={6} />
-              <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>${agent.spendLimit} monthly limit</div>
-            </div>
-            <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Auto-Approve Limit</div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>$25</div>
-              <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Purchases above this require your approval</div>
-            </div>
-            <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase" }}>Active Cards</div>
-              <div style={{ fontSize: 28, fontWeight: 700, color: "#303330", marginTop: 4 }}>0</div>
-              <div style={{ fontSize: 11, color: "#636E72", marginTop: 6 }}>Virtual cards currently issued</div>
-            </div>
-          </div>
-
-          <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", marginBottom: 24 }}>
-            <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#303330" }}>Recent Transactions</div>
-            </div>
-            <div style={{ padding: "20px", textAlign: "center", color: "#636E72", fontSize: 13 }}>
-              No transactions yet
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Advanced Provider Configuration */}
-      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 20 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>Agent-Specific API Key</div>
-        <div style={{ fontSize: 12, color: "#636E72", marginBottom: 16 }}>
-          Override the global API vault. Useful for isolating billing or restricting usage explicitly for this agent. Keep empty to use defaults.
-        </div>
-        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-          <input
-            type="password"
-            placeholder="sk-..."
-            value={overrideKey}
-            onChange={(e) => setOverrideKey(e.target.value)}
-            style={{ padding: "10px 14px", flex: 1, borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "rgba(255,255,255,0.7)" }}
-          />
-          <button onClick={saveOverride} disabled={saveStatus === "loading"} style={{
-            padding: "10px 20px", borderRadius: 8, border: "none", cursor: "pointer",
-            background: "#3c6663", color: "white", fontWeight: 600, fontSize: 13, minWidth: 100
-          }}>
-            {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Override"}
-          </button>
-        </div>
+        <button onClick={handleSave} disabled={saving} style={{
+           padding: "10px 24px", borderRadius: 10, background: saving ? "#4A9E96" : "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "0.2s"
+        }}>
+           {saving ? "Saved ✓" : "Commit Limits"}
+        </button>
       </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 32 }}>
+         <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+               <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Virtual Card Payments</div>
+               <Toggle checked={budget.payments_enabled} onChange={v => updateProp("payments_enabled", v)} />
+            </div>
+            <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20 }}>When disabled, the agent cannot issue any real-world merchant charges or API payments. It will simulate approvals.</div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for New Merchants</div>
+               <Toggle checked={budget.require_approval_new_merchant} onChange={v => updateProp("require_approval_new_merchant", v)} />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for Subscriptions</div>
+               <Toggle checked={budget.require_approval_recurring} onChange={v => updateProp("require_approval_recurring", v)} />
+            </div>
+         </div>
+
+         <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330", marginBottom: 20 }}>Limits & Thresholds</div>
+            
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Per-Transaction Limit ($)</div>
+               <input type="number" value={budget.per_transaction_limit_cents / 100} onChange={e => updateProp("per_transaction_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
+            </div>
+            
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Auto-Approve Threshold ($)</div>
+               <input type="number" value={budget.auto_approve_threshold_cents / 100} onChange={e => updateProp("auto_approve_threshold_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
+            </div>
+
+            <div style={{ height: 1, background: "rgba(0,0,0,0.05)", margin: "16px 0" }} />
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Daily Budget Total ($)</div>
+               <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
+            </div>
+         </div>
+      </div>
+
+      <div style={{ marginBottom: 24, fontSize: 16, fontWeight: 700, color: "#303330", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+         Purchase Execution Log
+         <div style={{ fontSize: 12, fontWeight: 500, color: "#636E72", background: "rgba(0,0,0,0.04)", padding: "4px 12px", borderRadius: 12 }}>
+            Daily Spend: ${(budget.daily_spent_cents / 100).toFixed(2)} / Monthly: ${(budget.monthly_spent_cents / 100).toFixed(2)}
+         </div>
+      </div>
+
+      {history.length === 0 ? (
+         <div style={{ textAlign: "center", padding: "40px 20px", color: "#636E72", fontSize: 14, ...glass(0.4), borderRadius: 16 }}>
+            There are no recent agent transactions on record.
+         </div>
+      ) : (
+         <div style={{ ...glass(0.6), borderRadius: 16, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+               <thead>
+                  <tr style={{ background: "rgba(0,0,0,0.03)", textAlign: "left" }}>
+                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Date/Time</th>
+                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Merchant</th>
+                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Category</th>
+                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Status</th>
+                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72", textAlign: "right" }}>Amount</th>
+                  </tr>
+               </thead>
+               <tbody>
+                  {history.map((record, i) => (
+                     <tr key={record.id || i} style={{ borderTop: "1px solid rgba(0,0,0,0.04)" }}>
+                        <td style={{ padding: "14px 20px", fontSize: 13, color: "#303330" }}>{new Date(record.timestamp || Date.now()).toLocaleString()}</td>
+                        <td style={{ padding: "14px 20px", fontSize: 13, fontWeight: 600, color: "#303330" }}>{record.merchant}</td>
+                        <td style={{ padding: "14px 20px", fontSize: 13, color: "#636E72" }}>{record.category}</td>
+                        <td style={{ padding: "14px 20px", fontSize: 13 }}>
+                           {record.decision === "Approved" || record.decision === "approved" || record.decision?.Approved === null
+                              ? <span style={{ color: "#4A9E96", background: "#4A9E9615", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>APPROVED</span>
+                              : record.decision === "Denied" || record.decision === "denied" || record.decision?.Denied
+                              ? <span style={{ color: "#E57373", background: "#E5737315", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>DENIED</span>
+                              : <span style={{ color: "#D4A04A", background: "#D4A04A15", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>REQUIRES APPROVAL</span>
+                           }
+                        </td>
+                        <td style={{ padding: "14px 20px", fontSize: 14, fontWeight: 700, color: "#303330", textAlign: "right" }}>
+                           ${((record.amount_cents || 0) / 100).toFixed(2)}
+                        </td>
+                     </tr>
+                  ))}
+               </tbody>
+            </table>
+         </div>
+      )}
     </div>
   );
 }
 
 // ─── Chat / Communion Tab ────────────────────────────────────────────────────
 
-function ChatTab({ agent }: { agent: AgentData }) {
+function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boolean }) {
   const [message, setMessage] = useState("");
   const [chatLog, setChatLog] = useState<ChatMessage[]>(agent.chatLog);
   const [loading, setLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Scroll to bottom whenever chatLog changes
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatLog]);
+
+  useEffect(() => {
+    if (typeof invoke === 'function') {
+      invoke("get_conversation_history", { agentId: agent.id, limit: 100 })
+        .then((resp: any) => {
+          if (Array.isArray(resp) && resp.length > 0) {
+            const mapped = resp.map(r => ({
+              id: r.id,
+              sender: r.role === "user" ? "user" : "agent",
+              text: r.content,
+              time: new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            }));
+            setChatLog(mapped);
+          }
+        })
+        .catch(err => console.error("Failed to fetch chat history:", err));
+    }
+  }, [agent.id]);
 
   const handleSendMessage = async () => {
     if (!message.trim()) return;
@@ -2822,21 +3578,30 @@ function ChatTab({ agent }: { agent: AgentData }) {
     setLoading(true);
 
     try {
-      const response = await invoke("send_message", {
+      const response: any = await invoke("send_message", {
         agentId: agent.id,
         message: message,
-      }) as string;
+      });
+
+      const responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
 
       const agentMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: "agent",
-        text: response,
+        text: responseText,
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
 
       setChatLog(prev => [...prev, agentMsg]);
     } catch (error) {
       console.error("Failed to send message:", error);
+      const errorMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: "agent",
+        text: `⚠️ **System Error**: ${String(error)}`,
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      setChatLog(prev => [...prev, errorMsg]);
     } finally {
       setLoading(false);
     }
@@ -2844,10 +3609,12 @@ function ChatTab({ agent }: { agent: AgentData }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-      <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Communion</h1>
-        <p style={{ fontSize: 14, color: "#636E72" }}>Communicate directly with {agent.name}.</p>
-      </div>
+      {!compact && (
+        <div style={{ marginBottom: 20 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Chat</h1>
+          <p style={{ fontSize: 14, color: "#636E72" }}>Communicate directly with {agent.name}.</p>
+        </div>
+      )}
 
       {/* Chat log */}
       <div style={{
@@ -2895,6 +3662,7 @@ function ChatTab({ agent }: { agent: AgentData }) {
             <span style={{ fontSize: 13, color: "#636E72", fontStyle: "italic" }}>{agent.name} is thinking...</span>
           </div>
         )}
+        <div ref={chatEndRef} />
       </div>
 
       {/* Input */}
@@ -2937,29 +3705,32 @@ function ChatTab({ agent }: { agent: AgentData }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function TopNav() {
-  const { activeView, setActiveView } = useWorldStore();
+  const { activeView, setActiveView, theme, toggleTheme, agents, setSelectedAgent } = useWorldStore();
+  const [searchQuery, setSearchQuery] = useState("");
 
   const navItems = [
     { id: "canopy" as const, label: "Canopy" },
     { id: "architect" as const, label: "Architect" },
     { id: "archive" as const, label: "Archive" },
-    { id: "library" as const, label: "Library" },
+    // { id: "library" as const, label: "Library" },
     { id: "vault" as const, label: "Vault" },
   ];
+
+  const filteredAgents = searchQuery ? agents.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase()) || a.role.toLowerCase().includes(searchQuery.toLowerCase())) : [];
 
   return (
     <div style={{
       position: activeView === "canopy" ? "absolute" : "relative",
       top: 0, left: 0, right: 0, zIndex: 20,
       display: "flex", alignItems: "center", justifyContent: "space-between",
-      padding: "12px 24px",
+      padding: "12px 24px 12px 80px",
       background: activeView === "canopy" ? "transparent" : "rgba(255,255,255,0.4)",
       borderBottom: activeView === "canopy" ? "none" : "1px solid rgba(0,0,0,0.06)",
       backdropFilter: activeView === "canopy" ? "none" : "blur(24px)",
-    }}>
+    }} data-tauri-drag-region>
       {/* Logo */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => setActiveView("canopy")}>
-        <LobsterIcon size={28} shellColor="#3c6663" accentColor="#4A9E96" />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setActiveView("canopy")}>
+        <img src="/app-icon.png" alt="Canopy Logo" style={{ width: 28, height: 28, objectFit: "contain", pointerEvents: "none" }} />
         <span style={{
           fontSize: 17, fontWeight: 700, color: "#303330", letterSpacing: "-0.02em",
           fontFamily: "'Satoshi', 'Manrope', system-ui, sans-serif",
@@ -2987,27 +3758,65 @@ function TopNav() {
       {/* Right actions */}
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         {activeView !== "canopy" && activeView !== "loading" && activeView !== "onboarding" && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 8, padding: "6px 14px",
-            borderRadius: 8, background: "rgba(0,0,0,0.03)", fontSize: 12, color: "#636E72",
-          }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
-            Search...
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <button
+               onClick={() => setActiveView("onboarding")}
+               style={{
+                 display: "flex", alignItems: "center", gap: 6,
+                 padding: "6px 14px", borderRadius: 8, background: "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "0.2s all"
+               }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              New Agent
+            </button>
+
+            <div style={{ position: "relative" }}>
+              <div style={{
+                display: "flex", alignItems: "center", gap: 8, padding: "6px 14px",
+                borderRadius: 8, background: "rgba(0,0,0,0.03)", color: "#636E72",
+              }}>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+                <input 
+                   placeholder="Search agents..." 
+                   value={searchQuery}
+                   onChange={e => setSearchQuery(e.target.value)}
+                   style={{ border: "none", outline: "none", background: "transparent", width: 120, fontSize: 12, fontFamily: "inherit", color: "#303330" }}
+                />
+              </div>
+              {searchQuery && (
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "white", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.1)", border: "1px solid rgba(0,0,0,0.05)", zIndex: 50, maxHeight: 300, overflow: "auto" }}>
+                  {filteredAgents.length === 0 ? (
+                    <div style={{ padding: "12px", fontSize: 12, color: "#636E72" }}>No agents found.</div>
+                  ) : (
+                    filteredAgents.map(a => (
+                      <div key={a.id} onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); setSearchQuery(""); }} style={{ padding: "8px 12px", fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(0,0,0,0.03)" }}>
+                        <div style={{ width: 16, height: 16, borderRadius: "50%", background: `${a.robeColor}20`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                           <div style={{ width: 6, height: 6, borderRadius: "50%", background: a.status === "active" ? "#4A9E96" : "#E57373" }} />
+                        </div>
+                        <div style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "#303330", fontWeight: 600 }}>{a.name}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         )}
         {(activeView !== "loading" && activeView !== "onboarding") && (
           <>
-            <button style={{
+            <button onClick={toggleTheme} style={{
               width: 32, height: 32, borderRadius: 8, border: "none", cursor: "pointer",
               background: "rgba(0,0,0,0.04)", display: "flex", alignItems: "center", justifyContent: "center",
+              color: theme === "dark" ? "#F5E6D8" : "#636E72",
             }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#636E72" strokeWidth={2} strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
             </button>
-            <div style={{
+            <div onClick={() => setActiveView("profile")} style={{
               width: 32, height: 32, borderRadius: "50%", background: "rgba(0,0,0,0.06)",
               display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+              color: "#636E72",
             }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#636E72" strokeWidth={2}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
             </div>
           </>
         )}
@@ -3055,10 +3864,28 @@ function CanopyView() {
             </div>
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>{a.name}</div>
-              <div style={{ fontSize: 10, color: "#636E72", textTransform: "capitalize" }}>{a.currentAction}</div>
+              <div style={{ fontSize: 10, color: "#636E72", textTransform: "capitalize" }}>{a.status === "error" ? "Offline" : a.currentAction}</div>
             </div>
           </div>
         ))}
+        
+        {/* Add Agent Button */}
+        <div onClick={() => setActiveView("onboarding")} style={{
+          background: "rgba(255,255,255,0.2)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+          border: "1px dashed rgba(60, 102, 99, 0.3)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.02)",
+          padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+          borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
+        }}>
+          <div style={{
+             width: 24, height: 24, borderRadius: "50%", background: "rgba(60, 102, 99, 0.1)",
+             display: "flex", alignItems: "center", justifyContent: "center", color: "#3c6663"
+          }}>
+             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#3c6663" }}>Add Agent</div>
+        </div>
+
       </div>
     </div>
   );
@@ -3160,7 +3987,59 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Name the token 'canopy-app-token' and click Generate. Copy the xapp-... token and paste it here.", input: { key: "slack-app-token", placeholder: "xapp-..." } },
         { text: "Almost done! Now click 'OAuth & Permissions' on the left sidebar." },
         { text: "Click the 'Install to Workspace' button and click Allow." },
-        { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } }
+        { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } },
+        { text: "Last step! Go to your Slack workspace and DM your new bot. It will respond with an 8-character pairing code. Paste that code here to authorize the connection.", input: { key: "slack-pairing-code", placeholder: "MPWKJ5KQ"} }
+      ]
+    },
+    email_dedicated: {
+      title: "Email Dedicated Setup",
+      avatar: "/app-icon.png",
+      intro: "Let's create a dedicated, locked-down email sandbox for your agent. This is the safest way to give them an email personality.",
+      steps: [
+        { text: "First, go to your preferred provider (like Gmail or Outlook) and create a brand new, free email address specifically for this agent." },
+        { text: "Next, we cannot use the raw password. Go to your new Google Account settings -> Security -> 2-Step Verification and scroll to 'App Passwords'." },
+        { text: "Generate a custom App Password named 'Canopy'." },
+        { text: "Paste the credentials below so your agent can safely login via IMAP/SMTP.", input: { key: "email-dedicated", placeholder: "agent@gmail.com : xyzt-abcd-..." } }
+      ]
+    },
+    email_oauth_read: {
+      title: "Email Read-Only OAuth",
+      avatar: "/app-icon.png",
+      intro: "This setup grants your agent secure insight into your emails without the ability to reply or delete.",
+      steps: [
+        { text: "Click the secure authorize gateway in your browser to sign into Google Workspace." },
+        { text: "When prompted, check the box strictly for 'View your email messages and settings'." },
+        { text: "Once you see the success screen, paste the generated OAuth token here.", input: { key: "email-oauth-read", placeholder: "oauth_..." } }
+      ]
+    },
+    email_oauth_write: {
+      title: "YOLO Mode: Email Full Access",
+      avatar: "/app-icon.png",
+      intro: "WARNING: You are about to give this agent full destructive and impersonation abilities over your real email. Do not proceed unless you thoroughly trust this setup.",
+      steps: [
+        { text: "Please acknowledge the YOLO warning. Your agent will be able to delete all your history or reply to your boss." },
+        { text: "Complete the OAuth flow using the link in your browser and check all boxes for complete control." },
+        { text: "Paste the YOLO token below to commit to this.", input: { key: "email-oauth-write", placeholder: "oauth_..." } }
+      ]
+    },
+    calendar_oauth_read: {
+      title: "Calendar Read-Only OAuth",
+      avatar: "/app-icon.png",
+      intro: "Let's give your agent the ability to check your availability without letting them modify your schedule.",
+      steps: [
+        { text: "Authenticate via Google Calendar in the browser window." },
+        { text: "Approve the 'View events on all your calendars' scope." },
+        { text: "Paste the scoped token below.", input: { key: "calendar-oauth-read", placeholder: "oauth_..." } }
+      ]
+    },
+    calendar_oauth_write: {
+      title: "YOLO Mode: Calendar Full Access",
+      avatar: "/app-icon.png",
+      intro: "WARNING: Your agent will be able to schedule, modify, edit, or delete any meeting on your calendar.",
+      steps: [
+        { text: "Acknowledge the risk. This allows the agent to decline invites on your behalf without asking or send new invites." },
+        { text: "Approve the Full Access scope in the browser integration." },
+        { text: "Paste the YOLO token below.", input: { key: "calendar-oauth-write", placeholder: "oauth_..." } }
       ]
     }
   }[type] || null;
@@ -3195,20 +4074,27 @@ export function CompanionGuide({ type }: { type: string }) {
                if (type === "slack") {
                   await emit('slack-credentials-saved');
                   const { invoke } = await import('@tauri-apps/api/core');
+                  
+                  // Finalize the physical device pairing securely with the agent gateway
+                  const pairingCode = tokens["slack-pairing-code"];
+                  if (pairingCode && pairingCode.trim() !== "") {
+                      try {
+                          await invoke("approve_slack_pairing", { code: pairingCode.trim() });
+                      } catch (pairingErr) {
+                          console.error("Pairing approval failed:", pairingErr);
+                          alert("Warning: Pairing failed. Your code may have expired. You can regenerate the pairing code via DM in Slack and approve it from the Architect View Connections tab.\n\n" + String(pairingErr));
+                      }
+                  }
+                  
                   await invoke("start_slack_listener").catch(() => {});
                }
             } catch(evtErr) {}
             
             setTimeout(async () => {
               try {
-                 const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                 const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                  await getCurrentWebviewWindow().close();
-              } catch (e) {
-                 try {
-                     const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                     await getCurrentWindow().close();
-                 } catch(e2) {}
-              }
+              } catch(e) {}
             }, 2000);
         }
       } catch (e) {
@@ -3239,13 +4125,9 @@ export function CompanionGuide({ type }: { type: string }) {
          </div>
          <div style={{ padding: "0 20px", cursor: "pointer", opacity: 0.5, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
              try {
-                const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
-                await getCurrentWebviewWindow().close();
-             } catch(e) {
-                // fallback for older Tauri
-                const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                await getCurrentWindow().close();
-             }
+                const { emit } = await import("@tauri-apps/api/event");
+                await emit("close-companion");
+             } catch(e) {}
          }}>✕</div>
        </div>
 
@@ -3323,11 +4205,240 @@ export function CompanionGuide({ type }: { type: string }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// USER PROFILE VIEW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+interface UserProfile {
+  name: string;
+  email: string;
+  phone: string;
+  timezone: string;
+  working_hours: string;
+  communication_tone: string;
+  global_directives: string;
+}
+
+function UserProfileView() {
+  const [profile, setProfile] = useState<UserProfile>({
+    name: "Admin", email: "", phone: "", timezone: "UTC", working_hours: "9:00 AM - 5:00 PM",
+    communication_tone: "Professional", global_directives: "Always cite your sources and optimize for safety."
+  });
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (typeof invoke === 'function') {
+      invoke("get_user_profile").then((res: any) => setProfile(res)).catch(console.error);
+    }
+  }, []);
+
+  const handleSave = async () => {
+    if (typeof invoke === 'function') {
+      setSaving(true);
+      await invoke("save_user_profile", { profile }).catch(console.error);
+      setTimeout(() => setSaving(false), 600);
+    }
+  };
+
+  const Field = ({ label, value, field, type = "text", placeholder = "", rows = 1 }: any) => (
+    <div style={{ marginBottom: 16 }}>
+      <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 6 }}>{label}</label>
+      {rows > 1 ? (
+        <textarea
+          value={value} onChange={e => setProfile({...profile, [field]: e.target.value})}
+          rows={rows} placeholder={placeholder}
+          style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontFamily: "inherit", fontSize: 14, outline: "none", resize: "vertical" }}
+        />
+      ) : (
+        <input
+          type={type} value={value} onChange={e => setProfile({...profile, [field]: e.target.value})}
+          placeholder={placeholder}
+          style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontFamily: "inherit", fontSize: 14, outline: "none" }}
+        />
+      )}
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: 700, margin: "40px auto", padding: "0 24px", paddingBottom: 100 }}>
+      <div style={{ marginBottom: 32 }}>
+        <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Principal Context</h1>
+        <p style={{ fontSize: 15, color: "#636E72", margin: 0 }}>Define your global identity. This context is inherited by every agent in the Canopy to understand who they work for.</p>
+      </div>
+
+      <div style={{ background: "rgba(255,255,255,0.4)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Identity & Contact</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+          <Field label="Full Name" field="name" value={profile.name} placeholder="e.g. Jane Doe" />
+          <Field label="Preferred Timezone" field="timezone" value={profile.timezone} placeholder="e.g. America/Los_Angeles" />
+          <Field label="Email Address" type="email" field="email" value={profile.email} placeholder="Agents can route reports here" />
+          <Field label="Phone Number" type="tel" field="phone" value={profile.phone} placeholder="For SMS alerts" />
+        </div>
+      </div>
+
+      <div style={{ background: "rgba(255,255,255,0.4)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Working Directives</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
+          <Field label="Working Hours" field="working_hours" value={profile.working_hours} placeholder="e.g. 9:00 AM - 5:00 PM EST" />
+          <Field label="Communication Tone" field="communication_tone" value={profile.communication_tone} placeholder="e.g. Professional & Concise" />
+        </div>
+        <Field label="Global Agent Directives" field="global_directives" value={profile.global_directives} rows={3} placeholder="e.g. 'Never read my personal inbox. Always provide a TL;DR summary at the top.'" />
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <button onClick={handleSave} disabled={saving} style={{ padding: "12px 32px", borderRadius: 12, background: saving ? "#4A9E96" : "#3c6663", color: "white", fontSize: 14, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "all 0.2s ease" }}>
+          {saving ? "Saved ✓" : "Save Profile Configuration"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // MAIN APP
+// ─── Archive View ─────────────────────────────────────────────────────────────
+
+function ArchiveView() {
+  const { agents } = useWorldStore();
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  // Filters
+  const [agentFilter, setAgentFilter] = useState<string>("all");
+  const [bridgeFilter, setBridgeFilter] = useState<string>("all");
+  const [actionFilter, setActionFilter] = useState<string>("all");
+  
+  useEffect(() => {
+    const fetchArchive = async () => {
+      setLoading(true);
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const data: any = await invoke('get_global_audit_log', { limit: 200 });
+        setLogs(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error("Failed to fetch global audit log", e);
+      }
+      setLoading(false);
+    };
+    fetchArchive();
+  }, []);
+
+  const getLogColor = (action: string) => {
+     const a = action.toLowerCase();
+     if (a.includes("spend") || a.includes("payment")) return { color: "#D4A04A", bg: "#D4A04A15", border: "#D4A04A40" };
+     if (a.includes("blocked") || a.includes("failed") || a.includes("denied")) return { color: "#E57373", bg: "#E5737315", border: "#E5737340" };
+     if (a.includes("created") || a.includes("spawn")) return { color: "#4A9E96", bg: "#4A9E9615", border: "#4A9E9640" };
+     return { color: "#636E72", bg: "rgba(0,0,0,0.04)", border: "rgba(0,0,0,0.08)" };
+  };
+
+  const filteredLogs = logs.filter(log => {
+     if (agentFilter !== "all" && log.agent_id !== agentFilter) return false;
+     if (bridgeFilter !== "all") {
+        if (!log.bridge_type && bridgeFilter !== "core") return false;
+        if (log.bridge_type && log.bridge_type.toLowerCase() !== bridgeFilter) return false;
+     }
+     if (actionFilter !== "all" && !log.action.toLowerCase().includes(actionFilter)) return false;
+     return true;
+  });
+
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "32px 40px", maxWidth: 1200, margin: "0 auto", width: "100%", height: "100%", overflow: "hidden" }}>
+       
+       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 32 }}>
+         <div>
+           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+             <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: 0 }}>System Archive</h1>
+             <div style={{ background: "#4A9E9620", color: "#4A9E96", padding: "4px 10px", borderRadius: 12, fontSize: 13, fontWeight: 700 }}>LIVE</div>
+           </div>
+           <p style={{ fontSize: 15, color: "#636E72", margin: 0 }}>Global flight data recorder mapping all agent decisions, actions, and anomalous traces.</p>
+         </div>
+       </div>
+
+       <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
+          <select value={agentFilter} onChange={e => setAgentFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
+             <option value="all">Every Agent</option>
+             {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <select value={bridgeFilter} onChange={e => setBridgeFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
+             <option value="all">All Bridges</option>
+             <option value="core">Core Platform</option>
+             <option value="slack">Slack</option>
+             <option value="imessage">iMessage</option>
+             <option value="payments">Virtual Cards</option>
+          </select>
+          <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
+             <option value="all">All Actions</option>
+             <option value="created">Agent Spawns</option>
+             <option value="spend">Financial Spends</option>
+             <option value="denied">Blocks & Flags</option>
+          </select>
+       </div>
+
+       {loading ? (
+         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#636E72" }}>Loading flight logs...</div>
+       ) : (
+         <div style={{ flex: 1, overflowY: "auto", ...glass(0.6), borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)" }}>
+           <table style={{ width: "100%", borderCollapse: "collapse" }}>
+             <thead style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.9)", backdropFilter: "blur(8px)", zIndex: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+               <tr style={{ textAlign: "left" }}>
+                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 140 }}>Time</th>
+                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 180 }}>Principal Agent</th>
+                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 160 }}>Bridge Target</th>
+                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em" }}>Action Trajectory</th>
+                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "right" }}>Trace Hash</th>
+               </tr>
+             </thead>
+             <tbody>
+               {filteredLogs.length === 0 ? (
+                 <tr>
+                    <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "#636E72", fontSize: 14 }}>No actions found matching these security filters.</td>
+                 </tr>
+               ) : filteredLogs.map((log) => {
+                 const mappedAgent = agents.find(a => a.id === log.agent_id);
+                 const styles = getLogColor(log.action);
+                 return (
+                   <tr key={log.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", cursor: "pointer", transition: "0.15s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                     <td style={{ padding: "16px 24px", fontSize: 13, color: "#636E72" }}>{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+                     <td style={{ padding: "16px 24px", fontSize: 14, fontWeight: 600, color: "#303330" }}>
+                       {log.agent_id ? (
+                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <div style={{ width: 8, height: 8, borderRadius: "50%", background: mappedAgent ? mappedAgent.robeColor : "#A0A0A0" }} />
+                              {mappedAgent ? mappedAgent.name : "Unknown Agent"}
+                           </div>
+                       ) : "System Engine"}
+                     </td>
+                     <td style={{ padding: "16px 24px" }}>
+                       <span style={{ padding: "4px 8px", background: "rgba(0,0,0,0.04)", borderRadius: 6, fontSize: 12, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>
+                         {log.bridge_type || "Core System"}
+                       </span>
+                     </td>
+                     <td style={{ padding: "16px 24px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                           <span style={{ display: "inline-block", padding: "2px 8px", background: styles.bg, color: styles.color, border: `1px solid ${styles.border}`, borderRadius: 4, fontSize: 11, fontWeight: 700, textTransform: "uppercase", width: "max-content", letterSpacing: "0.02em" }}>
+                              {log.action}
+                           </span>
+                           <span style={{ fontSize: 13, color: "#303330", lineHeight: 1.4 }}>{log.detail}</span>
+                        </div>
+                     </td>
+                     <td style={{ padding: "16px 24px", textAlign: "right" }}>
+                        <span style={{ fontFamily: "monospace", fontSize: 11, color: "#909090", background: "rgba(0,0,0,0.03)", padding: "4px 8px", borderRadius: 4 }}>
+                           {log.content_hash ? log.content_hash.substring(0, 8) : "N/A"}
+                        </span>
+                     </td>
+                   </tr>
+                 );
+               })}
+             </tbody>
+           </table>
+         </div>
+       )}
+    </div>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
-  const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents } = useWorldStore();
+  const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme } = useWorldStore();
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
 
@@ -3467,6 +4578,8 @@ export default function App() {
       fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
       overflow: "hidden",
       display: "flex", flexDirection: "column",
+      filter: theme === "dark" ? "invert(0.85) hue-rotate(180deg)" : "none",
+      transition: "filter 0.5s ease"
     }}>
       <UpdateManager />
       {activeView !== "onboarding" && <TopNav />}
@@ -3476,12 +4589,8 @@ export default function App() {
       {activeView === "canopy" && <CanopyView />}
       {activeView === "architect" && agent && <ArchitectView agent={agent} />}
       {activeView === "archive" && (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#636E72" }}>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 12 }}>&#9776;</div>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>Archive</div>
-            <div style={{ fontSize: 13, marginTop: 4 }}>Task history, decisions, and data flows</div>
-          </div>
+        <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>
+          <ArchiveView />
         </div>
       )}
       {activeView === "library" && (
@@ -3496,6 +4605,11 @@ export default function App() {
       {activeView === "vault" && (
         <div style={{ flex: 1, overflow: "auto" }}>
           <ProvidersVault />
+        </div>
+      )}
+      {activeView === "profile" && (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <UserProfileView />
         </div>
       )}
 
