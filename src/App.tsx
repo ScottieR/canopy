@@ -2144,13 +2144,20 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         {/* Agent identity */}
         <div style={{ padding: "0 8px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)", marginBottom: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-            <div style={{
-              width: 36, height: 36, borderRadius: "50%", overflow: "hidden",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: `0 0 0 3px rgba(255,255,255,0.6), 0 0 12px ${agent.robeColor}40`,
-              background: `${agent.robeColor}15`,
-            }}>
-              <LobsterIcon size={36} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
+            <div style={{ position: "relative" }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: "50%", overflow: "hidden",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                boxShadow: `0 0 0 3px rgba(255,255,255,0.6), 0 0 12px ${agent.robeColor}40`,
+                background: `${agent.robeColor}15`,
+              }}>
+                <LobsterIcon size={36} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
+              </div>
+              <div style={{
+                position: "absolute", bottom: -2, right: -2, width: 10, height: 10, borderRadius: "50%",
+                background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#B2BEC3",
+                border: "2px solid white", zIndex: 2
+              }} />
             </div>
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>Architect View</div>
@@ -2243,6 +2250,37 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 function OverviewTab({ agent }: { agent: AgentData }) {
   return (
     <div>
+      {agent.status === "error" && (
+        <div style={{ background: "#fcf3f3", border: "1px solid #f2bdbd", borderRadius: 16, padding: 24, marginBottom: 32, display: "flex", gap: 20, alignItems: "center" }}>
+          <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#E57373", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Agent Environment Offline</div>
+            <div style={{ fontSize: 13, color: "#636E72" }}>The OpenClaw setup failed or the local Docker container unexpectedly stopped.</div>
+          </div>
+          <button 
+            id="repair-openclaw-btn"
+            onClick={async () => {
+              const btn = document.getElementById('repair-openclaw-btn');
+              if(btn) btn.innerText = "Rebuilding...";
+              try {
+                if (typeof invoke === 'function') {
+                  const res = await invoke("repair_gateway", { agentId: agent.id });
+                  if(btn) btn.innerText = "Repaired!";
+                }
+              } catch(e) {
+                if(btn) btn.innerText = "Failed";
+                console.error("Openclaw repair failed:", e);
+              }
+              setTimeout(() => { if(btn) btn.innerText = "Re-Initialize Setup"; }, 2000);
+            }}
+            style={{ padding: "10px 20px", borderRadius: 10, background: "#E57373", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "all 0.2s ease" }}>
+            Re-Initialize Setup
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ marginBottom: 32 }}>
         <h1 style={{ fontSize: 36, fontWeight: 700, color: "#303330", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
@@ -2260,8 +2298,8 @@ function OverviewTab({ agent }: { agent: AgentData }) {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 10, height: 10, borderRadius: "50%",
-              background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : "#B2BEC3",
-              boxShadow: agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : "none",
+              background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#B2BEC3",
+              boxShadow: agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
             }} />
             <span style={{ fontSize: 20, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{agent.currentAction}</span>
           </div>
@@ -2345,6 +2383,7 @@ function IdentityTab({ agent }: { agent: AgentData }) {
     setAgents(useWorldStore.getState().agents.map(a =>
       a.id === agent.id ? {
         ...a,
+        image: res.compiledImageUrl,
         color: res.dynamicParams.color || a.color,
         robeColor: res.dynamicParams.robeColor || a.robeColor,
         accentColor: res.dynamicParams.accentColor || a.accentColor,
@@ -2353,13 +2392,11 @@ function IdentityTab({ agent }: { agent: AgentData }) {
     ));
   };
 
-  const [avatarPrompt, setAvatarPrompt] = useState(agent.avatarPrompt);
-
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 32, height: "100%" }}>
-      {/* Left: 3D Dressing Room & Avatar Settings */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-        <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", minHeight: 400, border: "1px solid rgba(0,0,0,0.06)" }}>
+      {/* Left: 3D Dressing Room */}
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 1, border: "1px solid rgba(0,0,0,0.06)" }}>
         <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
           <ambientLight intensity={0.8} color="#F5E6D8" />
           <directionalLight position={[10, 20, 5]} intensity={1} />
@@ -2381,44 +2418,6 @@ function IdentityTab({ agent }: { agent: AgentData }) {
         <div style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.8)", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#218380", display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#218380", animation: "pulse 2s infinite" }} />
           Live Preview
-        </div>
-      </div>
-
-      {/* Avatar Customization */}
-      <div style={{ background: "rgba(255,255,255,0.3)", padding: 24, borderRadius: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#303330" }}>Avatar Configuration</div>
-            <div style={{ fontSize: 11, color: "#636E72", marginTop: 4 }}>Static fallback thumbnail and base coloration.</div>
-          </div>
-          <div style={{
-            width: 64, height: 64, borderRadius: 16, background: `linear-gradient(135deg, ${agent.robeColor}20, ${agent.accentColor}30)`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            border: "2px dashed rgba(0,0,0,0.08)",
-          }}>
-            <LobsterIcon size={48} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
-          </div>
-        </div>
-        <textarea value={avatarPrompt} onChange={e => setAvatarPrompt(e.target.value)} rows={2} style={{
-          width: "100%", padding: 12, borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)",
-          background: "rgba(255,255,255,0.7)", fontSize: 13, fontFamily: "inherit",
-          color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
-        }} />
-        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-          <div style={{ display: "flex", gap: 6 }}>
-            {["#8B6AAE", "#4A9E96", "#D47A54", "#5B88A6", "#C4785A", "#6B8E5A"].map(c => (
-              <button key={c} onClick={() => updateIdentity({})} style={{
-                width: 24, height: 24, borderRadius: "50%", background: c, border: c === agent.robeColor ? "2px solid #2D3436" : "2px solid transparent",
-                cursor: "pointer", transition: "all 0.15s ease",
-              }} />
-            ))}
-          </div>
-          <div style={{ flex: 1 }} />
-          <button style={{
-            padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.08)",
-            background: "white", fontSize: 12, fontWeight: 600,
-            cursor: "pointer", fontFamily: "inherit", color: "#303330",
-          }}>Update Image</button>
         </div>
       </div>
     </div>
@@ -3050,7 +3049,7 @@ function CanopyView() {
               <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
               <div style={{
                 position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
-                background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : "#B2BEC3",
+                background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "#B2BEC3",
                 border: "2px solid white",
               }} />
             </div>
@@ -3431,6 +3430,31 @@ export default function App() {
       setSelectedAgent(agents[0].id);
     }
   }, [activeView, selectedAgent, agents]);
+
+  // Background Health Poller (15s)
+  useEffect(() => {
+    const pollInterval = window.setInterval(async () => {
+      try {
+        if (typeof invoke === 'function') {
+          const currentAgents = useWorldStore.getState().agents;
+          let changed = false;
+          const updatedAgents = await Promise.all(currentAgents.map(async (a) => {
+            try {
+              const status = await invoke("check_agent_status", { agentId: a.id });
+              if (status === "error" && a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
+              if (status === "active" && a.status === "error") { changed = true; return { ...a, status: "active" as any }; }
+              return a;
+            } catch(e) {
+              if (a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
+              return a;
+            }
+          }));
+          if (changed) useWorldStore.getState().setAgents(updatedAgents);
+        }
+      } catch(e) { }
+    }, 15000);
+    return () => clearInterval(pollInterval);
+  }, []);
 
   if (!initialized) {
     return <LoadingScreen />;
