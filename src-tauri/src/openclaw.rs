@@ -357,6 +357,21 @@ pub async fn get_agent_health(agent_id: String) -> Result<Value, String> {
     Ok(body)
 }
 
+#[tauri::command]
+pub async fn check_agent_status(agent_id: String) -> Result<String, String> {
+    // Specifically verify if the agent's environment is functionally responding
+    let client = Client::new();
+    let resp = client
+        .get(format!("{}/api/agents/{}", GATEWAY_URL, agent_id))
+        .send()
+        .await;
+        
+    match resp {
+        Ok(res) if res.status().is_success() => Ok("active".to_string()),
+        _ => Ok("error".to_string()), // If connection refused or 404
+    }
+}
+
 // ─── SOUL.md Generation ──────────────────────────────────────────────────────
 
 /// Generate a SOUL.md file from a structured personality.

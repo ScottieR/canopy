@@ -96,6 +96,7 @@ pub fn run() {
             openclaw::send_message,
             openclaw::get_conversation_history,
             openclaw::get_agent_health,
+            openclaw::check_agent_status,
             openclaw::import_agent,
             openclaw::scan_local_agents,
             openclaw::import_discovered_agent,
