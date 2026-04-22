@@ -213,7 +213,7 @@ const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: str
 function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record<string, any> = AGENT_TYPE_INFO) {
   const info = agentTypeInfo[role] || {};
   let basePrompt = "";
-  
+
   const personaName = name ? name : "Agent";
 
   if (!role || role === "Custom") {
@@ -221,9 +221,9 @@ function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record
     basePrompt = basePrompt.replace("You are a highly capable and adaptable AI agent", `You are ${personaName}`);
   } else {
     if (info.defaultPrompt) {
-        basePrompt = info.defaultPrompt.replace("You are", `You are ${personaName},`);
+      basePrompt = info.defaultPrompt.replace("You are", `You are ${personaName},`);
     } else {
-        basePrompt = `You are ${personaName}, an expert acting in the capacity of a ${role}. As a specialized agent, you must execute your duties meticulously, draw upon your deep domain knowledge, and provide structured, high-signal outputs. Avoid conversational fluff.`;
+      basePrompt = `You are ${personaName}, an expert acting in the capacity of a ${role}. As a specialized agent, you must execute your duties meticulously, draw upon your deep domain knowledge, and provide structured, high-signal outputs. Avoid conversational fluff.`;
     }
   }
 
@@ -251,7 +251,7 @@ function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record
 
 export function injectPrincipalContext(basePrompt: string, profile: UserProfile | null) {
   if (!profile || profile.name === "Admin" && !profile.global_directives) return basePrompt;
-  
+
   let principal = `\n\n=== PRINCIPAL CONTEXT ===\nYou are acting on behalf of ${profile.name}.`;
   if (profile.email) principal += `\nEmail: ${profile.email}`;
   if (profile.phone) principal += `\nPhone: ${profile.phone}`;
@@ -259,7 +259,7 @@ export function injectPrincipalContext(basePrompt: string, profile: UserProfile 
   if (profile.working_hours) principal += `\nWorking Hours: ${profile.working_hours}`;
   if (profile.communication_tone) principal += `\nRequired Tone: ${profile.communication_tone}`;
   if (profile.global_directives) principal += `\nGLOBAL DIRECTIVES: ${profile.global_directives}`;
-  
+
   return basePrompt + principal;
 }
 
@@ -564,8 +564,29 @@ function WorldArchitecture() {
 function SkyGradient() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
     vertexShader: `varying vec2 vU;void main(){vU=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
-    fragmentShader: `uniform float t;varying vec2 vU;void main(){vec3 top=vec3(.784,.847,.91);vec3 bot=vec3(.96,.902,.847);float s=sin(t*.02)*.03;top.r+=s;bot.b+=s;vec3 c=mix(bot,top,vU.y);vec2 cn=vU-.5;c*=1.-dot(cn,cn)*.5;gl_FragColor=vec4(c,1.);}`,
-    uniforms: { t: { value: 0 } }, side: THREE.BackSide, depthWrite: false,
+    fragmentShader: `varying vec2 vU;
+      void main() {
+        // Pastel Rainbow inspired by the 3D reference
+        vec3 c1 = vec3(0.92, 0.90, 0.97); // Warm Lavender (bottom left)
+        vec3 c2 = vec3(0.85, 0.93, 0.98); // Light Cyan (top right)
+        vec3 c3 = vec3(0.95, 0.90, 0.98); // Soft Purple (top left)
+        vec3 c4 = vec3(0.90, 0.94, 0.98); // Light Blue (bottom right)
+        
+        vec3 bot = mix(c1, c4, vU.x);
+        vec3 top = mix(c3, c2, vU.x);
+        vec3 finalColor = mix(bot, top, vU.y);
+        
+        // Subtle vignette to focus the center
+        vec2 cn = vU - 0.5;
+        finalColor *= 1.0 - dot(cn, cn) * 0.3;
+        
+        // Output pure sRGB color
+        gl_FragColor = vec4(finalColor, 1.0);
+      }`,
+    uniforms: { t: { value: 0 } },
+    side: THREE.BackSide,
+    depthWrite: false,
+    toneMapped: false, // CRUCIAL: prevents the ACESFilmic filter from turning our rainbow into muddy grey!
   }), []);
   useFrame(({ clock }) => { mat.uniforms.t.value = clock.getElapsedTime(); });
   return <mesh material={mat}><sphereGeometry args={[50, 16, 16]} /></mesh>;
@@ -584,16 +605,17 @@ function CanopyScene() {
   };
 
   return (<>
-    <ambientLight intensity={0.6} color="#F5E6D8" />
-    <directionalLight position={[5, 10, 3]} intensity={0.8} />
-    <directionalLight position={[-3, 5, -2]} intensity={0.2} color="#C8D8E8" />
-    <SkyGradient />
-    <Water />
+    {/* Soft, balanced lighting so we don't blow out or over-expose the pastel colors! */}
+    <ambientLight intensity={0.7} color="#FFFFFF" />
+    <directionalLight position={[8, 12, 4]} intensity={0.4} color="#FFFFFF" />
+    <directionalLight position={[-4, 8, -4]} intensity={0.2} color="#E8F0F8" />
+
+    {/* Removed Water and SkyGradient to eliminate any transparent 'overlay' planes or murky backgrounds */}
     <FloatingMotes count={25} />
-    
-    <WorldScene 
-      agents={agents} 
-      onAgentClick={handleAgentClick} 
+
+    <WorldScene
+      agents={agents}
+      onAgentClick={handleAgentClick}
       onAgentHover={setHoveredAgent}
       hoveredAgentId={hoveredAgent}
     />
@@ -652,7 +674,7 @@ function OnboardingWizard() {
   const [step, setStep] = useState(-1);
   const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "starting" | "ready">("checking");
   const [engineError, setEngineError] = useState("");
-  
+
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [agentName, setAgentName] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -688,41 +710,41 @@ function OnboardingWizard() {
         const unlisten1 = await listen('companion-finished', async (e: any) => {
           const { type, key } = e.payload || {};
           if (key) {
-             setApiKey(key);
-             if (type === "gemini") setLlmProvider("Google Gemini");
-             else if (type === "openai") setLlmProvider("OpenAI");
-             else if (type === "anthropic") setLlmProvider("Anthropic");
-             else if (type === "xai") setLlmProvider("xAI Grok");
-             setApiKeyMode("manual");
+            setApiKey(key);
+            if (type === "gemini") setLlmProvider("Google Gemini");
+            else if (type === "openai") setLlmProvider("OpenAI");
+            else if (type === "anthropic") setLlmProvider("Anthropic");
+            else if (type === "xai") setLlmProvider("xAI Grok");
+            setApiKeyMode("manual");
           }
           try {
-             // Use Tauri V2 getAllWebviewWindows to grab all labeled instances regardless of their dynamic Date.now() tail
-             const { getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow');
-             const windows = await getAllWebviewWindows();
-             for (const w of windows) {
-                if (w.label.toLowerCase().includes('companion')) {
-                   await w.close().catch(console.warn);
-                }
-             }
-          } catch(err) {
-             console.error("Failed to close companions automatically:", err);
+            // Use Tauri V2 getAllWebviewWindows to grab all labeled instances regardless of their dynamic Date.now() tail
+            const { getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow');
+            const windows = await getAllWebviewWindows();
+            for (const w of windows) {
+              if (w.label.toLowerCase().includes('companion')) {
+                await w.close().catch(console.warn);
+              }
+            }
+          } catch (err) {
+            console.error("Failed to close companions automatically:", err);
           }
         });
 
         const unlisten2 = await listen('close-companion', async () => {
           try {
-             const { getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow');
-             const windows = await getAllWebviewWindows();
-             for (const w of windows) {
-                if (w.label.toLowerCase().includes('companion')) {
-                   await w.close().catch(console.warn);
-                }
-             }
-          } catch(err) {}
+            const { getAllWebviewWindows } = await import('@tauri-apps/api/webviewWindow');
+            const windows = await getAllWebviewWindows();
+            for (const w of windows) {
+              if (w.label.toLowerCase().includes('companion')) {
+                await w.close().catch(console.warn);
+              }
+            }
+          } catch (err) { }
         });
 
         return () => { unlisten1(); unlisten2(); };
-      } catch(e) { return () => {}; }
+      } catch (e) { return () => { }; }
     };
     let unlistenFn: any;
     setupListener().then(f => unlistenFn = f);
@@ -912,7 +934,7 @@ function OnboardingWizard() {
       if (recentlyRead.length > 0) {
         finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
       }
-      
+
       try {
         if (typeof invoke === 'function') {
           const profile: any = await invoke("get_user_profile");
@@ -921,7 +943,7 @@ function OnboardingWizard() {
       } catch (e) {
         console.error("Failed to inject principal context:", e);
       }
-      
+
       let newAgentData: Agent;
       try {
         if (typeof invoke === 'function') {
@@ -1040,14 +1062,14 @@ function OnboardingWizard() {
             <LoadingScreen />
           ) : (
             <div style={{ textAlign: "center", maxWidth: 480, display: "flex", flexDirection: "column", alignItems: "center", padding: "40px" }}>
-              
+
               <div style={{
                 width: 80, height: 80, borderRadius: "50%", background: "#F5E6D8",
                 display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 24,
                 boxShadow: "0 8px 32px rgba(245, 230, 216, 0.4)"
               }}>
                 <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#3c6663" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+                  <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
                 </svg>
               </div>
 
@@ -1367,12 +1389,12 @@ function OnboardingWizard() {
               <input
                 value={agentName}
                 onChange={e => {
-                   const oldName = agentName || "Agent";
-                   const newName = e.target.value;
-                   setAgentName(newName);
-                   if (personalityPrompt.includes(oldName)) {
-                      setPersonalityPrompt(personalityPrompt.replaceAll(oldName, newName || "Agent"));
-                   }
+                  const oldName = agentName || "Agent";
+                  const newName = e.target.value;
+                  setAgentName(newName);
+                  if (personalityPrompt.includes(oldName)) {
+                    setPersonalityPrompt(personalityPrompt.replaceAll(oldName, newName || "Agent"));
+                  }
                 }}
                 placeholder="e.g., Atlas, Nova, Sage..."
                 style={{
@@ -1424,57 +1446,57 @@ function OnboardingWizard() {
               <div style={{ marginTop: 24 }}>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Recently Read</label>
                 <p style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>This gives your agent even more personality. Feel free to pick books unrelated to their job for a creative twist!</p>
-                
+
                 {recentlyRead.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
                     {recentlyRead.map(book => (
-                       <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                          {book}
-                          <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
-                       </div>
+                      <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                        {book}
+                        <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
+                      </div>
                     ))}
                   </div>
                 )}
 
                 {agentTypeInfo[selectedRole || "Custom"]?.suggestedBooks?.length > 0 && (
-                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
-                      {agentTypeInfo[selectedRole || "Custom"].suggestedBooks.filter((b: string) => !recentlyRead.includes(b)).map((book: string) => (
-                        <div key={book} onClick={() => setRecentlyRead([...recentlyRead, book])} style={{ padding: "4px 10px", background: "rgba(0,0,0,0.05)", color: "#303330", borderRadius: 16, fontSize: 11, cursor: "pointer", border: "1px solid rgba(0,0,0,0.1)", transition: "all 0.2s ease" }}>
-                           + {book}
-                        </div>
-                      ))}
-                   </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+                    {agentTypeInfo[selectedRole || "Custom"].suggestedBooks.filter((b: string) => !recentlyRead.includes(b)).map((book: string) => (
+                      <div key={book} onClick={() => setRecentlyRead([...recentlyRead, book])} style={{ padding: "4px 10px", background: "rgba(0,0,0,0.05)", color: "#303330", borderRadius: 16, fontSize: 11, cursor: "pointer", border: "1px solid rgba(0,0,0,0.1)", transition: "all 0.2s ease" }}>
+                        + {book}
+                      </div>
+                    ))}
+                  </div>
                 )}
 
                 <div style={{ display: "flex", gap: 8 }}>
-                   {(() => {
-                     const handleAddCustomBook = () => {
-                        const title = customBookInput.trim();
-                        if (title) {
-                            setRecentlyRead([...recentlyRead, title]);
-                            setCustomBookInput("");
-                            if (selectedRole && selectedRole !== "Custom") {
-                                fetch('http://localhost:3001/api/agents/add-suggestion', {
-                                    method: 'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body: JSON.stringify({ role: selectedRole, bookTitle: title })
-                                }).catch(e => console.warn("Failed to suggest book to backend", e));
-                            }
+                  {(() => {
+                    const handleAddCustomBook = () => {
+                      const title = customBookInput.trim();
+                      if (title) {
+                        setRecentlyRead([...recentlyRead, title]);
+                        setCustomBookInput("");
+                        if (selectedRole && selectedRole !== "Custom") {
+                          fetch('http://localhost:3001/api/agents/add-suggestion', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ role: selectedRole, bookTitle: title })
+                          }).catch(e => console.warn("Failed to suggest book to backend", e));
                         }
-                     };
-                     return (
-                       <>
-                         <input 
-                           value={customBookInput} 
-                           onChange={e => setCustomBookInput(e.target.value)} 
-                           placeholder="Type a custom book title..." 
-                           style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }} 
-                           onKeyDown={e => { if (e.key === "Enter") handleAddCustomBook(); }}
-                         />
-                         <button onClick={handleAddCustomBook} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
-                       </>
-                     );
-                   })()}
+                      }
+                    };
+                    return (
+                      <>
+                        <input
+                          value={customBookInput}
+                          onChange={e => setCustomBookInput(e.target.value)}
+                          placeholder="Type a custom book title..."
+                          style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }}
+                          onKeyDown={e => { if (e.key === "Enter") handleAddCustomBook(); }}
+                        />
+                        <button onClick={handleAddCustomBook} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
@@ -1509,11 +1531,11 @@ function OnboardingWizard() {
 
             {selectedRole && (
               <div style={{ marginBottom: 24, fontSize: 14, color: "#303330", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
-                 {llmProvider && llmProvider !== getDynamicRecommendedModel(selectedRole).provider ? (
-                   <>Since you selected <strong>{llmProvider}</strong> for the <strong>{selectedRole}</strong> role, we recommend using <strong>{getProviderRecommendedModel(selectedRole, llmProvider).model}</strong>.</>
-                 ) : (
-                   <>Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.</>
-                 )}
+                {llmProvider && llmProvider !== getDynamicRecommendedModel(selectedRole).provider ? (
+                  <>Since you selected <strong>{llmProvider}</strong> for the <strong>{selectedRole}</strong> role, we recommend using <strong>{getProviderRecommendedModel(selectedRole, llmProvider).model}</strong>.</>
+                ) : (
+                  <>Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.</>
+                )}
               </div>
             )}
 
@@ -1755,20 +1777,20 @@ function OnboardingWizard() {
                         const manifest = {
                           display_information: { name: agentName || "Sloane", description: selectedRole ? `Your ${selectedRole} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
                           features: {
-                              app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
-                              bot_user: { display_name: agentName || "Sloane", always_online: true }
+                            app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+                            bot_user: { display_name: agentName || "Sloane", always_online: true }
                           },
-                          oauth_config: { 
-                              scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] }, 
-                              pkce_enabled: false 
+                          oauth_config: {
+                            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
+                            pkce_enabled: false
                           },
-                          settings: { 
-                              event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] }, 
-                              interactivity: { is_enabled: true }, 
-                              org_deploy_enabled: false, 
-                              socket_mode_enabled: true, 
-                              token_rotation_enabled: false, 
-                              is_mcp_enabled: false 
+                          settings: {
+                            event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] },
+                            interactivity: { is_enabled: true },
+                            org_deploy_enabled: false,
+                            socket_mode_enabled: true,
+                            token_rotation_enabled: false,
+                            is_mcp_enabled: false
                           }
                         };
                         const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
@@ -1787,20 +1809,20 @@ function OnboardingWizard() {
                       const manifest = {
                         display_information: { name: agentName || "Sloane", description: selectedRole ? `Your ${selectedRole} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
                         features: {
-                            app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
-                            bot_user: { display_name: agentName || "Sloane", always_online: true }
+                          app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+                          bot_user: { display_name: agentName || "Sloane", always_online: true }
                         },
-                        oauth_config: { 
-                            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] }, 
-                            pkce_enabled: false 
+                        oauth_config: {
+                          scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
+                          pkce_enabled: false
                         },
-                        settings: { 
-                            event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] }, 
-                            interactivity: { is_enabled: true }, 
-                            org_deploy_enabled: false, 
-                            socket_mode_enabled: true, 
-                            token_rotation_enabled: false, 
-                            is_mcp_enabled: false 
+                        settings: {
+                          event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] },
+                          interactivity: { is_enabled: true },
+                          org_deploy_enabled: false,
+                          socket_mode_enabled: true,
+                          token_rotation_enabled: false,
+                          is_mcp_enabled: false
                         }
                       };
                       const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
@@ -1831,27 +1853,27 @@ function OnboardingWizard() {
                     <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20, lineHeight: 1.5 }}>
                       macOS blocks access to iMessage databases by default. To securely connect this, please toggle Canopy <strong>on</strong> in your System Settings under <strong>Full Disk Access</strong>.
                     </div>
-                    
+
                     <div style={{ background: "#ffffff", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid rgba(0,0,0,0.08)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", marginBottom: 20 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                         <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #3c6663, #2a4745)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 18, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>C</div>
                         <div style={{ fontSize: 15, fontWeight: 600, color: "#1D1D1F" }}>Canopy</div>
                       </div>
                       <div style={{ position: "relative" }}>
-                         <div style={{ width: 51, height: 31, background: "#34C759", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: 2, boxSizing: "border-box", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.1)" }}>
-                           <div style={{ width: 27, height: 27, background: "white", borderRadius: "50%", boxShadow: "0 2px 4px rgba(0,0,0,0.2), 0 1px 1px rgba(0,0,0,0.1)" }} />
-                         </div>
-                         <div style={{ position: "absolute", top: -4, left: -4, right: -4, bottom: -4, border: "2px solid #007AFF", borderRadius: 24, animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }} />
+                        <div style={{ width: 51, height: 31, background: "#34C759", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: 2, boxSizing: "border-box", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.1)" }}>
+                          <div style={{ width: 27, height: 27, background: "white", borderRadius: "50%", boxShadow: "0 2px 4px rgba(0,0,0,0.2), 0 1px 1px rgba(0,0,0,0.1)" }} />
+                        </div>
+                        <div style={{ position: "absolute", top: -4, left: -4, right: -4, bottom: -4, border: "2px solid #007AFF", borderRadius: 24, animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }} />
                       </div>
                     </div>
 
                     <button onClick={async () => {
-                       try {
-                          const { open } = await import("@tauri-apps/plugin-shell");
-                          await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
-                       } catch (e) {
-                          console.error("Failed to open System Settings", e);
-                       }
+                      try {
+                        const { open } = await import("@tauri-apps/plugin-shell");
+                        await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+                      } catch (e) {
+                        console.error("Failed to open System Settings", e);
+                      }
                     }} style={{ width: "100%", padding: "14px 16px", background: "#3c6663", color: "white", border: "none", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
                       Open System Settings
                     </button>
@@ -2171,7 +2193,7 @@ function OnboardingWizard() {
           <p style={{ fontSize: 16, color: "#636E72", marginBottom: 40, maxWidth: 400, margin: "0 auto 40px" }}>
             Your agent is ready. Drop them into The Canopy and watch them work.
           </p>
-          
+
           {createAgentError && (
             <div style={{ marginBottom: 24, padding: "16px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 14 }}>
               <strong style={{ display: "block", marginBottom: 4 }}>Creation Failed</strong>
@@ -2279,92 +2301,94 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 
         {/* Danger Zone */}
         <div style={{ padding: "10px 0", borderTop: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", gap: 8, position: "relative" }}>
-          <button 
+          <button
             onClick={() => setShowDangerZone(!showDangerZone)}
             style={{ background: "transparent", border: "none", color: "#B2BEC3", cursor: "pointer", textAlign: "right", padding: "4px 8px" }}
           >
-             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: showDangerZone ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
-                <polyline points="18 15 12 9 6 15"></polyline>
-             </svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: showDangerZone ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
+              <polyline points="18 15 12 9 6 15"></polyline>
+            </svg>
           </button>
-          
+
           {showDangerZone && (
             <div style={{
-               background: "#fff", borderRadius: 12, padding: 12, border: "1px solid #f2bdbd", boxShadow: "0 4px 12px rgba(198,40,40,0.08)"
+              background: "#fff", borderRadius: 12, padding: 12, border: "1px solid #f2bdbd", boxShadow: "0 4px 12px rgba(198,40,40,0.08)"
             }}>
-               <div style={{ fontSize: 10, fontWeight: 800, color: "#C62828", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.05em" }}>Danger Zone</div>
-               <button 
-                  onClick={async () => {
-                     // Pause disables execution permissions locally and backend
-                     const { invoke } = await import('@tauri-apps/api/core');
-                     const newPerms = agent.permissions.map(p => 
-                        (p.id === "autonomous" || p.id === "scheduled") ? { ...p, enabled: false } : p
-                     );
-                     
-                     const capabilitiesObj: any = {};
-                     newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                     useWorldStore.getState().setAgents(
-                        useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, permissions: newPerms } as AgentData : a)
-                     );
-                     await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
-                  }}
-                  style={{ width: "100%", padding: "8px 12px", background: "#f9f9f9", color: "#636E72", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6 }}
-               >
-                  Pause Agent
-               </button>
-               <button 
-                  onClick={async () => {
-                     const isConfirmed = window.confirm(`Are you absolutely sure you want to permanently delete ${agent.name}? This cannot be undone.`);
-                     if (!isConfirmed) return;
-                     try {
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        await invoke("delete_agent", { agentId: agent.id });
-                        useWorldStore.getState().setAgents(useWorldStore.getState().agents.filter(a => a.id !== agent.id));
-                        useWorldStore.getState().setActiveView("canopy");
-                     } catch(e) {
-                        alert("Failed to delete agent: " + e);
-                     }
-                  }}
-                  style={{ width: "100%", padding: "8px 12px", background: "#fdeaea", color: "#C62828", border: "1px solid #f2bdbd", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
-               >
-                  Delete Agent
-               </button>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#C62828", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.05em" }}>Danger Zone</div>
+              <button
+                onClick={async () => {
+                  // Pause disables execution permissions locally and backend
+                  const { invoke } = await import('@tauri-apps/api/core');
+                  const newPerms = agent.permissions.map(p =>
+                    (p.id === "autonomous" || p.id === "scheduled") ? { ...p, enabled: false } : p
+                  );
+
+                  const capabilitiesObj: any = {};
+                  newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                  useWorldStore.getState().setAgents(
+                    useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, permissions: newPerms } as AgentData : a)
+                  );
+                  await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+                }}
+                style={{ width: "100%", padding: "8px 12px", background: "#f9f9f9", color: "#636E72", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6 }}
+              >
+                Pause Agent
+              </button>
+              <button
+                onClick={async () => {
+                  const isConfirmed = window.confirm(`Are you absolutely sure you want to permanently delete ${agent.name}? This cannot be undone.`);
+                  if (!isConfirmed) return;
+                  try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    await invoke("delete_agent", { agentId: agent.id });
+                    useWorldStore.getState().setAgents(useWorldStore.getState().agents.filter(a => a.id !== agent.id));
+                    useWorldStore.getState().setActiveView("canopy");
+                  } catch (e) {
+                    alert("Failed to delete agent: " + e);
+                  }
+                }}
+                style={{ width: "100%", padding: "8px 12px", background: "#fdeaea", color: "#C62828", border: "1px solid #f2bdbd", borderRadius: 6, fontSize: 12, fontWeight: 700, cursor: "pointer" }}
+              >
+                Delete Agent
+              </button>
             </div>
           )}
         </div>
 
-        <button 
+        <button
           onClick={async () => {
-             const btn = document.getElementById('diag-btn-text');
-             if(btn) btn.innerText = "Running Diagnostics...";
-             try {
-                if (typeof invoke === 'function') {
-                   const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
-                   const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
-                   const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
-                   const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
-                   
-                   await invoke("sync_credentials", { agentId: agent.id, keys: {
-                       "ANTHROPIC_API_KEY": String(anthropic || ""),
-                       "OPENAI_API_KEY": String(openai || ""),
-                       "GEMINI_API_KEY": String(gemini || ""),
-                       "XAI_API_KEY": String(xai || "")
-                   }}).catch((err) => console.error("Sync credentials failed:", err));
+            const btn = document.getElementById('diag-btn-text');
+            if (btn) btn.innerText = "Running Diagnostics...";
+            try {
+              if (typeof invoke === 'function') {
+                const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
+                const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
+                const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
+                const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
 
-                   const res = await invoke("repair_gateway", { agentId: agent.id });
-                   if(btn) btn.innerText = "Config Repaired!";
-                }
-             } catch(e) {
-                if(btn) btn.innerText = "Repair Failed";
-             }
-             setTimeout(() => { if(btn) btn.innerText = "Run Diagnostics"; }, 3000);
+                await invoke("sync_credentials", {
+                  agentId: agent.id, keys: {
+                    "ANTHROPIC_API_KEY": String(anthropic || ""),
+                    "OPENAI_API_KEY": String(openai || ""),
+                    "GEMINI_API_KEY": String(gemini || ""),
+                    "XAI_API_KEY": String(xai || "")
+                  }
+                }).catch((err) => console.error("Sync credentials failed:", err));
+
+                const res = await invoke("repair_gateway", { agentId: agent.id });
+                if (btn) btn.innerText = "Config Repaired!";
+              }
+            } catch (e) {
+              if (btn) btn.innerText = "Repair Failed";
+            }
+            setTimeout(() => { if (btn) btn.innerText = "Run Diagnostics"; }, 3000);
           }}
           style={{
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-          padding: "10px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 12, cursor: "pointer",
-          background: "rgba(255,255,255,0.5)", color: "#218380", fontSize: 12, fontFamily: "inherit",
-          fontWeight: 600, marginTop: 4, transition: "all 0.2s ease"
-        }}>
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            padding: "10px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 12, cursor: "pointer",
+            background: "rgba(255,255,255,0.5)", color: "#218380", fontSize: 12, fontFamily: "inherit",
+            fontWeight: 600, marginTop: 4, transition: "all 0.2s ease"
+          }}>
           <SvgIcon size={14}><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><circle cx="12" cy="12" r="3"></circle></SvgIcon>
           <span id="diag-btn-text">Run Diagnostics</span>
         </button>
@@ -2443,11 +2467,11 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
       await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
       // Update global state
       useWorldStore.getState().setAgents(
-         useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+        useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
       );
       setSaveStatus("success");
       setTimeout(() => setSaveStatus("idle"), 2000);
-    } catch(e) {
+    } catch (e) {
       console.error(e);
       setSaveStatus("error");
     }
@@ -2482,7 +2506,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
             <div style={{ fontSize: 16, fontWeight: 800, color: "#2E7D32", marginBottom: 4 }}>Total Lock Down</div>
             <div style={{ fontSize: 12, color: strategy === "lockdown" ? "#1B5E20" : "#636E72" }}>Agent uses isolated, dedicated sandbox accounts.</div>
           </button>
-          
+
           {/* Secure */}
           <button onClick={() => setStrategy("secure")} style={{
             flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
@@ -2507,7 +2531,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
 
       <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "#B2BEC3", marginBottom: 16 }}>Function Settings</h3>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        
+
         {/* Email */}
         <div style={{ padding: 24, background: "white", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
           <div style={{ width: "30%" }}>
@@ -2546,15 +2570,15 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
             </select>
           </div>
           <div style={{ width: 120, textAlign: "right" }}>
-             <button onClick={() => {
-                if (calendarSetting !== "dedicated") {
-                   openCompanion(`calendar_${calendarSetting}`);
-                } else {
-                   alert("Dedicated Calendar is provisioned automatically locally. No credentials needed!");
-                }
-             }} style={{ padding: "8px 16px", background: calendarSetting === "dedicated" ? "#e0e0e0" : "#303330", color: calendarSetting === "dedicated" ? "#888" : "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: calendarSetting === "dedicated" ? "default" : "pointer" }}>
-               {calendarSetting === "dedicated" ? "Active" : "Connect"}
-             </button>
+            <button onClick={() => {
+              if (calendarSetting !== "dedicated") {
+                openCompanion(`calendar_${calendarSetting}`);
+              } else {
+                alert("Dedicated Calendar is provisioned automatically locally. No credentials needed!");
+              }
+            }} style={{ padding: "8px 16px", background: calendarSetting === "dedicated" ? "#e0e0e0" : "#303330", color: calendarSetting === "dedicated" ? "#888" : "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: calendarSetting === "dedicated" ? "default" : "pointer" }}>
+              {calendarSetting === "dedicated" ? "Active" : "Connect"}
+            </button>
           </div>
         </div>
 
@@ -2573,26 +2597,26 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
               </select>
             </div>
             <div style={{ width: 140, textAlign: "right", display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
-               <button onClick={() => openCompanion('slack')} style={{ padding: "8px 16px", background: "#303330", color: "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer", width: "100%" }}>
-                 Connect
-               </button>
-               <div
-                 onClick={async () => {
-                   const code = window.prompt("Enter the 8-character pairing code from Slack:");
-                   if (code && code.trim() !== "") {
-                     try {
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        await invoke("approve_slack_pairing", { code: code.trim() });
-                        alert("Slack pairing successful! The agent will now respond in Slack.");
-                     } catch(e) {
-                        alert("Failed to pair: " + String(e));
-                     }
-                   }
-                 }}
-                 style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
-               >
-                 Enter Pair Code ↗
-               </div>
+              <button onClick={() => openCompanion('slack')} style={{ padding: "8px 16px", background: "#303330", color: "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer", width: "100%" }}>
+                Connect
+              </button>
+              <div
+                onClick={async () => {
+                  const code = window.prompt("Enter the 8-character pairing code from Slack:");
+                  if (code && code.trim() !== "") {
+                    try {
+                      const { invoke } = await import('@tauri-apps/api/core');
+                      await invoke("approve_slack_pairing", { code: code.trim() });
+                      alert("Slack pairing successful! The agent will now respond in Slack.");
+                    } catch (e) {
+                      alert("Failed to pair: " + String(e));
+                    }
+                  }
+                }}
+                style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
+              >
+                Enter Pair Code ↗
+              </div>
             </div>
           </div>
         </div>
@@ -2619,11 +2643,11 @@ function OverviewTab({ agent }: { agent: AgentData }) {
               <div style={{ fontSize: 16, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Agent Environment Offline</div>
               <div style={{ fontSize: 13, color: "#636E72" }}>The OpenClaw setup failed or the local Docker container unexpectedly stopped.</div>
             </div>
-            <button 
+            <button
               id="repair-openclaw-btn"
               onClick={async () => {
                 const btn = document.getElementById('repair-openclaw-btn');
-                if(btn) btn.innerText = "Rebuilding...";
+                if (btn) btn.innerText = "Rebuilding...";
                 setRepairError(null);
                 try {
                   if (typeof invoke === 'function') {
@@ -2631,24 +2655,26 @@ function OverviewTab({ agent }: { agent: AgentData }) {
                     const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
                     const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
                     const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
-                    
-                    await invoke("sync_credentials", { agentId: agent.id, keys: {
+
+                    await invoke("sync_credentials", {
+                      agentId: agent.id, keys: {
                         "ANTHROPIC_API_KEY": String(anthropic || ""),
                         "OPENAI_API_KEY": String(openai || ""),
                         "GEMINI_API_KEY": String(gemini || ""),
                         "XAI_API_KEY": String(xai || "")
-                    }}).catch((err) => console.error("Sync credentials failed:", err));
+                      }
+                    }).catch((err) => console.error("Sync credentials failed:", err));
 
                     const res = await invoke("repair_gateway", { agentId: agent.id });
-                    if(btn) btn.innerText = "Repaired!";
+                    if (btn) btn.innerText = "Repaired!";
                     setRepairError(String(res));
                   }
-                } catch(e) {
-                  if(btn) btn.innerText = "Failed";
+                } catch (e) {
+                  if (btn) btn.innerText = "Failed";
                   setRepairError(String(e));
                   console.error("Openclaw repair failed:", e);
                 }
-                setTimeout(() => { if(btn) btn.innerText = "Re-Initialize Setup"; }, 2000);
+                setTimeout(() => { if (btn) btn.innerText = "Re-Initialize Setup"; }, 2000);
               }}
               style={{ padding: "10px 20px", borderRadius: 10, background: "#E57373", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "all 0.2s ease" }}>
               Re-Initialize Setup
@@ -2782,7 +2808,7 @@ function IdentityTab({ agent }: { agent: AgentData }) {
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 32, height: "100%" }}>
       {/* Left: 3D Dressing Room Areas */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        
+
         {/* Area 1: Base Lobster & Accessories */}
         <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 300 }}>
           <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
@@ -2810,7 +2836,7 @@ function IdentityTab({ agent }: { agent: AgentData }) {
 
         {/* Lower row: Standalone Assets */}
         <div style={{ display: "flex", gap: 16, flex: 1, minHeight: 180 }}>
-          
+
           {/* Area 2: Standalone Accessories Rack */}
           <div style={{ flex: 1, background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
             <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 90 }}>
@@ -2818,9 +2844,9 @@ function IdentityTab({ agent }: { agent: AgentData }) {
               <directionalLight position={[10, 20, 5]} intensity={1} />
               <OrbitControls autoRotate autoRotateSpeed={2.5} enablePan={false} />
               {agent.visual_identity?.accessories && agent.visual_identity.accessories.length > 0 ? (
-                 <SingleGLB url={agent.visual_identity.accessories[0]} />
+                <SingleGLB url={agent.visual_identity.accessories[0]} />
               ) : (
-                 <mesh><boxGeometry args={[0.5,0.5,0.5]}/><meshStandardMaterial wireframe color="#cccccc" /></mesh>
+                <mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial wireframe color="#cccccc" /></mesh>
               )}
             </Canvas>
             <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "#636E72" }}>Component</div>
@@ -2828,19 +2854,19 @@ function IdentityTab({ agent }: { agent: AgentData }) {
 
           {/* Area 3: Pedestal Habitat */}
           <div style={{ flex: 1, background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
-             <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 70 }}>
-                <ambientLight intensity={0.8} />
-                <directionalLight position={[10, 20, 5]} intensity={1} />
-                <OrbitControls autoRotate autoRotateSpeed={1} enablePan={false} />
-                <Pedestal color={agent.color || "#C8D8E8"} />
-             </Canvas>
-             <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "#636E72" }}>Habitat Platform</div>
+            <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 70 }}>
+              <ambientLight intensity={0.8} />
+              <directionalLight position={[10, 20, 5]} intensity={1} />
+              <OrbitControls autoRotate autoRotateSpeed={1} enablePan={false} />
+              <Pedestal color={agent.color || "#C8D8E8"} />
+            </Canvas>
+            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "#636E72" }}>Habitat Platform</div>
           </div>
 
         </div>
       </div>
 
-    {/* Right: Generative Studio */}
+      {/* Right: Generative Studio */}
       <div style={{ paddingRight: 8, height: "100%", overflow: "hidden" }}>
         <GenerativeStudio onApply={handleApplyGeneration} />
       </div>
@@ -2870,26 +2896,26 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
     if (!modelStrategies || !modelStrategies.strategies) return { provider: "OpenAI", model: "GPT-4o-mini (Fast & Light)", id: "gpt-4o-mini" };
     const { strategies, models } = modelStrategies;
     const isHeavy = strategies.heavy.includes(agent.role);
-    
+
     let forceProvider = null;
     let availableKeys = Object.entries(keys).filter(([_, val]) => val && val.trim().length > 0).map(([k]) => k);
     if (availableKeys.length === 1) {
       if (availableKeys[0] === "Gemini") forceProvider = "Google Gemini";
       else forceProvider = availableKeys[0];
     }
-    
+
     let match = null;
     if (forceProvider) {
-       let provModels = models.filter((m: any) => m.provider === forceProvider);
-       match = provModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"));
-       if (!match && provModels.length > 0) match = provModels[0];
+      let provModels = models.filter((m: any) => m.provider === forceProvider);
+      match = provModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"));
+      if (!match && provModels.length > 0) match = provModels[0];
     }
-    
+
     if (!match) {
-       const targetId = isHeavy ? strategies.defaultHeavyModel : strategies.defaultLightModel;
-       match = models.find((m: any) => m.id === targetId);
+      const targetId = isHeavy ? strategies.defaultHeavyModel : strategies.defaultLightModel;
+      match = models.find((m: any) => m.id === targetId);
     }
-    
+
     return { provider: match?.provider || "OpenAI", model: `${match?.name} (${match?.description})`, id: match?.id };
   };
 
@@ -2906,7 +2932,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
       providers.forEach(prov => {
         invoke("get_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` })
           .then(k => setKeys(prev => ({ ...prev, [prov]: k as string })))
-          .catch(() => {});
+          .catch(() => { });
       });
     }
   }, [agent.id]);
@@ -2924,22 +2950,22 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
             } else {
               await invoke("delete_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` });
             }
-          } catch(err) {
+          } catch (err) {
             // macOS keychain might throw if the key doesn't exist to delete. Ignore gracefully.
           }
         }
-        
+
         const finalModel = selectedModel || defaultModelInfo?.id || "gpt-4o-mini";
-        
+
         let litellmPrefix = "";
         if (modelStrategies && modelStrategies.models) {
-            let match = modelStrategies.models.find((m: any) => m.id === finalModel);
-            if (match) {
-                if (match.provider === "OpenAI") litellmPrefix = "openai/";
-                if (match.provider === "Anthropic") litellmPrefix = "anthropic/";
-                if (match.provider === "Google Gemini") litellmPrefix = "gemini/";
-                if (match.provider === "Grok") litellmPrefix = "xai/";
-            }
+          let match = modelStrategies.models.find((m: any) => m.id === finalModel);
+          if (match) {
+            if (match.provider === "OpenAI") litellmPrefix = "openai/";
+            if (match.provider === "Anthropic") litellmPrefix = "anthropic/";
+            if (match.provider === "Google Gemini") litellmPrefix = "gemini/";
+            if (match.provider === "Grok") litellmPrefix = "xai/";
+          }
         }
         // Synchronize updated keys directly to OpenClaw's auth-profiles.json layer
         let mappedKeys: Record<string, string> = {};
@@ -2947,13 +2973,13 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
         if (keys["Anthropic"]) mappedKeys["ANTHROPIC_API_KEY"] = keys["Anthropic"];
         if (keys["Gemini"]) mappedKeys["GEMINI_API_KEY"] = keys["Gemini"];
         if (keys["Grok"]) mappedKeys["XAI_API_KEY"] = keys["Grok"];
-        
+
         await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys });
 
         // Always push personality state to SQLite. If they choose default, it saves as "" cleanly.
         await invoke("update_agent_personality", {
-            agentId: agent.id, 
-            personality: { ...agent.personality, active_model: selectedModel }
+          agentId: agent.id,
+          personality: { ...agent.personality, active_model: selectedModel }
         });
         // Explicitly format model for LiteLLM schema and force update OpenClaw.
         await invoke("update_agent_model", { agentId: agent.id, model: litellmPrefix + finalModel });
@@ -2983,40 +3009,40 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
           <div style={{ textAlign: "right", background: "rgba(33,131,128,0.1)", padding: "12px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Core Model Override</div>
             <select
-                value={selectedModel}
-                onChange={e => setSelectedModel(e.target.value)}
-                style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "white", color: "#303330", cursor: "pointer", width: 220 }}
+              value={selectedModel}
+              onChange={e => setSelectedModel(e.target.value)}
+              style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "white", color: "#303330", cursor: "pointer", width: 220 }}
             >
-                <option value="">Strategy: {defaultModelInfo.model}</option>
-                <optgroup label="Available Engines">
-                  {modelStrategies?.models?.map((m: any) => (
-                    <option key={m.id} value={m.id}>{m.name} ({m.provider})</option>
-                  ))}
-                </optgroup>
+              <option value="">Strategy: {defaultModelInfo.model}</option>
+              <optgroup label="Available Engines">
+                {modelStrategies?.models?.map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} ({m.provider})</option>
+                ))}
+              </optgroup>
             </select>
           </div>
         </div>
-        
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
           {["OpenAI", "Anthropic", "Gemini", "Grok"].map(prov => (
             <div key={prov}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                  <div style={{ fontSize: 12, fontWeight: 500, color: "#303330" }}>{prov} API Key</div>
-                  <div 
-                     style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
-                     onClick={async () => {
-                         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                         new WebviewWindow('companion', {
-                           url: `/?companion=${prov.toLowerCase()}`,
-                           width: 400,
-                           height: 750,
-                           alwaysOnTop: true,
-                           titleBarStyle: 'overlay'
-                         });
-                     }}
-                  >
-                     Setup Guide ↗
-                  </div>
+                <div style={{ fontSize: 12, fontWeight: 500, color: "#303330" }}>{prov} API Key</div>
+                <div
+                  style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
+                  onClick={async () => {
+                    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                    new WebviewWindow('companion', {
+                      url: `/?companion=${prov.toLowerCase()}`,
+                      width: 400,
+                      height: 750,
+                      alwaysOnTop: true,
+                      titleBarStyle: 'overlay'
+                    });
+                  }}
+                >
+                  Setup Guide ↗
+                </div>
               </div>
               <input
                 type="password"
@@ -3028,7 +3054,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
             </div>
           ))}
         </div>
-        
+
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button onClick={saveOverrides} disabled={saveStatus === "loading"} style={{
             padding: "10px 24px", borderRadius: 8, border: "none", cursor: "pointer",
@@ -3044,37 +3070,37 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Training Books</div>
           <div style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>These books are injected into the agent's context to subtly shift their default decision making.</div>
-          
+
           <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
               {recentlyRead.length === 0 && <span style={{ fontSize: 12, color: "#636E72", fontStyle: "italic" }}>No books assigned.</span>}
               {recentlyRead.map(book => (
-                 <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                    {book}
-                    <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
-                 </div>
+                <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                  {book}
+                  <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
+                </div>
               ))}
             </div>
-            
+
             <div style={{ display: "flex", gap: 8 }}>
-               <input 
-                 value={customBookInput} 
-                 onChange={e => setCustomBookInput(e.target.value)} 
-                 placeholder="Type a custom book title..." 
-                 style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }} 
-                 onKeyDown={e => { 
-                   if (e.key === "Enter" && customBookInput.trim()) { 
-                     setRecentlyRead([...recentlyRead, customBookInput.trim()]); 
-                     setCustomBookInput(""); 
-                   } 
-                 }}
-               />
-               <button onClick={() => {
-                 if (customBookInput.trim()) { 
-                   setRecentlyRead([...recentlyRead, customBookInput.trim()]); 
-                   setCustomBookInput(""); 
-                 }
-               }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+              <input
+                value={customBookInput}
+                onChange={e => setCustomBookInput(e.target.value)}
+                placeholder="Type a custom book title..."
+                style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }}
+                onKeyDown={e => {
+                  if (e.key === "Enter" && customBookInput.trim()) {
+                    setRecentlyRead([...recentlyRead, customBookInput.trim()]);
+                    setCustomBookInput("");
+                  }
+                }}
+              />
+              <button onClick={() => {
+                if (customBookInput.trim()) {
+                  setRecentlyRead([...recentlyRead, customBookInput.trim()]);
+                  setCustomBookInput("");
+                }
+              }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
             </div>
           </div>
         </div>
@@ -3088,38 +3114,38 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
             background: "#f4f4f0", fontSize: 13, fontFamily: "inherit",
             color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
           }} />
-          <button 
+          <button
             onClick={async () => {
               const btn = document.getElementById('save-pers-btn');
-              if(btn) btn.innerText = "Saving...";
+              if (btn) btn.innerText = "Saving...";
               try {
-                if(typeof invoke === 'function') {
+                if (typeof invoke === 'function') {
                   let finalPrompt = prompt;
                   if (recentlyRead.length > 0) {
                     finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
                   }
-                  await invoke("update_agent_personality", { 
-                    agentId: agent.id, 
-                    personality: { ...agent.personality, custom_instructions: finalPrompt } 
+                  await invoke("update_agent_personality", {
+                    agentId: agent.id,
+                    personality: { ...agent.personality, custom_instructions: finalPrompt }
                   });
-                  if(btn) btn.innerText = "Saved!";
+                  if (btn) btn.innerText = "Saved!";
                 }
-              } catch(e) {
-                if(btn) btn.innerText = "Error";
+              } catch (e) {
+                if (btn) btn.innerText = "Error";
               }
-              setTimeout(() => { if(btn) btn.innerText = "Save Changes"; }, 2000);
+              setTimeout(() => { if (btn) btn.innerText = "Save Changes"; }, 2000);
             }}
             id="save-pers-btn"
             style={{
-            marginTop: 12, padding: "8px 16px", borderRadius: 8, border: "none",
-            background: "#3c6663", color: "white", fontSize: 12, fontWeight: 600,
-            cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-end",
-            transition: "all 0.2s ease"
-          }}>Save Changes</button>
+              marginTop: 12, padding: "8px 16px", borderRadius: 8, border: "none",
+              background: "#3c6663", color: "white", fontSize: 12, fontWeight: 600,
+              cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-end",
+              transition: "all 0.2s ease"
+            }}>Save Changes</button>
         </div>
       </div>
 
-      </div>
+    </div>
   );
 }
 
@@ -3176,12 +3202,12 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           <div style={{ fontSize: 11, color: "#636E72" }}>This agent runs in the shared Gateway. Switch to isolated for OS-level sandboxing.</div>
         </div>
         <div style={{ flex: 1 }} />
-        <button 
+        <button
           id="isolate-btn"
           onClick={async () => {
             const btn = document.getElementById('isolate-btn');
             const wasIsolated = agent.isolated;
-            if(btn) btn.innerText = "Rebooting...";
+            if (btn) btn.innerText = "Rebooting...";
             try {
               if (typeof invoke === 'function') {
                 await invoke("toggle_agent_isolation", {
@@ -3190,17 +3216,17 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
                 });
                 useWorldStore.getState().toggleIsolation(agent.id);
               }
-            } catch(e) {
+            } catch (e) {
               console.error("Failed isolation toggle", e);
             } finally {
-              if(btn) btn.innerText = !wasIsolated ? "Join Shared" : "Isolate";
+              if (btn) btn.innerText = !wasIsolated ? "Join Shared" : "Isolate";
             }
           }}
           style={{
-          padding: "6px 14px", borderRadius: 8, border: "1px solid #6B6BAE",
-          background: agent.isolated ? "#6B6BAE" : "transparent", color: agent.isolated ? "white" : "#6B6BAE", fontSize: 12, fontWeight: 600,
-          cursor: "pointer", fontFamily: "inherit", transition: "all 0.2s"
-        }}>{agent.isolated ? "Un-Isolate" : "Isolate"}</button>
+            padding: "6px 14px", borderRadius: 8, border: "1px solid #6B6BAE",
+            background: agent.isolated ? "#6B6BAE" : "transparent", color: agent.isolated ? "white" : "#6B6BAE", fontSize: 12, fontWeight: 600,
+            cursor: "pointer", fontFamily: "inherit", transition: "all 0.2s"
+          }}>{agent.isolated ? "Un-Isolate" : "Isolate"}</button>
       </div>
 
       {buckets.map(bucket => {
@@ -3209,11 +3235,11 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
         return (
           <div key={bucket.id} style={{ marginBottom: 32 }}>
             <div style={{
-               padding: "12px 16px", background: bucket.bg, borderTopLeftRadius: 14, borderTopRightRadius: 14,
-               borderBottom: `2px solid ${bucket.color}`, display: "flex", flexDirection: "column"
+              padding: "12px 16px", background: bucket.bg, borderTopLeftRadius: 14, borderTopRightRadius: 14,
+              borderBottom: `2px solid ${bucket.color}`, display: "flex", flexDirection: "column"
             }}>
-               <div style={{ fontSize: 14, fontWeight: 800, color: bucket.color, marginBottom: 4 }}>{bucket.label}</div>
-               <div style={{ fontSize: 12, color: bucket.isYolo ? "#b71c1c" : "#636E72", fontWeight: bucket.isYolo ? 600 : 400 }}>{bucket.desc}</div>
+              <div style={{ fontSize: 14, fontWeight: 800, color: bucket.color, marginBottom: 4 }}>{bucket.label}</div>
+              <div style={{ fontSize: 12, color: bucket.isYolo ? "#b71c1c" : "#636E72", fontWeight: bucket.isYolo ? 600 : 400 }}>{bucket.desc}</div>
             </div>
             <div style={{ ...glass(0.5), borderBottomLeftRadius: 14, borderBottomRightRadius: 14, overflow: "hidden" }}>
               {bucketPerms.map((p, i, arr) => (
@@ -3227,18 +3253,18 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
                     <div style={{ fontSize: 11, color: "#636E72", marginTop: 4 }}>{p.description}</div>
                   </div>
                   <Toggle enabled={p.enabled} onChange={async () => {
-                     toggle(agent.id, p.id);
-                     try {
-                       if (typeof invoke === 'function') {
-                         const newPerms = agent.permissions.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x);
-                         const capabilitiesObj: any = {};
-                         newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                         await invoke("update_agent_capabilities", {
-                           agentId: agent.id,
-                           capabilities: capabilitiesObj
-                         });
-                       }
-                     } catch(e) { console.error("Failed to update capabilities", e); }
+                    toggle(agent.id, p.id);
+                    try {
+                      if (typeof invoke === 'function') {
+                        const newPerms = agent.permissions.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x);
+                        const capabilitiesObj: any = {};
+                        newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                        await invoke("update_agent_capabilities", {
+                          agentId: agent.id,
+                          capabilities: capabilitiesObj
+                        });
+                      }
+                    } catch (e) { console.error("Failed to update capabilities", e); }
                   }} />
                 </div>
               ))}
@@ -3272,19 +3298,19 @@ function MemoryTab({ agent }: { agent: AgentData }) {
         when: new Date().toISOString(),
         confidence: 1.0
       };
-      
+
       const updatedMemories = [newMem, ...memories];
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke("update_agent_memories", { agentId: agent.id, memories: updatedMemories });
-      
-      setAgents(useWorldStore.getState().agents.map(a => 
+
+      setAgents(useWorldStore.getState().agents.map(a =>
         a.id === agent.id ? { ...a, memories: updatedMemories } as AgentData : a
       ));
-      
+
       setNewMemoryText("");
       setSaveStatus("success");
       setTimeout(() => setSaveStatus("idle"), 2000);
-    } catch(err) {
+    } catch (err) {
       console.error(err);
       setSaveStatus("error");
     }
@@ -3295,11 +3321,11 @@ function MemoryTab({ agent }: { agent: AgentData }) {
       const updatedMemories = memories.filter(m => m.id !== memId);
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke("update_agent_memories", { agentId: agent.id, memories: updatedMemories });
-      
-      setAgents(useWorldStore.getState().agents.map(a => 
+
+      setAgents(useWorldStore.getState().agents.map(a =>
         a.id === agent.id ? { ...a, memories: updatedMemories } as AgentData : a
       ));
-    } catch(err) {
+    } catch (err) {
       console.error(err);
     }
   };
@@ -3331,15 +3357,15 @@ function MemoryTab({ agent }: { agent: AgentData }) {
             <option value="preference">Preference</option>
             <option value="context">Context</option>
           </select>
-          <input 
-             value={newMemoryText} 
-             onChange={e => setNewMemoryText(e.target.value)}
-             onKeyDown={e => e.key === "Enter" && handleCreateMemory()}
-             placeholder="e.g. Only use the main branch for deployment." 
-             style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", outline: "none", fontSize: 13 }}
+          <input
+            value={newMemoryText}
+            onChange={e => setNewMemoryText(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleCreateMemory()}
+            placeholder="e.g. Only use the main branch for deployment."
+            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", outline: "none", fontSize: 13 }}
           />
           <button onClick={handleCreateMemory} disabled={saveStatus === "loading" || !newMemoryText.trim()} style={{
-            padding: "10px 20px", borderRadius: 8, border: "none", background: !newMemoryText.trim() ? "rgba(0,0,0,0.05)" : "#3c6663", 
+            padding: "10px 20px", borderRadius: 8, border: "none", background: !newMemoryText.trim() ? "rgba(0,0,0,0.05)" : "#3c6663",
             color: !newMemoryText.trim() ? "#A0A0A0" : "white", fontWeight: 600, cursor: !newMemoryText.trim() ? "not-allowed" : "pointer"
           }}>
             {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : "Inject"}
@@ -3409,12 +3435,12 @@ function SpendTab({ agent }: { agent: AgentData }) {
     if (!budget) return;
     setSaving(true);
     try {
-       const { invoke } = await import('@tauri-apps/api/core');
-       await invoke('update_agent_budget', { budget });
-       setTimeout(() => setSaving(false), 800);
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_agent_budget', { budget });
+      setTimeout(() => setSaving(false), 800);
     } catch (e) {
-       console.error("Failed to save budget", e);
-       setSaving(false);
+      console.error("Failed to save budget", e);
+      setSaving(false);
     }
   };
 
@@ -3430,103 +3456,103 @@ function SpendTab({ agent }: { agent: AgentData }) {
     <div style={{ paddingBottom: 64 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24 }}>
         <div>
-           <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Financial Guardrails</h1>
-           <p style={{ fontSize: 14, color: "#636E72", margin: 0 }}>
-             Manage limits and capabilities for {agent.name}'s autonomous spending.
-           </p>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Financial Guardrails</h1>
+          <p style={{ fontSize: 14, color: "#636E72", margin: 0 }}>
+            Manage limits and capabilities for {agent.name}'s autonomous spending.
+          </p>
         </div>
         <button onClick={handleSave} disabled={saving} style={{
-           padding: "10px 24px", borderRadius: 10, background: saving ? "#4A9E96" : "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "0.2s"
+          padding: "10px 24px", borderRadius: 10, background: saving ? "#4A9E96" : "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "0.2s"
         }}>
-           {saving ? "Saved ✓" : "Commit Limits"}
+          {saving ? "Saved ✓" : "Commit Limits"}
         </button>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 32 }}>
-         <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-               <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Virtual Card Payments</div>
-               <Toggle checked={budget.payments_enabled} onChange={v => updateProp("payments_enabled", v)} />
-            </div>
-            <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20 }}>When disabled, the agent cannot issue any real-world merchant charges or API payments. It will simulate approvals.</div>
+        <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Virtual Card Payments</div>
+            <Toggle checked={budget.payments_enabled} onChange={v => updateProp("payments_enabled", v)} />
+          </div>
+          <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20 }}>When disabled, the agent cannot issue any real-world merchant charges or API payments. It will simulate approvals.</div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for New Merchants</div>
-               <Toggle checked={budget.require_approval_new_merchant} onChange={v => updateProp("require_approval_new_merchant", v)} />
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for Subscriptions</div>
-               <Toggle checked={budget.require_approval_recurring} onChange={v => updateProp("require_approval_recurring", v)} />
-            </div>
-         </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for New Merchants</div>
+            <Toggle checked={budget.require_approval_new_merchant} onChange={v => updateProp("require_approval_new_merchant", v)} />
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for Subscriptions</div>
+            <Toggle checked={budget.require_approval_recurring} onChange={v => updateProp("require_approval_recurring", v)} />
+          </div>
+        </div>
 
-         <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330", marginBottom: 20 }}>Limits & Thresholds</div>
-            
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Per-Transaction Limit ($)</div>
-               <input type="number" value={budget.per_transaction_limit_cents / 100} onChange={e => updateProp("per_transaction_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
-            </div>
-            
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Auto-Approve Threshold ($)</div>
-               <input type="number" value={budget.auto_approve_threshold_cents / 100} onChange={e => updateProp("auto_approve_threshold_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
-            </div>
+        <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#303330", marginBottom: 20 }}>Limits & Thresholds</div>
 
-            <div style={{ height: 1, background: "rgba(0,0,0,0.05)", margin: "16px 0" }} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Per-Transaction Limit ($)</div>
+            <input type="number" value={budget.per_transaction_limit_cents / 100} onChange={e => updateProp("per_transaction_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
+          </div>
 
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-               <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Daily Budget Total ($)</div>
-               <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
-            </div>
-         </div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Auto-Approve Threshold ($)</div>
+            <input type="number" value={budget.auto_approve_threshold_cents / 100} onChange={e => updateProp("auto_approve_threshold_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
+          </div>
+
+          <div style={{ height: 1, background: "rgba(0,0,0,0.05)", margin: "16px 0" }} />
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Daily Budget Total ($)</div>
+            <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
+          </div>
+        </div>
       </div>
 
       <div style={{ marginBottom: 24, fontSize: 16, fontWeight: 700, color: "#303330", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-         Purchase Execution Log
-         <div style={{ fontSize: 12, fontWeight: 500, color: "#636E72", background: "rgba(0,0,0,0.04)", padding: "4px 12px", borderRadius: 12 }}>
-            Daily Spend: ${(budget.daily_spent_cents / 100).toFixed(2)} / Monthly: ${(budget.monthly_spent_cents / 100).toFixed(2)}
-         </div>
+        Purchase Execution Log
+        <div style={{ fontSize: 12, fontWeight: 500, color: "#636E72", background: "rgba(0,0,0,0.04)", padding: "4px 12px", borderRadius: 12 }}>
+          Daily Spend: ${(budget.daily_spent_cents / 100).toFixed(2)} / Monthly: ${(budget.monthly_spent_cents / 100).toFixed(2)}
+        </div>
       </div>
 
       {history.length === 0 ? (
-         <div style={{ textAlign: "center", padding: "40px 20px", color: "#636E72", fontSize: 14, ...glass(0.4), borderRadius: 16 }}>
-            There are no recent agent transactions on record.
-         </div>
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#636E72", fontSize: 14, ...glass(0.4), borderRadius: 16 }}>
+          There are no recent agent transactions on record.
+        </div>
       ) : (
-         <div style={{ ...glass(0.6), borderRadius: 16, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-               <thead>
-                  <tr style={{ background: "rgba(0,0,0,0.03)", textAlign: "left" }}>
-                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Date/Time</th>
-                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Merchant</th>
-                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Category</th>
-                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Status</th>
-                     <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72", textAlign: "right" }}>Amount</th>
-                  </tr>
-               </thead>
-               <tbody>
-                  {history.map((record, i) => (
-                     <tr key={record.id || i} style={{ borderTop: "1px solid rgba(0,0,0,0.04)" }}>
-                        <td style={{ padding: "14px 20px", fontSize: 13, color: "#303330" }}>{new Date(record.timestamp || Date.now()).toLocaleString()}</td>
-                        <td style={{ padding: "14px 20px", fontSize: 13, fontWeight: 600, color: "#303330" }}>{record.merchant}</td>
-                        <td style={{ padding: "14px 20px", fontSize: 13, color: "#636E72" }}>{record.category}</td>
-                        <td style={{ padding: "14px 20px", fontSize: 13 }}>
-                           {record.decision === "Approved" || record.decision === "approved" || record.decision?.Approved === null
-                              ? <span style={{ color: "#4A9E96", background: "#4A9E9615", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>APPROVED</span>
-                              : record.decision === "Denied" || record.decision === "denied" || record.decision?.Denied
-                              ? <span style={{ color: "#E57373", background: "#E5737315", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>DENIED</span>
-                              : <span style={{ color: "#D4A04A", background: "#D4A04A15", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>REQUIRES APPROVAL</span>
-                           }
-                        </td>
-                        <td style={{ padding: "14px 20px", fontSize: 14, fontWeight: 700, color: "#303330", textAlign: "right" }}>
-                           ${((record.amount_cents || 0) / 100).toFixed(2)}
-                        </td>
-                     </tr>
-                  ))}
-               </tbody>
-            </table>
-         </div>
+        <div style={{ ...glass(0.6), borderRadius: 16, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "rgba(0,0,0,0.03)", textAlign: "left" }}>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Date/Time</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Merchant</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Category</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Status</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72", textAlign: "right" }}>Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((record, i) => (
+                <tr key={record.id || i} style={{ borderTop: "1px solid rgba(0,0,0,0.04)" }}>
+                  <td style={{ padding: "14px 20px", fontSize: 13, color: "#303330" }}>{new Date(record.timestamp || Date.now()).toLocaleString()}</td>
+                  <td style={{ padding: "14px 20px", fontSize: 13, fontWeight: 600, color: "#303330" }}>{record.merchant}</td>
+                  <td style={{ padding: "14px 20px", fontSize: 13, color: "#636E72" }}>{record.category}</td>
+                  <td style={{ padding: "14px 20px", fontSize: 13 }}>
+                    {record.decision === "Approved" || record.decision === "approved" || record.decision?.Approved === null
+                      ? <span style={{ color: "#4A9E96", background: "#4A9E9615", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>APPROVED</span>
+                      : record.decision === "Denied" || record.decision === "denied" || record.decision?.Denied
+                        ? <span style={{ color: "#E57373", background: "#E5737315", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>DENIED</span>
+                        : <span style={{ color: "#D4A04A", background: "#D4A04A15", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>REQUIRES APPROVAL</span>
+                    }
+                  </td>
+                  <td style={{ padding: "14px 20px", fontSize: 14, fontWeight: 700, color: "#303330", textAlign: "right" }}>
+                    ${((record.amount_cents || 0) / 100).toFixed(2)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -3760,11 +3786,11 @@ function TopNav() {
         {activeView !== "canopy" && activeView !== "loading" && activeView !== "onboarding" && (
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button
-               onClick={() => setActiveView("onboarding")}
-               style={{
-                 display: "flex", alignItems: "center", gap: 6,
-                 padding: "6px 14px", borderRadius: 8, background: "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "0.2s all"
-               }}
+              onClick={() => setActiveView("onboarding")}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                padding: "6px 14px", borderRadius: 8, background: "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "0.2s all"
+              }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
               New Agent
@@ -3776,11 +3802,11 @@ function TopNav() {
                 borderRadius: 8, background: "rgba(0,0,0,0.03)", color: "#636E72",
               }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
-                <input 
-                   placeholder="Search agents..." 
-                   value={searchQuery}
-                   onChange={e => setSearchQuery(e.target.value)}
-                   style={{ border: "none", outline: "none", background: "transparent", width: 120, fontSize: 12, fontFamily: "inherit", color: "#303330" }}
+                <input
+                  placeholder="Search agents..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  style={{ border: "none", outline: "none", background: "transparent", width: 120, fontSize: 12, fontFamily: "inherit", color: "#303330" }}
                 />
               </div>
               {searchQuery && (
@@ -3791,7 +3817,7 @@ function TopNav() {
                     filteredAgents.map(a => (
                       <div key={a.id} onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); setSearchQuery(""); }} style={{ padding: "8px 12px", fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(0,0,0,0.03)" }}>
                         <div style={{ width: 16, height: 16, borderRadius: "50%", background: `${a.robeColor}20`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                           <div style={{ width: 6, height: 6, borderRadius: "50%", background: a.status === "active" ? "#4A9E96" : "#E57373" }} />
+                          <div style={{ width: 6, height: 6, borderRadius: "50%", background: a.status === "active" ? "#4A9E96" : "#E57373" }} />
                         </div>
                         <div style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "#303330", fontWeight: 600 }}>{a.name}</div>
                       </div>
@@ -3839,10 +3865,10 @@ function CanopyView() {
       <Canvas
         style={{ position: "absolute", inset: 0 }}
         gl={{ antialias: true, alpha: false }}
-        onCreated={({ gl }) => { gl.setClearColor("#EDE4DB"); gl.toneMapping = THREE.ACESFilmicToneMapping; gl.toneMappingExposure = 1.1; }}
+        onCreated={({ gl }) => { gl.setClearColor("#F6F8FA"); gl.toneMapping = THREE.LinearToneMapping; gl.toneMappingExposure = 1.0; }}
       >
         <OrthographicCamera makeDefault position={[10, 10, 10]} zoom={65} near={0.1} far={100} />
-        <OrbitControls enableZoom={false} enablePan={false} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping />
+        <OrbitControls enablePan={true} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping minZoom={50} maxZoom={650} />
         <CanopyScene />
       </Canvas>
 
@@ -3868,7 +3894,7 @@ function CanopyView() {
             </div>
           </div>
         ))}
-        
+
         {/* Add Agent Button */}
         <div onClick={() => setActiveView("onboarding")} style={{
           background: "rgba(255,255,255,0.2)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
@@ -3878,10 +3904,10 @@ function CanopyView() {
           borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
         }}>
           <div style={{
-             width: 24, height: 24, borderRadius: "50%", background: "rgba(60, 102, 99, 0.1)",
-             display: "flex", alignItems: "center", justifyContent: "center", color: "#3c6663"
+            width: 24, height: 24, borderRadius: "50%", background: "rgba(60, 102, 99, 0.1)",
+            display: "flex", alignItems: "center", justifyContent: "center", color: "#3c6663"
           }}>
-             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           </div>
           <div style={{ fontSize: 13, fontWeight: 600, color: "#3c6663" }}>Add Agent</div>
         </div>
@@ -3927,7 +3953,7 @@ function LoadingScreen() {
 export function CompanionGuide({ type }: { type: string }) {
   const [step, setStep] = useState(0);
   const [tokens, setTokens] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState<"idle"|"saving"|"success"|"error">("idle");
+  const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [step, status]);
@@ -3988,7 +4014,7 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Almost done! Now click 'OAuth & Permissions' on the left sidebar." },
         { text: "Click the 'Install to Workspace' button and click Allow." },
         { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } },
-        { text: "Last step! Go to your Slack workspace and DM your new bot. It will respond with an 8-character pairing code. Paste that code here to authorize the connection.", input: { key: "slack-pairing-code", placeholder: "MPWKJ5KQ"} }
+        { text: "Last step! Go to your Slack workspace and DM your new bot. It will respond with an 8-character pairing code. Paste that code here to authorize the connection.", input: { key: "slack-pairing-code", placeholder: "MPWKJ5KQ" } }
       ]
     },
     email_dedicated: {
@@ -4051,51 +4077,51 @@ export function CompanionGuide({ type }: { type: string }) {
   const handleAction = async () => {
     if (currentStepData.input) {
       if (!tokens[currentStepData.input.key]) return;
-      
+
       // If it's a keychain save
       setStatus("saving");
       try {
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke("store_secret_cmd", { key: currentStepData.input.key, value: tokens[currentStepData.input.key].trim() });
-        
+
         // If there are more steps, just advance
         if (step < config.steps.length - 1) {
-            setStep(step + 1);
-            setStatus("idle");
+          setStep(step + 1);
+          setStatus("idle");
         } else {
-            // Signal completion
-            setStatus("success");
-            
+          // Signal completion
+          setStatus("success");
+
+          try {
+            const { emit } = await import('@tauri-apps/api/event');
+            await emit('companion-finished', { type, key: tokens[currentStepData.input.key] });
+
+            // If it was Slack, we need to immediately test the connection so App.tsx can show it's connected
+            if (type === "slack") {
+              await emit('slack-credentials-saved');
+              const { invoke } = await import('@tauri-apps/api/core');
+
+              // Finalize the physical device pairing securely with the agent gateway
+              const pairingCode = tokens["slack-pairing-code"];
+              if (pairingCode && pairingCode.trim() !== "") {
+                try {
+                  await invoke("approve_slack_pairing", { code: pairingCode.trim() });
+                } catch (pairingErr) {
+                  console.error("Pairing approval failed:", pairingErr);
+                  alert("Warning: Pairing failed. Your code may have expired. You can regenerate the pairing code via DM in Slack and approve it from the Architect View Connections tab.\n\n" + String(pairingErr));
+                }
+              }
+
+              await invoke("start_slack_listener").catch(() => { });
+            }
+          } catch (evtErr) { }
+
+          setTimeout(async () => {
             try {
-               const { emit } = await import('@tauri-apps/api/event');
-               await emit('companion-finished', { type, key: tokens[currentStepData.input.key] });
-               
-               // If it was Slack, we need to immediately test the connection so App.tsx can show it's connected
-               if (type === "slack") {
-                  await emit('slack-credentials-saved');
-                  const { invoke } = await import('@tauri-apps/api/core');
-                  
-                  // Finalize the physical device pairing securely with the agent gateway
-                  const pairingCode = tokens["slack-pairing-code"];
-                  if (pairingCode && pairingCode.trim() !== "") {
-                      try {
-                          await invoke("approve_slack_pairing", { code: pairingCode.trim() });
-                      } catch (pairingErr) {
-                          console.error("Pairing approval failed:", pairingErr);
-                          alert("Warning: Pairing failed. Your code may have expired. You can regenerate the pairing code via DM in Slack and approve it from the Architect View Connections tab.\n\n" + String(pairingErr));
-                      }
-                  }
-                  
-                  await invoke("start_slack_listener").catch(() => {});
-               }
-            } catch(evtErr) {}
-            
-            setTimeout(async () => {
-              try {
-                 const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                 await getCurrentWebviewWindow().close();
-              } catch(e) {}
-            }, 2000);
+              const { getCurrentWindow } = await import('@tauri-apps/api/window');
+              await getCurrentWindow().close();
+            } catch (e) { }
+          }, 2000);
         }
       } catch (e) {
         console.error(e);
@@ -4108,91 +4134,96 @@ export function CompanionGuide({ type }: { type: string }) {
 
   return (
     <div style={{
-       width: "100%", height: "100vh", display: "flex", flexDirection: "column",
-       background: "rgba(255,255,255,0.85)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
-       borderLeft: "1px solid rgba(0,0,0,0.1)", fontFamily: "'Manrope', system-ui, sans-serif"
+      width: "100%", height: "100vh", display: "flex", flexDirection: "column",
+      background: "rgba(255,255,255,0.85)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+      borderLeft: "1px solid rgba(0,0,0,0.1)", fontFamily: "'Manrope', system-ui, sans-serif"
     }}>
-       <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", width: "100%", background: "linear-gradient(to right, #EDE4DB, #F5E6D8)", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-         <div data-tauri-drag-region style={{
-            flex: 1, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12,
-            cursor: "grab"
-         }}>
-            <LobsterIcon size={32} shellColor="#3c6663" accentColor="#D9B08C" className="pulse-slow" style={{ pointerEvents: "none" }} />
-            <div style={{ pointerEvents: "none" }}>
-               <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>{config.title}</div>
-               <div style={{ fontSize: 11, color: "#636E72" }}>Companion Walkthrough</div>
-            </div>
-         </div>
-         <div style={{ padding: "0 20px", cursor: "pointer", opacity: 0.5, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
-             try {
-                const { emit } = await import("@tauri-apps/api/event");
-                await emit("close-companion");
-             } catch(e) {}
-         }}>✕</div>
-       </div>
+      <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", width: "100%", background: "linear-gradient(to right, #EDE4DB, #F5E6D8)", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+        <div data-tauri-drag-region style={{
+          flex: 1, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12,
+          cursor: "grab"
+        }} onPointerDown={async () => {
+          try {
+            const { getCurrentWindow } = await import('@tauri-apps/api/window');
+            await getCurrentWindow().startDragging();
+          } catch (e) { }
+        }}>
+          <LobsterIcon size={32} shellColor="#3c6663" accentColor="#D9B08C" className="pulse-slow" style={{ pointerEvents: "none" }} />
+          <div style={{ pointerEvents: "none" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>{config.title}</div>
+            <div style={{ fontSize: 11, color: "#636E72" }}>Companion Walkthrough</div>
+          </div>
+        </div>
+        <div style={{ padding: "0 20px", cursor: "pointer", opacity: 0.5, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
+          try {
+            const { getCurrentWindow } = await import("@tauri-apps/api/window");
+            await getCurrentWindow().close();
+          } catch (e) { }
+        }}>✕</div>
+      </div>
 
-       <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
-         {/* Intro */}
-         <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
-            <img src={config.avatar} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
-            <div style={{ background: "#ffffff", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, color: "#303330", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
-               {config.intro}
-            </div>
-         </div>
+      <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
+        {/* Intro */}
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
+          <img src={config.avatar} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+          <div style={{ background: "#ffffff", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, color: "#303330", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+            {config.intro}
+          </div>
+        </div>
 
-         {config.steps.slice(0, step + 1).map((s, i) => (
-             <React.Fragment key={i}>
-                <div style={{ display: "flex", gap: 12, alignItems: "flex-end", animation: "slideIn 0.3s ease" }}>
-                   <div style={{ width: 28, flexShrink: 0 }} />
-                   <div style={{ width: "100%", background: i === step ? "#3c6663" : "#ffffff", color: i === step ? "white" : "#303330", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
-                      {s.text}
-                   {s.input && i === step && (
-                         <div style={{ marginTop: 12 }}>
-                           <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, lineHeight: 1.4, color: "#f8f9fa", background: "rgba(0,0,0,0.15)", padding: "8px 12px", borderRadius: 8 }}>
-                             <span style={{ marginRight: 6 }}>🔒</span>
-                             macOS will securely ask for your password to lock this in the system Keychain.
-                           </div>
-                           <input
-                             autoFocus
-                             type="password"
-                             placeholder={s.input.placeholder}
-                             value={tokens[s.input.key] || ""}
-                             onChange={e => setTokens({ ...tokens, [s.input.key]: e.target.value })}
-                             style={{
-                                width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8,
-                                border: "1px solid rgba(255,255,255,0.3)", background: "rgba(0,0,0,0.2)", color: "white", outline: "none", fontSize: 13, fontFamily: "monospace"
-                             }}
-                           />
-                         </div>
-                      )}
-                   </div>
-                </div>
-
-                {/* User advancement bubble */}
-                {i === step && status === "idle" && (
-                     <div style={{ display: "flex", justifyContent: "flex-end", animation: "slideIn 0.3s ease 0.5s backwards" }}>
-                        <button onClick={handleAction} disabled={s.input && !tokens[s.input.key]} style={{
-                           padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "#303330", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
-                        }}>
-                           {s.input ? "Save & Continue" : "I've done this ->"}
-                        </button>
-                     </div>
+        {config.steps.slice(0, step + 1).map((s, i) => (
+          <React.Fragment key={i}>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-end", animation: "slideIn 0.3s ease" }}>
+              <div style={{ width: 28, flexShrink: 0 }} />
+              <div style={{ width: "100%", background: i === step ? "#3c6663" : "#ffffff", color: i === step ? "white" : "#303330", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
+                {s.text}
+                {s.input && i === step && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, lineHeight: 1.4, color: "#f8f9fa", background: "rgba(0,0,0,0.15)", padding: "8px 12px", borderRadius: 8 }}>
+                      <span style={{ marginRight: 6 }}>🔒</span>
+                      macOS will securely ask for your password to lock this in the system Keychain.
+                    </div>
+                    <input
+                      autoFocus
+                      type="password"
+                      placeholder={s.input.placeholder}
+                      value={tokens[s.input.key] || ""}
+                      onChange={e => setTokens({ ...tokens, [s.input.key]: e.target.value })}
+                      style={{
+                        width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8,
+                        border: "1px solid rgba(255,255,255,0.3)", background: "rgba(0,0,0,0.2)", color: "white", outline: "none", fontSize: 13, fontFamily: "monospace"
+                      }}
+                    />
+                  </div>
                 )}
-             </React.Fragment>
-         ))}
-
-         {status === "saving" && (
-            <div style={{ textAlign: "center", fontSize: 13, color: "#636E72", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
-         )}
-         {status === "success" && (
-            <div style={{ textAlign: "center", animation: "slideIn 0.3s ease" }}>
-               <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
-               <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663" }}>Saved successfully!</div>
-               <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Validating connection & closing...</div>
+              </div>
             </div>
-         )}
 
-         <div ref={bottomRef} style={{ height: 20 }} />
+            {/* User advancement bubble */}
+            {i === step && status === "idle" && (
+              <div style={{ display: "flex", justifyContent: "flex-end", animation: "slideIn 0.3s ease 0.5s backwards" }}>
+                <button onClick={handleAction} disabled={s.input && !tokens[s.input.key]} style={{
+                  padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "#303330", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
+                }}>
+                  {s.input ? "Save & Continue" : "I've done this ->"}
+                </button>
+              </div>
+            )}
+          </React.Fragment>
+        ))}
+
+        {status === "saving" && (
+          <div style={{ textAlign: "center", fontSize: 13, color: "#636E72", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
+        )}
+        {status === "success" && (
+          <div style={{ textAlign: "center", animation: "slideIn 0.3s ease" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663" }}>Saved successfully!</div>
+            <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Validating connection & closing...</div>
+          </div>
+        )}
+
+        <div ref={bottomRef} style={{ height: 20 }} />
       </div>
 
       <style>{`
@@ -4244,13 +4275,13 @@ function UserProfileView() {
       <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 6 }}>{label}</label>
       {rows > 1 ? (
         <textarea
-          value={value} onChange={e => setProfile({...profile, [field]: e.target.value})}
+          value={value} onChange={e => setProfile({ ...profile, [field]: e.target.value })}
           rows={rows} placeholder={placeholder}
           style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontFamily: "inherit", fontSize: 14, outline: "none", resize: "vertical" }}
         />
       ) : (
         <input
-          type={type} value={value} onChange={e => setProfile({...profile, [field]: e.target.value})}
+          type={type} value={value} onChange={e => setProfile({ ...profile, [field]: e.target.value })}
           placeholder={placeholder}
           style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontFamily: "inherit", fontSize: 14, outline: "none" }}
         />
@@ -4301,12 +4332,12 @@ function ArchiveView() {
   const { agents } = useWorldStore();
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  
+
   // Filters
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [bridgeFilter, setBridgeFilter] = useState<string>("all");
   const [actionFilter, setActionFilter] = useState<string>("all");
-  
+
   useEffect(() => {
     const fetchArchive = async () => {
       setLoading(true);
@@ -4323,114 +4354,114 @@ function ArchiveView() {
   }, []);
 
   const getLogColor = (action: string) => {
-     const a = action.toLowerCase();
-     if (a.includes("spend") || a.includes("payment")) return { color: "#D4A04A", bg: "#D4A04A15", border: "#D4A04A40" };
-     if (a.includes("blocked") || a.includes("failed") || a.includes("denied")) return { color: "#E57373", bg: "#E5737315", border: "#E5737340" };
-     if (a.includes("created") || a.includes("spawn")) return { color: "#4A9E96", bg: "#4A9E9615", border: "#4A9E9640" };
-     return { color: "#636E72", bg: "rgba(0,0,0,0.04)", border: "rgba(0,0,0,0.08)" };
+    const a = action.toLowerCase();
+    if (a.includes("spend") || a.includes("payment")) return { color: "#D4A04A", bg: "#D4A04A15", border: "#D4A04A40" };
+    if (a.includes("blocked") || a.includes("failed") || a.includes("denied")) return { color: "#E57373", bg: "#E5737315", border: "#E5737340" };
+    if (a.includes("created") || a.includes("spawn")) return { color: "#4A9E96", bg: "#4A9E9615", border: "#4A9E9640" };
+    return { color: "#636E72", bg: "rgba(0,0,0,0.04)", border: "rgba(0,0,0,0.08)" };
   };
 
   const filteredLogs = logs.filter(log => {
-     if (agentFilter !== "all" && log.agent_id !== agentFilter) return false;
-     if (bridgeFilter !== "all") {
-        if (!log.bridge_type && bridgeFilter !== "core") return false;
-        if (log.bridge_type && log.bridge_type.toLowerCase() !== bridgeFilter) return false;
-     }
-     if (actionFilter !== "all" && !log.action.toLowerCase().includes(actionFilter)) return false;
-     return true;
+    if (agentFilter !== "all" && log.agent_id !== agentFilter) return false;
+    if (bridgeFilter !== "all") {
+      if (!log.bridge_type && bridgeFilter !== "core") return false;
+      if (log.bridge_type && log.bridge_type.toLowerCase() !== bridgeFilter) return false;
+    }
+    if (actionFilter !== "all" && !log.action.toLowerCase().includes(actionFilter)) return false;
+    return true;
   });
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", padding: "32px 40px", maxWidth: 1200, margin: "0 auto", width: "100%", height: "100%", overflow: "hidden" }}>
-       
-       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 32 }}>
-         <div>
-           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-             <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: 0 }}>System Archive</h1>
-             <div style={{ background: "#4A9E9620", color: "#4A9E96", padding: "4px 10px", borderRadius: 12, fontSize: 13, fontWeight: 700 }}>LIVE</div>
-           </div>
-           <p style={{ fontSize: 15, color: "#636E72", margin: 0 }}>Global flight data recorder mapping all agent decisions, actions, and anomalous traces.</p>
-         </div>
-       </div>
 
-       <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
-          <select value={agentFilter} onChange={e => setAgentFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
-             <option value="all">Every Agent</option>
-             {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
-          <select value={bridgeFilter} onChange={e => setBridgeFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
-             <option value="all">All Bridges</option>
-             <option value="core">Core Platform</option>
-             <option value="slack">Slack</option>
-             <option value="imessage">iMessage</option>
-             <option value="payments">Virtual Cards</option>
-          </select>
-          <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
-             <option value="all">All Actions</option>
-             <option value="created">Agent Spawns</option>
-             <option value="spend">Financial Spends</option>
-             <option value="denied">Blocks & Flags</option>
-          </select>
-       </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 32 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+            <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: 0 }}>System Archive</h1>
+            <div style={{ background: "#4A9E9620", color: "#4A9E96", padding: "4px 10px", borderRadius: 12, fontSize: 13, fontWeight: 700 }}>LIVE</div>
+          </div>
+          <p style={{ fontSize: 15, color: "#636E72", margin: 0 }}>Global flight data recorder mapping all agent decisions, actions, and anomalous traces.</p>
+        </div>
+      </div>
 
-       {loading ? (
-         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#636E72" }}>Loading flight logs...</div>
-       ) : (
-         <div style={{ flex: 1, overflowY: "auto", ...glass(0.6), borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)" }}>
-           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-             <thead style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.9)", backdropFilter: "blur(8px)", zIndex: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-               <tr style={{ textAlign: "left" }}>
-                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 140 }}>Time</th>
-                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 180 }}>Principal Agent</th>
-                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 160 }}>Bridge Target</th>
-                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em" }}>Action Trajectory</th>
-                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "right" }}>Trace Hash</th>
-               </tr>
-             </thead>
-             <tbody>
-               {filteredLogs.length === 0 ? (
-                 <tr>
-                    <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "#636E72", fontSize: 14 }}>No actions found matching these security filters.</td>
-                 </tr>
-               ) : filteredLogs.map((log) => {
-                 const mappedAgent = agents.find(a => a.id === log.agent_id);
-                 const styles = getLogColor(log.action);
-                 return (
-                   <tr key={log.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", cursor: "pointer", transition: "0.15s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-                     <td style={{ padding: "16px 24px", fontSize: 13, color: "#636E72" }}>{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
-                     <td style={{ padding: "16px 24px", fontSize: 14, fontWeight: 600, color: "#303330" }}>
-                       {log.agent_id ? (
-                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                              <div style={{ width: 8, height: 8, borderRadius: "50%", background: mappedAgent ? mappedAgent.robeColor : "#A0A0A0" }} />
-                              {mappedAgent ? mappedAgent.name : "Unknown Agent"}
-                           </div>
-                       ) : "System Engine"}
-                     </td>
-                     <td style={{ padding: "16px 24px" }}>
-                       <span style={{ padding: "4px 8px", background: "rgba(0,0,0,0.04)", borderRadius: 6, fontSize: 12, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>
-                         {log.bridge_type || "Core System"}
-                       </span>
-                     </td>
-                     <td style={{ padding: "16px 24px" }}>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                           <span style={{ display: "inline-block", padding: "2px 8px", background: styles.bg, color: styles.color, border: `1px solid ${styles.border}`, borderRadius: 4, fontSize: 11, fontWeight: 700, textTransform: "uppercase", width: "max-content", letterSpacing: "0.02em" }}>
-                              {log.action}
-                           </span>
-                           <span style={{ fontSize: 13, color: "#303330", lineHeight: 1.4 }}>{log.detail}</span>
+      <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
+        <select value={agentFilter} onChange={e => setAgentFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
+          <option value="all">Every Agent</option>
+          {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+        </select>
+        <select value={bridgeFilter} onChange={e => setBridgeFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
+          <option value="all">All Bridges</option>
+          <option value="core">Core Platform</option>
+          <option value="slack">Slack</option>
+          <option value="imessage">iMessage</option>
+          <option value="payments">Virtual Cards</option>
+        </select>
+        <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
+          <option value="all">All Actions</option>
+          <option value="created">Agent Spawns</option>
+          <option value="spend">Financial Spends</option>
+          <option value="denied">Blocks & Flags</option>
+        </select>
+      </div>
+
+      {loading ? (
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#636E72" }}>Loading flight logs...</div>
+      ) : (
+        <div style={{ flex: 1, overflowY: "auto", ...glass(0.6), borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.9)", backdropFilter: "blur(8px)", zIndex: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+              <tr style={{ textAlign: "left" }}>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 140 }}>Time</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 180 }}>Principal Agent</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 160 }}>Bridge Target</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em" }}>Action Trajectory</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "right" }}>Trace Hash</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredLogs.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "#636E72", fontSize: 14 }}>No actions found matching these security filters.</td>
+                </tr>
+              ) : filteredLogs.map((log) => {
+                const mappedAgent = agents.find(a => a.id === log.agent_id);
+                const styles = getLogColor(log.action);
+                return (
+                  <tr key={log.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", cursor: "pointer", transition: "0.15s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseOut={e => e.currentTarget.style.background = "transparent"}>
+                    <td style={{ padding: "16px 24px", fontSize: 13, color: "#636E72" }}>{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+                    <td style={{ padding: "16px 24px", fontSize: 14, fontWeight: 600, color: "#303330" }}>
+                      {log.agent_id ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: mappedAgent ? mappedAgent.robeColor : "#A0A0A0" }} />
+                          {mappedAgent ? mappedAgent.name : "Unknown Agent"}
                         </div>
-                     </td>
-                     <td style={{ padding: "16px 24px", textAlign: "right" }}>
-                        <span style={{ fontFamily: "monospace", fontSize: 11, color: "#909090", background: "rgba(0,0,0,0.03)", padding: "4px 8px", borderRadius: 4 }}>
-                           {log.content_hash ? log.content_hash.substring(0, 8) : "N/A"}
+                      ) : "System Engine"}
+                    </td>
+                    <td style={{ padding: "16px 24px" }}>
+                      <span style={{ padding: "4px 8px", background: "rgba(0,0,0,0.04)", borderRadius: 6, fontSize: 12, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>
+                        {log.bridge_type || "Core System"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "16px 24px" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <span style={{ display: "inline-block", padding: "2px 8px", background: styles.bg, color: styles.color, border: `1px solid ${styles.border}`, borderRadius: 4, fontSize: 11, fontWeight: 700, textTransform: "uppercase", width: "max-content", letterSpacing: "0.02em" }}>
+                          {log.action}
                         </span>
-                     </td>
-                   </tr>
-                 );
-               })}
-             </tbody>
-           </table>
-         </div>
-       )}
+                        <span style={{ fontSize: 13, color: "#303330", lineHeight: 1.4 }}>{log.detail}</span>
+                      </div>
+                    </td>
+                    <td style={{ padding: "16px 24px", textAlign: "right" }}>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "#909090", background: "rgba(0,0,0,0.03)", padding: "4px 8px", borderRadius: 4 }}>
+                        {log.content_hash ? log.content_hash.substring(0, 8) : "N/A"}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -4471,9 +4502,9 @@ export default function App() {
         if (typeof invoke === 'function') {
           // Unintrusively attempt to start the background orchestration gateway
           await safeStartGateway().catch((e) => console.log("Gateway boot bypassed:", e));
-          await invoke("start_slack_listener").catch(() => {});
+          await invoke("start_slack_listener").catch(() => { });
         }
-      } catch(e) {}
+      } catch (e) { }
     };
     bootSilentServices();
 
@@ -4503,9 +4534,9 @@ export default function App() {
               weeklyCompute: "0.000",
               monthlySpend: Math.floor(agent.stats.total_cost_usd),
               spendLimit: 200,
-              permissions: DEFAULT_PERMISSIONS.map(p => ({ 
-                ...p, 
-                enabled: agent.capabilities ? (agent.capabilities as any)[p.id] : p.enabled 
+              permissions: DEFAULT_PERMISSIONS.map(p => ({
+                ...p,
+                enabled: agent.capabilities ? (agent.capabilities as any)[p.id] : p.enabled
               })),
               recentSpend: [],
               chatLog: [],
@@ -4555,14 +4586,14 @@ export default function App() {
               if (status === "error" && a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
               if (status === "active" && a.status === "error") { changed = true; return { ...a, status: "active" as any }; }
               return a;
-            } catch(e) {
+            } catch (e) {
               if (a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
               return a;
             }
           }));
           if (changed) useWorldStore.getState().setAgents(updatedAgents);
         }
-      } catch(e) { }
+      } catch (e) { }
     }, 15000);
     return () => clearInterval(pollInterval);
   }, []);

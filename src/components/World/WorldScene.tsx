@@ -1,41 +1,76 @@
 import { useMemo } from "react";
 import agentsData from "../../../../shared/agents.json";
 import { AgentNeighborhood } from "./AgentNeighborhood";
+import { OnboardingCompanion } from "./OnboardingCompanion";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import React from "react";
 
 // Initiate early network fetching for high-priority onboarding assets so the 3D world loads instantly,
 // avoiding the piecemeal "pop-in" effect as React mounts individual components.
-useGLTF.preload("/models/lobsters/FlatIvyBase.opt.glb?v=sloppy-120k");
+useGLTF.preload("/models/habitats/Habitat_1.glb");
 ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].forEach(role => {
   useGLTF.preload(`/models/lobsters/${role}.glb`);
 });
 
 function TerrariumBase() {
-  // We rely on Drei's useGLTF because it deeply integrates with the preload cache defined above
-  const { scene } = useGLTF("/models/lobsters/FlatIvyBase.opt.glb?v=sloppy-120k");
+  const { scene } = useGLTF("/models/habitats/Habitat_1.glb");
 
   // Clone the scene so we can instance it multiple times across the grid
   const clonedScene = useMemo(() => {
     const clone = scene.clone();
+
+    // --- AUTOMATIC NORMALIZATION ---
+    // No matter what size the Meshy file was exported at, we measure it in true 3D space
+    const box = new THREE.Box3().setFromObject(clone);
+    const size = box.getSize(new THREE.Vector3());
+
+    // 1. Force the X/Z footprint to be exactly 2.2 units wide to fit our TILE_GAP perfect grid
+    const maxDim = Math.max(size.x, size.z);
+    const targetScale = maxDim > 0 ? (2.2 / maxDim) : 1;
+    clone.scale.set(targetScale, targetScale, targetScale);
+
+    // CRITICAL: We must update the world matrix manually so the Laser Raycaster can "see" the new scale
+    clone.updateMatrixWorld(true);
+
+    // 2. PROCEDURAL FLOOR SNAPPING (The Magic Trick!)
+    // We shoot a mathematical laser straight down from the sky at the exact center (0,0) of the island.
+    // When it hits the grass, we record that physical height and push the entire island DOWN by that amount!
+    // This perfectly anchors the top surface of ANY generated block to exactly Y=0, where Barnaby is standing!
+    const raycaster = new THREE.Raycaster();
+    raycaster.set(new THREE.Vector3(0, 50, 0), new THREE.Vector3(0, -1, 0));
+
+    const intersects = raycaster.intersectObject(clone, true);
+    if (intersects.length > 0) {
+      const hitY = intersects[0].point.y;
+      clone.position.y = -hitY; // Anchor top surface to 0!
+    } else {
+      // Fallback just in case the laser misses (e.g. there is a donut hole in the center of the grid)
+      clone.position.y = -(box.max.y * targetScale);
+    }
+
+    // Re-update matrix after dropping the island
+    clone.updateMatrixWorld(true);
+
     clone.traverse((child: any) => {
       if (child.isMesh && child.material) {
-        // Clone the material so it doesn't affect other instances if we decide to add hover states
-        child.material = child.material.clone();
-        child.material.metalness = 0.0;
-        child.material.roughness = 0.9;
-        // Apply a gentle emissive lift to brighten the artificially dark texture maps from Meshy
-        // and tint it slightly toward the app's soft sage green/teal.
-        child.material.emissive = new THREE.Color("#8EA676");
-        child.material.emissiveIntensity = 0.25;
-        child.material.needsUpdate = true;
+        // Just like the Lobster, Meshy bakes stunning shadows/highlights directly into the tile's texture.
+        // If we use standard lighting or emissive overlays, we wash out all the contrast and kill the pastels.
+        // Swapping to an unlit BasicMaterial allows the pure image texture to render perfectly crisp.
+        if (child.material.map) {
+          child.material = new THREE.MeshBasicMaterial({ map: child.material.map });
+        } else {
+          // Fallback if texture map is missing
+          child.material = child.material.clone();
+          child.material.color.set("#A3C4BC");
+          child.material.roughness = 0.9;
+        }
       }
     });
     return clone;
   }, [scene]);
 
-  return <primitive object={clonedScene} scale={1.8} position={[0, -0.2, 0]} />;
+  return <primitive object={clonedScene} />;
 }
 
 export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId }: { agents?: any[], onAgentClick?: (id: string) => void, onAgentHover?: (id: string | null) => void, hoveredAgentId?: string | null }) {
@@ -43,7 +78,7 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
   const selectedAgents = useMemo(() => {
     // These are the specific roles we physically possess GLB models for
     const knownGlbs = ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"];
-    
+
     if (agents && agents.length > 0) {
       return agents.map(agent => {
         const hasModel = knownGlbs.includes(agent.role);
@@ -67,9 +102,8 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
   // Compute Ulam Spiral layout coordinates for the tiled surface
   const TILE_GAP = 2.3; // Space between tile centers
 
-  // Mathematically derived from the GLB bounding box maximum Y vertex (0.9493)
-  // Max Y in world space = (0.9493 * scale(1.8)) + positionY(-0.2) = ~1.508
-  const LOBSTER_ELEVATION_OFFSET = 1.3; // Flush with the highest point of the grass
+  // We eliminated the hardcoded offset entirely via Procedural Floor Snapping
+  // LOBSTER_ELEVATION_OFFSET is now officially 0.0
 
   const points = useMemo(() => {
     const pts = [];
@@ -117,15 +151,27 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
 
             {/* 
                   Renders the agent directly on its personal soil tile.
-                  We assume AgentNeighborhood handles state-driven animations for performance.
+                  Because the Tile uses Procedural Raycasting to sink itself until its top surface is exactly 0,
+                  And the Lobster uses Normalization to rest its feet at exactly 0,
+                  they flawlessly snap together on ANY 3D model geometry automatically!
                 */}
-            <AgentNeighborhood
-              agent={agent}
-              position={[0, LOBSTER_ELEVATION_OFFSET, 0]}
-              onClick={() => onAgentClick?.(agent.id)}
-              onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
-              onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
-            />
+            {index === 0 ? (
+              <React.Suspense fallback={null}>
+                <OnboardingCompanion
+                  position={[10, 0, 0]}
+                  scale={10.3}
+                  animationState="Long breath and look around"
+                />
+              </React.Suspense>
+            ) : (
+              <AgentNeighborhood
+                agent={agent}
+                position={[0, 0, 0]}
+                onClick={() => onAgentClick?.(agent.id)}
+                onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
+                onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
+              />
+            )}
           </group>
         );
       })}

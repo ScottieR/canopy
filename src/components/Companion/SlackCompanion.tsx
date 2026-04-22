@@ -38,8 +38,8 @@ export function SlackCompanion() {
           setTimeout(async () => {
              try {
                 await emit("companion-finished", { type: "slack", key: null });
-                const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                await getCurrentWebviewWindow().close();
+                const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                await getCurrentWindow().close();
              } catch(e) {}
           }, 3000);
         } else {
@@ -75,16 +75,16 @@ export function SlackCompanion() {
               style={{ flex: 1, cursor: "grab", WebkitAppRegion: "drag", height: "100%" }} 
               onPointerDown={async () => {
                  try {
-                     const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                     await getCurrentWebviewWindow().startDragging();
+                     const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                     await getCurrentWindow().startDragging();
                  } catch(e) {}
               }}
          />
          <div style={{ padding: "0 16px", cursor: "pointer", opacity: 0.8, fontSize: 18, fontWeight: 'bold', display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000 }} onClick={async () => {
              try {
                 // Definitively close THIS exact window directly from the inside rather than relying on a global event listener sweep.
-                const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                await getCurrentWebviewWindow().close();
+                const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                await getCurrentWindow().close();
              } catch (e) {
                 console.error("Direct close failed", e);
              }
