@@ -158,9 +158,9 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
             {index === 0 ? (
               <React.Suspense fallback={null}>
                 <OnboardingCompanion
-                  position={[10, 0, 0]}
-                  scale={10.3}
-                  animationState="Long breath and look around"
+                  position={[0.65, -0.23, .2]}
+                  scale={0.25}
+                  animationState="Breath"
                 />
               </React.Suspense>
             ) : (
