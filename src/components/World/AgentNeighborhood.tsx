@@ -4,7 +4,7 @@ import { useMemo } from "react";
 import * as THREE from "three";
 
 export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
-  const isWorking = agent?.status === "active";
+  const isWorking = agent?.status === "active" || agent?.status === "thinking";
 
   return (
     <group 
@@ -22,6 +22,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
           navPoints={navPoints}
           scale={0.25} 
           isWorking={isWorking} 
+          agentStatus={agent?.status}
           baseColor={agent.color || "#D2D6CE"}
           robeColor={agent.robeColor || "#A3C4BC"}
           accentColor={agent.accentColor || "#FFAB91"}

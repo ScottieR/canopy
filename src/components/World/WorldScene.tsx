@@ -15,8 +15,8 @@ import React from "react";
   useGLTF.preload(`/models/lobsters/${role}.glb`);
 });
 
-function TerrariumBase({ index = 0, onNavMeshReady }: { index?: number, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
-  const modelNum = (index % 9) + 1;
+export function TerrariumBase({ index = 0, habitatId, onNavMeshReady }: { index?: number, habitatId?: number, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
+  const modelNum = habitatId || ((index % 9) + 1);
   const modelUrl = `/models/habitats/Habitat_${modelNum}.glb`;
   const { scene } = useGLTF(modelUrl);
 
@@ -186,7 +186,7 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
                    Tile the monolithic base out beneath each agent 
                 */}
             <React.Suspense fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
-              <TerrariumBase index={index} onNavMeshReady={(pts) => setNavMap(prev => ({ ...prev, [index]: pts }))} />
+              <TerrariumBase index={index} habitatId={agent.visual_identity?.habitat} onNavMeshReady={(pts) => setNavMap(prev => ({ ...prev, [index]: pts }))} />
             </React.Suspense>
 
             {/* 
