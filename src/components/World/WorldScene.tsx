@@ -95,12 +95,23 @@ export function TerrariumBase({ index = 0, habitatId, onNavMeshReady }: { index?
         // If we use standard lighting or emissive overlays, we wash out all the contrast and kill the pastels.
         // Swapping to an unlit BasicMaterial allows the pure image texture to render perfectly crisp.
         if (child.material.map) {
-          child.material = new THREE.MeshBasicMaterial({ map: child.material.map });
+          const safeMap = child.material.map.clone();
+          safeMap.needsUpdate = true;
+          child.material = new THREE.MeshBasicMaterial({ map: safeMap });
         } else {
           // Fallback if texture map is missing
-          child.material = child.material.clone();
-          child.material.color.set("#A3C4BC");
-          child.material.roughness = 0.9;
+          if (Array.isArray(child.material)) {
+             child.material = child.material.map(mat => {
+                 const m = (mat as THREE.Material).clone();
+                 if ('color' in m) (m as any).color.set("#A3C4BC");
+                 if ('roughness' in m) (m as any).roughness = 0.9;
+                 return m;
+             });
+          } else {
+             child.material = child.material.clone();
+             if (child.material.color) child.material.color.set("#A3C4BC");
+             child.material.roughness = 0.9;
+          }
         }
       }
     });

@@ -111,11 +111,12 @@ impl AgentStats {
         } else {
             // Fallback rules if the sync hasn't occurred or model is missing
             match model {
-                "claude-3-5-sonnet" | "claude-3-5-sonnet-20240620" => (3.00, 15.00),
+                "claude-4-6-sonnet" | "claude-4-6-sonnet-20240620" => (3.00, 15.00),
                 "gpt-4o-mini" => (0.15, 0.60),
-                "gpt-4o" => (5.00, 15.00),
-                "gemini-1.5-pro" => (3.50, 10.50),
-                "gemini-1.5-flash" => (0.35, 1.05),
+                "gpt-4o" => (2.50, 10.00),
+                "gemini-3.1-pro" => (3.50, 10.50),
+                "gemini-3.1-flash" => (0.35, 1.05),
+                "grok-beta" => (5.00, 15.00),
                 _ => (1.00, 5.00), // generic fallback
             }
         };

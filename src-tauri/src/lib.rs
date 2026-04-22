@@ -9,6 +9,7 @@ mod models;
 mod db;
 mod imessage;
 mod audit;
+mod audit_openclaw;
 mod voice;
 mod slack;
 mod google;
@@ -166,6 +167,10 @@ pub fn run() {
             audit::search_audit_log,
             audit::export_audit_log,
             audit::get_security_alerts,
+            // OpenClaw Audit
+            audit_openclaw::audit_openclaw_config,
+            audit_openclaw::repair_openclaw_config,
+            audit_openclaw::get_openclaw_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Canopy")
