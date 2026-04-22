@@ -1,18 +1,57 @@
-import React, { useRef } from "react";
+import React, { useEffect, useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
-import { useGLTF } from "@react-three/drei";
+import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
+import { SkeletonUtils } from "three-stdlib";
 
-export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, baseColor, robeColor, accentColor }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, baseColor?: string, robeColor?: string, accentColor?: string }) {
+export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, baseColor, robeColor, accentColor, role }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, baseColor?: string, robeColor?: string, accentColor?: string, role?: string }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
   
-  // Minimal floating effect replacing complex limb animation
-  useFrame(({ clock }) => {
-    if (groupRef.current) {
-      const t = clock.getElapsedTime();
-      groupRef.current.position.y = (position[1] as number) + Math.sin(t * 1.5 + position[0]) * 0.05;
+  // Load the universal rigged body
+  const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb");
+  
+  // Clone incredibly efficiently so each agent gets its own distinct animated skeleton and colored materials
+  const clonedScene = useMemo(() => {
+    const clone = SkeletonUtils.clone(scene);
+    
+    // Unlink and tint the materials dynamically based on agent colors
+    clone.traverse((node: any) => {
+      if (node.isMesh && node.material) {
+        node.material = node.material.clone();
+        
+        // Dynamically colorize the outfit to match the user's role profile!
+        // We override the base material color with the database-driven robe/accent color
+        if (robeColor) {
+           node.material.color.set(robeColor);
+        }
+      }
+    });
+    
+    return clone;
+  }, [scene, robeColor]);
+
+  // Bind animations to our cloned instance
+  const { actions, names } = useAnimations(animations, groupRef);
+
+  useEffect(() => {
+    if (names.length === 0) return;
+    
+    // GLB EXPORT PATCH: Track renaming due to export
+    const idleAnim = names.find(n => n === "Long_Breathe_and_Look_Around") || names[0];
+    const workingAnim = names.find(n => n === "run_fast_8_inplace") || names[0];
+    
+    const activeActionName = isWorking ? workingAnim : idleAnim;
+    const action = actions[activeActionName];
+    
+    if (action) {
+      action.reset().fadeIn(0.5).play();
     }
+    
+    return () => { if (action) action.fadeOut(0.5); };
+  }, [isWorking, actions, names]);
+
+  useFrame(({ clock }) => {
     // Glowing orb bob and pulse when working
     if (orbRef.current && isWorking) {
       const t = clock.getElapsedTime();
@@ -24,39 +63,35 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
 
   return (
     <group position={position as [number,number,number]} scale={scale} ref={groupRef}>
-      {/* 
-        If a user supplies a valid .glb url (e.g. from Meshy), it renders the raw static Mesh perfectly.
-        If NO URL is supplied, we peacefully render a simple fallback.
-      */}
-      {fileUrl ? (
-        <React.Suspense fallback={null}>
-          <GLBModel url={fileUrl} />
-        </React.Suspense>
-      ) : (
-        <mesh position={[0, 0.5, 0]}>
-           <cylinderGeometry args={[0.3, 0.4, 1, 16]} />
-           <meshStandardMaterial color={robeColor || "#CCC"} />
-        </mesh>
-      )}
+      <primitive object={clonedScene} />
 
       {/* Dynamic Accessories System */}
-      {accessories.map((accUrl, i) => (
-        <React.Suspense key={i} fallback={null}>
-           <GLBModel url={accUrl} />
-        </React.Suspense>
-      ))}
+      <React.Suspense fallback={null}>
+        {role && <DynamicAccessory role={role} />}
+      </React.Suspense>
 
-      {/* Floating UI Indicator: Replaces the need for complex 'working' limb animations */}
+      {/* Floating UI Indicator for Active status */}
       {isWorking && (
         <mesh ref={orbRef} position={[0, 1.3, 0]}>
-          <sphereGeometry args={[0.1, 16, 16]} />
-          {/* Highly emissive material creates a glowing effect */}
+          <sphereGeometry args={[0.08, 16, 16]} />
           <meshStandardMaterial color="#88E8D5" emissive="#88E8D5" emissiveIntensity={1.5} toneMapped={false} />
           <pointLight color="#88E8D5" intensity={0.5} distance={1.5} />
         </mesh>
       )}
     </group>
   );
+}
+
+function DynamicAccessory({ role }: { role: string }) {
+   // This is a rendering scaffold. 
+   // When AccessoriesLibrary.glb is built, we can `const { nodes } = useGLTF(...)`
+   // and selectively render `object={nodes.VR_Goggles.clone()}` based on the role string.
+   
+   return (
+      <group position={[0, 1.0, 0]}>
+         {/* Pending Accessory Splitting... */}
+      </group>
+   );
 }
 
 export function Pedestal({ color = "#C8D8E8", scale = 1, position = [0, 0, 0] }: { color?: string, scale?: number, position?: [number, number, number]|number[] }) {

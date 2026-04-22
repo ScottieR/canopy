@@ -11,10 +11,10 @@ interface CompanionProps {
 
 export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animationState, baseColor = "#F28C63" }: CompanionProps) {
   const groupRef = useRef<THREE.Group>(null);
-  
+
   // Load the rigged GLB model from the assets directory
   const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb");
-  
+
   // Extract animations bound to this specific scene/group
   const { actions, names } = useAnimations(animations, groupRef);
 
@@ -27,18 +27,18 @@ export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animation
       if (!state) return names[0];
       const lowerState = state.toLowerCase();
 
-        // GLB EXPORT PATCH: The tracks inside the new BaseLobsterRigged.glb are swapped!
-        // The 11.2 second slow breathing animation is incorrectly named "run_fast_8" internally.
-        if (lowerState.includes("breath") || lowerState.includes("look")) {
-          const swappedAnim = names.find(n => n === "run_fast_8_inplace");
-          if (swappedAnim) return swappedAnim;
-        }
+      // GLB EXPORT PATCH: The tracks inside the new BaseLobsterRigged.glb are swapped!
+      // The 11.2 second slow breathing animation is incorrectly named "run_fast_8" internally.
+      if (lowerState.includes("breath") || lowerState.includes("look")) {
+        const swappedAnim = names.find(n => n === "Long_Breathe_and_Look_Around");
+        if (swappedAnim) return swappedAnim;
+      }
 
-        // The 0.6s fast run looping cycle is incorrectly named "Long_Breathe..." internally.
-        if (/\brun/.test(lowerState) || lowerState.includes("walk")) {
-          const swappedAnim = names.find(n => n === "Long_Breathe_and_Look_Around");
-          if (swappedAnim) return swappedAnim;
-        }
+      // The 0.6s fast run looping cycle is incorrectly named "Long_Breathe..." internally.
+      if (/\brun/.test(lowerState) || lowerState.includes("walk")) {
+        const swappedAnim = names.find(n => n === "Long_Breathe_and_Look_Around");
+        if (swappedAnim) return swappedAnim;
+      }
 
       // Fuzzy match for generic states like 'idle'
       const match = names.find(n => n.toLowerCase().includes(lowerState));
@@ -51,7 +51,7 @@ export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animation
     };
 
     let activeActionName = findAnimation(animationState);
-    
+
     const action = actions[activeActionName];
     if (action) {
       action.reset().fadeIn(0.5).play();
@@ -59,7 +59,7 @@ export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animation
 
     return () => {
       if (action) {
-         action.fadeOut(0.5);
+        action.fadeOut(0.5);
       }
     };
   }, [animationState, actions, names]);

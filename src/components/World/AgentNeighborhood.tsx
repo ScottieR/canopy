@@ -1,7 +1,7 @@
 import { GLBAgent } from "./GLBAgent";
 import { useMemo } from "react";
 
-export function AgentNeighborhood({ agent, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
+export function AgentNeighborhood({ agent, index = 0, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
   const isWorking = agent?.status === "active";
 
   return (
@@ -15,8 +15,9 @@ export function AgentNeighborhood({ agent, position = [0, 0, 0], onClick, onPoin
       {agent && (
         <GLBAgent 
           fileUrl={agent.fileUrl}
-          position={[0, 0, 0]} 
-          scale={1.3} 
+          role={agent.role}
+          position={index === 0 ? [0.65, -0.23, 0.2] : [0, 0, 0]} 
+          scale={0.25} 
           isWorking={isWorking} 
           baseColor={agent.color || "#D2D6CE"}
           robeColor={agent.robeColor || "#A3C4BC"}
