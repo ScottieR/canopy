@@ -110,14 +110,19 @@ pub async fn get_container_status(
             health: "healthy".to_string(), // TODO: parse from health check
             memory_mb: 0.0,                // TODO: get from stats
             cpu_percent: 0.0,
-            port: 18789,                   // TODO: parse from port mappings
+            port: crate::model_constants::GATEWAY_HOST_PORT, // host-facing port (18799), not container-internal (18789)
         });
     }
 
     Ok(statuses)
 }
 
-/// Generate the docker-compose.yml for the shared gateway
+/// Generate the docker-compose.yml for the shared gateway.
+///
+/// Port mapping: HOST 18799 → CONTAINER 18789
+/// - Rust code talking to the gateway from the host uses port 18799 (GATEWAY_HOST_PORT).
+/// - The healthcheck curl runs *inside* the container, so it correctly uses 18789
+///   (GATEWAY_CONTAINER_PORT). Do NOT change the healthcheck URL to 18799.
 fn generate_compose_file(data_dir: &PathBuf) -> String {
     format!(
         r#"services:
@@ -129,7 +134,7 @@ fn generate_compose_file(data_dir: &PathBuf) -> String {
       - "com.canopy.managed=true"
       - "com.canopy.type=shared-gateway"
     ports:
-      - "18799:18789"
+      - "18799:18789"   # HOST:CONTAINER — Rust code connects on 18799; OpenClaw listens on 18789
       - "18800:18790"
       - "18801:18791"
     volumes:
@@ -138,7 +143,13 @@ fn generate_compose_file(data_dir: &PathBuf) -> String {
       # - {data}/config/openclaw.json:/home/node/.openclaw/openclaw.json:ro
     environment:
       - NODE_ENV=production
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '2.0'
     healthcheck:
+      # ⚠️  This curl runs INSIDE the container — use container port 18789, not host port 18799
       test: ["CMD", "curl", "-f", "http://localhost:18789/status"]
       interval: 30s
       timeout: 10s
@@ -175,6 +186,7 @@ pub fn generate_isolated_compose(agent_id: &str, data_dir: &PathBuf, host_port: 
     networks:
       - isolated-{id}
     healthcheck:
+      # ⚠️  Runs INSIDE the container — use container port 18789, not host port {port}
       test: ["CMD", "curl", "-f", "http://localhost:18789/status"]
       interval: 30s
       timeout: 10s
@@ -318,16 +330,8 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
             .await;
     }
 
-    // Attempt to manually trigger start in case it is cleanly trapped in an Exited (OOM/255) status
-    tracing::info!("Starting Gateway container explicitly...");
-    let docker_cmd = if docker_bin.exists() { docker_bin } else { std::path::PathBuf::from("docker") };
-    let _ = tokio::process::Command::new(&docker_cmd)
-        .args(["start", "canopy-gateway"])
-        .output()
-        .await;
-
-    // Await healthy stabilization window (give Node a little room to reconstruct proxy routes)
-    tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
+    // Re-generate configuration and bring it up via compose to apply new limits
+    let _ = start_gateway().await;
 
     Ok("Infrastructure rebooted perfectly.".to_string())
 }

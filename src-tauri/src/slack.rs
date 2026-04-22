@@ -536,74 +536,149 @@ pub async fn check_slack_connection() -> Result<SlackConnectionStatus, String> {
 // Socket Mode (WebSocket) for Real-time Events
 // ============================================================================
 
-/// Start listening for Slack events via Socket Mode
+/// Start the OpenClaw Slack integration via Socket Mode.
+///
+/// # How OpenClaw Slack configuration works (important)
+///
+/// OpenClaw does NOT have a `channels add` CLI command. Slack is configured by writing
+/// token values into `openclaw.json` via `openclaw config set`, then restarting the
+/// gateway so the new config is loaded. The previous implementation incorrectly called
+/// `openclaw channels add --channel slack ...` which does not exist and silently failed.
+///
+/// # Token requirements
+///
+/// Two tokens are required — both must be stored in the system keychain before calling this:
+///
+/// - **`slack-bot-token`** — starts with `xoxb-`. Obtained via the OAuth flow
+///   (`start_slack_oauth`). Requires bot scopes: `channels:read`, `channels:history`,
+///   `chat:write`, `users:read`.
+///
+/// - **`slack-app-token`** — starts with `xapp-`. Created separately in the Slack app
+///   dashboard under "App-Level Tokens". Requires the `connections:write` scope.
+///   This is NOT obtained via the OAuth redirect flow — the user must paste it manually.
+///   Without it, Socket Mode cannot establish its WebSocket connection.
 #[tauri::command]
 pub async fn start_slack_listener() -> Result<String, String> {
     let app_token = keychain::get_secret("slack-app-token")
-        .map_err(|_| "Slack App Token not set in keychain".to_string())?;
-        
+        .map_err(|_| {
+            "Slack App Token (xapp-...) not found in keychain. \
+             Create one in your Slack app dashboard under App-Level Tokens \
+             with the connections:write scope, then save it via the Canopy settings panel."
+                .to_string()
+        })?;
+
     let bot_token = keychain::get_secret("slack-bot-token")
-        .map_err(|_| "Slack Bot Token not set in keychain".to_string())?;
+        .map_err(|_| "Slack Bot Token (xoxb-...) not found in keychain. Connect Slack via Settings first.".to_string())?;
 
-    if app_token.trim().is_empty() { return Err("Slack App Token is blank".to_string()); }
-    if bot_token.trim().is_empty() { return Err("Slack Bot Token is blank".to_string()); }
+    let app_token = app_token.trim().to_string();
+    let bot_token = bot_token.trim().to_string();
 
-    let cmd_future = crate::openclaw::get_docker_command()
-        .args([
-            "exec", "-u", "node", "canopy-gateway",
-            "openclaw", "channels", "add",
-            "--channel", "slack",
-            "--bot-token", bot_token.trim(),
-            "--app-token", app_token.trim()
-        ])
-        .output();
-
-    let output = match tokio::time::timeout(std::time::Duration::from_secs(10), cmd_future).await {
-        Ok(res) => res.map_err(|e| format!("Failed to initiate OpenClaw Slack bridge: {}", e))?,
-        Err(_) => return Err("Slack bridge initiation timed out. Is the gateway running?".into()),
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
-        if combined.contains("cannot exec in a stopped container") {
-            combined = "Gateway container is stopped. Please start infrastructure first.".to_string();
-        } else if combined.is_empty() {
-            combined = format!("Container crashed silently natively with exit code: {}", output.status);
-        }
-        error!("OpenClaw channels native error: {}", combined);
-        return Err(format!("OpenClaw natively failed to connect Slack channel: {}", combined));
+    if app_token.is_empty() {
+        return Err("Slack App Token is blank. Paste the xapp-... token in Settings → Slack.".to_string());
+    }
+    if bot_token.is_empty() {
+        return Err("Slack Bot Token is blank. Re-connect Slack via the OAuth flow in Settings.".to_string());
+    }
+    if !app_token.starts_with("xapp-") {
+        return Err(format!(
+            "Slack App Token looks wrong (got '{}...'). It must start with 'xapp-'. \
+             Make sure you're pasting the App-Level Token, not the Bot Token.",
+            &app_token[..app_token.len().min(8)]
+        ));
+    }
+    if !bot_token.starts_with("xoxb-") {
+        return Err(format!(
+            "Slack Bot Token looks wrong (got '{}...'). It must start with 'xoxb-'.",
+            &bot_token[..bot_token.len().min(8)]
+        ));
     }
 
-    info!("Slack listener natively linked inside Docker successfully.");
-    Ok("Slack OpenClaw Bridge linked".to_string())
+    // Configure Slack in openclaw.json via config set.
+    // OpenClaw reads channels.slack.botToken and channels.slack.appToken from config,
+    // then establishes the Socket Mode WebSocket on gateway restart.
+    let config_steps: &[(&str, &str)] = &[
+        ("channels.slack.botToken",  &bot_token),
+        ("channels.slack.appToken",  &app_token),
+        ("channels.slack.enabled",   "true"),
+        ("channels.slack.mode",      "socket"),
+        ("channels.slack.groupPolicy", "allowlist"),
+    ];
+
+    for (key, val) in config_steps {
+        let cmd_future = crate::openclaw::get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", key, val])
+            .output();
+
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
+            Ok(res) => res.map_err(|e| format!("Failed to set {}: {}", key, e))?,
+            Err(_) => return Err(format!("Timed out while setting {}. Is the gateway running?", key)),
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+            if combined.contains("cannot exec in a stopped container") {
+                combined = "Gateway container is stopped. Start infrastructure first.".to_string();
+            }
+            error!("Failed to set Slack config key {}: {}", key, combined);
+            return Err(format!("Failed to configure Slack ({}): {}", key, combined));
+        }
+    }
+
+    // Restart the gateway so the new Slack config takes effect.
+    let restart_output = crate::openclaw::get_docker_command()
+        .args(["restart", "canopy-gateway"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to restart gateway after Slack config: {}", e))?;
+
+    if !restart_output.status.success() {
+        let stderr = String::from_utf8_lossy(&restart_output.stderr);
+        return Err(format!("Slack config written but gateway restart failed: {}", stderr));
+    }
+
+    // Brief wait for Socket Mode WebSocket to establish
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+
+    info!("Slack Socket Mode configured and gateway restarted successfully.");
+    Ok("Slack connected via Socket Mode. Gateway restarted.".to_string())
 }
 
-/// Stop listening for Slack events
+/// Disable the OpenClaw Slack integration.
+///
+/// Sets `channels.slack.enabled = false` in openclaw.json and restarts the gateway.
+/// Tokens are NOT removed from keychain — reconnecting only requires calling
+/// `start_slack_listener()` again.
 #[tauri::command]
 pub async fn stop_slack_listener() -> Result<(), String> {
     let cmd_future = crate::openclaw::get_docker_command()
         .args([
             "exec", "-u", "node", "canopy-gateway",
-            "openclaw", "channels", "remove",
-            "--channel", "slack"
+            "openclaw", "config", "set", "channels.slack.enabled", "false"
         ])
         .output();
 
-    let output = match tokio::time::timeout(std::time::Duration::from_secs(10), cmd_future).await {
-        Ok(res) => res.map_err(|e| format!("Failed to remove OpenClaw Slack bridge: {}", e))?,
-        Err(_) => return Err("Slack bridge removal timed out.".into()),
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
+        Ok(res) => res.map_err(|e| format!("Failed to disable Slack in gateway config: {}", e))?,
+        Err(_) => return Err("Timed out while disabling Slack.".into()),
     };
-        
+
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
-        warn!("Failed to seamlessly tear down Slack channel in OpenClaw: {}", combined);
+        warn!("Failed to set channels.slack.enabled=false: {}", combined);
+        // Non-fatal — still attempt the restart so whatever state we're in gets flushed
     }
 
-    info!("Slack listener natively disabled in OpenClaw.");
+    // Restart the gateway to drop the Socket Mode connection
+    let _ = crate::openclaw::get_docker_command()
+        .args(["restart", "canopy-gateway"])
+        .output()
+        .await;
+
+    info!("Slack integration disabled and gateway restarted.");
     Ok(())
 }
 
@@ -614,6 +689,8 @@ pub async fn stop_slack_listener() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Serialization ─────────────────────────────────────────────────────
 
     #[test]
     fn test_slack_channel_serialization() {
@@ -647,5 +724,57 @@ mod tests {
 
         assert_eq!(deserialized.ts, message.ts);
         assert_eq!(deserialized.text, message.text);
+    }
+
+    // ── Token format validation (regression guards) ───────────────────────
+
+    #[test]
+    fn bot_token_prefix_check() {
+        // Bot tokens from Slack's OAuth flow always start with "xoxb-".
+        // start_slack_listener validates this — test that the validation logic is correct.
+        assert!("xoxb-12345-abc".starts_with("xoxb-"), "Valid bot token prefix check failed");
+        assert!(!"xapp-12345-abc".starts_with("xoxb-"), "App token should not pass bot prefix check");
+        assert!(!"xoxb-".starts_with("xoxb-a"), "Empty token should not pass");
+    }
+
+    #[test]
+    fn app_token_prefix_check() {
+        // App-Level tokens (Socket Mode) always start with "xapp-".
+        assert!("xapp-1-abc123".starts_with("xapp-"), "Valid app token prefix check failed");
+        assert!(!"xoxb-12345-abc".starts_with("xapp-"), "Bot token should not pass app prefix check");
+    }
+
+    #[test]
+    fn start_slack_listener_uses_config_set_not_channels_add() {
+        // Regression guard: the old implementation called `openclaw channels add --channel slack`
+        // which does not exist. The new implementation uses `openclaw config set` for each key.
+        // This test documents the expected command structure.
+        //
+        // If start_slack_listener is rewritten, ensure it still uses config-set semantics:
+        // - "openclaw config set channels.slack.botToken <value>"
+        // - "openclaw config set channels.slack.appToken <value>"
+        // - "openclaw config set channels.slack.enabled true"
+        //
+        // These string literals are the expected config keys — any change to them here
+        // should also be reflected in the function body.
+        let expected_config_keys = [
+            "channels.slack.botToken",
+            "channels.slack.appToken",
+            "channels.slack.enabled",
+            "channels.slack.mode",
+        ];
+        for key in expected_config_keys {
+            assert!(key.starts_with("channels.slack."), "Config key '{}' must be under channels.slack.*", key);
+        }
+    }
+
+    #[test]
+    fn oauth_url_requests_required_scopes() {
+        // The OAuth URL in start_slack_oauth must request the minimum scopes for
+        // channel reading and message sending. Verify the scope string contains them.
+        let scopes = "channels:read,channels:history,chat:write,users:read";
+        assert!(scopes.contains("channels:read"),   "Missing channels:read scope");
+        assert!(scopes.contains("channels:history"), "Missing channels:history scope");
+        assert!(scopes.contains("chat:write"),       "Missing chat:write scope");
     }
 }

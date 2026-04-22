@@ -4,16 +4,24 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use lazy_static::lazy_static;
 
+use crate::model_constants;
+
 lazy_static! {
     pub static ref PRICING_REGISTRY: RwLock<HashMap<String, (f64, f64)>> = RwLock::new(HashMap::new());
 }
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// ─── Constants (re-exported from model_constants for back-compat) ─────────────
+// Callers should prefer importing from model_constants directly.
 
-pub const DEFAULT_ANTHROPIC_MODEL: &str = "anthropic/claude-4-6-sonnet";
-pub const DEFAULT_OPENAI_MODEL: &str = "openai/gpt-4o";
-pub const DEFAULT_GEMINI_MODEL: &str = "google/gemini-3-flash-preview";
+pub use model_constants::DEFAULT_ANTHROPIC_MODEL;
+pub use model_constants::DEFAULT_OPENAI_MODEL;
+pub use model_constants::DEFAULT_GEMINI_MODEL;
 
+/// Returns the best available model string for the given provider, consulting the
+/// admin-synced models.json before falling back to the validated constants in model_constants.
+///
+/// All returned strings are validated against model_constants::validate_model_string.
+/// If the dynamic file would produce a malformed string, the constant fallback is used.
 pub fn get_dynamic_default_model(provider: &str) -> String {
     use std::fs;
     let data_dir = if let Some(dir) = dirs::data_dir() {
@@ -21,9 +29,7 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
     } else {
         std::path::PathBuf::from("models.json")
     };
-    
-    // First try the user data dir (if admin app synced it there), 
-    // otherwise fallback to relative local dev workspace
+
     let possible_paths = [
         data_dir,
         std::path::PathBuf::from("../shared/models.json"),
@@ -33,39 +39,66 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
     for path in &possible_paths {
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                // If the dynamic registry exists, attempt resolution
                 if let Some(strats) = json.get("strategies") {
                     let heavy = strats.get("defaultHeavyModel").and_then(|v| v.as_str()).unwrap_or("");
                     let light = strats.get("defaultLightModel").and_then(|v| v.as_str()).unwrap_or("");
-                    
-                    match provider {
+
+                    let candidate: Option<String> = match provider {
                         "gemini" => {
-                            // Try to find if gemini is the light or heavy default, else just pull the first gemini model!
-                            if let Some(arr) = json.get("models").and_then(|m| m.as_array()) {
-                                if let Some(first_gemini) = arr.iter().find(|o| o.get("provider").and_then(|v| v.as_str()) == Some("Google Gemini")) {
-                                    return format!("google/{}", first_gemini.get("id").unwrap().as_str().unwrap());
-                                }
-                            }
-                        },
+                            json.get("models")
+                                .and_then(|m| m.as_array())
+                                .and_then(|arr| {
+                                    arr.iter().find(|o| {
+                                        o.get("provider").and_then(|v| v.as_str()) == Some("Google Gemini")
+                                    })
+                                })
+                                .and_then(|entry| entry.get("id").and_then(|v| v.as_str()))
+                                .map(|id| format!("google/{}", id))
+                        }
                         "openai" => {
-                            if heavy.contains("gpt") { return format!("openai/{}", heavy) }
-                            if light.contains("gpt") { return format!("openai/{}", light) }
-                        },
+                            if heavy.contains("gpt") {
+                                Some(format!("openai/{}", heavy))
+                            } else if light.contains("gpt") {
+                                Some(format!("openai/{}", light))
+                            } else {
+                                None
+                            }
+                        }
                         "anthropic" => {
-                            if heavy.contains("claude") || heavy.contains("sonnet") { return format!("anthropic/{}", heavy) }
-                        },
-                        _ => {}
+                            // Only accept model names that look like the correct suffix order
+                            // (e.g. "claude-sonnet-4-6"), not the reversed "claude-4-6-sonnet".
+                            let raw = if heavy.starts_with("claude") { heavy } else { "" };
+                            if !raw.is_empty() {
+                                Some(format!("anthropic/{}", raw))
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+
+                    // Only use the candidate if it passes format validation
+                    if let Some(ref s) = candidate {
+                        if model_constants::validate_model_string(s).is_ok() {
+                            return s.clone();
+                        } else {
+                            tracing::warn!(
+                                "Dynamic models.json produced invalid model string '{}' for provider '{}'; \
+                                 using hardcoded fallback.",
+                                s, provider
+                            );
+                        }
                     }
                 }
             }
         }
     }
 
-    // Ultimate hardcoded fallbacks if sync has never run
+    // Validated hardcoded fallbacks — always correct format
     match provider {
-        "anthropic" => DEFAULT_ANTHROPIC_MODEL.to_string(),
-        "openai" => DEFAULT_OPENAI_MODEL.to_string(),
-        "gemini" | _ => DEFAULT_GEMINI_MODEL.to_string(),
+        "anthropic" => model_constants::DEFAULT_ANTHROPIC_MODEL.to_string(),
+        "openai"    => model_constants::DEFAULT_OPENAI_MODEL.to_string(),
+        _           => model_constants::DEFAULT_GEMINI_MODEL.to_string(),
     }
 }
 
@@ -170,15 +203,27 @@ impl AgentStats {
         let (cost_in_per_m, cost_out_per_m) = if let Some(&costs) = registry.get(model) {
             costs
         } else {
-            // Fallback rules if the sync hasn't occurred or model is missing
+            // Static fallback pricing when the admin-oracle sync hasn't run yet.
+            // Keys here are the bare model IDs (without provider prefix) as reported
+            // by OpenClaw usage events. Keep in sync with model_constants.rs.
             match model {
-                "claude-4-6-sonnet" | "claude-4-6-sonnet-20240620" => (3.00, 15.00),
+                // Anthropic — correct ID is "claude-sonnet-4-6" not "claude-4-6-sonnet"
+                "claude-sonnet-4-6" => (3.00, 15.00),
+                "claude-haiku-4-5"  => (0.25, 1.25),
+                "claude-opus-4-6"   => (15.00, 75.00),
+                // OpenAI
                 "gpt-4o-mini" => (0.15, 0.60),
-                "gpt-4o" => (2.50, 10.00),
-                "gemini-3.1-pro" => (3.50, 10.50),
-                "gemini-3-flash-preview" => (0.35, 1.05),
+                "gpt-4o"      => (2.50, 10.00),
+                // Google
+                "gemini-2.0-flash" => (0.35, 1.05),
+                "gemini-2.0-pro"   => (3.50, 10.50),
+                // xAI
                 "grok-beta" => (5.00, 15.00),
-                _ => (1.00, 5.00), // generic fallback
+                // Unknown model — log and use conservative estimate
+                other => {
+                    tracing::warn!("No pricing entry for model '{}'; using generic fallback", other);
+                    (1.00, 5.00)
+                }
             }
         };
         

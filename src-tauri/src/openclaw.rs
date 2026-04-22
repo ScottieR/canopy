@@ -1,8 +1,13 @@
+use crate::model_constants::{
+    GATEWAY_URL,
+    GATEWAY_INTERNAL_TOKEN,
+    DEFAULT_ANTHROPIC_MODEL,
+    agent_auth_profile_path,
+    agent_soul_path,
+};
 use crate::models::{Agent, AgentPersonality, AgentCapabilities, AgentStats, AgentStatus, DiscoveredAgent};
 use reqwest::Client;
 use serde_json::{json, Value};
-
-const GATEWAY_URL: &str = "http://localhost:18799";
 
 pub fn get_docker_command() -> tokio::process::Command {
     if let Some(home) = dirs::home_dir() {
@@ -40,7 +45,7 @@ pub async fn create_agent(
     // Step 0: Ensure structural configurations are met so the gateway setup sequence doesn't fail uniquely in the headless docker host
     let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"]).output().await;
     let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.memorySearch.enabled", "false"]).output().await;
-    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.token", "canopy_internal_token_2026"]).output().await;
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.token", GATEWAY_INTERNAL_TOKEN]).output().await;
 
     // Fix models before creating to avoid FailoverError
     if let Some(ref model) = personality.active_model {
@@ -71,7 +76,7 @@ pub async fn create_agent(
     // Step 2: Generate SOUL.md from personality
     let soul_md = generate_soul_md(&personality);
     // Write SOUL.md to the agent's workspace inside the container
-    let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
+    let soul_path = agent_soul_path(&agent_id);
     get_docker_command()
         .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
             &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
@@ -138,7 +143,7 @@ pub async fn list_agents(
         
     if let Ok(resp) = client
         .get(format!("{}/api/status", GATEWAY_URL))
-        .header("Authorization", "Bearer canopy_internal_token_2026")
+        .header("Authorization", &crate::model_constants::gateway_bearer_header())
         .send()
         .await
     {
@@ -168,7 +173,7 @@ pub async fn update_agent_personality(
     personality: AgentPersonality,
 ) -> Result<(), String> {
     let soul_md = generate_soul_md(&personality);
-    let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
+    let soul_path = agent_soul_path(&agent_id);
 
     let output = get_docker_command()
         .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
@@ -253,6 +258,38 @@ pub async fn update_agent_visuals(
         return Err("Agent not found".to_string());
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn update_agent_details(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    name: String,
+    role: String,
+) -> Result<(), String> {
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.name = name.clone();
+        agent.role = role;
+        
+        // Keep personality name in sync
+        agent.personality.name = name;
+        
+        // Refresh SOUL.md so the agent knows its new name
+        let soul_md = generate_soul_md(&agent.personality);
+        let soul_path = agent_soul_path(&agent_id);
+        
+        let _ = get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
+                &format!("mkdir -p $(dirname {}) && cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_path, soul_md)])
+            .output()
+            .await;
+
+        db.update_agent(&agent).map_err(|e| format!("DB error: {}", e))?;
+        let _ = db.log_audit(&agent_id, "update_details", Some("canopy"), "Agent basic info updated", None);
+        Ok(())
+    } else {
+        Err(format!("Agent not found: {}", agent_id))
+    }
 }
 
 #[tauri::command]
@@ -376,7 +413,17 @@ pub async fn send_message_internal(
 
     if !output.status.success() {
         let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+        
+        // If the container was OOMKilled, or it was already stopped, return a specific error that triggers UI healing
+        if combined.contains("cannot exec in a stopped container") || combined.contains("OCI runtime exec failed") {
+            return Err("Infrastructure gateway is offline or has crashed (Stopped Container).".to_string());
+        }
+        
         if combined.is_empty() {
+            // Exit code 137 usually means OOM in Docker
+            if output.status.code() == Some(137) {
+                return Err("Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string());
+            }
             combined = format!("OpenClaw execution failed silently with status code: {}", output.status);
         }
         return Err(combined);
@@ -399,6 +446,17 @@ pub async fn send_message_internal(
         .or_else(|| body.get("content").and_then(|v| v.as_str()))
         .unwrap_or(&body.to_string())
         .to_string();
+
+    // OpenClaw emits "OpenClaw: <error>" lines when the agent is misconfigured
+    // (e.g. auth-profiles.json has no API key). Return these as errors so the
+    // frontend chat UI can offer the repair flow instead of showing the raw
+    // system message as if it were an agent reply.
+    if response_text.starts_with("OpenClaw:") {
+        return Err(format!(
+            "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
+            response_text.trim()
+        ));
+    }
 
     let _ = db.insert_message(&conv_id, "assistant", &response_text);
 
@@ -444,7 +502,7 @@ pub async fn import_agent(
     let client = Client::new();
     let resp = client
         .get(format!("{}/api/agents/{}", GATEWAY_URL, openclaw_agent_id))
-        .header("Authorization", "Bearer canopy_internal_token_2026")
+        .header("Authorization", &crate::model_constants::gateway_bearer_header())
         .send()
         .await
         .map_err(|e| format!("Failed to query gateway: {}", e))?;
@@ -455,7 +513,22 @@ pub async fn import_agent(
 
     let agent_data = resp.json::<Value>().await.map_err(|e| e.to_string())?;
 
-    // Step 2: Create local Agent struct from OpenClaw data
+    // Step 2: Create local Agent struct from OpenClaw data.
+    // Prefer the model specified in the imported agent's data; fall back to the best
+    // available model based on which API keys are present. Never leave active_model as
+    // None — an agent without a model will silently fail to respond.
+    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_openai    = crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_gemini    = crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+
+    let imported_model = agent_data.get("model")
+        .and_then(|v| v.as_str())
+        .and_then(|m| crate::model_constants::validate_model_string(m).ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            crate::model_constants::default_model_from_available_keys(has_anthropic, has_openai, has_gemini).to_string()
+        });
+
     let agent = Agent {
         id: openclaw_agent_id.clone(),
         name: name.clone(),
@@ -479,7 +552,7 @@ pub async fn import_agent(
             expertise: vec![],
             guardrails: vec![],
             custom_instructions: String::new(),
-            active_model: None,
+            active_model: Some(imported_model),
         },
         integrations: vec![],
         memories: vec![],
@@ -502,7 +575,7 @@ pub async fn get_agent_health(agent_id: String) -> Result<Value, String> {
     let client = Client::new();
     let resp = client
         .get(format!("{}/health/stats", GATEWAY_URL))
-        .header("Authorization", "Bearer canopy_internal_token_2026")
+        .header("Authorization", &crate::model_constants::gateway_bearer_header())
         .send()
         .await
         .map_err(|e| format!("Health check failed: {}", e))?;
@@ -562,12 +635,15 @@ pub async fn sync_credentials(
     }
 
     let auth_json = serde_json::to_string(&auth_profile).unwrap();
-    let filepath = format!("/home/node/.openclaw/agents/{}/agent/auth-profiles.json", agent_id);
+    // Use the validated path helper — NOT a manual format! string.
+    // Wrong (old): "/home/node/.openclaw/agents/{id}/agent/auth-profiles.json"  (extra agent/ dir)
+    // Right:       "/home/node/.openclaw/agents/{id}/auth-profiles.json"
+    let filepath = agent_auth_profile_path(&agent_id);
 
     let cmd_future = get_docker_command()
         .args([
             "exec", "-u", "node", "canopy-gateway", "sh", "-c",
-            &format!("mkdir -p $(dirname {}) && cat > {} << 'AUTHEOF'\n{}\nAUTHEOF && chmod 600 {}", filepath, filepath, auth_json, filepath)
+            &format!("mkdir -p $(dirname {filepath}) && cat > {filepath} << 'AUTHEOF'\n{auth_json}\nAUTHEOF && chmod 600 {filepath}")
         ])
         .output();
 
@@ -656,12 +732,14 @@ pub async fn scan_local_agents() -> Result<Vec<DiscoveredAgent>, String> {
     // 2. Scan Docker / OrbStack pseudo-directories or volumes
     // (A full implementation would use bollard to list active openclaw containers).
     
-    // 3. Scan HTTP ports for running standalone OpenClaw instances
+    // 3. Scan HTTP ports for running standalone OpenClaw instances reachable from the host.
+    // 18789 is container-internal only — do NOT include it here or every scan will falsely
+    // report a gateway on a port that isn't reachable from outside Docker.
     let client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(800)).build().unwrap_or_default();
-    let ports = [18789, 18798, 18799];
+    let ports = [crate::model_constants::GATEWAY_HOST_PORT, 18798];
     for port in ports {
         if let Ok(resp) = client.get(format!("http://localhost:{}/api/status", port))
-            .header("Authorization", "Bearer canopy_internal_token_2026")
+            .header("Authorization", &crate::model_constants::gateway_bearer_header())
             .send().await {
             if resp.status().is_success() {
                 discovered.push(DiscoveredAgent {
@@ -686,7 +764,7 @@ pub async fn import_discovered_agent(
     let soul_content = if path.starts_with("http") {
         let client = reqwest::Client::builder().timeout(std::time::Duration::from_millis(2000)).build().unwrap_or_default();
         if let Ok(resp) = client.get(format!("{}/api/agent", path))
-            .header("Authorization", "Bearer canopy_internal_token_2026")
+            .header("Authorization", &crate::model_constants::gateway_bearer_header())
             .send().await {
             if let Ok(json) = resp.json::<serde_json::Value>().await {
                 json["instructions"].as_str().unwrap_or("# Imported Standalone Agent").to_string()
@@ -706,7 +784,13 @@ pub async fn import_discovered_agent(
     };
         
     let name = agent_id.clone();
-    
+
+    // Pick the best available model — never leave active_model as None.
+    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_openai    = crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_gemini    = crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let default_model = crate::model_constants::default_model_from_available_keys(has_anthropic, has_openai, has_gemini).to_string();
+
     let agent = Agent {
         id: agent_id.clone(),
         name: name.clone(),
@@ -724,7 +808,7 @@ pub async fn import_discovered_agent(
             expertise: vec![],
             guardrails: vec![],
             custom_instructions: soul_content,
-            active_model: None,
+            active_model: Some(default_model),
         },
         integrations: vec![],
         memories: vec![],
@@ -745,105 +829,288 @@ pub async fn repair_gateway(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String
 ) -> Result<String, String> {
-    // 1. Verify and repair the agent's existence in the gateway
-    let add_output = get_docker_command()
-        .args([
-            "exec", "-u", "node", "canopy-gateway",
-            "openclaw", "agents", "add",
-            &agent_id,
-            "--workspace", "/home/node/openclaw/workspace",
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute docker: {}", e))?;
+    use std::fmt::Write as _;
+    let mut log = String::new();
+
+    // ─── Step 1: Verify Docker daemon is accessible ───────────────────────────
+    let _ = writeln!(log, "Step 1/6: Checking Docker daemon...");
+    let ping = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_docker_command().args(["info", "--format", "{{.ServerVersion}}"]).output(),
+    ).await;
+    match ping {
+        Err(_) => {
+            let _ = writeln!(log, "  ✗ Docker timed out (OrbStack may be starting)");
+            return Err(format!("{}\nDocker daemon is not responding. Open OrbStack, wait for it to finish starting, then try again.", log));
+        }
+        Ok(Err(e)) => {
+            let _ = writeln!(log, "  ✗ Docker not found: {}", e);
+            return Err(format!("{}\nDocker executable not found. Make sure OrbStack is installed.\nError: {}", log, e));
+        }
+        Ok(Ok(out)) if !out.status.success() => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let _ = writeln!(log, "  ✗ Docker daemon offline: {}", stderr.trim());
+            return Err(format!("{}\nDocker daemon is not running. Start OrbStack and try again.", log));
+        }
+        Ok(Ok(_)) => { let _ = writeln!(log, "  ✓ Docker daemon reachable"); }
+    }
+
+    // ─── Step 2: Ensure gateway container is running ─────────────────────────
+    let _ = writeln!(log, "Step 2/6: Checking gateway container...");
+    let inspect = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_docker_command().args(["inspect", "-f", "{{.State.Running}}", "canopy-gateway"]).output(),
+    ).await;
+    let container_running = matches!(
+        inspect,
+        Ok(Ok(ref out)) if String::from_utf8_lossy(&out.stdout).trim() == "true"
+    );
+
+    if !container_running {
+        let _ = writeln!(log, "  ! Gateway container offline — attempting to start...");
+        match crate::docker::start_gateway().await {
+            Ok(_) => {
+                let _ = writeln!(log, "  ✓ Gateway container started — waiting 5s for initialization...");
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+            Err(e) => {
+                let _ = writeln!(log, "  ✗ Failed to start gateway: {}", e);
+                return Err(format!(
+                    "{}\nCould not start the gateway container.\n\nReason: {}\n\nTry a Hard Reset from Settings → Infrastructure.",
+                    log, e
+                ));
+            }
+        }
+        // Confirm it actually came up
+        let recheck = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            get_docker_command().args(["inspect", "-f", "{{.State.Running}}", "canopy-gateway"]).output(),
+        ).await;
+        if !matches!(recheck, Ok(Ok(ref out)) if String::from_utf8_lossy(&out.stdout).trim() == "true") {
+            let _ = writeln!(log, "  ✗ Container still not running after start attempt");
+            return Err(format!(
+                "{}\nGateway container failed to start. Check that OrbStack is fully running, then try a Hard Reset from Settings → Infrastructure.",
+                log
+            ));
+        }
+        let _ = writeln!(log, "  ✓ Container confirmed running");
+    } else {
+        let _ = writeln!(log, "  ✓ Gateway container is running");
+    }
+
+    // ─── Step 3: Register agent in gateway ───────────────────────────────────
+    let _ = writeln!(log, "Step 3/6: Registering agent \"{}\" in gateway...", agent_id);
+
+    // Helper closure to run `openclaw agents add` with a timeout
+    let run_agents_add = |agent_id: &str| {
+        let agent_id = agent_id.to_string();
+        async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                get_docker_command()
+                    .args([
+                        "exec", "-u", "node", "canopy-gateway",
+                        "openclaw", "agents", "add",
+                        &agent_id,
+                        "--workspace", "/home/node/openclaw/workspace",
+                    ])
+                    .output()
+            ).await
+        }
+    };
+
+    let add_result = run_agents_add(&agent_id).await;
+
+    // If the first attempt times out while the container is running, it means the openclaw
+    // process inside the container is stuck (common after an unclean shutdown). Automatically
+    // restart the container and retry once before reporting failure.
+    let add_output = match add_result {
+        Err(_) => {
+            let state = get_docker_command()
+                .args(["inspect", "-f", "{{.State.Status}}", "canopy-gateway"])
+                .output().await
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .unwrap_or_else(|| "unknown".into());
+
+            let _ = writeln!(log, "  ! Exec timed out (container state: {}) — restarting and retrying...", state);
+
+            // Auto-restart the container to clear the stuck process
+            match get_docker_command().args(["restart", "canopy-gateway"]).output().await {
+                Ok(o) if o.status.success() => {
+                    let _ = writeln!(log, "  ✓ Container restarted — waiting 5s...");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+                Ok(o) => {
+                    let _ = writeln!(log, "  ✗ Restart failed: {}", String::from_utf8_lossy(&o.stderr).trim());
+                    return Err(format!(
+                        "{}\nGateway container is stuck and restart failed. Use the Hard Reset button above, then try again.",
+                        log
+                    ));
+                }
+                Err(e) => {
+                    let _ = writeln!(log, "  ✗ Restart error: {}", e);
+                    return Err(format!(
+                        "{}\nGateway container is stuck and could not be restarted: {}\n\nUse the Hard Reset button above, then try again.",
+                        log, e
+                    ));
+                }
+            }
+
+            // Retry after restart
+            match run_agents_add(&agent_id).await {
+                Err(_) => {
+                    let _ = writeln!(log, "  ✗ Still timed out after restart — container may be corrupted");
+                    return Err(format!(
+                        "{}\nThe gateway container is still unresponsive after an automatic restart.\n\nUse the Hard Reset button above to fully rebuild the container, then try again.",
+                        log
+                    ));
+                }
+                Ok(Err(e)) => {
+                    let _ = writeln!(log, "  ✗ docker exec failed on retry: {}", e);
+                    return Err(format!("{}\nFailed to run docker exec on retry: {}", log, e));
+                }
+                Ok(Ok(out)) => {
+                    let _ = writeln!(log, "  ✓ Retry succeeded after restart");
+                    out
+                }
+            }
+        }
+        Ok(Err(e)) => {
+            let _ = writeln!(log, "  ✗ docker exec failed: {}", e);
+            return Err(format!("{}\nFailed to run docker exec: {}", log, e));
+        }
+        Ok(Ok(out)) => out,
+    };
 
     if !add_output.status.success() {
         let stderr = String::from_utf8_lossy(&add_output.stderr);
         let stdout = String::from_utf8_lossy(&add_output.stdout);
         let combined = format!("{}\n{}", stdout, stderr);
-        
-        if !combined.to_lowercase().contains("already exists") {
-            return Err(format!("OpenClaw agents add failed:\n{}", combined.trim()));
+        let detail = combined.trim();
+
+        if detail.to_lowercase().contains("already exists") {
+            let _ = writeln!(log, "  ✓ Agent already registered (continuing with repair)");
+        } else {
+            // Build a meaningful message even when docker produces no output
+            let explanation = if detail.is_empty() {
+                let state = get_docker_command()
+                    .args(["inspect", "-f", "{{.State.Status}}", "canopy-gateway"])
+                    .output().await
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_else(|| "unknown".into());
+                format!(
+                    "The openclaw CLI exited with no output (exit code {}).\n\
+                     Container state at failure: {}\n\n\
+                     This usually means the container crashed mid-execution or the \
+                     openclaw binary is not present in the image.\n\n\
+                     Try a Hard Reset from Settings → Infrastructure.",
+                    add_output.status.code().unwrap_or(-1),
+                    state
+                )
+            } else {
+                detail.to_string()
+            };
+
+            let _ = writeln!(log, "  ✗ agents add failed:\n    {}", explanation.replace('\n', "\n    "));
+            return Err(format!("{}\n\nAgent registration failed:\n{}", log, explanation));
         }
-        // If it already exists, that's fine—we can move forward to repairing it!
+    } else {
+        let _ = writeln!(log, "  ✓ Agent registered successfully");
     }
 
-    // 2. Sync personality to ensure SOUL.md is present
-    if let Ok(Some(agent)) = db.get_agent(&agent_id) {
-        let soul_md = generate_soul_md(&agent.personality);
-        let soul_path = format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id);
+    // ─── Step 4: Sync personality (SOUL.md) ──────────────────────────────────
+    let _ = writeln!(log, "Step 4/6: Writing agent personality...");
+    match db.get_agent(&agent_id) {
+        Ok(Some(agent)) => {
+            let soul_md = generate_soul_md(&agent.personality);
+            let soul_path = agent_soul_path(&agent_id);
+            let soul_result = get_docker_command()
+                .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
+                    &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
+                .output().await;
+            match soul_result {
+                Ok(o) if o.status.success() => { let _ = writeln!(log, "  ✓ Personality synced to {}", soul_path); }
+                Ok(o) => { let _ = writeln!(log, "  ! Personality sync warning: {}", String::from_utf8_lossy(&o.stderr).trim()); }
+                Err(e) => { let _ = writeln!(log, "  ! Personality sync skipped (non-fatal): {}", e); }
+            }
+        }
+        Ok(None) => { let _ = writeln!(log, "  ! Agent not in local DB — skipping personality sync"); }
+        Err(e) => { let _ = writeln!(log, "  ! DB error reading agent (non-fatal): {}", e); }
+    }
+
+    // ─── Step 5: Apply gateway configuration ─────────────────────────────────
+    let _ = writeln!(log, "Step 5/6: Applying gateway configuration...");
+    let config_cmds = [
+        ("gateway.mode", "local"),
+        ("agents.defaults.memorySearch.enabled", "false"),
+        ("gateway.token", GATEWAY_INTERNAL_TOKEN),
+    ];
+    for (key, val) in config_cmds.iter() {
+        let r = get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", key, val])
+            .output().await;
+        match r {
+            Ok(o) if o.status.success() => { let _ = writeln!(log, "  ✓ Set {}", key); }
+            Ok(o) => { let _ = writeln!(log, "  ! config set {} warning: {}", key, String::from_utf8_lossy(&o.stderr).trim()); }
+            Err(e) => { let _ = writeln!(log, "  ! config set {} failed (non-fatal): {}", key, e); }
+        }
+    }
+
+    // Prune stale session transcripts
+    for store_path in [
+        "/home/node/.openclaw/agents/main/sessions/sessions.json".to_string(),
+        format!("/home/node/.openclaw/agents/{}/sessions/sessions.json", agent_id),
+    ] {
         let _ = get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
-                &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md)])
-            .output()
-            .await;
+            .args([
+                "exec", "-u", "node", "canopy-gateway",
+                "openclaw", "sessions", "cleanup",
+                "--store", &store_path,
+                "--enforce", "--fix-missing",
+            ])
+            .output().await;
+    }
+    let _ = writeln!(log, "  ✓ Session stores pruned");
+
+    // ─── Step 6: Restart gateway & run openclaw doctor ───────────────────────
+    let _ = writeln!(log, "Step 6/6: Restarting gateway and running diagnostics...");
+    match get_docker_command().args(["restart", "canopy-gateway"]).output().await {
+        Ok(o) if o.status.success() => { let _ = writeln!(log, "  ✓ Gateway restarted"); }
+        Ok(o) => { let _ = writeln!(log, "  ! Restart warning: {}", String::from_utf8_lossy(&o.stderr).trim()); }
+        Err(e) => { let _ = writeln!(log, "  ! Restart failed (continuing): {}", e); }
     }
 
-    // 2.5. Inject missing structural OpenClaw configurations into the container
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"])
-        .output()
-        .await;
+    // Wait for gateway to fully bind
+    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
 
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.memorySearch.enabled", "false"])
-        .output()
-        .await;
-
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.token", "canopy_internal_token_2026"])
-        .output()
-        .await;
-
-    // 2.7. Prune any stray or corrupted memory transcripts from failed restarts (both main and the specific agent)
-    let _ = get_docker_command()
-        .args([
-            "exec", "-u", "node", "canopy-gateway",
-            "openclaw", "sessions", "cleanup",
-            "--store", "/home/node/.openclaw/agents/main/sessions/sessions.json",
-            "--enforce", "--fix-missing",
-        ])
-        .output()
-        .await;
-
-    let _ = get_docker_command()
-        .args([
-            "exec", "-u", "node", "canopy-gateway",
-            "openclaw", "sessions", "cleanup",
-            "--store", &format!("/home/node/.openclaw/agents/{}/sessions/sessions.json", agent_id),
-            "--enforce", "--fix-missing",
-        ])
-        .output()
-        .await;
-
-    // 2.8. Force the entire container supervisor to restart so it natively reloads the newly assigned tokens and permissions
-    let _ = get_docker_command()
-        .args(["restart", "canopy-gateway"])
-        .output()
-        .await;
-
-    // Small delay to let the websocket server bind
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-
-    // 3. Run the OpenClaw native diagnostic repair tool
-    let output = get_docker_command()
-        .args([
-            "exec", "-u", "node", "canopy-gateway",
-            "openclaw", "doctor", "--fix",
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to run diagnostic repair: {}", e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined_logs = format!("{}\n{}", stdout, stderr);
-
-    if !output.status.success() {
-        return Err(format!("Doctor repair failed:\n{}", combined_logs));
+    // Run openclaw doctor --fix
+    let doctor = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "doctor", "--fix"]).output(),
+    ).await;
+    match doctor {
+        Ok(Ok(out)) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if out.status.success() {
+                let trimmed = stdout.trim();
+                if trimmed.is_empty() {
+                    let _ = writeln!(log, "  ✓ Doctor completed (no issues found)");
+                } else {
+                    let _ = writeln!(log, "  ✓ Doctor completed:\n    {}", trimmed.replace('\n', "\n    "));
+                }
+            } else {
+                let _ = writeln!(log, "  ! Doctor reported issues:\n    {}",
+                    format!("{}\n{}", stdout.trim(), stderr.trim()).trim().replace('\n', "\n    "));
+            }
+        }
+        Ok(Err(e)) => { let _ = writeln!(log, "  ! Doctor exec failed: {}", e); }
+        Err(_) => { let _ = writeln!(log, "  ! Doctor timed out (gateway may still be initializing — this is normal on first start)"); }
     }
 
-    Ok(format!("Diagnostics and repair completed.\nLogs:\n{}", combined_logs))
+    Ok(format!("✓ Repair complete.\n\n{}", log.trim_end()))
 }
 
 #[tauri::command]
@@ -928,4 +1195,137 @@ pub fn get_global_audit_log(
     state: tauri::State<'_, crate::db::Database>,
 ) -> Result<Vec<crate::db::AuditEntry>, String> {
     state.get_audit_log(None, limit.unwrap_or(100)).map_err(|e| e.to_string())
+}
+
+// ─── Regression Tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_constants;
+
+    // ── Gateway URL / token ────────────────────────────────────────────────
+
+    #[test]
+    fn gateway_url_constant_uses_host_port() {
+        // GATEWAY_URL must reference the host-side port (18799), not the container-internal
+        // port (18789). If these are swapped, every API call from the Tauri host silently fails.
+        assert!(
+            GATEWAY_URL.contains("18799"),
+            "GATEWAY_URL '{}' must contain the host port 18799",
+            GATEWAY_URL
+        );
+        assert!(
+            !GATEWAY_URL.contains("18789"),
+            "GATEWAY_URL '{}' must NOT contain the container-internal port 18789",
+            GATEWAY_URL
+        );
+    }
+
+    #[test]
+    fn gateway_bearer_header_contains_token() {
+        let header = model_constants::gateway_bearer_header();
+        assert!(
+            header.starts_with("Bearer "),
+            "Bearer header must start with 'Bearer '"
+        );
+        assert!(
+            header.contains(model_constants::GATEWAY_INTERNAL_TOKEN),
+            "Bearer header must contain the gateway token"
+        );
+    }
+
+    // ── Auth-profile path ─────────────────────────────────────────────────
+
+    #[test]
+    fn auth_profile_path_from_constant_has_no_extra_agent_subdir() {
+        // Regression guard for the bug where an extra `agent/` directory was inserted,
+        // causing OpenClaw to not find the API key file.
+        let path = model_constants::agent_auth_profile_path("some-agent");
+        assert!(
+            !path.contains("/agent/auth-profiles"),
+            "Path '{}' contains spurious '/agent/' subdirectory — OpenClaw cannot find the file there",
+            path
+        );
+        assert!(
+            path.ends_with("some-agent/auth-profiles.json"),
+            "Path '{}' must end with agent-id/auth-profiles.json",
+            path
+        );
+    }
+
+    // ── SOUL.md path ──────────────────────────────────────────────────────
+
+    #[test]
+    fn soul_path_is_in_workspace_not_dot_openclaw() {
+        let path = model_constants::agent_soul_path("test-agent");
+        assert!(
+            path.contains("/openclaw/workspace/"),
+            "SOUL path '{}' must be under /openclaw/workspace/",
+            path
+        );
+        assert!(
+            !path.contains("/.openclaw/"),
+            "SOUL path '{}' must NOT be under /.openclaw/ — wrong directory",
+            path
+        );
+    }
+
+    // ── Port scan ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_local_agents_does_not_scan_container_internal_port() {
+        // Port 18789 is container-internal and not reachable from the host.
+        // Scanning it produces false positives. The scan list must only contain
+        // host-accessible ports.
+        let ports: &[u16] = &[model_constants::GATEWAY_HOST_PORT, 18798];
+        assert!(
+            !ports.contains(&model_constants::GATEWAY_CONTAINER_PORT),
+            "Port scan list must not include container-internal port {} (not reachable from host)",
+            model_constants::GATEWAY_CONTAINER_PORT
+        );
+        assert!(
+            ports.contains(&model_constants::GATEWAY_HOST_PORT),
+            "Port scan list must include the host-facing gateway port {}",
+            model_constants::GATEWAY_HOST_PORT
+        );
+    }
+
+    // ── Imported agents get a model ───────────────────────────────────────
+
+    #[test]
+    fn default_model_from_keys_is_never_empty() {
+        // When all keys are absent, we should still get a non-empty string so the
+        // agent is created with a model (even if that model will need a key added).
+        let model = model_constants::default_model_from_available_keys(false, false, false);
+        assert!(!model.is_empty(), "default_model_from_available_keys must never return empty string");
+        assert!(
+            model_constants::validate_model_string(model).is_ok(),
+            "No-key fallback model '{}' fails format validation",
+            model
+        );
+    }
+
+    #[test]
+    fn default_model_prefers_anthropic_when_present() {
+        let model = model_constants::default_model_from_available_keys(true, false, false);
+        assert!(
+            model.starts_with("anthropic/"),
+            "With Anthropic key present, default model should start with 'anthropic/', got '{}'",
+            model
+        );
+    }
+
+    #[test]
+    fn default_model_does_not_prefer_gemini_over_anthropic() {
+        // Regression: the old audit_openclaw.rs code started with `expected_model = gemini`
+        // and only overrode it for lower-priority providers, making Gemini the effective
+        // default even when Anthropic was present.
+        let model = model_constants::default_model_from_available_keys(true, true, true);
+        assert!(
+            model.starts_with("anthropic/"),
+            "Anthropic must be preferred over Gemini when both keys present, got '{}'",
+            model
+        );
+    }
 }

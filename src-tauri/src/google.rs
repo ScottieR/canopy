@@ -13,16 +13,26 @@ pub struct GoogleTokenResponse {
     pub error: Option<String>,
 }
 
+// OAuth client credentials are safe to embed in desktop app binaries — Google's own
+// documentation states that the "client secret" for desktop/native apps is not truly
+// secret, because anyone can extract it from the binary. The env var override exists
+// for local development only; production builds use these compile-time constants.
+const GOOGLE_OAUTH_CLIENT_ID: &str = "677940720803-9ainnmmjh1ac4aeagq4ln3gll1v2t65f.apps.googleusercontent.com";
+const GOOGLE_OAUTH_CLIENT_SECRET: &str = "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";
+
 /// Start Google OAuth flow by opening the browser and listening for a local redirect
 #[tauri::command]
 pub async fn start_google_oauth(
     scopes: Vec<String>,
+    read_only: Option<bool>,
 ) -> Result<GoogleTokenResponse, String> {
+    // Prefer runtime env var (works during `tauri dev`); fall back to embedded constants
+    // so the flow works in production builds where .env is not loaded at runtime.
     let client_id = std::env::var("GOOGLE_CLIENT_ID")
-        .map_err(|_| "GOOGLE_CLIENT_ID not set. Set it before connecting Workspace APIs.".to_string())?;
-    
+        .unwrap_or_else(|_| GOOGLE_OAUTH_CLIENT_ID.to_string());
     let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
-        .map_err(|_| "GOOGLE_CLIENT_SECRET not set.".to_string())?;
+        .unwrap_or_else(|_| GOOGLE_OAUTH_CLIENT_SECRET.to_string());
+    let read_only = read_only.unwrap_or(false);
 
     // Find available port for redirect listener
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -41,15 +51,21 @@ pub async fn start_google_oauth(
         "https://www.googleapis.com/auth/userinfo.profile".to_string()
     ];
     
-    for scope in scopes {
+    for scope in &scopes {
         if scope == "email" {
             requested_scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
-            requested_scopes.push("https://www.googleapis.com/auth/gmail.send".to_string());
-            requested_scopes.push("https://www.googleapis.com/auth/gmail.modify".to_string());
+            if !read_only {
+                // Only request send/modify for write strategies (YOLO mode)
+                requested_scopes.push("https://www.googleapis.com/auth/gmail.send".to_string());
+                requested_scopes.push("https://www.googleapis.com/auth/gmail.modify".to_string());
+            }
         }
         if scope == "calendar" {
             requested_scopes.push("https://www.googleapis.com/auth/calendar.readonly".to_string());
-            requested_scopes.push("https://www.googleapis.com/auth/calendar.events".to_string());
+            if !read_only {
+                // Only request write access for non-read-only strategies
+                requested_scopes.push("https://www.googleapis.com/auth/calendar.events".to_string());
+            }
         }
     }
 
@@ -138,6 +154,52 @@ pub async fn start_google_oauth(
         .json()
         .await
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
+
+    if let Some(err) = &token_data.error {
+        return Err(format!("Google token exchange error: {}", err));
+    }
+
+    // ── Persist tokens to keychain so re-auth isn't needed after app restart ──
+    // Determine a stable prefix per service so email and calendar tokens don't clobber each other
+    let service_prefix = if scopes.iter().any(|s| s == "email") { "google-email" } else { "google-calendar" };
+
+    if let Some(access_token) = &token_data.access_token {
+        let _ = crate::keychain::store_secret(
+            &format!("{}-access-token", service_prefix),
+            access_token,
+        );
+        // ── Forward token to OpenClaw so the agent can actually use the integration ──
+        let channel_key = if scopes.iter().any(|s| s == "email") { "gmail" } else { "googleCalendar" };
+        let config_pairs: &[(&str, &str)] = &[
+            ("enabled", "true"),
+            ("accessToken", access_token.as_str()),
+            ("clientId", &client_id),
+            ("clientSecret", &client_secret),
+        ];
+        for (field, val) in config_pairs {
+            let key = format!("channels.{}.{}", channel_key, field);
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::openclaw::get_docker_command()
+                    .args(["exec", "canopy-gateway", "openclaw", "config", "set", &key, val])
+                    .output(),
+            ).await;
+        }
+        if let Some(refresh_token) = &token_data.refresh_token {
+            let _ = crate::keychain::store_secret(
+                &format!("{}-refresh-token", service_prefix),
+                refresh_token,
+            );
+            let key = format!("channels.{}.refreshToken", channel_key);
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                crate::openclaw::get_docker_command()
+                    .args(["exec", "canopy-gateway", "openclaw", "config", "set", &key, refresh_token.as_str()])
+                    .output(),
+            ).await;
+        }
+        info!("Google {} tokens saved to keychain and forwarded to OpenClaw gateway", service_prefix);
+    }
 
     Ok(token_data)
 }
