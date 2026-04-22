@@ -4,7 +4,7 @@ import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
 
-export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, baseColor, robeColor, accentColor, role, navPoints }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[] }) {
+export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, agentStatus, baseColor, robeColor, accentColor, role, navPoints }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, agentStatus?: string, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[] }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
   const targetPos = useRef<THREE.Vector3>(new THREE.Vector3().fromArray(position as number[]));
@@ -16,21 +16,37 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
   const clonedScene = useMemo(() => {
     const clone = SkeletonUtils.clone(scene);
     
-    // Unlink and tint the materials dynamically based on agent colors
+    // Unlink materials so multiple agents don't share the same color reference
     clone.traverse((node: any) => {
       if (node.isMesh && node.material) {
         node.material = node.material.clone();
-        
-        // Dynamically colorize the outfit to match the user's role profile!
-        // We override the base material color with the database-driven robe/accent color
-        if (robeColor) {
-           node.material.color.set(robeColor);
-        }
       }
     });
     
     return clone;
-  }, [scene, robeColor]);
+  }, [scene]);
+
+  // Dynamically colorize the outfit in-place so we don't break the animation mixer bindings!
+  useEffect(() => {
+    if (clonedScene && robeColor) {
+      try {
+        clonedScene.traverse((node: any) => {
+          if (node.isMesh && node.material) {
+            if (Array.isArray(node.material)) {
+              node.material.forEach(mat => {
+                if (mat && mat.color) mat.color.set(robeColor);
+              });
+            } else if (node.material.color) {
+              node.material.color.set(robeColor);
+            }
+          }
+        });
+      } catch (e) {
+        console.warn("Could not apply robeColor to mesh:", e);
+      }
+    }
+  }, [clonedScene, robeColor]);
+
 
   // Bind animations to our cloned instance
   const { actions, names } = useAnimations(animations, groupRef);
@@ -47,8 +63,9 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     
     if (action) {
       // Add a randomized starting frame so that multiple lobsters stagger their breathing and animations organically!
-      action.time = Math.random() * action.getClip().duration;
       action.reset().fadeIn(0.5).play();
+      // To ensure desync, jump to a random point in the animation AFTER playing
+      action.getMixer().setTime(Math.random() * action.getClip().duration);
     }
     
     return () => { if (action) action.fadeOut(0.5); };
@@ -95,13 +112,21 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     }
 
     // Glowing orb bob and pulse when working
-    if (orbRef.current && isWorking) {
+    if (orbRef.current && agentStatus && agentStatus !== "offline") {
       const t = clock.getElapsedTime();
       orbRef.current.position.y = 1.3 + Math.sin(t * 3) * 0.1;
-      const pulsingScale = 1 + Math.sin(t * 6) * 0.15;
+      const pulsingScale = agentStatus === "thinking" ? 1 + Math.sin(t * 8) * 0.3 : 1 + Math.sin(t * 6) * 0.15;
       orbRef.current.scale.setScalar(pulsingScale);
     }
   });
+
+  const getStatusColor = () => {
+    if (agentStatus === "active") return "#4A9E96";
+    if (agentStatus === "thinking") return "#8B6AAE";
+    if (agentStatus === "error") return "#E57373";
+    return "#A0AAB5"; // idle
+  };
+  const statusColor = getStatusColor();
 
   return (
     <group position={position as [number,number,number]} scale={scale} ref={groupRef}>
@@ -113,11 +138,11 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
       </React.Suspense>
 
       {/* Floating UI Indicator for Active status */}
-      {isWorking && (
+      {agentStatus && (
         <mesh ref={orbRef} position={[0, 1.3, 0]}>
           <sphereGeometry args={[0.08, 16, 16]} />
-          <meshStandardMaterial color="#88E8D5" emissive="#88E8D5" emissiveIntensity={1.5} toneMapped={false} />
-          <pointLight color="#88E8D5" intensity={0.5} distance={1.5} />
+          <meshStandardMaterial color={statusColor} emissive={statusColor} emissiveIntensity={isWorking ? 1.5 : 0.5} toneMapped={false} />
+          <pointLight color={statusColor} intensity={isWorking ? 0.5 : 0.1} distance={1.5} />
         </mesh>
       )}
     </group>

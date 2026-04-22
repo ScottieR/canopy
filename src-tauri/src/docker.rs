@@ -143,10 +143,6 @@ fn generate_compose_file(data_dir: &PathBuf) -> String {
       interval: 30s
       timeout: 10s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 2G
 
 volumes:
   openclaw-state:
@@ -183,10 +179,6 @@ pub fn generate_isolated_compose(agent_id: &str, data_dir: &PathBuf, host_port: 
       interval: 30s
       timeout: 10s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          memory: 2G
 
 networks:
   isolated-{id}:
@@ -204,6 +196,12 @@ pub fn get_docker_compose_command() -> tokio::process::Command {
         if orb_compose.exists() {
             return tokio::process::Command::new(orb_compose);
         }
+    }
+    if std::path::Path::new("/usr/local/bin/docker-compose").exists() {
+        return tokio::process::Command::new("/usr/local/bin/docker-compose");
+    }
+    if std::path::Path::new("/opt/homebrew/bin/docker-compose").exists() {
+        return tokio::process::Command::new("/opt/homebrew/bin/docker-compose");
     }
     tokio::process::Command::new("docker-compose")
 }

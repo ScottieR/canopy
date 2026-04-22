@@ -23,6 +23,7 @@ pub struct Agent {
     pub personality: AgentPersonality,
     pub capabilities: AgentCapabilities,
     pub integrations: Vec<String>,
+    pub visual_identity: Option<serde_json::Value>,
     pub memories: Vec<AgentMemory>,
     pub created_at: DateTime<Utc>,
     pub stats: AgentStats,

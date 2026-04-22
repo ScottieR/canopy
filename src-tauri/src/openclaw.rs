@@ -11,6 +11,12 @@ pub fn get_docker_command() -> tokio::process::Command {
             return tokio::process::Command::new(orb_docker);
         }
     }
+    if std::path::Path::new("/usr/local/bin/docker").exists() {
+        return tokio::process::Command::new("/usr/local/bin/docker");
+    }
+    if std::path::Path::new("/opt/homebrew/bin/docker").exists() {
+        return tokio::process::Command::new("/opt/homebrew/bin/docker");
+    }
     tokio::process::Command::new("docker")
 }
 
@@ -87,6 +93,7 @@ pub async fn create_agent(
         isolated,
         capabilities: crate::models::AgentCapabilities::default(),
         container_id: None,
+        visual_identity: None,
         personality,
         integrations: vec![],
         memories: vec![],
@@ -217,6 +224,22 @@ pub async fn update_agent_capabilities(
     // In a full implementation, we would relay these network restrictions directly to the Docker container's iptables or the gateway proxy.
     // For now, the Tauri bridge acts as the gateway proxy and evaluates these capabilities from SQLite during any outgoing intercept.
 
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_agent_visuals(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    visual_identity: serde_json::Value,
+) -> Result<(), String> {
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.visual_identity = Some(visual_identity);
+        let _ = db.update_agent(&agent);
+        let _ = db.log_audit(&agent_id, "update_visuals", None, "Agent visual identity updated", None);
+    } else {
+        return Err("Agent not found".to_string());
+    }
     Ok(())
 }
 
@@ -403,6 +426,7 @@ pub async fn import_agent(
         status: AgentStatus::Active,
         isolated: false,
         container_id: None,
+        visual_identity: None,
         personality: AgentPersonality {
             name: name.clone(),
             communication_style: String::new(),
@@ -644,6 +668,7 @@ pub async fn import_discovered_agent(
         isolated: true,
         capabilities: crate::models::AgentCapabilities::default(),
         container_id: None,
+        visual_identity: None,
         personality: AgentPersonality {
             name: name.clone(),
             communication_style: "Imported from local disk".to_string(),

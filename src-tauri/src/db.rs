@@ -105,6 +105,12 @@ impl Database {
             [],
         );
 
+        // Migration: Add visual identity
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN visual_identity_json TEXT NOT NULL DEFAULT '{}'",
+            [],
+        );
+
         // Create conversations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS conversations (
@@ -259,12 +265,14 @@ impl Database {
 
         let memories_json = serde_json::to_string(&agent.memories)
             .unwrap_or_else(|_| "[]".to_string());
+        let vi_json = serde_json::to_string(&agent.visual_identity)
+            .unwrap_or_else(|_| "{}".to_string());
             
         conn.execute(
             "INSERT INTO agents
                 (id, name, role, emoji, color, status, isolated, container_id,
-                 personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                 personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json, visual_identity_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 &agent.id,
                 &agent.name,
@@ -280,6 +288,7 @@ impl Database {
                 agent.created_at.to_rfc3339(),
                 stats_json,
                 memories_json,
+                vi_json,
             ],
         )?;
 
@@ -292,7 +301,7 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json, visual_identity_json
              FROM agents WHERE id = ?1",
         )?;
 
@@ -304,6 +313,7 @@ impl Database {
             let stats_json: String = row.get(12)?;
             let created_at_str: String = row.get(11)?;
             let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
+            let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -322,6 +332,7 @@ impl Database {
                     .unwrap_or_else(|_| chrono::DateTime::default())
                     .with_timezone(&Utc),
                 stats: serde_json::from_str(&stats_json).unwrap_or_default(),
+                visual_identity: serde_json::from_str(&vi_json).ok(),
             })
         }).optional()?;
 
@@ -334,7 +345,7 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json, visual_identity_json
              FROM agents ORDER BY created_at DESC",
         )?;
 
@@ -346,6 +357,7 @@ impl Database {
             let stats_json: String = row.get(12)?;
             let created_at_str: String = row.get(11)?;
             let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
+            let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -364,6 +376,7 @@ impl Database {
                     .unwrap_or_else(|_| chrono::DateTime::default())
                     .with_timezone(&Utc),
                 stats: serde_json::from_str(&stats_json).unwrap_or_default(),
+                visual_identity: serde_json::from_str(&vi_json).ok(),
             })
         })?
             .collect::<SqlResult<Vec<_>>>()?;
@@ -385,14 +398,16 @@ impl Database {
             .unwrap_or_else(|_| "{}".to_string());
         let memories_json = serde_json::to_string(&agent.memories)
             .unwrap_or_else(|_| "[]".to_string());
+        let vi_json = serde_json::to_string(&agent.visual_identity)
+            .unwrap_or_else(|_| "{}".to_string());
         let status_str = status_to_string(&agent.status);
 
         conn.execute(
             "UPDATE agents
              SET name = ?1, role = ?2, emoji = ?3, color = ?4, status = ?5,
                  isolated = ?6, container_id = ?7, personality_json = ?8,
-                 capabilities_json = ?9, integrations_json = ?10, stats_json = ?11, memories_json = ?12
-             WHERE id = ?13",
+                 capabilities_json = ?9, integrations_json = ?10, stats_json = ?11, memories_json = ?12, visual_identity_json = ?13
+             WHERE id = ?14",
             params![
                 &agent.name,
                 &agent.role,
@@ -406,6 +421,7 @@ impl Database {
                 integrations_json,
                 stats_json,
                 memories_json,
+                vi_json,
                 &agent.id,
             ],
         )?;

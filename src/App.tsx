@@ -1,10 +1,10 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, OrthographicCamera } from "@react-three/drei";
+import { OrbitControls, OrthographicCamera, Billboard, Image } from "@react-three/drei";
 import * as THREE from "three";
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { WorldScene } from "./components/World/WorldScene";
+import { WorldScene, TerrariumBase } from "./components/World/WorldScene";
 import RAW_AGENT_TYPE_INFO from "../shared/agents.json";
 import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
@@ -23,6 +23,27 @@ const safeStartGateway = async () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // CANOPY — Monument Valley Isometric World + Architect Agent Detail
 // ═══════════════════════════════════════════════════════════════════════════════
+
+class SafeBillboard extends React.Component<{ url: string, position: [number, number, number] }, { hasError: boolean }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true };
+  }
+  componentDidCatch(error: any, errorInfo: any) {
+    console.warn("Gracefully intercepting broken accessory texture", this.props.url);
+  }
+  render() {
+    if (this.state.hasError) return null;
+    return (
+      <Billboard position={this.props.position}>
+        <Image url={this.props.url} transparent scale={1.0} />
+      </Billboard>
+    );
+  }
+}
 
 function OrganicLobsterBody({ robeMat, headColor }: { robeMat: THREE.Material, headColor: string }) {
   const pts = useMemo(() => {
@@ -942,7 +963,7 @@ function OnboardingWizard() {
     }
 
     const tempId = `temp-${Date.now()}`;
-    
+
     // Inject optimistic agent immediately to dismiss wizard
     const optimisticAgent: AgentData = {
       id: tempId as unknown as number, // Temporary cast
@@ -1007,6 +1028,31 @@ function OnboardingWizard() {
             isolated: false,
           }) as Agent;
 
+          let defaultAccessories: string[] = [];
+          try {
+            const accRes = await fetch('http://localhost:3001/api/accessories');
+            if (accRes.ok) {
+              const catalog = await accRes.json();
+              defaultAccessories = catalog.defaults?.[selectedRole as string] || [];
+            }
+          } catch (e) {
+            console.warn("Could not fetch accessory defaults", e);
+          }
+
+          if (defaultAccessories.length > 0) {
+            try {
+              if (typeof invoke === 'function') {
+                await invoke("update_agent_visuals", {
+                  agentId: newAgentData.id,
+                  visuals: JSON.stringify({ accessories: defaultAccessories })
+                });
+                newAgentData.visual_identity = { accessories: defaultAccessories };
+              }
+            } catch (e) {
+              console.error("Failed to seed default visual identity", e);
+            }
+          }
+
           if (apiKey.trim()) {
             await invoke("store_secret_cmd", {
               key: `agent_${newAgentData.id}_api_key`,
@@ -1044,11 +1090,11 @@ function OnboardingWizard() {
 
           // Successfully setup container. Swap the temp stub out for the permanent database entity
           useWorldStore.setState(state => ({
-            agents: state.agents.map(a => a.id === tempId as unknown as number 
-                ? { ...a, ...newAgentData, id: newAgentData.id, status: "active", currentAction: "idle" } 
-                : a)
+            agents: state.agents.map(a => a.id === tempId as unknown as number
+              ? { ...a, ...newAgentData, id: newAgentData.id, status: "active", currentAction: "idle" }
+              : a)
           }));
-          
+
         } else {
           throw new Error("Tauri invoke not found");
         }
@@ -1056,9 +1102,9 @@ function OnboardingWizard() {
         console.error("Background Agent Deployment Failed:", err);
         // Paint the placeholder red with an error
         useWorldStore.setState(state => ({
-            agents: state.agents.map(a => a.id === tempId as unknown as number 
-                ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" } 
-                : a)
+          agents: state.agents.map(a => a.id === tempId as unknown as number
+            ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" }
+            : a)
         }));
       }
     }, 100);
@@ -1183,7 +1229,7 @@ function OnboardingWizard() {
                 style={{
                   pointerEvents: "auto",
                   padding: "18px 48px", borderRadius: 16, border: "none",
-                  background: "linear-gradient(135deg, #3c6663, #b8e6e2)",
+                  background: "linear-gradient(135deg, #3c6663, #609995)",
                   color: "var(--surface-card)", fontSize: 18, fontWeight: 700, cursor: "pointer",
                   boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
                   transition: "all 0.3s ease",
@@ -2222,7 +2268,7 @@ function OnboardingWizard() {
 
           <button onClick={handleCreateAgent} disabled={isCreatingAgent} style={{
             padding: "16px 40px", borderRadius: 16, border: "none",
-            background: createAgentError ? "#E53E3E" : "linear-gradient(135deg, #3c6663, #b8e6e2)",
+            background: createAgentError ? "#E53E3E" : "linear-gradient(135deg, #3c6663, #609995)",
             color: "var(--surface-card)", fontSize: 16, fontWeight: 600, cursor: isCreatingAgent ? "not-allowed" : "pointer",
             boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
             transition: "all 0.3s ease",
@@ -2801,14 +2847,53 @@ function OverviewTab({ agent }: { agent: AgentData }) {
 
 // ─── 3D Identity Tab ─────────────────────────────────────────────────────────
 
+const PASTEL_COLORS = [
+  "#FFAB91", "#FFD54F", "#FFF59D", "#DCE775", "#AED581", "#81C784",
+  "#4DB6AC", "#4DD0E1", "#4FC3F7", "#64B5F6", "#7986CB", "#9575CD",
+  "#BA68C8", "#F06292", "#E0E0E0", "#BCAAA4"
+];
+
+const HABITATS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+// 150 items
+const ACCESSORIES = Array.from({ length: 6 }, (_, s) =>
+  Array.from({ length: 25 }, (_, i) =>
+    `/accessories/accessories_set_${s + 1}_item_${String(i + 1).padStart(2, '0')}.png`
+  )
+).flat();
+
 function IdentityTab({ agent }: { agent: AgentData }) {
   const { setAgents } = useWorldStore();
+  const [accessorySearch, setAccessorySearch] = useState("");
+  const [stagedVisuals, setStagedVisuals] = useState<Partial<AgentData["visual_identity"]>>(agent.visual_identity || {});
 
-  const updateIdentity = (updates: Partial<AgentData["visual_identity"]>) => {
-    setAgents(useWorldStore.getState().agents.map(a =>
-      a.id === agent.id ? { ...a, visual_identity: { ...a.visual_identity, ...updates } } : a
-    ));
+  useEffect(() => {
+    setStagedVisuals(agent.visual_identity || {});
+  }, [agent.id, agent.visual_identity]);
+
+  const handleUpdateStaged = (updates: Partial<AgentData["visual_identity"]>) => {
+    setStagedVisuals(prev => ({ ...prev, ...updates }));
   };
+
+  const handleSave = async () => {
+    const updatedVi = { ...stagedVisuals };
+    setAgents(useWorldStore.getState().agents.map(a =>
+      a.id === agent.id ? { ...a, color: updatedVi.color || a.color, robeColor: updatedVi.color || a.robeColor, accentColor: updatedVi.color || a.accentColor, visual_identity: updatedVi } : a
+    ));
+    if (typeof invoke === 'function') {
+      try {
+        await invoke("update_agent_visuals", { agentId: agent.id, visualIdentity: updatedVi });
+      } catch (e) {
+        console.error("Failed to save visual identity", e);
+      }
+    }
+  };
+
+  const handleUndo = () => {
+    setStagedVisuals(agent.visual_identity || {});
+  };
+
+  const hasChanges = JSON.stringify(stagedVisuals) !== JSON.stringify(agent.visual_identity || {});
 
   const handleApplyGeneration = (res: GenerativeResult) => {
     setAgents(useWorldStore.getState().agents.map(a =>
@@ -2823,71 +2908,154 @@ function IdentityTab({ agent }: { agent: AgentData }) {
     ));
   };
 
+  const [catalog, setCatalog] = useState<any>(null);
+  useEffect(() => {
+    fetch('http://localhost:3001/api/accessories')
+      .then(r => r.json())
+      .then(d => setCatalog(d))
+      .catch(() => { });
+  }, []);
+
+  const visibleAccessories = React.useMemo(() => {
+    if (!catalog || !catalog.items) return ACCESSORIES;
+    return ACCESSORIES.filter(path => {
+      if (catalog.items[path] && catalog.items[path].isVisible === false) return false;
+      return true;
+    });
+  }, [catalog]);
+
+  const sortedAccessories = useMemo(() => {
+    const copy = [...visibleAccessories];
+    const seed = agent.role.charCodeAt(0) % 6;
+    const suggestions = copy.splice(seed * 25, 5);
+    const combined = [...suggestions, ...copy];
+    if (!accessorySearch) return combined;
+    return combined.filter(a => a.toLowerCase().includes(accessorySearch.toLowerCase()));
+  }, [agent.role, accessorySearch]);
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 32, height: "100%" }}>
-      {/* Left: 3D Dressing Room Areas */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 32, height: "100%", paddingRight: 8 }}>
+      {/* 3D Dressing Room Areas */}
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
         {/* Area 1: Base Lobster & Accessories */}
-        <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 300 }}>
+        <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 400 }}>
           <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
             <ambientLight intensity={0.8} color="#F5E6D8" />
             <directionalLight position={[10, 20, 5]} intensity={1} />
             <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
             <group position={[0, -1, 0]}>
-              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
-                <planeGeometry args={[10, 10]} />
-                <shadowMaterial transparent opacity={0.2} />
-              </mesh>
+              {stagedVisuals?.habitatId ? (
+                <React.Suspense fallback={null}>
+                  <group position={[0, 0, 0]} scale={0.7} rotation={[0, Math.PI / 4, 0]}>
+                    <TerrariumBase habitatId={stagedVisuals.habitatId} />
+                  </group>
+                </React.Suspense>
+              ) : (
+                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
+                  <planeGeometry args={[10, 10]} />
+                  <shadowMaterial transparent opacity={0.2} />
+                </mesh>
+              )}
               <GLBAgent
-                fileUrl={agent.visual_identity?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
-                accessories={agent.visual_identity?.accessories || []}
-                isWorking={agent.status === "thinking" || agent.status === "active"}
+                fileUrl={stagedVisuals?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
+                accessories={stagedVisuals?.accessories || []}
+                agentStatus={agent.status}
                 scale={1.5}
+                robeColor={stagedVisuals?.color || agent.color}
               />
+              {/* Fallback Accessory Stickers for Preview */}
+              <React.Suspense fallback={null}>
+                {(stagedVisuals?.accessories || []).map((path, i) => (
+                  <SafeBillboard 
+                    key={path} 
+                    url={`http://localhost:3001${path}`} 
+                    position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]} 
+                  />
+                ))}
+              </React.Suspense>
             </group>
           </Canvas>
           <div style={{ position: "absolute", top: 16, left: 16, background: "var(--glass-heavy)", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#218380", display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#218380", animation: "pulse 2s infinite" }} />
             Core Agent
           </div>
+          {hasChanges && (
+            <div style={{ position: "absolute", top: 16, right: 16, display: "flex", gap: 8 }}>
+              <button
+                onClick={handleUndo}
+                style={{ background: "rgba(0,0,0,0.05)", border: "none", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "var(--text-sub)", cursor: "pointer", transition: "all 0.2s" }}
+              >
+                Undo
+              </button>
+              <button
+                onClick={handleSave}
+                style={{ background: "#218380", border: "none", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "white", cursor: "pointer", transition: "all 0.2s", boxShadow: "0 4px 12px rgba(33,131,128,0.2)" }}
+              >
+                Save Changes
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Lower row: Standalone Assets */}
-        <div style={{ display: "flex", gap: 16, flex: 1, minHeight: 180 }}>
+        {/* Lower row: Interactive Selectors */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, height: 260 }}>
 
-          {/* Area 2: Standalone Accessories Rack */}
-          <div style={{ flex: 1, background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
-            <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 90 }}>
-              <ambientLight intensity={0.8} />
-              <directionalLight position={[10, 20, 5]} intensity={1} />
-              <OrbitControls autoRotate autoRotateSpeed={2.5} enablePan={false} />
-              {agent.visual_identity?.accessories && agent.visual_identity.accessories.length > 0 ? (
-                <SingleGLB url={agent.visual_identity.accessories[0]} />
-              ) : (
-                <mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial wireframe color="#cccccc" /></mesh>
-              )}
-            </Canvas>
-            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "var(--text-sub)" }}>Component</div>
+          {/* Selector 1: Pastels */}
+          <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>PIGMENTS</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, overflowY: "auto", alignContent: "flex-start", flex: 1, paddingBottom: 16 }}>
+              {PASTEL_COLORS.map(c => (
+                <div key={c}
+                  onClick={() => handleUpdateStaged({ color: c })}
+                  style={{ width: 32, height: 32, borderRadius: "50%", background: c, cursor: "pointer", border: (stagedVisuals?.color || agent.color) === c ? '2px solid var(--text-main)' : '2px solid transparent', transition: "all 0.2s ease" }}
+                />
+              ))}
+            </div>
           </div>
 
-          {/* Area 3: Pedestal Habitat */}
-          <div style={{ flex: 1, background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
-            <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 70 }}>
-              <ambientLight intensity={0.8} />
-              <directionalLight position={[10, 20, 5]} intensity={1} />
-              <OrbitControls autoRotate autoRotateSpeed={1} enablePan={false} />
-              <Pedestal color={agent.color || "#C8D8E8"} />
-            </Canvas>
-            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "var(--text-sub)" }}>Habitat Platform</div>
+          {/* Selector 2: Assets Grid */}
+          <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>ASSETS</span>
+              <input
+                type="text"
+                placeholder="Search..."
+                value={accessorySearch}
+                onChange={e => setAccessorySearch(e.target.value)}
+                style={{ background: "rgba(0,0,0,0.05)", border: "none", borderRadius: 12, padding: "4px 8px", fontSize: 9, width: 60, outline: "none", color: "var(--text-main)" }}
+              />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, overflowY: "auto", flex: 1, paddingRight: 4, paddingBottom: 16 }}>
+              {sortedAccessories.map(acc => {
+                let isActive = stagedVisuals?.accessories?.includes(acc);
+                return (
+                  <img key={acc} src={acc}
+                    onClick={() => {
+                      const current = stagedVisuals?.accessories || [];
+                      handleUpdateStaged({ accessories: isActive ? current.filter(x => x !== acc) : [...current, acc] });
+                    }}
+                    style={{ width: "100%", aspectRatio: "1/1", objectFit: "contain", background: "rgba(0,0,0,0.03)", borderRadius: 8, cursor: "pointer", border: isActive ? '2px solid var(--text-main)' : '2px solid transparent', transition: "all 0.1s ease" }}
+                  />
+                )
+              })}
+            </div>
           </div>
 
+          {/* Selector 3: Habitats */}
+          <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>HABITAT</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, overflowY: "auto", flex: 1, alignContent: "flex-start", paddingRight: 4, paddingBottom: 16 }}>
+              {HABITATS.map(h => (
+                <div key={h}
+                  onClick={() => handleUpdateStaged({ habitatId: h })}
+                  style={{ background: "rgba(0,0,0,0.03)", borderRadius: 12, padding: "16px 4px", textAlign: "center", fontSize: 11, cursor: "pointer", fontWeight: 700, color: stagedVisuals?.habitatId === h ? "var(--text-main)" : "var(--text-sub)", border: stagedVisuals?.habitatId === h ? "2px solid var(--text-main)" : "2px solid rgba(0,0,0,0)", transition: "all 0.1s ease" }}>
+                  Plot {h}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
-      </div>
-
-      {/* Right: Generative Studio */}
-      <div style={{ paddingRight: 8, height: "100%", overflow: "hidden" }}>
-        <GenerativeStudio onApply={handleApplyGeneration} />
       </div>
     </div>
   );
@@ -2895,8 +3063,10 @@ function IdentityTab({ agent }: { agent: AgentData }) {
 
 function PersonalityTab({ agent }: { agent: AgentData }) {
   const initialFullPrompt = agent.personalityPrompt || "";
-  const [base, booksStr] = initialFullPrompt.split("\n\nRecently Read Books: You have recently read the following books and found them very interesting: ");
-  const initialBooks = booksStr ? booksStr.replace(".", "").split(", ").filter(Boolean) : [];
+  const booksMatch = initialFullPrompt.match(/\n\nRecently Read Books: You have recently read the following books and found them very interesting: (.*?)(?=\n\n|$)/);
+  const booksStr = booksMatch ? booksMatch[1] : "";
+  const initialBooks = booksStr ? booksStr.replace(/\.$/, "").split(", ").filter(Boolean) : [];
+  const base = initialFullPrompt.replace(/\n\nRecently Read Books: You have recently read the following books and found them very interesting: .*?(?=\n\n|$)/, "");
 
   const [prompt, setPrompt] = useState(base);
   const [recentlyRead, setRecentlyRead] = useState<string[]>(initialBooks);
@@ -3012,7 +3182,47 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
   };
 
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", paddingRight: 16, overflowY: "auto" }}>
+
+      {/* Top 3D View Hero Area */}
+      <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", height: 260, border: "1px solid rgba(0,0,0,0.06)", flexShrink: 0, marginBottom: 24 }}>
+        <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
+          <ambientLight intensity={0.8} color="#F5E6D8" />
+          <directionalLight position={[10, 20, 5]} intensity={1} />
+          <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
+          <group position={[0, -1, 0]}>
+            {agent.visual_identity?.habitatId ? (
+              <React.Suspense fallback={null}>
+                <group position={[0, 0, 0]} scale={0.7} rotation={[0, Math.PI / 4, 0]}>
+                  <TerrariumBase habitatId={agent.visual_identity.habitatId} />
+                </group>
+              </React.Suspense>
+            ) : (
+              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
+                <planeGeometry args={[10, 10]} />
+                <shadowMaterial transparent opacity={0.2} />
+              </mesh>
+            )}
+            <GLBAgent
+              fileUrl={agent.visual_identity?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
+              accessories={agent.visual_identity?.accessories || []}
+              agentStatus={agent.status}
+              scale={1.5}
+              robeColor={agent.visual_identity?.color || agent.color}
+            />
+            {/* Fallback Accessory Stickers for Preview */}
+            <React.Suspense fallback={null}>
+              {(agent.visual_identity?.accessories || []).map((path, i) => (
+                <SafeBillboard 
+                  key={path} 
+                  url={`http://localhost:3001${path}`} 
+                  position={[(i - ((agent.visual_identity?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]} 
+                />
+              ))}
+            </React.Suspense>
+          </group>
+        </Canvas>
+      </div>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Neural Path</h1>
       <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28 }}>Shape how {agent.name} thinks, acts, and appears.</p>
 
@@ -3679,7 +3889,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
               <div style={{
                 maxWidth: "70%", padding: "12px 16px", borderRadius: 14,
                 background: msg.sender === "user"
-                  ? "linear-gradient(135deg, #3c6663, #b8e6e2)"
+                  ? "linear-gradient(135deg, #3c6663, #609995)"
                   : "var(--glass-light)",
                 color: msg.sender === "user" ? "var(--surface-card)" : "var(--text-main)",
                 fontSize: 13, lineHeight: 1.5,
@@ -3877,6 +4087,7 @@ function TopNav() {
 function CanopyView() {
   const agents = useWorldStore(s => s.agents);
   const selectedAgent = useWorldStore(s => s.selectedAgent);
+  const hoveredAgent = useWorldStore(s => s.hoveredAgent);
   const { setSelectedAgent, setActiveView } = useWorldStore();
   const theme = useWorldStore(s => s.theme);
 
@@ -3892,32 +4103,38 @@ function CanopyView() {
         onCreated={({ gl }) => { gl.toneMapping = THREE.LinearToneMapping; gl.toneMappingExposure = 1.0; }}
       >
         <OrthographicCamera makeDefault position={[10, 10, 10]} zoom={65} near={0.1} far={100} />
-        <OrbitControls enablePan={true} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping minZoom={50} maxZoom={650} />
+        <OrbitControls enablePan={true} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping minZoom={150} maxZoom={650} />
         <CanopyScene />
       </Canvas>
 
       {/* Agent roster overlay */}
       <div style={{ position: "absolute", top: 68, left: 20, zIndex: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-        {agents.map(a => (
-          <div key={a.id} onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); }} style={{
-            ...glass(selectedAgent === a.id ? 0.7 : 0.45),
-            padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-            borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
-          }}>
-            <div style={{ width: 24, height: 24, position: "relative" }}>
-              <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
-              <div style={{
-                position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
-                background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
-                border: "2px solid white",
-              }} />
+        {agents.map(a => {
+          const isHovered = hoveredAgent === a.id;
+          return (
+            <div key={a.id} onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); }} style={{
+              ...glass(selectedAgent === a.id ? 0.7 : 0.45),
+              padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+              borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
+              transform: isHovered ? "translateX(4px)" : "none",
+              border: isHovered ? "1px solid #4A9E96" : "1px solid transparent",
+              boxShadow: isHovered ? "0 4px 12px rgba(74, 158, 150, 0.2)" : "none",
+            }}>
+              <div style={{ width: 24, height: 24, position: "relative" }}>
+                <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
+                <div style={{
+                  position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
+                  background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
+                  border: "2px solid white",
+                }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
+                <div style={{ fontSize: 10, color: "var(--text-sub)", textTransform: "capitalize" }}>{a.status === "error" ? "Offline" : a.currentAction}</div>
+              </div>
             </div>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)", textTransform: "capitalize" }}>{a.status === "error" ? "Offline" : a.currentAction}</div>
-            </div>
-          </div>
-        ))}
+          )
+        })}
 
         {/* Add Agent Button */}
         <div onClick={() => setActiveView("onboarding")} style={{

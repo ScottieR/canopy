@@ -90,6 +90,7 @@ pub fn run() {
             openclaw::list_agents,
             openclaw::get_agent,
             openclaw::update_agent_personality,
+            openclaw::update_agent_visuals,
             openclaw::update_agent_capabilities,
             openclaw::update_agent_integrations,
             openclaw::update_agent_memories,
