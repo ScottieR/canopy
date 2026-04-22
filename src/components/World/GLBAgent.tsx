@@ -4,6 +4,9 @@ import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
 
+// Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous
+let globalAnimationStagger = 0;
+
 export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, agentStatus, baseColor, robeColor, accentColor, role, navPoints }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, agentStatus?: string, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[] }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
@@ -62,10 +65,12 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     const action = actions[activeActionName];
     
     if (action) {
-      // Add a randomized starting frame so that multiple lobsters stagger their breathing and animations organically!
+      // Advance our global phase clock by 100ms for each spawned agent
+      globalAnimationStagger += 0.1;
+      
       action.reset().fadeIn(0.5).play();
-      // To ensure desync, jump to a random point in the animation AFTER playing
-      action.getMixer().setTime(Math.random() * action.getClip().duration);
+      // To ensure perfectly dispersed desync, we assign the local playhead time directly rather than hitting the global mixer
+      action.time = globalAnimationStagger % action.getClip().duration;
     }
     
     return () => { if (action) action.fadeOut(0.5); };
@@ -84,13 +89,22 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     // 2. Roaming Logic: Periodically pick a new safe topological node to wander towards
     if (!navPoints || navPoints.length === 0) return;
     
-    // They will pick a new valid node to settle down on every 15 minutes
-    const interval = setInterval(() => {
+    let timeoutId: ReturnType<typeof setTimeout>;
+    
+    const scheduleNextMove = () => {
+      // Pick a random interval between 20 seconds and 60 seconds (1 minute)
+      const delay = 20000 + Math.random() * 40000;
+      
+      timeoutId = setTimeout(() => {
         const newPoint = navPoints[Math.floor(Math.random() * navPoints.length)];
         targetPos.current.copy(newPoint);
-    }, 15 * 60 * 1000); 
+        scheduleNextMove();
+      }, delay);
+    };
+
+    scheduleNextMove();
     
-    return () => clearInterval(interval);
+    return () => clearTimeout(timeoutId);
   }, [navPoints]);
 
   useFrame(({ clock }, delta) => {
@@ -114,7 +128,7 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     // Glowing orb bob and pulse when working
     if (orbRef.current && agentStatus && agentStatus !== "offline") {
       const t = clock.getElapsedTime();
-      orbRef.current.position.y = 1.3 + Math.sin(t * 3) * 0.1;
+      orbRef.current.position.y = 2.2 + Math.sin(t * 3) * 0.1;
       const pulsingScale = agentStatus === "thinking" ? 1 + Math.sin(t * 8) * 0.3 : 1 + Math.sin(t * 6) * 0.15;
       orbRef.current.scale.setScalar(pulsingScale);
     }
@@ -139,10 +153,10 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
 
       {/* Floating UI Indicator for Active status */}
       {agentStatus && (
-        <mesh ref={orbRef} position={[0, 1.3, 0]}>
+        <mesh ref={orbRef} position={[0, 2.2, 0]}>
           <sphereGeometry args={[0.08, 16, 16]} />
           <meshStandardMaterial color={statusColor} emissive={statusColor} emissiveIntensity={isWorking ? 1.5 : 0.5} toneMapped={false} />
-          <pointLight color={statusColor} intensity={isWorking ? 0.5 : 0.1} distance={1.5} />
+          <pointLight color={statusColor} intensity={isWorking ? 0.5 : 0.1} distance={2.5} />
         </mesh>
       )}
     </group>

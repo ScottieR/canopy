@@ -27,6 +27,7 @@ pub fn get_docker_command() -> tokio::process::Command {
 
 #[tauri::command]
 pub async fn create_agent(
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, crate::db::Database>,
     name: String,
     role: String,
@@ -40,6 +41,13 @@ pub async fn create_agent(
     let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"]).output().await;
     let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.memorySearch.enabled", "false"]).output().await;
     let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.token", "canopy_internal_token_2026"]).output().await;
+
+    // Fix models before creating to avoid FailoverError
+    if let Some(ref model) = personality.active_model {
+        let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.model", model]).output().await;
+    } else {
+        let _ = crate::audit_openclaw::repair_openclaw_config(app_handle.clone(), None).await;
+    }
 
     // Step 1: Create agent via OpenClaw CLI (inside the container)
     let output = get_docker_command()
