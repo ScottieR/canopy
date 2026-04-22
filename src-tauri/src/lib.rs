@@ -86,6 +86,7 @@ pub fn run() {
             docker::get_container_status,
             docker::start_gateway,
             docker::stop_gateway,
+            docker::hard_reset_infrastructure,
             // OpenClaw agent CRUD
             openclaw::create_agent,
             openclaw::list_agents,

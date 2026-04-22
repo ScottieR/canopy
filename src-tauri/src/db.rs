@@ -205,6 +205,19 @@ impl Database {
             [],
         )?;
 
+        // Create provider_models table for dynamic synchronization
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS provider_models (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                name TEXT NOT NULL,
+                capabilities_json TEXT NOT NULL,
+                recommended BOOLEAN NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         // Create indexes for common queries
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)", [])?;
@@ -431,10 +444,21 @@ impl Database {
 
     /// Delete an agent
     pub fn delete_agent(&self, id: &str) -> SqlResult<()> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
 
-        conn.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
+        // Clean up all child relational tables to avoid FOREIGN KEY constraints
+        tx.execute("DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id = ?1)", params![id])?;
+        tx.execute("DELETE FROM conversations WHERE agent_id = ?1", params![id])?;
+        tx.execute("DELETE FROM bridges WHERE agent_id = ?1", params![id])?;
+        tx.execute("DELETE FROM budgets WHERE agent_id = ?1", params![id])?;
+        tx.execute("DELETE FROM purchase_history WHERE agent_id = ?1", params![id])?;
+        tx.execute("DELETE FROM audit_log WHERE agent_id = ?1", params![id])?;
+        
+        // Finally delete the main agent record
+        tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
 
+        tx.commit()?;
         Ok(())
     }
 
@@ -991,6 +1015,60 @@ impl Database {
         conn.execute("DELETE FROM conversations", [])?;
         conn.execute("DELETE FROM agents", [])?;
 
+        Ok(())
+    }
+
+    // ─── Provider Models Operations ──────────────────────────────────────────
+
+    pub fn insert_provider_models(&self, models: Vec<ProviderModel>) -> SqlResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        // To keep logic simple, we can upsert
+        for m in models {
+            let caps_json = serde_json::to_string(&m.capabilities).unwrap_or_else(|_| "[]".to_string());
+            tx.execute(
+                "INSERT INTO provider_models (id, provider, name, capabilities_json, recommended, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(id) DO UPDATE SET 
+                    name = excluded.name,
+                    capabilities_json = excluded.capabilities_json,
+                    recommended = CASE WHEN recommended = 1 THEN excluded.recommended ELSE recommended END",
+                params![&m.id, &m.provider, &m.name, &caps_json, &m.recommended, m.created_at.to_rfc3339()],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn get_provider_models(&self) -> SqlResult<Vec<ProviderModel>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, provider, name, capabilities_json, recommended, created_at FROM provider_models ORDER BY provider ASC, id DESC"
+        )?;
+
+        let models = stmt.query_map([], |row| {
+            let caps_json: String = row.get(3)?;
+            let created_at_str: String = row.get(5)?;
+            Ok(ProviderModel {
+                id: row.get(0)?,
+                provider: row.get(1)?,
+                name: row.get(2)?,
+                capabilities: serde_json::from_str(&caps_json).unwrap_or_default(),
+                recommended: row.get(4)?,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                    .unwrap_or_else(|_| chrono::DateTime::default())
+                    .with_timezone(&Utc),
+            })
+        })?.collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(models)
+    }
+
+    pub fn remove_provider_model(&self, id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM provider_models WHERE id = ?1", params![id])?;
         Ok(())
     }
 }

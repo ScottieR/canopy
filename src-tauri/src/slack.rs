@@ -548,7 +548,7 @@ pub async fn start_slack_listener() -> Result<String, String> {
     if app_token.trim().is_empty() { return Err("Slack App Token is blank".to_string()); }
     if bot_token.trim().is_empty() { return Err("Slack Bot Token is blank".to_string()); }
 
-    let output = crate::openclaw::get_docker_command()
+    let cmd_future = crate::openclaw::get_docker_command()
         .args([
             "exec", "-u", "node", "canopy-gateway",
             "openclaw", "channels", "add",
@@ -556,15 +556,20 @@ pub async fn start_slack_listener() -> Result<String, String> {
             "--bot-token", bot_token.trim(),
             "--app-token", app_token.trim()
         ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to initiate OpenClaw Slack bridge: {}", e))?;
+        .output();
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(10), cmd_future).await {
+        Ok(res) => res.map_err(|e| format!("Failed to initiate OpenClaw Slack bridge: {}", e))?,
+        Err(_) => return Err("Slack bridge initiation timed out. Is the gateway running?".into()),
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
-        if combined.is_empty() {
+        if combined.contains("cannot exec in a stopped container") {
+            combined = "Gateway container is stopped. Please start infrastructure first.".to_string();
+        } else if combined.is_empty() {
             combined = format!("Container crashed silently natively with exit code: {}", output.status);
         }
         error!("OpenClaw channels native error: {}", combined);
@@ -578,15 +583,18 @@ pub async fn start_slack_listener() -> Result<String, String> {
 /// Stop listening for Slack events
 #[tauri::command]
 pub async fn stop_slack_listener() -> Result<(), String> {
-    let output = crate::openclaw::get_docker_command()
+    let cmd_future = crate::openclaw::get_docker_command()
         .args([
             "exec", "-u", "node", "canopy-gateway",
             "openclaw", "channels", "remove",
             "--channel", "slack"
         ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to remove OpenClaw Slack bridge: {}", e))?;
+        .output();
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(10), cmd_future).await {
+        Ok(res) => res.map_err(|e| format!("Failed to remove OpenClaw Slack bridge: {}", e))?,
+        Err(_) => return Err("Slack bridge removal timed out.".into()),
+    };
         
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

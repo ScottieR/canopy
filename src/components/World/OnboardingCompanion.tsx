@@ -36,7 +36,7 @@ export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animation
 
       // The 0.6s fast run looping cycle is incorrectly named "Long_Breathe..." internally.
       if (/\brun/.test(lowerState) || lowerState.includes("walk")) {
-        const swappedAnim = names.find(n => n === "Long_Breathe_and_Look_Around");
+        const swappedAnim = names.find(n => n === "Walking");
         if (swappedAnim) return swappedAnim;
       }
 

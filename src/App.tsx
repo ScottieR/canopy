@@ -170,6 +170,9 @@ interface AgentData extends Agent {
   visual_identity: {
     baseModelUrl: string | null;
     accessories: string[];
+    habitatId?: number;
+    color?: string;
+    habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; };
   };
 }
 
@@ -2126,7 +2129,7 @@ function OnboardingWizard() {
                     setTestStatus("error");
                   }
                 }} style={{
-                  padding: "12px 24px", borderRadius: 12, border: "none", background: "var(--surface-card)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, margin: "0 auto", border: "1px solid rgba(0,0,0,0.1)", boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
+                  padding: "12px 24px", borderRadius: 12, background: "var(--surface-card)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, margin: "0 auto", border: "1px solid rgba(0,0,0,0.1)", boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
                 }}>
                   <svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
                   Connect {enabledPlugins[testPluginIndex] === "email" ? "Gmail" : "Google Calendar"}
@@ -2300,7 +2303,89 @@ function ArchitectView({ agent }: { agent: AgentData }) {
   const [diagErrors, setDiagErrors] = useState<string[]>([]);
   const [diagSuccess, setDiagSuccess] = useState<string>("");
   const [openclawStatusOutput, setOpenclawStatusOutput] = useState<string>("");
+  const [showDiagnosticsPane, setShowDiagnosticsPane] = useState(false);
   const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
+  const [isHealing, setIsHealing] = useState(false);
+
+  useEffect(() => {
+    // Reset Diagnostic UI states when selecting a different agent
+    setDiagErrors([]);
+    setDiagSuccess("");
+    setOpenclawStatusOutput("");
+    setShowDiagnosticsPane(false);
+  }, [agent.id]);
+
+  const runDiagnostics = async () => {
+    const btn = document.getElementById('diag-btn-text');
+    if (btn) btn.innerText = "Running Diagnostics...";
+    setOpenclawStatusOutput("");
+    setShowDiagnosticsPane(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
+      const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
+      const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
+      const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
+
+      await invoke("sync_credentials", {
+        agentId: agent.id, keys: {
+          "ANTHROPIC_API_KEY": String(anthropic || ""),
+          "OPENAI_API_KEY": String(openai || ""),
+          "GEMINI_API_KEY": String(gemini || ""),
+          "XAI_API_KEY": String(xai || "")
+        }
+      }).catch((err) => console.error("Sync credentials failed:", err));
+
+      const res: any = await invoke("audit_openclaw_config");
+      const statusStr: any = await invoke("get_openclaw_status").catch(() => "");
+
+      if (statusStr) {
+        setOpenclawStatusOutput(statusStr);
+      }
+
+      if (res && (!res.is_aligned || res.missing_keys.length > 0)) {
+        const errors = [];
+        if (res.missing_keys && res.missing_keys.length > 0) {
+          errors.push(`Missing API Keys for: ${res.missing_keys.join(', ')}. Please configure them in setup.`);
+        }
+        if (res.active_default_model !== res.expected_model) {
+          errors.push(`Model Mismatch: OpenClaw fallback model is stuck on ${res.active_default_model} but it should be ${res.expected_model} based on your active API keys.`);
+        }
+        if (res.port_mismatch) {
+          errors.push("Port configuration mismatch detected on gateway proxy.");
+        }
+        if (!res.container_running) {
+          errors.push("The OpenClaw gateway container is entirely offline. Ensure Docker is running.");
+        }
+        setDiagErrors(errors);
+        setDiagSuccess("");
+        if (btn) btn.innerText = "Errors Found";
+      } else if (statusStr && statusStr.toLowerCase().includes("error")) {
+        setDiagErrors(["OpenClaw Status check reported trailing service errors. Please view the diagnostic logs below!"]);
+        setDiagSuccess("");
+        if (btn) btn.innerText = "Check Logs";
+      } else {
+        setDiagErrors([]);
+        setDiagSuccess("Systems Healthy & Aligned!");
+        if (btn) btn.innerText = "System Healthy";
+      }
+    } catch (e) {
+      const errStr = String(e);
+      if (errStr.includes("Timeout") || errStr.includes("hanging")) {
+        setIsHealing(true);
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke("hard_reset_infrastructure").catch(ex => console.error("Healing failed:", ex));
+        setIsHealing(false);
+        // Gently notify them to try again if it didn't auto-resolve gracefully
+        setDiagErrors(["Infrastructure was cleanly rebooted. Please try running diagnostics again."]);
+        if (btn) btn.innerText = "Diagnostics";
+        return;
+      }
+      if (btn) btn.innerText = "Diagnostic Failed";
+      setDiagErrors(["Critical Failure: " + errStr]);
+    }
+    setTimeout(() => { if (btn) btn.innerText = "Diagnostics"; }, 3000);
+  };
 
   const tabs = [
     { id: "overview", label: "Overview", icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
@@ -2318,7 +2403,29 @@ function ArchitectView({ agent }: { agent: AgentData }) {
   );
 
   return (
-    <div style={{ display: "flex", flex: 1, minHeight: 0, fontFamily: "'Manrope', system-ui, sans-serif" }}>
+    <div style={{ display: "flex", flex: 1, minHeight: 0, fontFamily: "'Manrope', system-ui, sans-serif", position: "relative" }}>
+      {isHealing && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 999, background: "rgba(255,255,255,0.85)",
+          backdropFilter: "blur(12px)", display: "flex", alignItems: "center", justifyContent: "center"
+        }}>
+          <div style={{
+            background: "var(--surface-card)", padding: 40, borderRadius: 24,
+            boxShadow: "0 24px 48px rgba(0,0,0,0.1)", textAlign: "center", maxWidth: 420,
+            border: "1px solid rgba(0,0,0,0.08)"
+          }}>
+            <div style={{ marginBottom: 24, display: "flex", justifyContent: "center" }}>
+              <div style={{ width: 48, height: 48, borderRadius: "50%", background: "rgba(33,131,128,0.1)", display: "flex", alignItems: "center", justifyContent: "center", animation: "pulse 2s infinite" }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#218380" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>
+              </div>
+            </div>
+            <h2 style={{ fontSize: 22, fontWeight: 700, color: "var(--text-main)", marginBottom: 16 }}>Auto-Healing Engine...</h2>
+            <p style={{ fontSize: 15, color: "var(--text-sub)", lineHeight: 1.6 }}>
+              It looks like your underlying agent infrastructure got overloaded. We are safely flushing the environment buffers and waking the engines back up. This usually takes just a few seconds.
+            </p>
+          </div>
+        </div>
+      )}
       {/* ── Left Sidebar ── */}
       <div style={{
         width: 240, padding: "24px 16px", display: "flex", flexDirection: "column", gap: 4,
@@ -2343,7 +2450,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
               }} />
             </div>
             <div style={{ position: "relative" }}>
-              <div 
+              <div
                 onClick={() => setIsAgentMenuOpen(!isAgentMenuOpen)}
                 style={{ display: "flex", alignItems: "center", cursor: "pointer", gap: 6 }}
               >
@@ -2357,9 +2464,9 @@ function ArchitectView({ agent }: { agent: AgentData }) {
               {/* Custom Dropdown Menu */}
               {isAgentMenuOpen && (
                 <>
-                  <div 
-                    onClick={() => setIsAgentMenuOpen(false)} 
-                    style={{ position: "fixed", inset: 0, zIndex: 99 }} 
+                  <div
+                    onClick={() => setIsAgentMenuOpen(false)}
+                    style={{ position: "fixed", inset: 0, zIndex: 99 }}
                   />
                   <div style={{
                     position: "absolute", top: 38, left: 0, width: 220, background: "var(--surface-card)",
@@ -2408,7 +2515,10 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 
         {/* Nav tabs */}
         {tabs.map(tab => (
-          <button key={tab.id} onClick={() => setArchitectTab(tab.id)} style={{
+          <button key={tab.id} onClick={() => {
+            setArchitectTab(tab.id);
+            setShowDiagnosticsPane(false);
+          }} style={{
             display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
             border: "none", borderRadius: 10, cursor: "pointer", fontSize: 13,
             fontWeight: architectTab === tab.id ? 600 : 400,
@@ -2462,7 +2572,8 @@ function ArchitectView({ agent }: { agent: AgentData }) {
               </button>
               <button
                 onClick={async () => {
-                  const isConfirmed = window.confirm(`Are you absolutely sure you want to permanently delete ${agent.name}? This cannot be undone.`);
+                  const { confirm } = await import('@tauri-apps/plugin-dialog');
+                  const isConfirmed = await confirm(`Are you absolutely sure you want to permanently delete ${agent.name}? This cannot be undone.`, { title: "Delete Agent", kind: "warning" });
                   if (!isConfirmed) return;
                   try {
                     const { invoke } = await import('@tauri-apps/api/core');
@@ -2481,94 +2592,13 @@ function ArchitectView({ agent }: { agent: AgentData }) {
           )}
         </div>
 
-        {diagErrors.length > 0 && (
-          <div style={{ marginTop: 12, padding: "12px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 11, border: "1px solid #FCA5A5" }}>
-            <span style={{ fontWeight: 700, display: "block", marginBottom: 4 }}>Diagnostics Failed:</span>
-            <ul style={{ margin: 0, paddingLeft: 16 }}>
-              {diagErrors.map((err, i) => <li key={i}>{err}</li>)}
-            </ul>
-            <div style={{ marginTop: 8 }}>
-              <button 
-                onClick={() => setActiveView("diagnostics" as any)} 
-                style={{ background: "#B91C1C", color: "white", padding: "4px 8px", borderRadius: 4, border: "none", fontSize: 10, cursor: "pointer", fontWeight: 600 }}>
-                Launch Auto-Repair
-              </button>
-            </div>
-          </div>
-        )}
-        {diagSuccess && (
-          <div style={{ marginTop: 12, padding: "8px 12px", background: "#F0FDF4", color: "#15803D", borderRadius: 8, fontSize: 11, border: "1px solid #BBF7D0", fontWeight: 600 }}>
-            <SvgIcon size={12}><path d="M5 13l4 4L19 7" /></SvgIcon> {diagSuccess}
-          </div>
-        )}
-
-        {openclawStatusOutput && (
-          <div style={{ marginTop: 12, padding: "8px", background: "var(--glass-light)", borderRadius: 8, fontSize: 9, border: "1px solid rgba(0,0,0,0.1)", maxHeight: 150, overflowY: "auto", fontFamily: "monospace", color: "var(--text-sub)", whiteSpace: "pre-wrap" }}>
-            <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-main)" }}>OpenClaw System Status</div>
-            {openclawStatusOutput}
-          </div>
-        )}
-
         <button
-          onClick={async () => {
-            const btn = document.getElementById('diag-btn-text');
-            if (btn) btn.innerText = "Running Diagnostics...";
-            setOpenclawStatusOutput("");
-            try {
-              if (typeof invoke === 'function') {
-                const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
-                const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
-                const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
-                const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
-
-                await invoke("sync_credentials", {
-                  agentId: agent.id, keys: {
-                    "ANTHROPIC_API_KEY": String(anthropic || ""),
-                    "OPENAI_API_KEY": String(openai || ""),
-                    "GEMINI_API_KEY": String(gemini || ""),
-                    "XAI_API_KEY": String(xai || "")
-                  }
-                }).catch((err) => console.error("Sync credentials failed:", err));
-
-                const res: any = await invoke("audit_openclaw_config");
-                const statusStr = await invoke<string>("get_openclaw_status").catch(() => "");
-                
-                if (statusStr) {
-                  setOpenclawStatusOutput(statusStr);
-                }
-
-                if (res && (!res.is_aligned || res.missing_keys.length > 0)) {
-                   const errors = [];
-                   if (res.missing_keys && res.missing_keys.length > 0) {
-                      errors.push(`Missing API Keys for: ${res.missing_keys.join(', ')}. Please configure them in setup.`);
-                   }
-                   if (res.active_default_model !== res.expected_model) {
-                      errors.push(`Model Mismatch: OpenClaw fallback model is stuck on ${res.active_default_model} but it should be ${res.expected_model} based on your active API keys.`);
-                   }
-                   if (res.port_mismatch) {
-                      errors.push("Port configuration mismatch detected on gateway proxy.");
-                   }
-                   if (!res.container_running) {
-                      errors.push("The OpenClaw gateway container is entirely offline. Ensure Docker is running.");
-                   }
-                   setDiagErrors(errors);
-                   setDiagSuccess("");
-                   if (btn) btn.innerText = "Errors Found";
-                } else if (statusStr && statusStr.toLowerCase().includes("error")) {
-                   setDiagErrors(["OpenClaw Status check reported trailing service errors. Please view the diagnostic logs below!"]);
-                   setDiagSuccess("");
-                   if (btn) btn.innerText = "Check Logs";
-                } else {
-                   setDiagErrors([]);
-                   setDiagSuccess("Systems Healthy & Aligned!");
-                   if (btn) btn.innerText = "System Healthy";
-                }
-              }
-            } catch (e) {
-              if (btn) btn.innerText = "Diagnostic Failed";
-              setDiagErrors(["Critical Failure: " + String(e)]);
+          onClick={() => {
+            if (diagErrors.length > 0 || diagSuccess || openclawStatusOutput) {
+              setShowDiagnosticsPane(true);
+            } else {
+              runDiagnostics();
             }
-            setTimeout(() => { if (btn) btn.innerText = "Run Diagnostics"; }, 3000);
           }}
           style={{
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
@@ -2577,7 +2607,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
             fontWeight: 600, marginTop: 4, transition: "all 0.2s ease"
           }}>
           <SvgIcon size={14}><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><circle cx="12" cy="12" r="3"></circle></SvgIcon>
-          <span id="diag-btn-text">Run Diagnostics</span>
+          <span id="diag-btn-text">Diagnostics</span>
         </button>
 
         <button onClick={() => setActiveView("canopy")} style={{
@@ -2592,16 +2622,99 @@ function ArchitectView({ agent }: { agent: AgentData }) {
       </div>
 
       {/* ── Main Content ── */}
-      <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}>
-        {architectTab === "overview" && <OverviewTab agent={agent} />}
-        {architectTab === "identity" && <IdentityTab agent={agent} />}
-        {architectTab === "personality" && <PersonalityTab agent={agent} />}
-        {architectTab === "permissions" && <PermissionsTab agent={agent} />}
-        {architectTab === "connections" && <ConnectionsTab agent={agent} />}
-        {architectTab === "memory" && <MemoryTab agent={agent} />}
-        {architectTab === "spend" && <SpendTab agent={agent} />}
-        {architectTab === "chat" && <ChatTab agent={agent} />}
-      </div>
+      {showDiagnosticsPane ? (
+        <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column", position: "relative", background: "var(--surface-base)" }}>
+          <button
+            onClick={() => setShowDiagnosticsPane(false)}
+            style={{ position: "absolute", top: 24, right: 32, background: "none", border: "none", cursor: "pointer", color: "var(--text-sub)", padding: 8, display: "flex", alignItems: "center", justifyContent: "center" }}
+          >
+            <SvgIcon size={24}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></SvgIcon>
+          </button>
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingRight: 32 }}>
+            <h1 style={{ fontSize: 24, fontWeight: 800, color: "var(--text-main)", margin: 0 }}>System Diagnostics</h1>
+            {openclawStatusOutput && (
+              <button
+                onClick={runDiagnostics}
+                style={{ background: "#218380", color: "white", padding: "6px 12px", borderRadius: 6, border: "none", fontSize: 12, cursor: "pointer", fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}
+              >
+                <SvgIcon size={14}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></SvgIcon>
+                Re-run Audit
+              </button>
+            )}
+          </div>
+          <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24 }}>Real-time audit of your OpenClaw agent status</p>
+
+          {!openclawStatusOutput && diagErrors.length === 0 && !diagSuccess && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: "40px 0", color: "var(--text-sub)" }}>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", border: "3px solid rgba(0,0,0,0.1)", borderTopColor: "#218380", animation: "diagnostics-spin 1s linear infinite" }} />
+              <div style={{ fontSize: 13, fontWeight: 600 }}>Executing full system audit...</div>
+              <style>{`@keyframes diagnostics-spin { 100% { transform: rotate(360deg); } }`}</style>
+            </div>
+          )}
+
+          {diagErrors.length > 0 && (
+            <div style={{ marginBottom: 24, padding: "16px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 13, border: "1px solid #FCA5A5" }}>
+              <span style={{ fontWeight: 700, display: "block", marginBottom: 8 }}>Action Required:</span>
+              <ul style={{ margin: 0, paddingLeft: 20, marginBottom: 16 }}>
+                {diagErrors.map((err, i) => <li key={i}>{err}</li>)}
+              </ul>
+              <button
+                id="repair-btn"
+                onClick={async () => {
+                  const btn = document.getElementById('repair-btn');
+                  if (btn) btn.innerText = "Applying Repairs...";
+                  try {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    await invoke("repair_openclaw_config");
+                    if (btn) {
+                      btn.innerText = "Repaired! Re-Run Diagnostics \u2192";
+                      btn.style.background = "#15803D";
+                    }
+                  } catch (e) {
+                    if (btn) btn.innerText = "Repair Failed";
+                    alert("Repair failed: " + e);
+                  }
+                }}
+                style={{ background: "#B91C1C", color: "white", padding: "8px 16px", borderRadius: 6, border: "none", fontSize: 12, cursor: "pointer", fontWeight: 700, transition: "background 0.2s" }}
+              >
+                Launch Auto-Repair
+              </button>
+            </div>
+          )}
+
+          {diagSuccess && (
+            <div style={{ marginBottom: 24, padding: "16px", background: "#F0FDF4", color: "#15803D", borderRadius: 8, fontSize: 13, border: "1px solid #BBF7D0", fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+              <SvgIcon size={16}><path d="M5 13l4 4L19 7" /></SvgIcon> {diagSuccess}
+            </div>
+          )}
+
+          {openclawStatusOutput && (
+            <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+              <details style={{ background: "#f8f9fa", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", overflow: "hidden" }}>
+                <summary style={{ padding: "12px 16px", fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, color: "var(--text-main)", fontSize: 13, userSelect: "none", outline: "none" }}>
+                  <SvgIcon size={16}><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></SvgIcon>
+                  See advanced raw telemetry
+                </summary>
+                <div style={{ padding: "16px", borderTop: "1px solid rgba(0,0,0,0.1)", fontSize: 12, overflowY: "auto", fontFamily: "monospace", color: "var(--text-sub)", whiteSpace: "pre-wrap", maxHeight: 400, background: "#fff" }}>
+                  {openclawStatusOutput}
+                </div>
+              </details>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}>
+          {architectTab === "overview" && <OverviewTab agent={agent} />}
+          {architectTab === "identity" && <IdentityTab agent={agent} />}
+          {architectTab === "personality" && <PersonalityTab agent={agent} />}
+          {architectTab === "permissions" && <PermissionsTab agent={agent} />}
+          {architectTab === "connections" && <ConnectionsTab agent={agent} />}
+          {architectTab === "memory" && <MemoryTab agent={agent} />}
+          {architectTab === "spend" && <SpendTab agent={agent} />}
+          {architectTab === "chat" && <ChatTab agent={agent} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -3062,14 +3175,14 @@ function IdentityTab({ agent }: { agent: AgentData }) {
 
         {/* Area 1: Base Lobster & Accessories */}
         <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 400 }}>
-          <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 150 }}>
+          <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
             <ambientLight intensity={0.8} color="#F5E6D8" />
             <directionalLight position={[10, 20, 5]} intensity={1} />
             <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
-            <group position={[0, -1, 0]}>
+            <group position={[0, -0.6, 0]}>
               {stagedVisuals?.habitatId ? (
                 <React.Suspense fallback={null}>
-                  <group position={[0, 0, 0]} scale={0.7} rotation={[0, Math.PI / 4, 0]}>
+                  <group position={[0, -0.1, 0]} scale={1.0} rotation={[0, Math.PI / 4, 0]}>
                     <TerrariumBase habitatId={stagedVisuals.habitatId} />
                   </group>
                 </React.Suspense>
@@ -3083,16 +3196,17 @@ function IdentityTab({ agent }: { agent: AgentData }) {
                 fileUrl={stagedVisuals?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
                 accessories={stagedVisuals?.accessories || []}
                 agentStatus={agent.status}
-                scale={1.5}
+                scale={1.0}
                 robeColor={stagedVisuals?.color || agent.color}
+              //forceAnimation="Long_Breathe_and_Look_Around"
               />
               {/* Fallback Accessory Stickers for Preview */}
               <React.Suspense fallback={null}>
                 {(stagedVisuals?.accessories || []).map((path, i) => (
-                  <SafeBillboard 
-                    key={path} 
-                    url={`http://localhost:3001${path}`} 
-                    position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]} 
+                  <SafeBillboard
+                    key={path}
+                    url={`http://localhost:3001${path}`}
+                    position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]}
                   />
                 ))}
               </React.Suspense>
@@ -3167,12 +3281,20 @@ function IdentityTab({ agent }: { agent: AgentData }) {
           {/* Selector 3: Habitats */}
           <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>HABITAT</div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, overflowY: "auto", flex: 1, alignContent: "flex-start", paddingRight: 4, paddingBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, overflowY: "auto", flex: 1, alignContent: "flex-start", paddingRight: 4, paddingBottom: 16 }}>
               {HABITATS.map(h => (
                 <div key={h}
                   onClick={() => handleUpdateStaged({ habitatId: h })}
-                  style={{ background: "rgba(0,0,0,0.03)", borderRadius: 12, padding: "16px 4px", textAlign: "center", fontSize: 11, cursor: "pointer", fontWeight: 700, color: stagedVisuals?.habitatId === h ? "var(--text-main)" : "var(--text-sub)", border: stagedVisuals?.habitatId === h ? "2px solid var(--text-main)" : "2px solid rgba(0,0,0,0)", transition: "all 0.1s ease" }}>
-                  Plot {h}
+                  style={{ background: "rgba(0,0,0,0.03)", borderRadius: 12, height: 100, overflow: "hidden", position: "relative", cursor: "pointer", border: stagedVisuals?.habitatId === h ? "2px solid #218380" : "2px solid rgba(0,0,0,0)", transition: "all 0.1s ease" }}>
+                  <Canvas orthographic camera={{ position: [5, 5, 5], zoom: 16 }} style={{ pointerEvents: "none" }}>
+                    <ambientLight intensity={1} />
+                    <directionalLight position={[10, 20, 5]} intensity={1} />
+                    <group position={[0, -0.6, 0]} rotation={[0, Math.PI / 4, 0]}>
+                      <React.Suspense fallback={null}>
+                        <TerrariumBase habitatId={h} />
+                      </React.Suspense>
+                    </group>
+                  </Canvas>
                 </div>
               ))}
             </div>
@@ -3274,7 +3396,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
           if (match) {
             if (match.provider === "OpenAI") litellmPrefix = "openai/";
             if (match.provider === "Anthropic") litellmPrefix = "anthropic/";
-            if (match.provider === "Google Gemini") litellmPrefix = "gemini/";
+            if (match.provider === "Google Gemini") litellmPrefix = "google/";
             if (match.provider === "Grok") litellmPrefix = "xai/";
           }
         }
@@ -3898,7 +4020,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
               text: r.content,
               time: new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
             }));
-            
+
             // Retain any locally generated UI messages (like system errors) that aren't in the canonical backend
             const localOnly = agent.chatLog.filter(msg => !mapped.some((m: any) => m.id === msg.id) && msg.text.includes("⚠️ **System"));
             setChatLog([...mapped, ...localOnly]);
@@ -3906,7 +4028,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             // Restore local errors if no remote history yet
             const localOnly = agent.chatLog.filter(msg => msg.text.includes("⚠️ **System"));
             if (localOnly.length > 0) {
-                setChatLog(localOnly);
+              setChatLog(localOnly);
             }
           }
         })
@@ -3946,20 +4068,26 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       setChatLog(prev => [...prev, agentMsg]);
     } catch (error) {
       let friendlyError = String(error);
-      if (friendlyError.includes("No API key found for provider")) {
-         const match = friendlyError.match(/No API key found for provider "([^"]+)"/);
-         if (match) {
-            friendlyError = `You have selected a **${match[1].toUpperCase()}** model, but no API key is configured. Please set your key in the Vault or run Diagnostics.`;
-         } else {
-            friendlyError = "Your API Key is missing for this model's provider. Please configure your integration.";
-         }
+      if (friendlyError.includes("Timeout") || friendlyError.includes("hanging")) {
+        setIsHealing(true);
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke("hard_reset_infrastructure").catch(ex => console.error("Healing failed:", ex));
+        setIsHealing(false);
+        friendlyError = "The infrastructure gracefully auto-healed after an overload. Please try sending your message again!";
+      } else if (friendlyError.includes("No API key found for provider")) {
+        const match = friendlyError.match(/No API key found for provider "([^"]+)"/);
+        if (match) {
+          friendlyError = `You have selected a **${match[1].toUpperCase()}** model, but no API key is configured. Please set your key in the Vault or run Diagnostics.`;
+        } else {
+          friendlyError = "Your API Key is missing for this model's provider. Please configure your integration.";
+        }
       } else if (friendlyError.includes("Unknown model")) {
-         const match = friendlyError.match(/Unknown model: ([^\s]+)/);
-         if (match) {
-            friendlyError = `The model **${match[1]}** is not recognized. Please check your spelling or select a valid model from the dropdown.`;
-         } else {
-            friendlyError = "The model you selected is unknown or unsupported.";
-         }
+        const match = friendlyError.match(/Unknown model: ([^\s]+)/);
+        if (match) {
+          friendlyError = `The model **${match[1]}** is not recognized. Please check your spelling or select a valid model from the dropdown.`;
+        } else {
+          friendlyError = "The model you selected is unknown or unsupported.";
+        }
       }
 
       const errorMsg: ChatMessage = {
@@ -3969,6 +4097,9 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setChatLog(prev => [...prev, errorMsg]);
+      // Immediately push locally to Z-Store to prevent get_conversation sync wipe
+      const { setAgents, agents } = useWorldStore.getState();
+      setAgents(agents.map(a => a.id === agent.id ? { ...a, chatLog: [...chatLog, errorMsg] } : a));
     } finally {
       setLoading(false);
     }
@@ -4190,7 +4321,7 @@ function TopNav() {
               display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
               color: "var(--text-sub)",
             }} title="System Diagnostics">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
             </div>
           </>
         )}
@@ -4612,7 +4743,7 @@ function DiagnosticsView() {
     try {
       const res = await invoke("audit_openclaw_config");
       setReport(res);
-    } catch(e) {
+    } catch (e) {
       console.error(e);
       setReport({ error: String(e) });
     }
@@ -4630,7 +4761,7 @@ function DiagnosticsView() {
       const msg = await invoke("repair_openclaw_config", { targetModel: null });
       setRepairMsg(String(msg));
       runAudit();
-    } catch(e) {
+    } catch (e) {
       setRepairMsg("Error: " + String(e));
     }
     setRepairing(false);
@@ -4640,50 +4771,50 @@ function DiagnosticsView() {
     <div style={{ maxWidth: 800, margin: "0 auto", padding: "40px 20px" }}>
       <div style={{ fontSize: 24, fontWeight: 800, fontFamily: "'Noto Serif', Georgia, serif", color: "var(--text-main)", marginBottom: 8 }}>System Diagnostics</div>
       <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 32 }}>Audit openclaw configuration and repair alignment mismatches.</div>
-      
-      {loading ? (
-         <div style={{ padding: 24, textAlign: "center" }}>Scanning OpenClaw Container...</div>
-      ) : report?.error ? (
-         <div style={{ padding: 24, border: "1px dashed #dca5a5", background: "#fcf2f2", color: "#aa371c" }}>
-            <b>Audit Failed:</b> {report.error}
-         </div>
-      ) : (
-         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
-               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                  <div style={{ fontWeight: 600 }}>Alignment Status</div>
-                  <div style={{ background: report.is_aligned ? "#4A9E96" : "#E57373", color: "white", padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>
-                    {report.is_aligned ? "ALIGNED" : "MISCONFIGURED"}
-                  </div>
-               </div>
-               
-               <div style={{ fontSize: 13, color: "var(--text-main)", display: "flex", flexDirection: "column", gap: 8 }}>
-                 <div><b>Container Online:</b> {report.container_running ? "Yes" : "No"}</div>
-                 <div><b>Active Container Default Model:</b> {report.active_default_model}</div>
-                 <div><b>Expected Based on APIs:</b> {report.expected_model}</div>
-                 {report.missing_keys.length > 0 && (
-                   <div style={{ color: "#aa371c" }}><b>Missing API Keys for Default:</b> {report.missing_keys.join(", ")}</div>
-                 )}
-                 <div><b>Ports Synchronized:</b> {report.port_mismatch ? "No" : "Yes"}</div>
-               </div>
 
-               {!report.is_aligned && (
-                  <button onClick={handleRepair} disabled={repairing} style={{ marginTop: 24, background: "#218380", color: "white", border: "none", padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
-                    {repairing ? "Repairing..." : "Auto-Repair Configuration"}
-                  </button>
-               )}
-               {repairMsg && <div style={{ fontSize: 12, marginTop: 12, color: repairMsg.startsWith("Error") ? "#aa371c" : "#218380" }}>{repairMsg}</div>}
+      {loading ? (
+        <div style={{ padding: 24, textAlign: "center" }}>Scanning OpenClaw Container...</div>
+      ) : report?.error ? (
+        <div style={{ padding: 24, border: "1px dashed #dca5a5", background: "#fcf2f2", color: "#aa371c" }}>
+          <b>Audit Failed:</b> {report.error}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontWeight: 600 }}>Alignment Status</div>
+              <div style={{ background: report.is_aligned ? "#4A9E96" : "#E57373", color: "white", padding: "4px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700 }}>
+                {report.is_aligned ? "ALIGNED" : "MISCONFIGURED"}
+              </div>
             </div>
 
-            {report.raw_config_json && (
-              <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
-                 <div style={{ fontWeight: 600, marginBottom: 12 }}>Raw OpenClaw Configuration</div>
-                 <pre style={{ fontSize: 10, background: "rgba(0,0,0,0.02)", padding: 12, borderRadius: 8, overflowX: "auto", color: "var(--text-sub)" }}>
-                   {report.raw_config_json}
-                 </pre>
-              </div>
+            <div style={{ fontSize: 13, color: "var(--text-main)", display: "flex", flexDirection: "column", gap: 8 }}>
+              <div><b>Container Online:</b> {report.container_running ? "Yes" : "No"}</div>
+              <div><b>Active Container Default Model:</b> {report.active_default_model}</div>
+              <div><b>Expected Based on APIs:</b> {report.expected_model}</div>
+              {report.missing_keys.length > 0 && (
+                <div style={{ color: "#aa371c" }}><b>Missing API Keys for Default:</b> {report.missing_keys.join(", ")}</div>
+              )}
+              <div><b>Ports Synchronized:</b> {report.port_mismatch ? "No" : "Yes"}</div>
+            </div>
+
+            {!report.is_aligned && (
+              <button onClick={handleRepair} disabled={repairing} style={{ marginTop: 24, background: "#218380", color: "white", border: "none", padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontWeight: 600 }}>
+                {repairing ? "Repairing..." : "Auto-Repair Configuration"}
+              </button>
             )}
-         </div>
+            {repairMsg && <div style={{ fontSize: 12, marginTop: 12, color: repairMsg.startsWith("Error") ? "#aa371c" : "#218380" }}>{repairMsg}</div>}
+          </div>
+
+          {report.raw_config_json && (
+            <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
+              <div style={{ fontWeight: 600, marginBottom: 12 }}>Raw OpenClaw Configuration</div>
+              <pre style={{ fontSize: 10, background: "rgba(0,0,0,0.02)", padding: 12, borderRadius: 8, overflowX: "auto", color: "var(--text-sub)" }}>
+                {report.raw_config_json}
+              </pre>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -4926,6 +5057,7 @@ export default function App() {
   const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme } = useWorldStore();
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
+  const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");
 
   // Sync hash to activeView on load and hashchange
   useEffect(() => {
@@ -4958,24 +5090,33 @@ export default function App() {
         if (loadedAgents.length === 0) {
           setActiveView("onboarding");
         } else {
+          setLoadStatus("Starting infrastructure gateway...");
+          await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
+
+          setLoadStatus("Checking DB for Agents...");
           // Sync keys to all legacy agents to prevent silent Failovers into OOM crashes (Exit 137).
           const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
           const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
           const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
           const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
+
+          setLoadStatus("Keys loaded, pushing sync...");
           const keysToSync = {
-              "ANTHROPIC_API_KEY": String(anthropic || ""),
-              "OPENAI_API_KEY": String(openai || ""),
-              "GEMINI_API_KEY": String(gemini || ""),
-              "XAI_API_KEY": String(xai || "")
+            "ANTHROPIC_API_KEY": String(anthropic || ""),
+            "OPENAI_API_KEY": String(openai || ""),
+            "GEMINI_API_KEY": String(gemini || ""),
+            "XAI_API_KEY": String(xai || "")
           };
 
           for (const ag of loadedAgents) {
-             await invoke("sync_credentials", { agentId: ag.id, keys: keysToSync }).catch(console.warn);
+            setLoadStatus("Syncing Keys: " + ag.id);
+            await invoke("sync_credentials", { agentId: ag.id, keys: keysToSync }).catch(console.warn);
           }
-          
+
+          setLoadStatus("Repairing Gateway config...");
           await invoke("repair_openclaw_config", { targetModel: null }).catch(console.warn);
 
+          setLoadStatus("Setting up UI Agent Models...");
           // Enrich agents with UI data
           const enrichedAgents: AgentData[] = loadedAgents.map(agent => {
             const roleInfo = AGENT_TYPE_INFO[agent.role] || AGENT_TYPE_INFO["Assistant"];
@@ -5026,7 +5167,6 @@ export default function App() {
       // Safe to boot background listeners after all configuration syncs have cleanly finished without racing.
       try {
         if (typeof invoke === 'function') {
-          await safeStartGateway().catch((e) => console.log("Gateway boot bypassed:", e));
           await invoke("start_slack_listener").catch(() => { });
         }
       } catch (e) { }
@@ -5068,7 +5208,7 @@ export default function App() {
   }, []);
 
   if (!initialized) {
-    return <LoadingScreen />;
+    return <LoadingScreen status={loadStatus} />;
   }
 
   return (
@@ -5082,7 +5222,7 @@ export default function App() {
       <UpdateManager />
       {activeView !== "onboarding" && <TopNav />}
 
-      {activeView === "loading" && <LoadingScreen />}
+      {activeView === "loading" && <LoadingScreen status={loadStatus} />}
       {activeView === "onboarding" && <OnboardingWizard />}
       {activeView === "canopy" && <CanopyView />}
       {activeView === "architect" && agent && <ArchitectView agent={agent} />}
