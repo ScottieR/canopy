@@ -269,7 +269,7 @@ pub async fn send_voice_message(
 
     // Send transcription as regular message to OpenClaw via HTTP
     let client = reqwest::Client::new();
-    let gateway_url = "http://localhost:18799";
+    let gateway_url = crate::model_constants::GATEWAY_URL;
     let resp = client
         .post(format!("{}/api/sessions/main/messages", gateway_url))
         .json(&serde_json::json!({

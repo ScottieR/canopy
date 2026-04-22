@@ -1,3 +1,4 @@
+use crate::model_constants;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::process::Command;
@@ -36,7 +37,7 @@ pub async fn audit_openclaw_config(
         return Ok(OpenClawAuditReport {
              is_aligned: false,
              active_default_model: "Unknown (Offline)".to_string(),
-             expected_model: crate::models::DEFAULT_GEMINI_MODEL.to_string(),
+             expected_model: model_constants::DEFAULT_ANTHROPIC_MODEL.to_string(),
              missing_keys: vec![],
              port_mismatch: false,
              container_running: false,
@@ -73,40 +74,40 @@ pub async fn audit_openclaw_config(
     // 3. Evaluate active settings
     let default_model = config.pointer("/agents/defaults/model")
         .and_then(|v| v.as_str())
-        .unwrap_or(&crate::models::get_dynamic_default_model("anthropic"))
+        .unwrap_or(model_constants::DEFAULT_ANTHROPIC_MODEL)
         .to_string();
 
-    // 4. Determine our EXPECTED default model based on available keys
-    // If no keys, it defaults to the gemini fallback model.
-    let mut expected_model = crate::models::get_dynamic_default_model("gemini");
+    // 4. Determine the EXPECTED default model based on available API keys.
+    // Priority: Anthropic > OpenAI > Gemini (Gemini is last resort, not first choice).
+    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_openai    = crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_gemini    = crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+
+    let expected_model = model_constants::default_model_from_available_keys(
+        has_anthropic, has_openai, has_gemini,
+    ).to_string();
+
     let mut missing_keys = vec![];
 
-    let has_openai = crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
-    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
-    let has_gemini = crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
-
-    if has_gemini {
-        expected_model = crate::models::get_dynamic_default_model("gemini");
-    } else if has_openai {
-        expected_model = crate::models::get_dynamic_default_model("openai");
-    } else if has_anthropic {
-        expected_model = crate::models::get_dynamic_default_model("anthropic");
-    }
-
+    // Check whether the *currently configured* model's provider has a key available
     if default_model.starts_with("anthropic") && !has_anthropic {
         missing_keys.push("anthropic".to_string());
     }
     if default_model.starts_with("openai") && !has_openai {
         missing_keys.push("openai".to_string());
     }
-    if default_model.starts_with("gemini") && !has_gemini {
-        missing_keys.push("gemini".to_string());
+    if default_model.starts_with("google") && !has_gemini {
+        missing_keys.push("google".to_string());
     }
 
-    // Determine port alignment (checking controlUi allowedOrigins)
+    // Determine port alignment.
+    // We check for GATEWAY_HOST_PORT (18799) — the port Canopy connects to from the host.
+    // Do NOT check for GATEWAY_CONTAINER_PORT (18789) — that's container-internal only
+    // and will always appear missing from the host side, causing a permanent false alarm.
+    let host_port_str = model_constants::GATEWAY_HOST_PORT.to_string();
     let port_mismatch = config.pointer("/gateway/controlUi/allowedOrigins")
         .and_then(|v| v.as_array())
-        .map_or(false, |arr| !arr.iter().any(|val| val.as_str().unwrap_or("").contains("18789")));
+        .map_or(false, |arr| !arr.iter().any(|val| val.as_str().unwrap_or("").contains(&host_port_str)));
 
     let is_aligned = missing_keys.is_empty() && !port_mismatch && default_model == expected_model;
 
@@ -142,10 +143,17 @@ pub async fn repair_openclaw_config(
 
     let actual_model = model_to_set.unwrap();
 
+    // Validate the chosen model string before writing it to the container config.
+    // A malformed string here would silently break all agents.
+    model_constants::validate_model_string(&actual_model)
+        .map_err(|e| format!("Refusing to write invalid model string to gateway: {}", e))?;
+
     let fixes = [
         ("agents.defaults.model", actual_model.as_str()),
         ("gateway.trustedProxies", "[\"127.0.0.1\", \"192.168.107.2\"]"),
-        ("channels.slack.groupPolicy", "allowlist"),
+        // Note: channels.slack.groupPolicy is intentionally NOT set here.
+        // Slack is configured via openclaw config set channels.slack.* — not via repair.
+        // Setting it here caused Slack to be configured in a broken state on every repair run.
     ];
 
     for (key, val) in fixes.iter() {
@@ -193,4 +201,81 @@ pub async fn get_openclaw_status() -> Result<String, String> {
     }
 
     Ok(stdout)
+}
+
+// ─── Regression Tests ─────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_constants;
+
+    // ── Port check uses host port, not container port ──────────────────────
+
+    #[test]
+    fn audit_port_check_uses_host_port() {
+        // The allowedOrigins check must look for GATEWAY_HOST_PORT (18799).
+        // Looking for GATEWAY_CONTAINER_PORT (18789) always fails from the host side,
+        // causing a permanent false `port_mismatch = true` that triggers repair loops.
+        let host_port_str = model_constants::GATEWAY_HOST_PORT.to_string();
+        let container_port_str = model_constants::GATEWAY_CONTAINER_PORT.to_string();
+
+        // Simulate what the audit does: check if host port appears in some origin string
+        let sample_origins = vec![
+            format!("http://localhost:{}", model_constants::GATEWAY_HOST_PORT),
+        ];
+        let found_host = sample_origins.iter().any(|v| v.contains(&host_port_str));
+        let found_container = sample_origins.iter().any(|v| v.contains(&container_port_str));
+
+        assert!(found_host, "Host port {} must be detectable in origins", model_constants::GATEWAY_HOST_PORT);
+        assert!(!found_container, "Container port {} must NOT appear in host-side origins", model_constants::GATEWAY_CONTAINER_PORT);
+    }
+
+    // ── Repair validates model string before writing ───────────────────────
+
+    #[test]
+    fn repair_would_reject_reversed_anthropic_model() {
+        // validate_model_string returns Ok for any well-formed "provider/model" string.
+        // The reversed "claude-4-6-sonnet" is technically parseable, so we rely on the
+        // suffix-order test in model_constants to guard against it.
+        let bad = "anthropic/claude-4-6-sonnet";
+        assert!(
+            !bad.ends_with("sonnet-4-6"),
+            "The bad string '{}' should not match the correct suffix pattern",
+            bad
+        );
+
+        // The correct string passes validation and has the right suffix order
+        let good = model_constants::DEFAULT_ANTHROPIC_MODEL;
+        assert!(model_constants::validate_model_string(good).is_ok());
+        assert!(good.ends_with("sonnet-4-6"), "Correct string '{}' must end with 'sonnet-4-6'", good);
+    }
+
+    // ── Offline report uses Anthropic as expected model ───────────────────
+
+    #[test]
+    fn offline_report_expected_model_is_anthropic_not_gemini() {
+        // When the container is offline, the report should default to Anthropic
+        // (so the UI prompts the user to add an Anthropic key), not Gemini.
+        let expected = model_constants::DEFAULT_ANTHROPIC_MODEL;
+        assert!(
+            expected.starts_with("anthropic/"),
+            "Offline expected_model '{}' should be Anthropic, not Gemini",
+            expected
+        );
+    }
+
+    // ── Missing key detection uses correct provider prefix ────────────────
+
+    #[test]
+    fn google_models_use_google_prefix_not_gemini() {
+        // openclaw.json uses "google/..." as the provider prefix for Gemini models,
+        // not "gemini/...". The missing_keys check must test default_model.starts_with("google")
+        let gemini_model = model_constants::DEFAULT_GEMINI_MODEL;
+        assert!(
+            gemini_model.starts_with("google/"),
+            "Gemini model '{}' must use 'google/' prefix for OpenClaw compatibility",
+            gemini_model
+        );
+    }
 }

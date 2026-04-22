@@ -1,5 +1,6 @@
 #![allow(unused)]
 
+mod model_constants; // Single source of truth for model strings, ports, and path helpers
 mod docker;
 mod openclaw;
 mod keychain;
@@ -13,6 +14,7 @@ mod audit_openclaw;
 mod voice;
 mod slack;
 mod google;
+mod channels;
 
 use tauri::Manager;
 
@@ -96,6 +98,7 @@ pub fn run() {
             openclaw::update_agent_capabilities,
             openclaw::update_agent_integrations,
             openclaw::update_agent_memories,
+            openclaw::update_agent_details,
             openclaw::toggle_agent_isolation,
             openclaw::delete_agent,
             openclaw::send_message,
@@ -152,6 +155,11 @@ pub fn run() {
             slack::stop_slack_listener,
             // Google
             google::start_google_oauth,
+            // Messaging / productivity channels
+            channels::configure_telegram,
+            channels::configure_whatsapp,
+            channels::configure_discord,
+            channels::configure_github,
             // Voice mode
             voice::get_voice_config,
             voice::update_voice_config,

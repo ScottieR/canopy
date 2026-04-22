@@ -121,7 +121,27 @@ export function TerrariumBase({ index = 0, habitatId, onNavMeshReady }: { index?
   return <primitive object={clonedScene} />;
 }
 
-export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId }: { agents?: any[], onAgentClick?: (id: string) => void, onAgentHover?: (id: string | null) => void, hoveredAgentId?: string | null }) {
+export function WorldScene({ 
+  agents, 
+  onAgentClick, 
+  onAgentHover, 
+  hoveredAgentId,
+  isEditMode,
+  transformMode,
+  selectedEditAgent,
+  editTransforms,
+  onTransformChange
+}: { 
+  agents?: any[], 
+  onAgentClick?: (id: string) => void, 
+  onAgentHover?: (id: string | null) => void, 
+  hoveredAgentId?: string | null,
+  isEditMode?: boolean,
+  transformMode?: "translate" | "rotate",
+  selectedEditAgent?: string | null,
+  editTransforms?: Record<string, any>,
+  onTransformChange?: (id: string, transform: any) => void
+}) {
   const [navMap, setNavMap] = React.useState<Record<number, THREE.Vector3[]>>({});
   // Use passed agents or fallback to the hardcoded demo set
   const selectedAgents = useMemo(() => {
@@ -185,13 +205,27 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
     <group position={[0, -0.5, 0]}>
       {/* Agents and their 1:1 Terrarium Tiles */}
       {selectedAgents.map((agent: any, index) => {
-        const pos = points[index];
         const isHovered = hoveredAgentId === agent.id;
+        const isSelectedForEdit = isEditMode && selectedEditAgent === agent.id;
+        const t = editTransforms?.[agent.id] || agent.visual_identity?.habitatTransform;
+        
+        const basePath = points[index];
+        const initPos = t ? new THREE.Vector3(t.x, t.y, t.z) : basePath;
+        const initRotY = t?.rotationY || 0;
 
-        return (
-          <group key={agent.id || index} position={pos.toArray()}>
+        const content = (
+          <group 
+            position={initPos.toArray()} 
+            rotation={[0, initRotY, 0]}
+            onClick={(e) => {
+              if (isEditMode) {
+                e.stopPropagation();
+                onAgentClick?.(agent.id);
+              }
+            }}
+          >
             {/* Hover Indicator Ring */}
-            {isHovered && <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[1.2, 1.4, 32]} /><meshBasicMaterial color="#83C5BE" transparent opacity={0.6} /></mesh>}
+            {(isHovered || isSelectedForEdit) && <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[1.2, 1.4, 32]} /><meshBasicMaterial color={isSelectedForEdit ? "#D4A373" : "#83C5BE"} transparent opacity={isSelectedForEdit ? 0.9 : 0.6} /></mesh>}
 
             {/* 
                    Tile the monolithic base out beneath each agent 
@@ -215,6 +249,12 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
               onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
               onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
             />
+          </group>
+        );
+
+        return (
+          <group key={agent.id || index}>
+            {content}
           </group>
         );
       })}
