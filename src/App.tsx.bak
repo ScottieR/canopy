@@ -632,17 +632,14 @@ function CanopyScene() {
 // UI COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const glass = (opacity = 0.55): React.CSSProperties => {
-  const isDark = useWorldStore.getState().theme === "dark";
-  return {
-    background: isDark ? `rgba(17,21,32,${opacity})` : `rgba(255,255,255,${opacity})`,
-    backdropFilter: "blur(24px)",
-    WebkitBackdropFilter: "blur(24px)",
-    border: isDark ? "1px solid rgba(255,255,255,0.08)" : "1px solid rgba(255,255,255,0.3)",
-    borderRadius: 16,
-    boxShadow: isDark ? "0 8px 32px rgba(0,0,0,0.3)" : "0 8px 32px rgba(0,0,0,0.06)",
-  };
-};
+const glass = (opacity = 0.55): React.CSSProperties => ({
+  background: `rgba(255,255,255,${opacity})`,
+  backdropFilter: "blur(24px)",
+  WebkitBackdropFilter: "blur(24px)",
+  border: "1px solid rgba(255,255,255,0.3)",
+  borderRadius: 16,
+  boxShadow: "0 8px 32px rgba(0,0,0,0.06)",
+});
 
 function Toggle({ enabled, onChange, size = "normal" }: { enabled: boolean; onChange: () => void; size?: "normal" | "small" }) {
   const w = size === "small" ? 32 : 40;
@@ -651,11 +648,11 @@ function Toggle({ enabled, onChange, size = "normal" }: { enabled: boolean; onCh
   return (
     <button onClick={onChange} style={{
       width: w, height: h, borderRadius: h, border: "none", padding: 2, cursor: "pointer",
-      background: enabled ? "#3c6663" : "var(--border-subtle)", transition: "all 0.2s ease",
+      background: enabled ? "#3c6663" : "rgba(0,0,0,0.08)", transition: "all 0.2s ease",
       display: "flex", alignItems: "center",
     }}>
       <div style={{
-        width: d, height: d, borderRadius: "50%", background: "var(--surface-card)",
+        width: d, height: d, borderRadius: "50%", background: "white",
         boxShadow: "0 1px 3px rgba(0,0,0,0.15)", transition: "transform 0.2s ease",
         transform: `translateX(${enabled ? w - d - 4 : 0}px)`,
       }} />
@@ -665,7 +662,7 @@ function Toggle({ enabled, onChange, size = "normal" }: { enabled: boolean; onCh
 
 function ProgressBar({ value, max = 1, color = "#3c6663", height = 4 }: { value: number; max?: number; color?: string; height?: number }) {
   return (
-    <div style={{ height, borderRadius: height / 2, background: "var(--border-subtle)", width: "100%" }}>
+    <div style={{ height, borderRadius: height / 2, background: "rgba(0,0,0,0.06)", width: "100%" }}>
       <div style={{ height: "100%", borderRadius: height / 2, background: color, width: `${(value / max) * 100}%`, transition: "width 0.5s ease" }} />
     </div>
   );
@@ -935,52 +932,13 @@ function OnboardingWizard() {
 
     setIsCreatingAgent(true);
     setCreateAgentError("");
-    const roleInfo = agentTypeInfo[selectedRole];
-    let finalPrompt = personalityPrompt;
-    if (recentlyRead.length > 0) {
-      finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
-    }
+    try {
+      const roleInfo = agentTypeInfo[selectedRole];
+      let finalPrompt = personalityPrompt;
+      if (recentlyRead.length > 0) {
+        finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
+      }
 
-    const tempId = `temp-${Date.now()}`;
-    
-    // Inject optimistic agent immediately to dismiss wizard
-    const optimisticAgent: AgentData = {
-      id: tempId as unknown as number, // Temporary cast
-      name: agentName,
-      status: "deploying", // Signals UI to show loader rings instead of GLB
-      role: selectedRole,
-      emoji: "agent",
-      title: `The ${selectedRole}`,
-      description: roleInfo?.description || "A custom agent",
-      image: roleInfo?.image,
-      color: customIdentity?.dynamicColors?.color || roleInfo?.color || "#888",
-      robeColor: customIdentity?.dynamicColors?.robeColor || roleInfo?.robeColor || "#888",
-      accentColor: customIdentity?.dynamicColors?.accentColor || roleInfo?.accentColor || "#ccc",
-      position: [Math.random() * 2 - 1, 0, Math.random() * 2 - 1],
-      targetPosition: [Math.random() * 2 - 1, 0, Math.random() * 2 - 1],
-      currentAction: "Initializing Agent Container...",
-      socialMotive: 0.5 + Math.random() * 0.3,
-      energy: 0.6 + Math.random() * 0.3,
-      uptime: "0 hrs",
-      tokensUsed: "0k",
-      weeklyCompute: "0.000",
-      monthlySpend: 0,
-      spendLimit: 200,
-      permissions: DEFAULT_PERMISSIONS.map(p => ({ ...p })),
-      recentSpend: [],
-      chatLog: [],
-      memories: [],
-      personalityPrompt: finalPrompt || `${agentName} is a ${selectedRole.toLowerCase()} agent — reliable, sharp, and always working.`,
-      avatarPrompt: `Isometric 3D-rendered agent character in Monument Valley art style. Rounded bell-shaped body with ${roleInfo?.robeColor || "#888"} shell, smooth round head, two swept-back antennae with bulbous ${roleInfo?.accentColor || "#ccc"} tips, small expressive claws at sides. Flat-shaded low-poly faces, soft directional lighting from upper-left. Warm muted pastel palette. No outlines. Ref: agent-style-grid.png`,
-      visual_identity: customIdentity || { baseModelUrl: null, accessories: [] }
-    };
-
-    addAgent(optimisticAgent);
-    setActiveView("canopy");
-    setIsCreatingAgent(false);
-
-    // Fire off slow OpenClaw logic in the background
-    setTimeout(async () => {
       try {
         if (typeof invoke === 'function') {
           const profile: any = await invoke("get_user_profile");
@@ -1041,27 +999,53 @@ function OnboardingWizard() {
               await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
             }
           }
-
-          // Successfully setup container. Swap the temp stub out for the permanent database entity
-          useWorldStore.setState(state => ({
-            agents: state.agents.map(a => a.id === tempId as unknown as number 
-                ? { ...a, ...newAgentData, id: newAgentData.id, status: "active", currentAction: "idle" } 
-                : a)
-          }));
-          
         } else {
           throw new Error("Tauri invoke not found");
         }
       } catch (err) {
-        console.error("Background Agent Deployment Failed:", err);
-        // Paint the placeholder red with an error
-        useWorldStore.setState(state => ({
-            agents: state.agents.map(a => a.id === tempId as unknown as number 
-                ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" } 
-                : a)
-        }));
+        setCreateAgentError(`Agent Engine failed to persist: ${err}`);
+        setIsCreatingAgent(false);
+        return; // Halt creation, do not generate ghost agents
       }
-    }, 100);
+
+      const enrichedAgent: AgentData = {
+        ...newAgentData,
+        title: `The ${selectedRole}`,
+        description: roleInfo?.description || "A custom agent",
+        image: roleInfo?.image,
+        color: customIdentity?.dynamicColors?.color || roleInfo?.color || "#888",
+        robeColor: customIdentity?.dynamicColors?.robeColor || roleInfo?.robeColor || "#888",
+        accentColor: customIdentity?.dynamicColors?.accentColor || roleInfo?.accentColor || "#ccc",
+        position: [Math.random() * 2 - 1, 0, Math.random() * 2 - 1],
+        targetPosition: [Math.random() * 2 - 1, 0, Math.random() * 2 - 1],
+        currentAction: "idle",
+        socialMotive: 0.5 + Math.random() * 0.3,
+        energy: 0.6 + Math.random() * 0.3,
+        uptime: "0 hrs",
+        tokensUsed: "0k",
+        weeklyCompute: "0.000",
+        monthlySpend: 0,
+        spendLimit: 200,
+        permissions: DEFAULT_PERMISSIONS.map(p => ({ ...p })),
+        recentSpend: [],
+        chatLog: [],
+        memories: [],
+        personalityPrompt: finalPrompt || `${agentName} is a ${selectedRole.toLowerCase()} agent — reliable, sharp, and always working.`,
+        avatarPrompt: `Isometric 3D-rendered agent character in Monument Valley art style. Rounded bell-shaped body with ${roleInfo?.robeColor || "#888"} shell, smooth round head, two swept-back antennae with bulbous ${roleInfo?.accentColor || "#ccc"} tips, small expressive claws at sides. Flat-shaded low-poly faces, soft directional lighting from upper-left. Warm muted pastel palette. No outlines. Ref: agent-style-grid.png`,
+        visual_identity: customIdentity || {
+          baseModelUrl: null,
+          accessories: [],
+        }
+      };
+
+      addAgent(enrichedAgent);
+      setActiveView("canopy");
+      setIsCreatingAgent(false);
+    } catch (error) {
+      console.error("Failed to setup agent context:", error);
+      setCreateAgentError(error.toString());
+      setIsCreatingAgent(false);
+    }
   };
 
 
@@ -1093,11 +1077,11 @@ function OnboardingWizard() {
                 </svg>
               </div>
 
-              <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", marginBottom: 16, fontFamily: "'Noto Serif', Georgia, serif" }}>
+              <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", marginBottom: 16, fontFamily: "'Noto Serif', Georgia, serif" }}>
                 Missing Local Engine
               </h1>
 
-              <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.6 }}>
+              <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, lineHeight: 1.6 }}>
                 Canopy needs OrbStack installed locally to orchestrate your private agents. Without it, your agents won't actually be able to retain memory.
               </p>
 
@@ -1121,7 +1105,7 @@ function OnboardingWizard() {
                 }}
                 style={{
                   padding: "16px 32px", borderRadius: 12, border: "none",
-                  background: "#3c6663", color: "var(--surface-card)", fontSize: 16, fontWeight: 600,
+                  background: "#3c6663", color: "white", fontSize: 16, fontWeight: 600,
                   cursor: "pointer", boxShadow: "0 4px 12px rgba(60,102,99,0.2)",
                   transition: "all 0.2s ease"
                 }}
@@ -1159,7 +1143,7 @@ function OnboardingWizard() {
 
           <div style={{ textAlign: "center", maxWidth: 640, zIndex: 1, position: "relative", pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center" }}>
             <div style={{
-              background: "var(--surface-card)", padding: "8px 16px", borderRadius: 20,
+              background: "#ffffff", padding: "8px 16px", borderRadius: 20,
               fontSize: 12, fontWeight: 700, color: "#3c6663", backdropFilter: "blur(8px)",
               display: "flex", alignItems: "center", gap: 8, marginBottom: 40,
               boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
@@ -1172,7 +1156,7 @@ function OnboardingWizard() {
               background: "radial-gradient(ellipse at center, rgba(237,228,219,0.9) 0%, rgba(237,228,219,0) 70%)",
               padding: "40px", borderRadius: "50%"
             }}>
-              <h1 style={{ fontSize: 56, fontWeight: 700, color: "var(--text-main)", marginBottom: 16, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif", textShadow: "0 4px 32px rgba(48,51,48,0.06)" }}>
+              <h1 style={{ fontSize: 56, fontWeight: 700, color: "#303330", marginBottom: 16, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif", textShadow: "0 4px 32px rgba(48,51,48,0.06)" }}>
                 Welcome to The Canopy
               </h1>
               <p style={{ fontSize: 20, color: "#4A5568", marginBottom: 40, lineHeight: 1.6, maxWidth: 400, margin: "0 auto 40px", textShadow: "0 2px 8px rgba(255,255,255,0.8)" }}>
@@ -1184,7 +1168,7 @@ function OnboardingWizard() {
                   pointerEvents: "auto",
                   padding: "18px 48px", borderRadius: 16, border: "none",
                   background: "linear-gradient(135deg, #3c6663, #b8e6e2)",
-                  color: "var(--surface-card)", fontSize: 18, fontWeight: 700, cursor: "pointer",
+                  color: "white", fontSize: 18, fontWeight: 700, cursor: "pointer",
                   boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
                   transition: "all 0.3s ease",
                   animation: "pulse 2s ease-in-out infinite",
@@ -1201,19 +1185,19 @@ function OnboardingWizard() {
       {step === 1 && (
         <div style={{ maxWidth: 900, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-            <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
               {agents.length > 0 ? "Add another agent" : "Create your first agent"}
             </h1>
-            <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, textAlign: "center" }}>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, textAlign: "center" }}>
               {agents.length > 0 ? "How should we grow the team?" : "You can create additional agents later"}
             </p>
 
             <div style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 32 }}>
               <button onClick={() => handleRoleSelect("Custom")} style={{
-                padding: "12px 24px", borderRadius: 12, background: "var(--glass-heavy)", border: selectedRole === "Custom" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", color: "var(--text-main)", fontSize: 14, fontWeight: 600, cursor: "pointer"
+                padding: "12px 24px", borderRadius: 12, background: "rgba(255,255,255,0.8)", border: selectedRole === "Custom" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", color: "#303330", fontSize: 14, fontWeight: 600, cursor: "pointer"
               }}>+ Create Custom Agent</button>
               <button onClick={startImportFlow} style={{
-                padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px dashed rgba(0,0,0,0.2)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600, cursor: "pointer"
+                padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px dashed rgba(0,0,0,0.2)", color: "#636E72", fontSize: 14, fontWeight: 600, cursor: "pointer"
               }}>↓ Import Agent</button>
             </div>
 
@@ -1223,7 +1207,7 @@ function OnboardingWizard() {
             }}>
               {roleTypes.map(role => (
                 <div key={role.key} style={{ display: "flex", flexDirection: "column" }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", textAlign: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#303330", textAlign: "center", marginBottom: 8 }}>
                     {role.key}
                   </div>
                   <div
@@ -1261,7 +1245,7 @@ function OnboardingWizard() {
                             position: "absolute", top: 8, left: 8,
                             fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
                             color: role.robeColor, textTransform: "uppercase",
-                            background: "var(--glass-light)", borderRadius: 4,
+                            background: "rgba(255,255,255,0.55)", borderRadius: 4,
                             padding: "2px 6px",
                           }}>{role.habitatLabel}</div>
                           {/* Isometric ground shadow beneath lobster */}
@@ -1279,16 +1263,16 @@ function OnboardingWizard() {
                       <div style={{
                         background: selectedRole === role.key
                           ? `${role.color}18`
-                          : "var(--glass-heavy)",
+                          : "rgba(255,255,255,0.96)",
                         padding: "9px 12px 10px",
                         borderTop: selectedRole === role.key
                           ? `1px solid ${role.color}40`
                           : "1px solid rgba(177,178,175,0.10)",
                       }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
                           {role.key}
                         </div>
-                        <div style={{ fontSize: 10, color: "var(--text-sub)", lineHeight: 1.4, textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.4, textAlign: "center" }}>
                           {role.description}
                         </div>
                       </div>
@@ -1297,17 +1281,17 @@ function OnboardingWizard() {
                       <div style={{
                         background: selectedRole === role.key
                           ? `${role.color}18`
-                          : "var(--glass-heavy)",
+                          : "rgba(255,255,255,0.96)",
                         padding: "8px 10px",
                         borderTop: selectedRole === role.key
                           ? `1px solid ${role.color}40`
                           : "1px solid rgba(177,178,175,0.10)",
                         borderBottomLeftRadius: 10, borderBottomRightRadius: 10
                       }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
                           {role.key}
                         </div>
-                        <div style={{ fontSize: 10, color: "var(--text-sub)", lineHeight: 1.3, textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: "#636E72", lineHeight: 1.3, textAlign: "center" }}>
                           {role.description}
                         </div>
                       </div>
@@ -1320,13 +1304,13 @@ function OnboardingWizard() {
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(0)} style={{
-              padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => selectedRole === "Custom" ? setStep(1.5) : setStep(2)} disabled={!selectedRole} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: selectedRole ? "#3c6663" : "var(--border-subtle)",
-              color: selectedRole ? "var(--surface-card)" : "var(--text-muted)",
+              background: selectedRole ? "#3c6663" : "rgba(0,0,0,0.06)",
+              color: selectedRole ? "white" : "#B2BEC3",
               fontSize: 14, fontWeight: 600, cursor: selectedRole ? "pointer" : "default",
               fontFamily: "inherit",
             }}>Next</button>
@@ -1339,10 +1323,10 @@ function OnboardingWizard() {
         <div style={{ width: "90vw", maxWidth: 1200, height: "85vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
             <div>
-              <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: 0 }}>Design Custom Agent</h1>
-              <p style={{ fontSize: 14, color: "var(--text-sub)", margin: "4px 0 0 0" }}>Describe the appearance and our AI will conform it to The Canopy's visual identity.</p>
+              <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: 0 }}>Design Custom Agent</h1>
+              <p style={{ fontSize: 14, color: "#636E72", margin: "4px 0 0 0" }}>Describe the appearance and our AI will conform it to The Canopy's visual identity.</p>
             </div>
-            <button onClick={() => setStep(1)} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", cursor: "pointer", fontWeight: 600, color: "var(--text-sub)" }}>
+            <button onClick={() => setStep(1)} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", cursor: "pointer", fontWeight: 600, color: "#636E72" }}>
               Back
             </button>
           </div>
@@ -1359,28 +1343,28 @@ function OnboardingWizard() {
       {/* Step 1.8: Import Agent Flow */}
       {step === 1.8 && (
         <div style={{ maxWidth: 700, width: "90%", maxHeight: "90vh", overflow: "auto" }}>
-          <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
+          <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
             Import Existing Agent
           </h1>
-          <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, textAlign: "center" }}>
+          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, textAlign: "center" }}>
             Auto-discovered agents from Docker and your local filesystem
           </p>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 16, marginBottom: 40 }}>
             {discoveredAgents.length === 0 ? (
-              <div style={{ padding: 40, textAlign: "center", background: "var(--glass-light)", borderRadius: 16, border: "1px dashed rgba(0,0,0,0.1)" }}>
-                <div style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 16 }}>No local agents detected.</div>
-                <button style={{ padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px solid rgba(0,0,0,0.1)", color: "var(--text-main)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+              <div style={{ padding: 40, textAlign: "center", background: "rgba(255,255,255,0.6)", borderRadius: 16, border: "1px dashed rgba(0,0,0,0.1)" }}>
+                <div style={{ fontSize: 16, color: "#636E72", marginBottom: 16 }}>No local agents detected.</div>
+                <button style={{ padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px solid rgba(0,0,0,0.1)", color: "#303330", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
                   Select BlinkClaw .tar.gz Backup
                 </button>
               </div>
             ) : discoveredAgents.map(a => (
-              <div key={a.id} style={{ display: "flex", alignItems: "center", justifyItems: "center", background: "var(--surface-card)", padding: 20, borderRadius: 16, boxShadow: "0 4px 12px rgba(0,0,0,0.04)", border: "1px solid rgba(0,0,0,0.05)" }}>
+              <div key={a.id} style={{ display: "flex", alignItems: "center", justifyItems: "center", background: "white", padding: 20, borderRadius: 16, boxShadow: "0 4px 12px rgba(0,0,0,0.04)", border: "1px solid rgba(0,0,0,0.05)" }}>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>{a.name}</div>
-                  <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Source: {a.source} ({a.path})</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: "#303330", marginBottom: 4 }}>{a.name}</div>
+                  <div style={{ fontSize: 12, color: "#636E72" }}>Source: {a.source} ({a.path})</div>
                 </div>
-                <button onClick={() => handleImportAgent(a)} disabled={isDeployingImport} style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: isDeployingImport ? "wait" : "pointer" }}>
+                <button onClick={() => handleImportAgent(a)} disabled={isDeployingImport} style={{ padding: "10px 20px", borderRadius: 10, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: isDeployingImport ? "wait" : "pointer" }}>
                   {isDeployingImport ? "Extracting..." : "Import"}
                 </button>
               </div>
@@ -1388,7 +1372,7 @@ function OnboardingWizard() {
           </div>
 
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-            <button onClick={() => setStep(1)} style={{ padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Back</button>
+            <button onClick={() => setStep(1)} style={{ padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}>Back</button>
           </div>
         </div>
       )}
@@ -1397,15 +1381,15 @@ function OnboardingWizard() {
       {step === 2 && (
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-            <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
               Name Your Agent
             </h1>
-            <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32 }}>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
               Give them an identity
             </p>
 
             <div style={{ marginBottom: 32 }}>
-              <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Agent Name</label>
+              <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>Agent Name</label>
               <input
                 value={agentName}
                 onChange={e => {
@@ -1420,15 +1404,15 @@ function OnboardingWizard() {
                 style={{
                   width: "100%", padding: "14px 18px", borderRadius: 12,
                   fontSize: 15,
-                  fontFamily: "inherit", color: "var(--text-main)",
-                  outline: "none", background: "var(--surface-card)",
+                  fontFamily: "inherit", color: "#303330",
+                  outline: "none", background: "#ffffff",
                 }}
               />
             </div>
 
             {selectedRole && agentTypeInfo[selectedRole] && (
               <div style={{
-                background: "var(--surface-base)", padding: 20, borderRadius: 16, marginBottom: 32,
+                background: "#f4f4f0", padding: 20, borderRadius: 16, marginBottom: 32,
                 display: "flex", gap: 16, alignItems: "flex-start", backdropFilter: "blur(4px)",
               }}>
                 {agentTypeInfo[selectedRole].image ? (
@@ -1437,19 +1421,19 @@ function OnboardingWizard() {
                   <LobsterIcon size={48} shellColor={agentTypeInfo[selectedRole].robeColor} accentColor={agentTypeInfo[selectedRole].accentColor} />
                 )}
                 <div>
-                  <div style={{ fontSize: 16, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>
+                  <div style={{ fontSize: 16, fontWeight: 600, color: "#303330", marginBottom: 4 }}>
                     {agentName || "Your Agent"} the {selectedRole}
                   </div>
-                  <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 13, color: "#636E72", lineHeight: 1.5 }}>
                     {agentTypeInfo[selectedRole].description}
                   </div>
                 </div>
               </div>
             )}
 
-            <div style={{ background: "var(--surface-base)", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
-              <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Agent Personality</h3>
-              <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
+            <div style={{ background: "#f4f4f0", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
+              <h3 style={{ fontSize: 16, color: "#303330", margin: "0 0 4px 0" }}>Agent Personality</h3>
+              <p style={{ fontSize: 13, color: "#636E72", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
 
               <textarea
                 value={personalityPrompt}
@@ -1458,19 +1442,19 @@ function OnboardingWizard() {
                 style={{
                   width: "100%", padding: "12px 16px", borderRadius: 12, resize: "vertical",
                   fontSize: 14, lineHeight: 1.5,
-                  fontFamily: "inherit", color: "var(--text-main)", background: "var(--surface-card)",
+                  fontFamily: "inherit", color: "#303330", background: "#ffffff",
                   outline: "none"
                 }}
               />
 
               <div style={{ marginTop: 24 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Recently Read</label>
-                <p style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>This gives your agent even more personality. Feel free to pick books unrelated to their job for a creative twist!</p>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Recently Read</label>
+                <p style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>This gives your agent even more personality. Feel free to pick books unrelated to their job for a creative twist!</p>
 
                 {recentlyRead.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
                     {recentlyRead.map(book => (
-                      <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "var(--surface-card)", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                      <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
                         {book}
                         <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
                       </div>
@@ -1481,7 +1465,7 @@ function OnboardingWizard() {
                 {agentTypeInfo[selectedRole || "Custom"]?.suggestedBooks?.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
                     {agentTypeInfo[selectedRole || "Custom"].suggestedBooks.filter((b: string) => !recentlyRead.includes(b)).map((book: string) => (
-                      <div key={book} onClick={() => setRecentlyRead([...recentlyRead, book])} style={{ padding: "4px 10px", background: "var(--border-subtle)", color: "var(--text-main)", borderRadius: 16, fontSize: 11, cursor: "pointer", border: "1px solid rgba(0,0,0,0.1)", transition: "all 0.2s ease" }}>
+                      <div key={book} onClick={() => setRecentlyRead([...recentlyRead, book])} style={{ padding: "4px 10px", background: "rgba(0,0,0,0.05)", color: "#303330", borderRadius: 16, fontSize: 11, cursor: "pointer", border: "1px solid rgba(0,0,0,0.1)", transition: "all 0.2s ease" }}>
                         + {book}
                       </div>
                     ))}
@@ -1513,7 +1497,7 @@ function OnboardingWizard() {
                           style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }}
                           onKeyDown={e => { if (e.key === "Enter") handleAddCustomBook(); }}
                         />
-                        <button onClick={handleAddCustomBook} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+                        <button onClick={handleAddCustomBook} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
                       </>
                     );
                   })()}
@@ -1524,13 +1508,13 @@ function OnboardingWizard() {
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(1)} style={{
-              padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => setStep(3)} disabled={!agentName.trim()} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: agentName.trim() ? "#3c6663" : "var(--border-subtle)",
-              color: agentName.trim() ? "var(--surface-card)" : "var(--text-muted)",
+              background: agentName.trim() ? "#3c6663" : "rgba(0,0,0,0.06)",
+              color: agentName.trim() ? "white" : "#B2BEC3",
               fontSize: 14, fontWeight: 600, cursor: agentName.trim() ? "pointer" : "default",
               fontFamily: "inherit",
             }}>Next</button>
@@ -1542,15 +1526,15 @@ function OnboardingWizard() {
       {step === 3 && (
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-            <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
               Power Up Your Agent
             </h1>
-            <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32 }}>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
               Provide an LLM API key so your agent can think.
             </p>
 
             {selectedRole && (
-              <div style={{ marginBottom: 24, fontSize: 14, color: "var(--text-main)", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
+              <div style={{ marginBottom: 24, fontSize: 14, color: "#303330", background: "rgba(33,131,128,0.1)", padding: "12px 16px", borderRadius: 12, border: "1px solid rgba(33,131,128,0.2)" }}>
                 {llmProvider && llmProvider !== getDynamicRecommendedModel(selectedRole).provider ? (
                   <>Since you selected <strong>{llmProvider}</strong> for the <strong>{selectedRole}</strong> role, we recommend using <strong>{getProviderRecommendedModel(selectedRole, llmProvider).model}</strong>.</>
                 ) : (
@@ -1561,15 +1545,15 @@ function OnboardingWizard() {
 
             <div style={{ marginBottom: 24, display: "flex", flexWrap: "wrap", gap: 12 }}>
               {["OpenAI", "Google Gemini", "Anthropic", "xAI Grok"].map(prov => (
-                <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--surface-card)", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
+                <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "#ffffff", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
                   <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => { setLlmProvider(prov as any); setApiKeyMode("hidden"); setApiKey(""); }} />
-                  <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{prov}</span>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: "#303330" }}>{prov}</span>
                 </label>
               ))}
             </div>
 
             <div style={{ marginBottom: 32 }}>
-              <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 16 }}>
+              <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 16 }}>
                 API Key Setup
               </label>
 
@@ -1586,10 +1570,10 @@ function OnboardingWizard() {
                   } catch (e) {
                     alert("No existing key found in keychain.");
                   }
-                }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: !llmProvider ? "1px solid rgba(0,0,0,0.1)" : "1px solid #3c6663", background: "rgba(60,102,99,0.05)", color: !llmProvider ? "var(--text-muted)" : "#3c6663", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
+                }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: !llmProvider ? "1px solid rgba(0,0,0,0.1)" : "1px solid #3c6663", background: "rgba(60,102,99,0.05)", color: !llmProvider ? "#B2BEC3" : "#3c6663", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
                   Scan for existing API key
                 </button>
-                <div style={{ textAlign: "center", fontSize: 12, color: "var(--text-sub)", margin: "-6px 0" }}>— or —</div>
+                <div style={{ textAlign: "center", fontSize: 12, color: "#636E72", margin: "-6px 0" }}>— or —</div>
                 <button onClick={async () => {
                   if (!llmProvider) return;
                   setApiKeyMode("manual");
@@ -1640,7 +1624,7 @@ function OnboardingWizard() {
                     const { open } = await import('@tauri-apps/plugin-shell');
                     await open(urls[llmProvider]);
                   }
-                }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: "none", background: !llmProvider ? "var(--border-subtle)" : "#3c6663", color: !llmProvider ? "var(--text-muted)" : "var(--surface-card)", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
+                }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: "none", background: !llmProvider ? "rgba(0,0,0,0.06)" : "#3c6663", color: !llmProvider ? "#B2BEC3" : "white", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
                   Set up new API key ✨
                 </button>
               </div>
@@ -1661,12 +1645,12 @@ function OnboardingWizard() {
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(2)} style={{
-              padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => setStep(4)} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: "#3c6663", color: "var(--surface-card)",
+              background: "#3c6663", color: "white",
               fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
             }}>Next</button>
           </div>
@@ -1677,30 +1661,30 @@ function OnboardingWizard() {
       {step === 4 && (
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-            <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
-            <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.5 }}>
+            <h1 style={{ fontSize: 40, fontWeight: 700, color: "#303330", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
+            <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32, lineHeight: 1.5 }}>
               Give your agent the tools they need to interact with your world. We'll configure granular security bounds for these connections — like specific folders, email labels, and message threads — on the next screen.
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
               {(["slack", "email", "calendar", "folders", "imessage", "photos"] as const).map(p => (
                 <div key={p} style={{ display: "flex", flexDirection: "column" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: "16px 20px", borderRadius: plugins[p] && p === "folders" ? "12px 12px 0 0" : 12, border: plugins[p] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#ffffff", padding: "16px 20px", borderRadius: plugins[p] && p === "folders" ? "12px 12px 0 0" : 12, border: plugins[p] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
                     <div>
-                      <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)", textTransform: p === "imessage" || p === "photos" ? "none" : "capitalize" }}>{p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p} Access</div>
-                      <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p}.</div>
+                      <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", textTransform: p === "imessage" || p === "photos" ? "none" : "capitalize" }}>{p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p} Access</div>
+                      <div style={{ fontSize: 13, color: "#636E72", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p}.</div>
                     </div>
                     <Toggle enabled={plugins[p]} onChange={() => setPlugins(prev => ({ ...prev, [p]: !prev[p] }))} />
                   </div>
                   {p === "folders" && plugins.folders && (
-                    <div style={{ padding: "16px 20px", background: "var(--glass-light)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 12 }}>Select Folder Scope</div>
+                    <div style={{ padding: "16px 20px", background: "rgba(255,255,255,0.6)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 12 }}>Select Folder Scope</div>
                       <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#303330", cursor: "pointer" }}>
                           <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} />
                           Specific Folder
                         </label>
-                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#303330", cursor: "pointer" }}>
                           <input type="radio" checked={folderAccessType === "all"} onChange={() => setFolderAccessType("all")} />
                           All Folders
                         </label>
@@ -1708,7 +1692,7 @@ function OnboardingWizard() {
 
                       {folderAccessType === "specific" && (
                         <div style={{ display: "flex", gap: 8 }}>
-                          <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "var(--surface-card)", outline: "none" }} />
+                          <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "#ffffff", outline: "none" }} />
                           <button onClick={async () => {
                             try {
                               const { open } = await import('@tauri-apps/plugin-dialog');
@@ -1738,7 +1722,7 @@ function OnboardingWizard() {
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(3)} style={{
-              padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
+              padding: "12px 28px", borderRadius: 12, background: "#f4f4f0", color: "#636E72", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => {
@@ -1750,7 +1734,7 @@ function OnboardingWizard() {
               }
             }} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: "#3c6663", color: "var(--surface-card)",
+              background: "#3c6663", color: "white",
               fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
             }}>Next</button>
           </div>
@@ -1760,20 +1744,20 @@ function OnboardingWizard() {
       {/* Step 6: Integration Testing */}
       {step === 5 && testPluginIndex >= 0 && testPluginIndex < enabledPlugins.length && (
         <div style={{ maxWidth: 500, width: "90%", textAlign: "center" }}>
-          <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, textTransform: enabledPlugins[testPluginIndex] === "imessage" ? "none" : "capitalize" }}>Test {enabledPlugins[testPluginIndex] === "imessage" ? "iMessage" : enabledPlugins[testPluginIndex]}</h1>
-          <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32 }}>Let's make sure {agentName || "the agent"} can successfully connect.</p>
+          <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", marginBottom: 12, textTransform: "capitalize" }}>Test {enabledPlugins[testPluginIndex]}</h1>
+          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>Let's make sure {agentName || "the agent"} can successfully connect.</p>
 
-          <div style={{ background: "var(--surface-card)", padding: 32, borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", marginBottom: 32, minHeight: 180, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#ffffff", padding: 32, borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", marginBottom: 32, minHeight: 180, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
             {testStatus === "idle" && enabledPlugins[testPluginIndex] === "slack" && (
               <div style={{ width: "100%", textAlign: "left" }}>
-                <div style={{ fontSize: 16, color: "var(--text-main)", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Connect to Slack</div>
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 24, textAlign: "center" }}>
+                <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Connect to Slack</div>
+                <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
                   Canopy connects locally via Socket Mode. Setup is now 3 easy steps!
                 </div>
 
                 <div style={{ marginBottom: 20, padding: 24, textAlign: "center", background: "rgba(33,131,128,0.05)", borderRadius: 12, border: "1px solid rgba(33,131,128,0.15)" }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>Open the Side-by-Side Guide</div>
-                  <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 20, lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#303330", marginBottom: 12 }}>Open the Side-by-Side Guide</div>
+                  <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20, lineHeight: 1.5 }}>
                     We'll open an always-on-top companion window alongside Slack to walk you through pasting your tokens step-by-step.
                   </div>
                   <button onClick={async () => {
@@ -1849,12 +1833,12 @@ function OnboardingWizard() {
                       const { open } = await import('@tauri-apps/plugin-shell');
                       await open(url);
                     }
-                  }} style={{ padding: "12px 24px", borderRadius: 8, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer", boxShadow: "0 4px 12px rgba(60,102,99,0.3)" }}>
+                  }} style={{ padding: "12px 24px", borderRadius: 8, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", boxShadow: "0 4px 12px rgba(60,102,99,0.3)" }}>
                     Launch Slack Setup ✨
                   </button>
                 </div>
 
-                <div style={{ textAlign: "center", marginTop: 24, fontSize: 12, color: "var(--text-sub)" }}>
+                <div style={{ textAlign: "center", marginTop: 24, fontSize: 12, color: "#636E72" }}>
                   Listening for credentials from companion window...
                 </div>
               </div>
@@ -1862,26 +1846,26 @@ function OnboardingWizard() {
 
             {testStatus === "idle" && enabledPlugins[testPluginIndex] === "imessage" && (
               <div style={{ width: "100%", textAlign: "left" }}>
-                <div style={{ fontSize: 16, color: "var(--text-main)", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>iMessage Bridge</div>
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 24, textAlign: "center" }}>
+                <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>iMessage Bridge</div>
+                <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
                   Canopy reads iMessage directly from macOS. Keep your texts local.
                 </div>
 
-                {fullDiskAccessGranted !== true && (
-                  <div style={{ padding: "20px", background: "var(--surface-base)", borderRadius: 16, border: "1px solid var(--border-subtle)", marginBottom: 20, animation: "slideIn 0.3s ease" }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Permission Required</div>
-                    <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 20, lineHeight: 1.5 }}>
+                {fullDiskAccessGranted === false && (
+                  <div style={{ padding: "20px", background: "#f8f9fa", borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)", marginBottom: 20, animation: "slideIn 0.3s ease" }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Permission Required</div>
+                    <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20, lineHeight: 1.5 }}>
                       macOS blocks access to iMessage databases by default. To securely connect this, please toggle Canopy <strong>on</strong> in your System Settings under <strong>Full Disk Access</strong>.
                     </div>
 
-                    <div style={{ background: "var(--surface-card)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid rgba(0,0,0,0.08)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", marginBottom: 20 }}>
+                    <div style={{ background: "#ffffff", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid rgba(0,0,0,0.08)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", marginBottom: 20 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        <img src="/app-icon.png" alt="App Icon" style={{ width: 36, height: 36, borderRadius: 8, objectFit: "contain", boxShadow: "0 2px 8px rgba(0,0,0,0.1)" }} />
-                        <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)" }}>Canopy</div>
+                        <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #3c6663, #2a4745)", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 18, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.2)" }}>C</div>
+                        <div style={{ fontSize: 15, fontWeight: 600, color: "#1D1D1F" }}>Canopy</div>
                       </div>
                       <div style={{ position: "relative" }}>
                         <div style={{ width: 51, height: 31, background: "#34C759", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "flex-end", padding: 2, boxSizing: "border-box", boxShadow: "inset 0 1px 3px rgba(0,0,0,0.1)" }}>
-                          <div style={{ width: 27, height: 27, background: "var(--surface-card)", borderRadius: "50%", boxShadow: "0 2px 4px rgba(0,0,0,0.2), 0 1px 1px rgba(0,0,0,0.1)" }} />
+                          <div style={{ width: 27, height: 27, background: "white", borderRadius: "50%", boxShadow: "0 2px 4px rgba(0,0,0,0.2), 0 1px 1px rgba(0,0,0,0.1)" }} />
                         </div>
                         <div style={{ position: "absolute", top: -4, left: -4, right: -4, bottom: -4, border: "2px solid #007AFF", borderRadius: 24, animation: "pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite" }} />
                       </div>
@@ -1889,11 +1873,12 @@ function OnboardingWizard() {
 
                     <button onClick={async () => {
                       try {
-                        window.location.href = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
+                        const { open } = await import("@tauri-apps/plugin-shell");
+                        await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
                       } catch (e) {
                         console.error("Failed to open System Settings", e);
                       }
-                    }} style={{ width: "100%", padding: "14px 16px", background: "#3c6663", color: "var(--surface-card)", border: "none", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
+                    }} style={{ width: "100%", padding: "14px 16px", background: "#3c6663", color: "white", border: "none", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
                       Open System Settings
                     </button>
                     <div style={{ fontSize: 12, color: "#a0aab2", marginTop: 12, textAlign: "center" }}>Click <b>Run Test</b> below once you've flipped the system toggle!</div>
@@ -1903,7 +1888,7 @@ function OnboardingWizard() {
                 {fullDiskAccessGranted === true && (
                   <>
                     <div style={{ marginBottom: 20 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Access Level</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Access Level</div>
                       <div style={{ display: "flex", gap: 16 }}>
                         <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
                           <input type="radio" checked={imessageAccessLevel === "read-only"} onChange={() => setImessageAccessLevel("read-only")} /> Read-only
@@ -1915,10 +1900,10 @@ function OnboardingWizard() {
                     </div>
 
                     <div style={{ marginBottom: 20 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Allowed Conversations</div>
-                      <div style={{ border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, maxHeight: 160, overflowY: "auto", background: "var(--surface-base)" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Allowed Conversations</div>
+                      <div style={{ border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, maxHeight: 160, overflowY: "auto", background: "#f9f9f9" }}>
                         {imessageThreads.length === 0 ? (
-                          <div style={{ padding: 16, fontSize: 13, color: "var(--text-sub)", textAlign: "center" }}>Loading threads...</div>
+                          <div style={{ padding: 16, fontSize: 13, color: "#636E72", textAlign: "center" }}>Loading threads...</div>
                         ) : (
                           imessageThreads.map(thread => (
                             <label key={thread.chat_identifier} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid rgba(0,0,0,0.05)", cursor: "pointer" }}>
@@ -1929,9 +1914,9 @@ function OnboardingWizard() {
                                   else setSelectedIMessageThreads(selectedIMessageThreads.filter(id => id !== thread.chat_identifier));
                                 }}
                               />
-                              <div style={{ fontSize: 13, color: "var(--text-main)" }}>
+                              <div style={{ fontSize: 13, color: "#303330" }}>
                                 {thread.display_name || thread.chat_identifier}
-                                <span style={{ color: "var(--text-sub)", fontSize: 11, marginLeft: 6 }}>({thread.message_count} msgs)</span>
+                                <span style={{ color: "#636E72", fontSize: 11, marginLeft: 6 }}>({thread.message_count} msgs)</span>
                               </div>
                             </label>
                           ))
@@ -1985,7 +1970,7 @@ function OnboardingWizard() {
                       setFullDiskAccessGranted(false);
                     }
                   }} style={{
-                    padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
+                    padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
                   }}>
                     {fullDiskAccessGranted === true ? "Save Integration" : "Check Access & Load Threads"}
                   </button>
@@ -1995,13 +1980,13 @@ function OnboardingWizard() {
 
             {testStatus === "idle" && enabledPlugins[testPluginIndex] === "folders" && (
               <div style={{ width: "100%", textAlign: "left" }}>
-                <div style={{ fontSize: 16, color: "var(--text-main)", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Folder Permissions</div>
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 24, textAlign: "center" }}>
+                <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8, textAlign: "center" }}>Folder Permissions</div>
+                <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24, textAlign: "center" }}>
                   Select a local folder on your Mac for the agent to have complete read/write access to.
                 </div>
 
                 <div style={{ marginBottom: 20 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Access Type</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Access Type</div>
                   <div style={{ display: "flex", gap: 16 }}>
                     <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
                       <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} /> Specific Folder
@@ -2019,9 +2004,9 @@ function OnboardingWizard() {
 
                 {folderAccessType === "specific" && (
                   <div style={{ marginBottom: 20 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Mapped Directory</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Mapped Directory</div>
                     <div style={{ display: "flex", gap: 8 }}>
-                      <input type="text" readOnly value={selectedFolderPath} placeholder="No folder selected..." style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "var(--surface-base)" }} />
+                      <input type="text" readOnly value={selectedFolderPath} placeholder="No folder selected..." style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} />
                       <button onClick={async () => {
                         try {
                           const { open } = await import('@tauri-apps/plugin-dialog');
@@ -2049,7 +2034,7 @@ function OnboardingWizard() {
                     }
                     setTestStatus("success");
                   }} style={{
-                    padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: (folderAccessType === "all" || selectedFolderPath) ? "pointer" : "default", transition: "all 0.2s", opacity: (folderAccessType === "all" || selectedFolderPath) ? 1 : 0.5
+                    padding: "12px 32px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: (folderAccessType === "all" || selectedFolderPath) ? "pointer" : "default", transition: "all 0.2s", opacity: (folderAccessType === "all" || selectedFolderPath) ? 1 : 0.5
                   }}>Save Access Map</button>
                 </div>
               </div>
@@ -2057,8 +2042,8 @@ function OnboardingWizard() {
 
             {testStatus === "idle" && (enabledPlugins[testPluginIndex] === "email" || enabledPlugins[testPluginIndex] === "calendar") && (
               <div style={{ width: "100%", textAlign: "center" }}>
-                <div style={{ fontSize: 16, color: "var(--text-main)", fontWeight: 700, marginBottom: 8 }}>Google Workspace APIs</div>
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 24 }}>
+                <div style={{ fontSize: 16, color: "#303330", fontWeight: 700, marginBottom: 8 }}>Google Workspace APIs</div>
+                <div style={{ fontSize: 13, color: "#636E72", marginBottom: 24 }}>
                   Connect your Google account directly on your Mac using a secure local loopback. Canopy never proxies your data through our servers.
                 </div>
                 <button onClick={async () => {
@@ -2080,7 +2065,7 @@ function OnboardingWizard() {
                     setTestStatus("error");
                   }
                 }} style={{
-                  padding: "12px 24px", borderRadius: 12, border: "none", background: "var(--surface-card)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, margin: "0 auto", border: "1px solid rgba(0,0,0,0.1)", boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
+                  padding: "12px 24px", borderRadius: 12, border: "none", background: "white", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, margin: "0 auto", border: "1px solid rgba(0,0,0,0.1)", boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
                 }}>
                   <svg width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" /><path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" /><path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" /><path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" /></svg>
                   Connect {enabledPlugins[testPluginIndex] === "email" ? "Gmail" : "Google Calendar"}
@@ -2090,12 +2075,12 @@ function OnboardingWizard() {
 
             {testStatus === "idle" && enabledPlugins[testPluginIndex] !== "slack" && enabledPlugins[testPluginIndex] !== "imessage" && enabledPlugins[testPluginIndex] !== "folders" && enabledPlugins[testPluginIndex] !== "email" && enabledPlugins[testPluginIndex] !== "calendar" && (
               <>
-                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 16 }}>Test Action: Send a test ping to your {enabledPlugins[testPluginIndex]}.</div>
+                <div style={{ fontSize: 14, color: "#303330", fontWeight: 600, marginBottom: 16 }}>Test Action: Send a test ping to your {enabledPlugins[testPluginIndex]}.</div>
                 <button onClick={() => {
                   setTestStatus("testing");
                   setTimeout(() => setTestStatus("success"), 1500);
                 }} style={{
-                  padding: "12px 24px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
+                  padding: "12px 24px", borderRadius: 12, border: "none", background: "#3c6663", color: "white", fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
                 }}>Run Test</button>
               </>
             )}
@@ -2111,8 +2096,8 @@ function OnboardingWizard() {
               <div style={{ color: "#E53E3E", fontSize: 16, fontWeight: 600, textAlign: "center" }}>
                 <span style={{ fontSize: 32, display: "block", marginBottom: 8 }}>❌</span>
                 Connection Failed.
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>Make sure both tokens are valid and the app is installed.</div>
-                <button onClick={() => setTestStatus("idle")} style={{ marginTop: 16, padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", cursor: "pointer", fontSize: 13 }}>Try Again</button>
+                <div style={{ fontSize: 13, color: "#636E72", marginTop: 8, fontWeight: 400 }}>Make sure both tokens are valid and the app is installed.</div>
+                <button onClick={() => setTestStatus("idle")} style={{ marginTop: 16, padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", cursor: "pointer", fontSize: 13 }}>Try Again</button>
               </div>
             )}
 
@@ -2121,7 +2106,7 @@ function OnboardingWizard() {
                 <span style={{ fontSize: 32, display: "block", marginBottom: 8 }}>✅</span>
                 Connected successfully!
                 {enabledPlugins[testPluginIndex] === "slack" && slackWorkspaceMsg && (
-                  <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>{slackWorkspaceMsg}</div>
+                  <div style={{ fontSize: 13, color: "#636E72", marginTop: 8, fontWeight: 400 }}>{slackWorkspaceMsg}</div>
                 )}
               </div>
             )}
@@ -2129,7 +2114,7 @@ function OnboardingWizard() {
 
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <button onClick={() => {
-              if (testStatus === "success" || testStatus === "error") {
+              if (testStatus === "success") {
                 if (testPluginIndex < enabledPlugins.length - 1) {
                   setTestPluginIndex(testPluginIndex + 1);
                   setTestStatus("idle");
@@ -2137,15 +2122,15 @@ function OnboardingWizard() {
                   setStep(6);
                 }
               }
-            }} disabled={testStatus === "idle" || testStatus === "testing"} style={{
+            }} disabled={testStatus !== "success"} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
-              background: testStatus === "success" || testStatus === "error" ? "#3c6663" : "var(--border-subtle)",
-              color: testStatus === "success" || testStatus === "error" ? "var(--surface-card)" : "var(--text-muted)",
-              fontSize: 14, fontWeight: 600, cursor: testStatus === "success" || testStatus === "error" ? "pointer" : "default",
+              background: testStatus === "success" ? "#3c6663" : "rgba(0,0,0,0.06)",
+              color: testStatus === "success" ? "white" : "#B2BEC3",
+              fontSize: 14, fontWeight: 600, cursor: testStatus === "success" ? "pointer" : "default",
               fontFamily: "inherit",
               width: "100%", maxWidth: 200
             }}>
-              {testStatus === "error" ? "Skip For Now" : testPluginIndex < enabledPlugins.length - 1 ? "Next Integration" : "Finish Setup"}
+              {testPluginIndex < enabledPlugins.length - 1 ? "Next Integration" : "Finish Setup"}
             </button>
           </div>
         </div>
@@ -2181,7 +2166,7 @@ function OnboardingWizard() {
                       position: "absolute", top: 10, left: 12,
                       fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
                       color: shellColor, textTransform: "uppercase",
-                      background: "var(--glass-light)", borderRadius: 4, padding: "2px 7px",
+                      background: "rgba(255,255,255,0.55)", borderRadius: 4, padding: "2px 7px",
                     }}>{habitatLabel}</div>
                     <div style={{
                       position: "absolute", bottom: 10, width: 56, height: 14,
@@ -2195,7 +2180,7 @@ function OnboardingWizard() {
                     )}
                   </div>
                   <div style={{
-                    background: "var(--glass-heavy)", padding: "10px 16px 11px",
+                    background: "rgba(255,255,255,0.96)", padding: "10px 16px 11px",
                     borderTop: `1px solid ${borderColor}20`,
                   }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: shellColor, letterSpacing: "0.03em" }}>
@@ -2206,10 +2191,10 @@ function OnboardingWizard() {
               );
             })()}
           </div>
-          <h1 style={{ fontSize: 44, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif" }}>
+          <h1 style={{ fontSize: 44, fontWeight: 700, color: "#303330", marginBottom: 12, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif" }}>
             {agentName} is Alive!
           </h1>
-          <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 40, maxWidth: 400, margin: "0 auto 40px" }}>
+          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 40, maxWidth: 400, margin: "0 auto 40px" }}>
             Your agent is ready. Drop them into The Canopy and watch them work.
           </p>
 
@@ -2223,7 +2208,7 @@ function OnboardingWizard() {
           <button onClick={handleCreateAgent} disabled={isCreatingAgent} style={{
             padding: "16px 40px", borderRadius: 16, border: "none",
             background: createAgentError ? "#E53E3E" : "linear-gradient(135deg, #3c6663, #b8e6e2)",
-            color: "var(--surface-card)", fontSize: 16, fontWeight: 600, cursor: isCreatingAgent ? "not-allowed" : "pointer",
+            color: "white", fontSize: 16, fontWeight: 600, cursor: isCreatingAgent ? "not-allowed" : "pointer",
             boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
             transition: "all 0.3s ease",
             opacity: isCreatingAgent ? 0.7 : 1
@@ -2272,7 +2257,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
       {/* ── Left Sidebar ── */}
       <div style={{
         width: 240, padding: "24px 16px", display: "flex", flexDirection: "column", gap: 4,
-        borderRight: "1px solid rgba(0,0,0,0.06)", background: "var(--glass-light)",
+        borderRight: "1px solid rgba(0,0,0,0.06)", background: "rgba(255,255,255,0.3)",
       }}>
         {/* Agent identity */}
         <div style={{ padding: "0 8px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)", marginBottom: 12 }}>
@@ -2288,13 +2273,13 @@ function ArchitectView({ agent }: { agent: AgentData }) {
               </div>
               <div style={{
                 position: "absolute", bottom: -2, right: -2, width: 10, height: 10, borderRadius: "50%",
-                background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
+                background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#B2BEC3",
                 border: "2px solid white", zIndex: 2
               }} />
             </div>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Architect View</div>
-              <div style={{ fontSize: 11, color: "var(--text-sub)" }}>{agent.name} / {agent.role}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>Architect View</div>
+              <div style={{ fontSize: 11, color: "#636E72" }}>{agent.name} / {agent.role}</div>
             </div>
           </div>
         </div>
@@ -2322,7 +2307,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         <div style={{ padding: "10px 0", borderTop: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", gap: 8, position: "relative" }}>
           <button
             onClick={() => setShowDangerZone(!showDangerZone)}
-            style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", textAlign: "right", padding: "4px 8px" }}
+            style={{ background: "transparent", border: "none", color: "#B2BEC3", cursor: "pointer", textAlign: "right", padding: "4px 8px" }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: showDangerZone ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}>
               <polyline points="18 15 12 9 6 15"></polyline>
@@ -2349,7 +2334,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
                   );
                   await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
                 }}
-                style={{ width: "100%", padding: "8px 12px", background: "var(--surface-base)", color: "var(--text-sub)", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6 }}
+                style={{ width: "100%", padding: "8px 12px", background: "#f9f9f9", color: "#636E72", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6 }}
               >
                 Pause Agent
               </button>
@@ -2405,7 +2390,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
           style={{
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             padding: "10px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 12, cursor: "pointer",
-            background: "var(--glass-light)", color: "#218380", fontSize: 12, fontFamily: "inherit",
+            background: "rgba(255,255,255,0.5)", color: "#218380", fontSize: 12, fontFamily: "inherit",
             fontWeight: 600, marginTop: 4, transition: "all 0.2s ease"
           }}>
           <SvgIcon size={14}><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><circle cx="12" cy="12" r="3"></circle></SvgIcon>
@@ -2415,7 +2400,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         <button onClick={() => setActiveView("canopy")} style={{
           display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
           padding: "8px", border: "none", borderRadius: 8, cursor: "pointer",
-          background: "transparent", color: "var(--text-sub)", fontSize: 12, fontFamily: "inherit",
+          background: "transparent", color: "#636E72", fontSize: 12, fontFamily: "inherit",
           marginTop: 4,
         }}>
           <SvgIcon size={14}><path d="M11 17l-5-5m0 0l5-5m-5 5h12" /></SvgIcon>
@@ -2500,89 +2485,89 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
     <div style={{ maxWidth: 800, margin: "0 auto", paddingBottom: 60, width: "100%" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 40 }}>
         <div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Connections & Permissions</h2>
-          <p style={{ fontSize: 14, color: "var(--text-sub)", lineHeight: 1.5 }}>
+          <h2 style={{ fontSize: 24, fontWeight: 700, color: "#303330", marginBottom: 8 }}>Connections & Permissions</h2>
+          <p style={{ fontSize: 14, color: "#636E72", lineHeight: 1.5 }}>
             Manage how this agent connects to external services. You can set a global strategy or customize individually.
           </p>
         </div>
         <button onClick={saveConnections} disabled={saveStatus === "loading"} style={{
           padding: "10px 24px", borderRadius: 12, border: "none", cursor: "pointer",
-          background: "#3c6663", color: "var(--surface-card)", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
+          background: "#3c6663", color: "white", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
         }}>
           {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Integrations"}
         </button>
       </div>
 
       <div style={{ marginBottom: 40 }}>
-        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 16 }}>Global Connection Strategy</h3>
+        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "#B2BEC3", marginBottom: 16 }}>Global Connection Strategy</h3>
         <div style={{ display: "flex", gap: 12 }}>
           {/* Lockdown */}
           <button onClick={() => setStrategy("lockdown")} style={{
             flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
             border: strategy === "lockdown" ? "2px solid #2E7D32" : "1px solid rgba(0,0,0,0.06)",
-            background: strategy === "lockdown" ? "#e8f5e9" : "var(--surface-card)",
+            background: strategy === "lockdown" ? "#e8f5e9" : "white",
           }}>
             <div style={{ fontSize: 16, fontWeight: 800, color: "#2E7D32", marginBottom: 4 }}>Total Lock Down</div>
-            <div style={{ fontSize: 12, color: strategy === "lockdown" ? "#1B5E20" : "var(--text-sub)" }}>Agent uses isolated, dedicated sandbox accounts.</div>
+            <div style={{ fontSize: 12, color: strategy === "lockdown" ? "#1B5E20" : "#636E72" }}>Agent uses isolated, dedicated sandbox accounts.</div>
           </button>
 
           {/* Secure */}
           <button onClick={() => setStrategy("secure")} style={{
             flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
             border: strategy === "secure" ? "2px solid #00ACC1" : "1px solid rgba(0,0,0,0.06)",
-            background: strategy === "secure" ? "#e0f7fa" : "var(--surface-card)",
+            background: strategy === "secure" ? "#e0f7fa" : "white",
           }}>
             <div style={{ fontSize: 16, fontWeight: 800, color: "#00ACC1", marginBottom: 4 }}>Secure Power</div>
-            <div style={{ fontSize: 12, color: strategy === "secure" ? "#006064" : "var(--text-sub)" }}>Read-only OAuth access to your real accounts.</div>
+            <div style={{ fontSize: 12, color: strategy === "secure" ? "#006064" : "#636E72" }}>Read-only OAuth access to your real accounts.</div>
           </button>
 
           {/* YOLO */}
           <button onClick={() => setStrategy("yolo")} style={{
             flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
             border: strategy === "yolo" ? "2px solid #C62828" : "1px solid rgba(0,0,0,0.06)",
-            background: strategy === "yolo" ? "#fdeaea" : "var(--surface-card)",
+            background: strategy === "yolo" ? "#fdeaea" : "white",
           }}>
             <div style={{ fontSize: 16, fontWeight: 800, color: "#C62828", marginBottom: 4 }}>YOLO Mode ⚠️</div>
-            <div style={{ fontSize: 12, color: strategy === "yolo" ? "#b71c1c" : "var(--text-sub)" }}>Full Read/Write access to user accounts.</div>
+            <div style={{ fontSize: 12, color: strategy === "yolo" ? "#b71c1c" : "#636E72" }}>Full Read/Write access to user accounts.</div>
           </button>
         </div>
       </div>
 
-      <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 16 }}>Function Settings</h3>
+      <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "#B2BEC3", marginBottom: 16 }}>Function Settings</h3>
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
         {/* Email */}
-        <div style={{ padding: 24, background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
+        <div style={{ padding: 24, background: "white", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
           <div style={{ width: "30%" }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Email Access</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Interact with email.</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Email Access</div>
+            <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Interact with email.</div>
           </div>
           <div style={{ flex: 1, padding: "0 20px" }}>
             <select value={emailSetting} onChange={(e) => {
               setEmailSetting(e.target.value);
               setStrategy("custom");
-            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", fontSize: 14 }}>
+            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "#f9f9f9", fontSize: 14 }}>
               <option value="dedicated">Dedicated Agent Account (IMAP Forwarded)</option>
               <option value="oauth_read">User's Real Email via OAuth (Read-Only)</option>
               <option value="oauth_write">User's Real Email via OAuth (Read/Write ⚠️)</option>
             </select>
           </div>
           <div style={{ width: 120, textAlign: "right" }}>
-            <button onClick={() => openCompanion(`email_${emailSetting}`)} style={{ padding: "8px 16px", background: "var(--text-main)", color: "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Connect</button>
+            <button onClick={() => openCompanion(`email_${emailSetting}`)} style={{ padding: "8px 16px", background: "#303330", color: "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Connect</button>
           </div>
         </div>
 
         {/* Calendar */}
-        <div style={{ padding: 24, background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
+        <div style={{ padding: 24, background: "white", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
           <div style={{ width: "30%" }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Calendar Access</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Schedule & reading events.</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Calendar Access</div>
+            <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Schedule & reading events.</div>
           </div>
           <div style={{ flex: 1, padding: "0 20px" }}>
             <select value={calendarSetting} onChange={(e) => {
               setCalendarSetting(e.target.value);
               setStrategy("custom");
-            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", fontSize: 14 }}>
+            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "#f9f9f9", fontSize: 14 }}>
               <option value="dedicated">Dedicated Sandbox Calendar (Isolated)</option>
               <option value="oauth_read">User's Real Calendar via OAuth (Read-Only)</option>
               <option value="oauth_write">User's Real Calendar via OAuth (Read/Write ⚠️)</option>
@@ -2595,28 +2580,28 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
               } else {
                 alert("Dedicated Calendar is provisioned automatically locally. No credentials needed!");
               }
-            }} style={{ padding: "8px 16px", background: calendarSetting === "dedicated" ? "#e0e0e0" : "var(--text-main)", color: calendarSetting === "dedicated" ? "#888" : "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: calendarSetting === "dedicated" ? "default" : "pointer" }}>
+            }} style={{ padding: "8px 16px", background: calendarSetting === "dedicated" ? "#e0e0e0" : "#303330", color: calendarSetting === "dedicated" ? "#888" : "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: calendarSetting === "dedicated" ? "default" : "pointer" }}>
               {calendarSetting === "dedicated" ? "Active" : "Connect"}
             </button>
           </div>
         </div>
 
         {/* App Integrations section */}
-        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 16, marginTop: 24 }}>App Integrations</h3>
+        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "#B2BEC3", marginBottom: 16, marginTop: 24 }}>App Integrations</h3>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Slack */}
-          <div style={{ padding: 24, background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
+          <div style={{ padding: 24, background: "white", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
             <div style={{ width: "30%" }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Slack</div>
-              <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Work chat & agent interaction.</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Slack</div>
+              <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Work chat & agent interaction.</div>
             </div>
             <div style={{ flex: 1, padding: "0 20px" }}>
-              <select value="socket" disabled style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", fontSize: 14, cursor: "not-allowed", color: "var(--text-sub)" }}>
+              <select value="socket" disabled style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "#f9f9f9", fontSize: 14, cursor: "not-allowed", color: "#636E72" }}>
                 <option value="socket">Private Socket Mode (Local-Only)</option>
               </select>
             </div>
             <div style={{ width: 140, textAlign: "right", display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
-              <button onClick={() => openCompanion('slack')} style={{ padding: "8px 16px", background: "var(--text-main)", color: "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer", width: "100%" }}>
+              <button onClick={() => openCompanion('slack')} style={{ padding: "8px 16px", background: "#303330", color: "white", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer", width: "100%" }}>
                 Connect
               </button>
               <div
@@ -2655,12 +2640,12 @@ function OverviewTab({ agent }: { agent: AgentData }) {
       {agent.status === "error" && (
         <div style={{ background: "#fcf3f3", border: "1px solid #f2bdbd", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
-            <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#E57373", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--surface-card)", flexShrink: 0 }}>
+            <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#E57373", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Agent Environment Offline</div>
-              <div style={{ fontSize: 13, color: "var(--text-sub)" }}>The OpenClaw setup failed or the local Docker container unexpectedly stopped.</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#303330", marginBottom: 4 }}>Agent Environment Offline</div>
+              <div style={{ fontSize: 13, color: "#636E72" }}>The OpenClaw setup failed or the local Docker container unexpectedly stopped.</div>
             </div>
             <button
               id="repair-openclaw-btn"
@@ -2695,7 +2680,7 @@ function OverviewTab({ agent }: { agent: AgentData }) {
                 }
                 setTimeout(() => { if (btn) btn.innerText = "Re-Initialize Setup"; }, 2000);
               }}
-              style={{ padding: "10px 20px", borderRadius: 10, background: "#E57373", color: "var(--surface-card)", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "all 0.2s ease" }}>
+              style={{ padding: "10px 20px", borderRadius: 10, background: "#E57373", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "all 0.2s ease" }}>
               Re-Initialize Setup
             </button>
           </div>
@@ -2709,10 +2694,10 @@ function OverviewTab({ agent }: { agent: AgentData }) {
 
       {/* Header */}
       <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 36, fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
-          {agent.name}: <span style={{ color: "var(--text-sub)", fontWeight: 400 }}>{agent.title}</span>
+        <h1 style={{ fontSize: 36, fontWeight: 700, color: "#303330", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
+          {agent.name}: <span style={{ color: "#636E72", fontWeight: 400 }}>{agent.title}</span>
         </h1>
-        <p style={{ fontSize: 15, color: "var(--text-sub)", marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
+        <p style={{ fontSize: 15, color: "#636E72", marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
           {agent.description}
         </p>
       </div>
@@ -2720,31 +2705,31 @@ function OverviewTab({ agent }: { agent: AgentData }) {
       {/* Status + Stats row */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Current State</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Current State</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 10, height: 10, borderRadius: "50%",
-              background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
+              background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#B2BEC3",
               boxShadow: agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
             }} />
-            <span style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)", textTransform: "capitalize" }}>{agent.status === "error" ? "Offline" : agent.currentAction}</span>
+            <span style={{ fontSize: 20, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>{agent.status === "error" ? "Offline" : agent.currentAction}</span>
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12, fontSize: 11, color: "var(--text-sub)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12, fontSize: 11, color: "#636E72" }}>
             <span>Uptime</span>
-            <span style={{ fontWeight: 500, color: "var(--text-main)" }}>{agent.uptime}</span>
+            <span style={{ fontWeight: 500, color: "#303330" }}>{agent.uptime}</span>
           </div>
         </div>
 
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Resource Consumption</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Resource Consumption</div>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
             <div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Weekly Compute</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>{agent.weeklyCompute}</div>
+              <div style={{ fontSize: 10, color: "#636E72" }}>Weekly Compute</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: "#303330" }}>{agent.weeklyCompute}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Tokens Mined</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>
+              <div style={{ fontSize: 10, color: "#636E72" }}>Tokens Mined</div>
+              <div style={{ fontSize: 20, fontWeight: 600, color: "#303330" }}>
                 {(() => {
                   const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
                   if (totalTokens === 0) return agent.tokensUsed || "0k";
@@ -2759,9 +2744,9 @@ function OverviewTab({ agent }: { agent: AgentData }) {
         </div>
 
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Cost (Active)</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)" }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
-          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 8 }}>of ${agent.spendLimit} limit</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 8 }}>Cost (Active)</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "#303330" }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
+          <div style={{ fontSize: 11, color: "#636E72", marginBottom: 8 }}>of ${agent.spendLimit} limit</div>
           <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color={(agent.stats?.total_cost_usd || agent.monthlySpend || 0) > agent.spendLimit * 0.8 ? "#D4A04A" : "#4A9E96"} />
         </div>
       </div>
@@ -2769,19 +2754,19 @@ function OverviewTab({ agent }: { agent: AgentData }) {
       {/* Core Nature + Permissions quick view */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr", gap: 16 }}>
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Core Nature</div>
-          <div style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic", lineHeight: 1.5 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 16 }}>Core Nature</div>
+          <div style={{ fontSize: 12, color: "#636E72", fontStyle: "italic", lineHeight: 1.5 }}>
             "{agent.personalityPrompt}"
           </div>
         </div>
 
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Key Permissions</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 16 }}>Key Permissions</div>
           {agent.permissions.filter(p => ["autonomous", "payments", "ext_network", "file_write"].includes(p.id)).map(p => (
             <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
               <div>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-main)" }}>{p.label}</div>
-                <div style={{ fontSize: 11, color: "var(--text-sub)" }}>{p.description}</div>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "#303330" }}>{p.label}</div>
+                <div style={{ fontSize: 11, color: "#636E72" }}>{p.description}</div>
               </div>
               <Toggle enabled={p.enabled} onChange={() => useWorldStore.getState().togglePermission(agent.id, p.id)} size="small" />
             </div>
@@ -2789,7 +2774,7 @@ function OverviewTab({ agent }: { agent: AgentData }) {
         </div>
 
         <div style={{ ...glass(0.5), padding: 20, borderRadius: 16, display: "flex", flexDirection: "column", maxHeight: 300 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Quick Comms</div>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "#636E72", textTransform: "uppercase", marginBottom: 16 }}>Quick Comms</div>
           <ChatTab agent={agent} compact={true} />
         </div>
       </div>
@@ -2829,7 +2814,7 @@ function IdentityTab({ agent }: { agent: AgentData }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
         {/* Area 1: Base Lobster & Accessories */}
-        <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 300 }}>
+        <div style={{ background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 300 }}>
           <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
             <ambientLight intensity={0.8} color="#F5E6D8" />
             <directionalLight position={[10, 20, 5]} intensity={1} />
@@ -2847,7 +2832,7 @@ function IdentityTab({ agent }: { agent: AgentData }) {
               />
             </group>
           </Canvas>
-          <div style={{ position: "absolute", top: 16, left: 16, background: "var(--glass-heavy)", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#218380", display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.8)", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "#218380", display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#218380", animation: "pulse 2s infinite" }} />
             Core Agent
           </div>
@@ -2857,7 +2842,7 @@ function IdentityTab({ agent }: { agent: AgentData }) {
         <div style={{ display: "flex", gap: 16, flex: 1, minHeight: 180 }}>
 
           {/* Area 2: Standalone Accessories Rack */}
-          <div style={{ flex: 1, background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
+          <div style={{ flex: 1, background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
             <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 90 }}>
               <ambientLight intensity={0.8} />
               <directionalLight position={[10, 20, 5]} intensity={1} />
@@ -2868,18 +2853,18 @@ function IdentityTab({ agent }: { agent: AgentData }) {
                 <mesh><boxGeometry args={[0.5, 0.5, 0.5]} /><meshStandardMaterial wireframe color="#cccccc" /></mesh>
               )}
             </Canvas>
-            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "var(--text-sub)" }}>Component</div>
+            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "#636E72" }}>Component</div>
           </div>
 
           {/* Area 3: Pedestal Habitat */}
-          <div style={{ flex: 1, background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
+          <div style={{ flex: 1, background: "rgba(255,255,255,0.4)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)" }}>
             <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 70 }}>
               <ambientLight intensity={0.8} />
               <directionalLight position={[10, 20, 5]} intensity={1} />
               <OrbitControls autoRotate autoRotateSpeed={1} enablePan={false} />
               <Pedestal color={agent.color || "#C8D8E8"} />
             </Canvas>
-            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "var(--text-sub)" }}>Habitat Platform</div>
+            <div style={{ position: "absolute", top: 12, left: 16, fontSize: 11, fontWeight: 600, color: "#636E72" }}>Habitat Platform</div>
           </div>
 
         </div>
@@ -3013,15 +2998,15 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
 
   return (
     <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Neural Path</h1>
-      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28 }}>Shape how {agent.name} thinks, acts, and appears.</p>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Neural Path</h1>
+      <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>Shape how {agent.name} thinks, acts, and appears.</p>
 
       {/* Advanced Provider Configuration */}
       <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 24, marginBottom: 24 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>Cognitive Engines (LLM)</div>
-            <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#303330", marginBottom: 4 }}>Cognitive Engines (LLM)</div>
+            <div style={{ fontSize: 13, color: "#636E72" }}>
               Override the global API vault for explicitly isolating this agent. Keep empty to use standard globals.
             </div>
           </div>
@@ -3030,7 +3015,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
             <select
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
-              style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", cursor: "pointer", width: 220 }}
+              style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "white", color: "#303330", cursor: "pointer", width: 220 }}
             >
               <option value="">Strategy: {defaultModelInfo.model}</option>
               <optgroup label="Available Engines">
@@ -3046,7 +3031,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
           {["OpenAI", "Anthropic", "Gemini", "Grok"].map(prov => (
             <div key={prov}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-main)" }}>{prov} API Key</div>
+                <div style={{ fontSize: 12, fontWeight: 500, color: "#303330" }}>{prov} API Key</div>
                 <div
                   style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
                   onClick={async () => {
@@ -3068,7 +3053,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
                 placeholder={prov === "Anthropic" ? "sk-ant-..." : "sk-..."}
                 value={keys[prov]}
                 onChange={(e) => setKeys(prev => ({ ...prev, [prov]: e.target.value }))}
-                style={{ padding: "10px 14px", width: "100%", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--glass-light)" }}
+                style={{ padding: "10px 14px", width: "100%", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "rgba(255,255,255,0.7)" }}
               />
             </div>
           ))}
@@ -3077,7 +3062,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button onClick={saveOverrides} disabled={saveStatus === "loading"} style={{
             padding: "10px 24px", borderRadius: 8, border: "none", cursor: "pointer",
-            background: "#3c6663", color: "var(--surface-card)", fontWeight: 600, fontSize: 13, minWidth: 120
+            background: "#3c6663", color: "white", fontWeight: 600, fontSize: 13, minWidth: 120
           }}>
             {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Overrides"}
           </button>
@@ -3087,14 +3072,14 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
         {/* Training Books */}
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Training Books</div>
-          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>These books are injected into the agent's context to subtly shift their default decision making.</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Training Books</div>
+          <div style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>These books are injected into the agent's context to subtly shift their default decision making.</div>
 
           <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-              {recentlyRead.length === 0 && <span style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic" }}>No books assigned.</span>}
+              {recentlyRead.length === 0 && <span style={{ fontSize: 12, color: "#636E72", fontStyle: "italic" }}>No books assigned.</span>}
               {recentlyRead.map(book => (
-                <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "var(--surface-card)", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "white", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
                   {book}
                   <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
                 </div>
@@ -3119,19 +3104,19 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
                   setRecentlyRead([...recentlyRead, customBookInput.trim()]);
                   setCustomBookInput("");
                 }
-              }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+              }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#f4f4f0", color: "#303330", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
             </div>
           </div>
         </div>
 
         {/* Personality Prompt */}
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Personality Seed</div>
-          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>Describe how this agent should behave. This shapes their decision-making and communication style.</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#303330", marginBottom: 6 }}>Personality Seed</div>
+          <div style={{ fontSize: 11, color: "#636E72", marginBottom: 12 }}>Describe how this agent should behave. This shapes their decision-making and communication style.</div>
           <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={6} style={{
             flex: 1, padding: 12, borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)",
-            background: "var(--surface-base)", fontSize: 13, fontFamily: "inherit",
-            color: "var(--text-main)", resize: "none", outline: "none", lineHeight: 1.6,
+            background: "#f4f4f0", fontSize: 13, fontFamily: "inherit",
+            color: "#303330", resize: "none", outline: "none", lineHeight: 1.6,
           }} />
           <button
             onClick={async () => {
@@ -3157,7 +3142,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
             id="save-pers-btn"
             style={{
               marginTop: 12, padding: "8px 16px", borderRadius: 8, border: "none",
-              background: "#3c6663", color: "var(--surface-card)", fontSize: 12, fontWeight: 600,
+              background: "#3c6663", color: "white", fontSize: 12, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-end",
               transition: "all 0.2s ease"
             }}>Save Changes</button>
@@ -3202,8 +3187,8 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
 
   return (
     <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Permissions</h1>
-      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28 }}>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Permissions</h1>
+      <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>
         Granular control over {agent.name}'s capabilities. Changes take effect immediately.
       </p>
 
@@ -3217,8 +3202,8 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
         </svg>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Shared Container</div>
-          <div style={{ fontSize: 11, color: "var(--text-sub)" }}>This agent runs in the shared Gateway. Switch to isolated for OS-level sandboxing.</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Shared Container</div>
+          <div style={{ fontSize: 11, color: "#636E72" }}>This agent runs in the shared Gateway. Switch to isolated for OS-level sandboxing.</div>
         </div>
         <div style={{ flex: 1 }} />
         <button
@@ -3243,7 +3228,7 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           }}
           style={{
             padding: "6px 14px", borderRadius: 8, border: "1px solid #6B6BAE",
-            background: agent.isolated ? "#6B6BAE" : "transparent", color: agent.isolated ? "var(--surface-card)" : "#6B6BAE", fontSize: 12, fontWeight: 600,
+            background: agent.isolated ? "#6B6BAE" : "transparent", color: agent.isolated ? "white" : "#6B6BAE", fontSize: 12, fontWeight: 600,
             cursor: "pointer", fontFamily: "inherit", transition: "all 0.2s"
           }}>{agent.isolated ? "Un-Isolate" : "Isolate"}</button>
       </div>
@@ -3258,7 +3243,7 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
               borderBottom: `2px solid ${bucket.color}`, display: "flex", flexDirection: "column"
             }}>
               <div style={{ fontSize: 14, fontWeight: 800, color: bucket.color, marginBottom: 4 }}>{bucket.label}</div>
-              <div style={{ fontSize: 12, color: bucket.isYolo ? "#b71c1c" : "var(--text-sub)", fontWeight: bucket.isYolo ? 600 : 400 }}>{bucket.desc}</div>
+              <div style={{ fontSize: 12, color: bucket.isYolo ? "#b71c1c" : "#636E72", fontWeight: bucket.isYolo ? 600 : 400 }}>{bucket.desc}</div>
             </div>
             <div style={{ ...glass(0.5), borderBottomLeftRadius: 14, borderBottomRightRadius: 14, overflow: "hidden" }}>
               {bucketPerms.map((p, i, arr) => (
@@ -3268,8 +3253,8 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
                   borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none",
                 }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{p.label}</div>
-                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#303330" }}>{p.label}</div>
+                    <div style={{ fontSize: 11, color: "#636E72", marginTop: 4 }}>{p.description}</div>
                   </div>
                   <Toggle enabled={p.enabled} onChange={async () => {
                     toggle(agent.id, p.id);
@@ -3351,8 +3336,8 @@ function MemoryTab({ agent }: { agent: AgentData }) {
 
   return (
     <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Memory</h1>
-      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28 }}>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Memory</h1>
+      <p style={{ fontSize: 14, color: "#636E72", marginBottom: 28 }}>
         What {agent.name} has learned and remembers. Memories are versioned and can be pruned.
       </p>
 
@@ -3360,17 +3345,17 @@ function MemoryTab({ agent }: { agent: AgentData }) {
         {["All", "Learned", "Experience", "Preference"].map(f => (
           <button key={f} style={{
             padding: "6px 14px", borderRadius: 20, border: "1px solid rgba(0,0,0,0.08)",
-            background: f === "All" ? "#3c6663" : "var(--glass-light)",
-            color: f === "All" ? "var(--surface-card)" : "var(--text-sub)",
+            background: f === "All" ? "#3c6663" : "rgba(255,255,255,0.5)",
+            color: f === "All" ? "white" : "#636E72",
             fontSize: 12, fontWeight: 500, cursor: "pointer", fontFamily: "inherit",
           }}>{f}</button>
         ))}
       </div>
 
       <div style={{ ...glass(0.5), padding: 20, borderRadius: 16, marginBottom: 24 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 12 }}>Inject Manual Core Memory</div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 12 }}>Inject Manual Core Memory</div>
         <div style={{ display: "flex", gap: 12 }}>
-          <select value={newMemoryType} onChange={e => setNewMemoryType(e.target.value)} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", outline: "none" }}>
+          <select value={newMemoryType} onChange={e => setNewMemoryType(e.target.value)} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", outline: "none" }}>
             <option value="learned">Learned Fact</option>
             <option value="experience">Experience</option>
             <option value="preference">Preference</option>
@@ -3381,11 +3366,11 @@ function MemoryTab({ agent }: { agent: AgentData }) {
             onChange={e => setNewMemoryText(e.target.value)}
             onKeyDown={e => e.key === "Enter" && handleCreateMemory()}
             placeholder="e.g. Only use the main branch for deployment."
-            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", outline: "none", fontSize: 13 }}
+            style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", outline: "none", fontSize: 13 }}
           />
           <button onClick={handleCreateMemory} disabled={saveStatus === "loading" || !newMemoryText.trim()} style={{
-            padding: "10px 20px", borderRadius: 8, border: "none", background: !newMemoryText.trim() ? "var(--border-subtle)" : "#3c6663",
-            color: !newMemoryText.trim() ? "#A0A0A0" : "var(--surface-card)", fontWeight: 600, cursor: !newMemoryText.trim() ? "not-allowed" : "pointer"
+            padding: "10px 20px", borderRadius: 8, border: "none", background: !newMemoryText.trim() ? "rgba(0,0,0,0.05)" : "#3c6663",
+            color: !newMemoryText.trim() ? "#A0A0A0" : "white", fontWeight: 600, cursor: !newMemoryText.trim() ? "not-allowed" : "pointer"
           }}>
             {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : "Inject"}
           </button>
@@ -3394,7 +3379,7 @@ function MemoryTab({ agent }: { agent: AgentData }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {memories.length === 0 ? (
-          <div style={{ padding: "40px 20px", textAlign: "center", color: "var(--text-sub)", fontSize: 14 }}>
+          <div style={{ padding: "40px 20px", textAlign: "center", color: "#636E72", fontSize: 14 }}>
             {agent.name} doesn't have any memories yet.<br />Memories are formed asynchronously as the agent works.
           </div>
         ) : (
@@ -3407,13 +3392,13 @@ function MemoryTab({ agent }: { agent: AgentData }) {
                       fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em",
                       color: typeColors[m.type], background: `${typeColors[m.type]}15`, padding: "2px 8px", borderRadius: 4,
                     }}>{m.type}</span>
-                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{m.when}</span>
+                    <span style={{ fontSize: 11, color: "#B2BEC3" }}>{m.when}</span>
                   </div>
-                  <div style={{ fontSize: 13, color: "var(--text-main)", lineHeight: 1.5 }}>{m.text}</div>
+                  <div style={{ fontSize: 13, color: "#303330", lineHeight: 1.5 }}>{m.text}</div>
                 </div>
                 <div style={{ textAlign: "right", marginLeft: 16 }}>
-                  <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Confidence</div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>{Math.round((m.confidence || 1.0) * 100)}%</div>
+                  <div style={{ fontSize: 10, color: "#636E72" }}>Confidence</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#303330", marginBottom: 8 }}>{Math.round((m.confidence || 1.0) * 100)}%</div>
                   <button onClick={() => handleDeleteMemory(m.id)} style={{ background: "none", border: "none", cursor: "pointer", opacity: 0.5 }}>🗑️</button>
                 </div>
               </div>
@@ -3468,20 +3453,20 @@ function SpendTab({ agent }: { agent: AgentData }) {
     setBudget({ ...budget, [key]: val });
   };
 
-  if (loading) return <div style={{ color: "var(--text-sub)", fontSize: 14 }}>Loading financial data...</div>;
-  if (!budget) return <div style={{ color: "var(--text-sub)", fontSize: 14 }}>Failed to map budget pipeline...</div>;
+  if (loading) return <div style={{ color: "#636E72", fontSize: 14 }}>Loading financial data...</div>;
+  if (!budget) return <div style={{ color: "#636E72", fontSize: 14 }}>Failed to map budget pipeline...</div>;
 
   return (
     <div style={{ paddingBottom: 64 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24 }}>
         <div>
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Financial Guardrails</h1>
-          <p style={{ fontSize: 14, color: "var(--text-sub)", margin: 0 }}>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Financial Guardrails</h1>
+          <p style={{ fontSize: 14, color: "#636E72", margin: 0 }}>
             Manage limits and capabilities for {agent.name}'s autonomous spending.
           </p>
         </div>
         <button onClick={handleSave} disabled={saving} style={{
-          padding: "10px 24px", borderRadius: 10, background: saving ? "#4A9E96" : "#3c6663", color: "var(--surface-card)", fontSize: 13, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "0.2s"
+          padding: "10px 24px", borderRadius: 10, background: saving ? "#4A9E96" : "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "0.2s"
         }}>
           {saving ? "Saved ✓" : "Commit Limits"}
         </button>
@@ -3490,72 +3475,72 @@ function SpendTab({ agent }: { agent: AgentData }) {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 32 }}>
         <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Virtual Card Payments</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#303330" }}>Virtual Card Payments</div>
             <Toggle checked={budget.payments_enabled} onChange={v => updateProp("payments_enabled", v)} />
           </div>
-          <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 20 }}>When disabled, the agent cannot issue any real-world merchant charges or API payments. It will simulate approvals.</div>
+          <div style={{ fontSize: 13, color: "#636E72", marginBottom: 20 }}>When disabled, the agent cannot issue any real-world merchant charges or API payments. It will simulate approvals.</div>
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Require Approval for New Merchants</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for New Merchants</div>
             <Toggle checked={budget.require_approval_new_merchant} onChange={v => updateProp("require_approval_new_merchant", v)} />
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Require Approval for Subscriptions</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Require Approval for Subscriptions</div>
             <Toggle checked={budget.require_approval_recurring} onChange={v => updateProp("require_approval_recurring", v)} />
           </div>
         </div>
 
         <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 20 }}>Limits & Thresholds</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#303330", marginBottom: 20 }}>Limits & Thresholds</div>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Per-Transaction Limit ($)</div>
-            <input type="number" value={budget.per_transaction_limit_cents / 100} onChange={e => updateProp("per_transaction_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right" }} />
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Per-Transaction Limit ($)</div>
+            <input type="number" value={budget.per_transaction_limit_cents / 100} onChange={e => updateProp("per_transaction_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
           </div>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Auto-Approve Threshold ($)</div>
-            <input type="number" value={budget.auto_approve_threshold_cents / 100} onChange={e => updateProp("auto_approve_threshold_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right" }} />
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Auto-Approve Threshold ($)</div>
+            <input type="number" value={budget.auto_approve_threshold_cents / 100} onChange={e => updateProp("auto_approve_threshold_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
           </div>
 
-          <div style={{ height: 1, background: "var(--border-subtle)", margin: "16px 0" }} />
+          <div style={{ height: 1, background: "rgba(0,0,0,0.05)", margin: "16px 0" }} />
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Daily Budget Total ($)</div>
-            <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right" }} />
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>Daily Budget Total ($)</div>
+            <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", textAlign: "right" }} />
           </div>
         </div>
       </div>
 
-      <div style={{ marginBottom: 24, fontSize: 16, fontWeight: 700, color: "var(--text-main)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div style={{ marginBottom: 24, fontSize: 16, fontWeight: 700, color: "#303330", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         Purchase Execution Log
-        <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-sub)", background: "var(--border-subtle)", padding: "4px 12px", borderRadius: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 500, color: "#636E72", background: "rgba(0,0,0,0.04)", padding: "4px 12px", borderRadius: 12 }}>
           Daily Spend: ${(budget.daily_spent_cents / 100).toFixed(2)} / Monthly: ${(budget.monthly_spent_cents / 100).toFixed(2)}
         </div>
       </div>
 
       {history.length === 0 ? (
-        <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-sub)", fontSize: 14, ...glass(0.4), borderRadius: 16 }}>
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#636E72", fontSize: 14, ...glass(0.4), borderRadius: 16 }}>
           There are no recent agent transactions on record.
         </div>
       ) : (
         <div style={{ ...glass(0.6), borderRadius: 16, overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
-              <tr style={{ background: "var(--border-subtle)", textAlign: "left" }}>
-                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)" }}>Date/Time</th>
-                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)" }}>Merchant</th>
-                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)" }}>Category</th>
-                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)" }}>Status</th>
-                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textAlign: "right" }}>Amount</th>
+              <tr style={{ background: "rgba(0,0,0,0.03)", textAlign: "left" }}>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Date/Time</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Merchant</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Category</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72" }}>Status</th>
+                <th style={{ padding: "12px 20px", fontSize: 12, fontWeight: 600, color: "#636E72", textAlign: "right" }}>Amount</th>
               </tr>
             </thead>
             <tbody>
               {history.map((record, i) => (
                 <tr key={record.id || i} style={{ borderTop: "1px solid rgba(0,0,0,0.04)" }}>
-                  <td style={{ padding: "14px 20px", fontSize: 13, color: "var(--text-main)" }}>{new Date(record.timestamp || Date.now()).toLocaleString()}</td>
-                  <td style={{ padding: "14px 20px", fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{record.merchant}</td>
-                  <td style={{ padding: "14px 20px", fontSize: 13, color: "var(--text-sub)" }}>{record.category}</td>
+                  <td style={{ padding: "14px 20px", fontSize: 13, color: "#303330" }}>{new Date(record.timestamp || Date.now()).toLocaleString()}</td>
+                  <td style={{ padding: "14px 20px", fontSize: 13, fontWeight: 600, color: "#303330" }}>{record.merchant}</td>
+                  <td style={{ padding: "14px 20px", fontSize: 13, color: "#636E72" }}>{record.category}</td>
                   <td style={{ padding: "14px 20px", fontSize: 13 }}>
                     {record.decision === "Approved" || record.decision === "approved" || record.decision?.Approved === null
                       ? <span style={{ color: "#4A9E96", background: "#4A9E9615", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>APPROVED</span>
@@ -3564,7 +3549,7 @@ function SpendTab({ agent }: { agent: AgentData }) {
                         : <span style={{ color: "#D4A04A", background: "#D4A04A15", padding: "4px 8px", borderRadius: 4, fontWeight: 600, fontSize: 11 }}>REQUIRES APPROVAL</span>
                     }
                   </td>
-                  <td style={{ padding: "14px 20px", fontSize: 14, fontWeight: 700, color: "var(--text-main)", textAlign: "right" }}>
+                  <td style={{ padding: "14px 20px", fontSize: 14, fontWeight: 700, color: "#303330", textAlign: "right" }}>
                     ${((record.amount_cents || 0) / 100).toFixed(2)}
                   </td>
                 </tr>
@@ -3656,8 +3641,8 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       {!compact && (
         <div style={{ marginBottom: 20 }}>
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Chat</h1>
-          <p style={{ fontSize: 14, color: "var(--text-sub)" }}>Communicate directly with {agent.name}.</p>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Chat</h1>
+          <p style={{ fontSize: 14, color: "#636E72" }}>Communicate directly with {agent.name}.</p>
         </div>
       )}
 
@@ -3667,7 +3652,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         display: "flex", flexDirection: "column", gap: 12,
       }}>
         {chatLog.length === 0 ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-muted)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#B2BEC3" }}>
             Start a conversation...
           </div>
         ) : (
@@ -3680,8 +3665,8 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 maxWidth: "70%", padding: "12px 16px", borderRadius: 14,
                 background: msg.sender === "user"
                   ? "linear-gradient(135deg, #3c6663, #b8e6e2)"
-                  : "var(--glass-light)",
-                color: msg.sender === "user" ? "var(--surface-card)" : "var(--text-main)",
+                  : "rgba(255,255,255,0.7)",
+                color: msg.sender === "user" ? "white" : "#303330",
                 fontSize: 13, lineHeight: 1.5,
                 borderBottomRightRadius: msg.sender === "user" ? 4 : 14,
                 borderBottomLeftRadius: msg.sender === "agent" ? 4 : 14,
@@ -3689,7 +3674,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 {msg.text}
               </div>
               <div style={{
-                fontSize: 10, color: "var(--text-muted)", marginTop: 4,
+                fontSize: 10, color: "#B2BEC3", marginTop: 4,
                 paddingLeft: msg.sender === "agent" ? 4 : 0,
                 paddingRight: msg.sender === "user" ? 4 : 0,
               }}>
@@ -3704,7 +3689,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
               width: 12, height: 12, borderRadius: "50%", background: "#3c6663",
               animation: "pulse 1.5s ease-in-out infinite",
             }} />
-            <span style={{ fontSize: 13, color: "var(--text-sub)", fontStyle: "italic" }}>{agent.name} is thinking...</span>
+            <span style={{ fontSize: 13, color: "#636E72", fontStyle: "italic" }}>{agent.name} is thinking...</span>
           </div>
         )}
         <div ref={chatEndRef} />
@@ -3721,15 +3706,15 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
           style={{
             flex: 1, padding: "14px 18px", borderRadius: 14,
             border: "1px solid rgba(0,0,0,0.08)",
-            background: "var(--glass-light)",
-            fontSize: 13, fontFamily: "inherit", color: "var(--text-main)",
+            background: "rgba(255,255,255,0.6)",
+            fontSize: 13, fontFamily: "inherit", color: "#303330",
             outline: "none", opacity: loading ? 0.6 : 1,
           }}
         />
         <button onClick={handleSendMessage} disabled={!message.trim() || loading} style={{
           padding: "14px 20px", borderRadius: 14, border: "none",
-          background: (message.trim() && !loading) ? "#3c6663" : "var(--border-subtle)",
-          color: (message.trim() && !loading) ? "var(--surface-card)" : "var(--text-muted)",
+          background: (message.trim() && !loading) ? "#3c6663" : "rgba(0,0,0,0.06)",
+          color: (message.trim() && !loading) ? "white" : "#B2BEC3",
           fontSize: 13, fontWeight: 600, cursor: (message.trim() && !loading) ? "pointer" : "default",
           fontFamily: "inherit",
           transition: "all 0.15s ease",
@@ -3769,7 +3754,7 @@ function TopNav() {
       top: 0, left: 0, right: 0, zIndex: 20,
       display: "flex", alignItems: "center", justifyContent: "space-between",
       padding: "12px 24px 12px 80px",
-      background: activeView === "canopy" ? "transparent" : "var(--glass-light)",
+      background: activeView === "canopy" ? "transparent" : "rgba(255,255,255,0.4)",
       borderBottom: activeView === "canopy" ? "none" : "1px solid rgba(0,0,0,0.06)",
       backdropFilter: activeView === "canopy" ? "none" : "blur(24px)",
     }} data-tauri-drag-region>
@@ -3777,7 +3762,7 @@ function TopNav() {
       <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setActiveView("canopy")}>
         <img src="/app-icon.png" alt="Canopy Logo" style={{ width: 28, height: 28, objectFit: "contain", pointerEvents: "none" }} />
         <span style={{
-          fontSize: 17, fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.02em",
+          fontSize: 17, fontWeight: 700, color: "#303330", letterSpacing: "-0.02em",
           fontFamily: "'Satoshi', 'Manrope', system-ui, sans-serif",
           fontStyle: "italic",
         }}>The Canopy</span>
@@ -3790,7 +3775,7 @@ function TopNav() {
             padding: "6px 16px", border: "none", borderRadius: 6, cursor: "pointer",
             fontSize: 12, fontWeight: activeView === item.id ? 700 : 400,
             letterSpacing: "0.04em", textTransform: "uppercase",
-            color: activeView === item.id ? "var(--text-main)" : "var(--text-sub)",
+            color: activeView === item.id ? "#303330" : "#636E72",
             background: "transparent", fontFamily: "inherit",
             borderBottom: activeView === item.id ? "2px solid #3c6663" : "2px solid transparent",
             transition: "all 0.15s ease",
@@ -3808,7 +3793,7 @@ function TopNav() {
               onClick={() => setActiveView("onboarding")}
               style={{
                 display: "flex", alignItems: "center", gap: 6,
-                padding: "6px 14px", borderRadius: 8, background: "#3c6663", color: "var(--surface-card)", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "0.2s all"
+                padding: "6px 14px", borderRadius: 8, background: "#3c6663", color: "white", fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", transition: "0.2s all"
               }}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
@@ -3818,27 +3803,27 @@ function TopNav() {
             <div style={{ position: "relative" }}>
               <div style={{
                 display: "flex", alignItems: "center", gap: 8, padding: "6px 14px",
-                borderRadius: 8, background: "var(--border-subtle)", color: "var(--text-sub)",
+                borderRadius: 8, background: "rgba(0,0,0,0.03)", color: "#636E72",
               }}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
                 <input
                   placeholder="Search agents..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  style={{ border: "none", outline: "none", background: "transparent", width: 120, fontSize: 12, fontFamily: "inherit", color: "var(--text-main)" }}
+                  style={{ border: "none", outline: "none", background: "transparent", width: 120, fontSize: 12, fontFamily: "inherit", color: "#303330" }}
                 />
               </div>
               {searchQuery && (
-                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "var(--surface-card)", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.1)", border: "1px solid rgba(0,0,0,0.05)", zIndex: 50, maxHeight: 300, overflow: "auto" }}>
+                <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, background: "white", borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.1)", border: "1px solid rgba(0,0,0,0.05)", zIndex: 50, maxHeight: 300, overflow: "auto" }}>
                   {filteredAgents.length === 0 ? (
-                    <div style={{ padding: "12px", fontSize: 12, color: "var(--text-sub)" }}>No agents found.</div>
+                    <div style={{ padding: "12px", fontSize: 12, color: "#636E72" }}>No agents found.</div>
                   ) : (
                     filteredAgents.map(a => (
                       <div key={a.id} onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); setSearchQuery(""); }} style={{ padding: "8px 12px", fontSize: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, borderBottom: "1px solid rgba(0,0,0,0.03)" }}>
                         <div style={{ width: 16, height: 16, borderRadius: "50%", background: `${a.robeColor}20`, display: "flex", alignItems: "center", justifyContent: "center" }}>
                           <div style={{ width: 6, height: 6, borderRadius: "50%", background: a.status === "active" ? "#4A9E96" : "#E57373" }} />
                         </div>
-                        <div style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-main)", fontWeight: 600 }}>{a.name}</div>
+                        <div style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "#303330", fontWeight: 600 }}>{a.name}</div>
                       </div>
                     ))
                   )}
@@ -3851,15 +3836,15 @@ function TopNav() {
           <>
             <button onClick={toggleTheme} style={{
               width: 32, height: 32, borderRadius: 8, border: "none", cursor: "pointer",
-              background: "var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center",
-              color: theme === "dark" ? "#F5E6D8" : "var(--text-sub)",
+              background: "rgba(0,0,0,0.04)", display: "flex", alignItems: "center", justifyContent: "center",
+              color: theme === "dark" ? "#F5E6D8" : "#636E72",
             }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
             </button>
             <div onClick={() => setActiveView("profile")} style={{
-              width: 32, height: 32, borderRadius: "50%", background: "var(--border-subtle)",
+              width: 32, height: 32, borderRadius: "50%", background: "rgba(0,0,0,0.06)",
               display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-              color: "var(--text-sub)",
+              color: "#636E72",
             }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
             </div>
@@ -3908,13 +3893,13 @@ function CanopyView() {
               <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
               <div style={{
                 position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
-                background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
+                background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "#B2BEC3",
                 border: "2px solid white",
               }} />
             </div>
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)", textTransform: "capitalize" }}>{a.status === "error" ? "Offline" : a.currentAction}</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#303330" }}>{a.name}</div>
+              <div style={{ fontSize: 10, color: "#636E72", textTransform: "capitalize" }}>{a.status === "error" ? "Offline" : a.currentAction}</div>
             </div>
           </div>
         ))}
@@ -3960,7 +3945,7 @@ function LoadingScreen() {
       }}>
         <img src="/app-icon.png" alt="Canopy Logo" style={{ width: 80, height: 80, objectFit: "contain" }} />
       </div>
-      <div style={{ fontSize: 24, fontWeight: 600, color: "var(--text-main)" }}>
+      <div style={{ fontSize: 24, fontWeight: 600, color: "#303330" }}>
         Waking up the lobsters...
       </div>
       <style>{`
@@ -4159,7 +4144,7 @@ export function CompanionGuide({ type }: { type: string }) {
   return (
     <div style={{
       width: "100%", height: "100vh", display: "flex", flexDirection: "column",
-      background: "var(--glass-heavy)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+      background: "rgba(255,255,255,0.85)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
       borderLeft: "1px solid rgba(0,0,0,0.1)", fontFamily: "'Manrope', system-ui, sans-serif"
     }}>
       <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", width: "100%", background: "linear-gradient(to right, #EDE4DB, #F5E6D8)", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
@@ -4174,8 +4159,8 @@ export function CompanionGuide({ type }: { type: string }) {
         }}>
           <LobsterIcon size={32} shellColor="#3c6663" accentColor="#D9B08C" className="pulse-slow" style={{ pointerEvents: "none" }} />
           <div style={{ pointerEvents: "none" }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{config.title}</div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)" }}>Companion Walkthrough</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#303330" }}>{config.title}</div>
+            <div style={{ fontSize: 11, color: "#636E72" }}>Companion Walkthrough</div>
           </div>
         </div>
         <div style={{ padding: "0 20px", cursor: "pointer", opacity: 0.5, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
@@ -4190,7 +4175,7 @@ export function CompanionGuide({ type }: { type: string }) {
         {/* Intro */}
         <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
           <img src={config.avatar} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
-          <div style={{ background: "var(--surface-card)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, color: "var(--text-main)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
+          <div style={{ background: "#ffffff", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, color: "#303330", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
             {config.intro}
           </div>
         </div>
@@ -4199,11 +4184,11 @@ export function CompanionGuide({ type }: { type: string }) {
           <React.Fragment key={i}>
             <div style={{ display: "flex", gap: 12, alignItems: "flex-end", animation: "slideIn 0.3s ease" }}>
               <div style={{ width: 28, flexShrink: 0 }} />
-              <div style={{ width: "100%", background: i === step ? "#3c6663" : "var(--surface-card)", color: i === step ? "var(--surface-card)" : "var(--text-main)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
+              <div style={{ width: "100%", background: i === step ? "#3c6663" : "#ffffff", color: i === step ? "white" : "#303330", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
                 {s.text}
                 {s.input && i === step && (
                   <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, lineHeight: 1.4, color: "#f8f9fa", background: "var(--border-strong)", padding: "8px 12px", borderRadius: 8 }}>
+                    <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, lineHeight: 1.4, color: "#f8f9fa", background: "rgba(0,0,0,0.15)", padding: "8px 12px", borderRadius: 8 }}>
                       <span style={{ marginRight: 6 }}>🔒</span>
                       macOS will securely ask for your password to lock this in the system Keychain.
                     </div>
@@ -4215,7 +4200,7 @@ export function CompanionGuide({ type }: { type: string }) {
                       onChange={e => setTokens({ ...tokens, [s.input.key]: e.target.value })}
                       style={{
                         width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8,
-                        border: "1px solid rgba(255,255,255,0.3)", background: "rgba(0,0,0,0.2)", color: "var(--surface-card)", outline: "none", fontSize: 13, fontFamily: "monospace"
+                        border: "1px solid rgba(255,255,255,0.3)", background: "rgba(0,0,0,0.2)", color: "white", outline: "none", fontSize: 13, fontFamily: "monospace"
                       }}
                     />
                   </div>
@@ -4227,7 +4212,7 @@ export function CompanionGuide({ type }: { type: string }) {
             {i === step && status === "idle" && (
               <div style={{ display: "flex", justifyContent: "flex-end", animation: "slideIn 0.3s ease 0.5s backwards" }}>
                 <button onClick={handleAction} disabled={s.input && !tokens[s.input.key]} style={{
-                  padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "var(--text-main)", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
+                  padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "#303330", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
                 }}>
                   {s.input ? "Save & Continue" : "I've done this ->"}
                 </button>
@@ -4237,13 +4222,13 @@ export function CompanionGuide({ type }: { type: string }) {
         ))}
 
         {status === "saving" && (
-          <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-sub)", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
+          <div style={{ textAlign: "center", fontSize: 13, color: "#636E72", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
         )}
         {status === "success" && (
           <div style={{ textAlign: "center", animation: "slideIn 0.3s ease" }}>
             <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663" }}>Saved successfully!</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Validating connection & closing...</div>
+            <div style={{ fontSize: 12, color: "#636E72", marginTop: 4 }}>Validating connection & closing...</div>
           </div>
         )}
 
@@ -4296,18 +4281,18 @@ function UserProfileView() {
 
   const Field = ({ label, value, field, type = "text", placeholder = "", rows = 1 }: any) => (
     <div style={{ marginBottom: 16 }}>
-      <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>{label}</label>
+      <label style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#303330", marginBottom: 6 }}>{label}</label>
       {rows > 1 ? (
         <textarea
           value={value} onChange={e => setProfile({ ...profile, [field]: e.target.value })}
           rows={rows} placeholder={placeholder}
-          style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontFamily: "inherit", fontSize: 14, outline: "none", resize: "vertical" }}
+          style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontFamily: "inherit", fontSize: 14, outline: "none", resize: "vertical" }}
         />
       ) : (
         <input
           type={type} value={value} onChange={e => setProfile({ ...profile, [field]: e.target.value })}
           placeholder={placeholder}
-          style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontFamily: "inherit", fontSize: 14, outline: "none" }}
+          style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontFamily: "inherit", fontSize: 14, outline: "none" }}
         />
       )}
     </div>
@@ -4316,11 +4301,11 @@ function UserProfileView() {
   return (
     <div style={{ maxWidth: 700, margin: "40px auto", padding: "0 24px", paddingBottom: 100 }}>
       <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Principal Context</h1>
-        <p style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>Define your global identity. This context is inherited by every agent in the Canopy to understand who they work for.</p>
+        <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: "0 0 8px 0" }}>Principal Context</h1>
+        <p style={{ fontSize: 15, color: "#636E72", margin: 0 }}>Define your global identity. This context is inherited by every agent in the Canopy to understand who they work for.</p>
       </div>
 
-      <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
+      <div style={{ background: "rgba(255,255,255,0.4)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Identity & Contact</h3>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
           <Field label="Full Name" field="name" value={profile.name} placeholder="e.g. Jane Doe" />
@@ -4330,7 +4315,7 @@ function UserProfileView() {
         </div>
       </div>
 
-      <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
+      <div style={{ background: "rgba(255,255,255,0.4)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Working Directives</h3>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0 16px" }}>
           <Field label="Working Hours" field="working_hours" value={profile.working_hours} placeholder="e.g. 9:00 AM - 5:00 PM EST" />
@@ -4340,7 +4325,7 @@ function UserProfileView() {
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
-        <button onClick={handleSave} disabled={saving} style={{ padding: "12px 32px", borderRadius: 12, background: saving ? "#4A9E96" : "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "all 0.2s ease" }}>
+        <button onClick={handleSave} disabled={saving} style={{ padding: "12px 32px", borderRadius: 12, background: saving ? "#4A9E96" : "#3c6663", color: "white", fontSize: 14, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "all 0.2s ease" }}>
           {saving ? "Saved ✓" : "Save Profile Configuration"}
         </button>
       </div>
@@ -4382,7 +4367,7 @@ function ArchiveView() {
     if (a.includes("spend") || a.includes("payment")) return { color: "#D4A04A", bg: "#D4A04A15", border: "#D4A04A40" };
     if (a.includes("blocked") || a.includes("failed") || a.includes("denied")) return { color: "#E57373", bg: "#E5737315", border: "#E5737340" };
     if (a.includes("created") || a.includes("spawn")) return { color: "#4A9E96", bg: "#4A9E9615", border: "#4A9E9640" };
-    return { color: "var(--text-sub)", bg: "var(--border-subtle)", border: "var(--border-subtle)" };
+    return { color: "#636E72", bg: "rgba(0,0,0,0.04)", border: "rgba(0,0,0,0.08)" };
   };
 
   const filteredLogs = logs.filter(log => {
@@ -4401,26 +4386,26 @@ function ArchiveView() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 32 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-            <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: 0 }}>System Archive</h1>
+            <h1 style={{ fontSize: 32, fontWeight: 700, color: "#303330", margin: 0 }}>System Archive</h1>
             <div style={{ background: "#4A9E9620", color: "#4A9E96", padding: "4px 10px", borderRadius: 12, fontSize: 13, fontWeight: 700 }}>LIVE</div>
           </div>
-          <p style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>Global flight data recorder mapping all agent decisions, actions, and anomalous traces.</p>
+          <p style={{ fontSize: 15, color: "#636E72", margin: 0 }}>Global flight data recorder mapping all agent decisions, actions, and anomalous traces.</p>
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 16, marginBottom: 24 }}>
-        <select value={agentFilter} onChange={e => setAgentFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 13, fontWeight: 600, color: "var(--text-main)", outline: "none", cursor: "pointer" }}>
+        <select value={agentFilter} onChange={e => setAgentFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
           <option value="all">Every Agent</option>
           {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
-        <select value={bridgeFilter} onChange={e => setBridgeFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 13, fontWeight: 600, color: "var(--text-main)", outline: "none", cursor: "pointer" }}>
+        <select value={bridgeFilter} onChange={e => setBridgeFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
           <option value="all">All Bridges</option>
           <option value="core">Core Platform</option>
           <option value="slack">Slack</option>
           <option value="imessage">iMessage</option>
           <option value="payments">Virtual Cards</option>
         </select>
-        <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 13, fontWeight: 600, color: "var(--text-main)", outline: "none", cursor: "pointer" }}>
+        <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "white", fontSize: 13, fontWeight: 600, color: "#303330", outline: "none", cursor: "pointer" }}>
           <option value="all">All Actions</option>
           <option value="created">Agent Spawns</option>
           <option value="spend">Financial Spends</option>
@@ -4429,31 +4414,31 @@ function ArchiveView() {
       </div>
 
       {loading ? (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-sub)" }}>Loading flight logs...</div>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#636E72" }}>Loading flight logs...</div>
       ) : (
         <div style={{ flex: 1, overflowY: "auto", ...glass(0.6), borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead style={{ position: "sticky", top: 0, background: "var(--glass-heavy)", backdropFilter: "blur(8px)", zIndex: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
+            <thead style={{ position: "sticky", top: 0, background: "rgba(255,255,255,0.9)", backdropFilter: "blur(8px)", zIndex: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
               <tr style={{ textAlign: "left" }}>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 140 }}>Time</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 180 }}>Principal Agent</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 160 }}>Bridge Target</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Action Trajectory</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "right" }}>Trace Hash</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 140 }}>Time</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 180 }}>Principal Agent</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", width: 160 }}>Bridge Target</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em" }}>Action Trajectory</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "#636E72", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "right" }}>Trace Hash</th>
               </tr>
             </thead>
             <tbody>
               {filteredLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "var(--text-sub)", fontSize: 14 }}>No actions found matching these security filters.</td>
+                  <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "#636E72", fontSize: 14 }}>No actions found matching these security filters.</td>
                 </tr>
               ) : filteredLogs.map((log) => {
                 const mappedAgent = agents.find(a => a.id === log.agent_id);
                 const styles = getLogColor(log.action);
                 return (
                   <tr key={log.id} style={{ borderBottom: "1px solid rgba(0,0,0,0.04)", cursor: "pointer", transition: "0.15s" }} onMouseOver={e => e.currentTarget.style.background = "rgba(0,0,0,0.02)"} onMouseOut={e => e.currentTarget.style.background = "transparent"}>
-                    <td style={{ padding: "16px 24px", fontSize: 13, color: "var(--text-sub)" }}>{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
-                    <td style={{ padding: "16px 24px", fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>
+                    <td style={{ padding: "16px 24px", fontSize: 13, color: "#636E72" }}>{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+                    <td style={{ padding: "16px 24px", fontSize: 14, fontWeight: 600, color: "#303330" }}>
                       {log.agent_id ? (
                         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                           <div style={{ width: 8, height: 8, borderRadius: "50%", background: mappedAgent ? mappedAgent.robeColor : "#A0A0A0" }} />
@@ -4462,7 +4447,7 @@ function ArchiveView() {
                       ) : "System Engine"}
                     </td>
                     <td style={{ padding: "16px 24px" }}>
-                      <span style={{ padding: "4px 8px", background: "var(--border-subtle)", borderRadius: 6, fontSize: 12, fontWeight: 600, color: "var(--text-main)", textTransform: "capitalize" }}>
+                      <span style={{ padding: "4px 8px", background: "rgba(0,0,0,0.04)", borderRadius: 6, fontSize: 12, fontWeight: 600, color: "#303330", textTransform: "capitalize" }}>
                         {log.bridge_type || "Core System"}
                       </span>
                     </td>
@@ -4471,11 +4456,11 @@ function ArchiveView() {
                         <span style={{ display: "inline-block", padding: "2px 8px", background: styles.bg, color: styles.color, border: `1px solid ${styles.border}`, borderRadius: 4, fontSize: 11, fontWeight: 700, textTransform: "uppercase", width: "max-content", letterSpacing: "0.02em" }}>
                           {log.action}
                         </span>
-                        <span style={{ fontSize: 13, color: "var(--text-main)", lineHeight: 1.4 }}>{log.detail}</span>
+                        <span style={{ fontSize: 13, color: "#303330", lineHeight: 1.4 }}>{log.detail}</span>
                       </div>
                     </td>
                     <td style={{ padding: "16px 24px", textAlign: "right" }}>
-                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "#909090", background: "var(--border-subtle)", padding: "4px 8px", borderRadius: 4 }}>
+                      <span style={{ fontFamily: "monospace", fontSize: 11, color: "#909090", background: "rgba(0,0,0,0.03)", padding: "4px 8px", borderRadius: 4 }}>
                         {log.content_hash ? log.content_hash.substring(0, 8) : "N/A"}
                       </span>
                     </td>
@@ -4647,7 +4632,7 @@ export default function App() {
         </div>
       )}
       {activeView === "library" && (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-sub)" }}>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#636E72" }}>
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 12 }}>&#10070;</div>
             <div style={{ fontSize: 16, fontWeight: 600 }}>Library</div>

@@ -33,6 +33,33 @@
   /* Shadows */
   --shadow-ambient: 0 8px 40px rgba(48, 51, 48, 0.06);
   --shadow-float:   0 8px 24px rgba(48, 51, 48, 0.08);
+
+  /* Modern Dynamic Theme Tokens */
+  --text-main: #303330;
+  --text-sub: #636E72;
+  --text-muted: #B2BEC3;
+  --surface-card: #FFFFFF;
+  --surface-base: #F4F4F0;
+  --border-subtle: rgba(0,0,0,0.06);
+  --border-strong: rgba(0,0,0,0.1);
+  --glass-light: rgba(255,255,255,0.5);
+  --glass-heavy: rgba(255,255,255,0.8);
+}
+
+[data-theme="dark"] {
+  --text-main: #F8FAFC;
+  --text-sub: #94A3B8;
+  --text-muted: #64748B;
+  --surface-card: #111520;
+  --surface-base: #0B0E14;
+  --border-subtle: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.15);
+  --glass-light: rgba(17,21,32,0.6);
+  --glass-heavy: rgba(17,21,32,0.85);
+
+  /* Sync legacy CSS vars to Dark too in case they fall through */
+  --surface: #0B0E14;
+  --on-surface: #F8FAFC;
 }
 
 * {

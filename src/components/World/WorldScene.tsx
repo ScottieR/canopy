@@ -9,12 +9,14 @@ import React from "react";
 // Initiate early network fetching for high-priority onboarding assets so the 3D world loads instantly,
 // avoiding the piecemeal "pop-in" effect as React mounts individual components.
 useGLTF.preload("/models/habitats/Habitat_1.glb");
+useGLTF.preload("/models/habitats/Habitat_2.glb");
 ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].forEach(role => {
   useGLTF.preload(`/models/lobsters/${role}.glb`);
 });
 
-function TerrariumBase() {
-  const { scene } = useGLTF("/models/habitats/Habitat_1.glb");
+function TerrariumBase({ index = 0 }: { index?: number }) {
+  const modelUrl = index % 2 === 0 ? "/models/habitats/Habitat_1.glb" : "/models/habitats/Habitat_2.glb";
+  const { scene } = useGLTF(modelUrl);
 
   // Clone the scene so we can instance it multiple times across the grid
   const clonedScene = useMemo(() => {
@@ -146,7 +148,7 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
                    Tile the monolithic base out beneath each agent 
                 */}
             <React.Suspense fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
-              <TerrariumBase />
+              <TerrariumBase index={index} />
             </React.Suspense>
 
             {/* 
@@ -155,23 +157,14 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
                   And the Lobster uses Normalization to rest its feet at exactly 0,
                   they flawlessly snap together on ANY 3D model geometry automatically!
                 */}
-            {index === 0 ? (
-              <React.Suspense fallback={null}>
-                <OnboardingCompanion
-                  position={[0.65, -0.23, .2]}
-                  scale={0.25}
-                  animationState="Breath"
-                />
-              </React.Suspense>
-            ) : (
-              <AgentNeighborhood
-                agent={agent}
-                position={[0, 0, 0]}
-                onClick={() => onAgentClick?.(agent.id)}
-                onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
-                onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
-              />
-            )}
+            <AgentNeighborhood
+              agent={agent}
+              index={index}
+              position={[0, 0, 0]}
+              onClick={() => onAgentClick?.(agent.id)}
+              onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
+              onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
+            />
           </group>
         );
       })}
