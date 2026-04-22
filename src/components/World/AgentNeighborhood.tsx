@@ -1,7 +1,9 @@
 import { GLBAgent } from "./GLBAgent";
 import { useMemo } from "react";
 
-export function AgentNeighborhood({ agent, index = 0, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
+import * as THREE from "three";
+
+export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
   const isWorking = agent?.status === "active";
 
   return (
@@ -17,6 +19,7 @@ export function AgentNeighborhood({ agent, index = 0, position = [0, 0, 0], onCl
           fileUrl={agent.fileUrl}
           role={agent.role}
           position={index === 0 ? [0.65, -0.23, 0.2] : [0, 0, 0]} 
+          navPoints={navPoints}
           scale={0.25} 
           isWorking={isWorking} 
           baseColor={agent.color || "#D2D6CE"}

@@ -4,9 +4,10 @@ import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
 
-export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, baseColor, robeColor, accentColor, role }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, baseColor?: string, robeColor?: string, accentColor?: string, role?: string }) {
+export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, baseColor, robeColor, accentColor, role, navPoints }: { fileUrl?: string, accessories?: string[], position?: [number, number, number]|number[], scale?: number, isWorking?: boolean, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[] }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
+  const targetPos = useRef<THREE.Vector3>(new THREE.Vector3().fromArray(position as number[]));
   
   // Load the universal rigged body
   const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb");
@@ -45,13 +46,54 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     const action = actions[activeActionName];
     
     if (action) {
+      // Add a randomized starting frame so that multiple lobsters stagger their breathing and animations organically!
+      action.time = Math.random() * action.getClip().duration;
       action.reset().fadeIn(0.5).play();
     }
     
     return () => { if (action) action.fadeOut(0.5); };
   }, [isWorking, actions, names]);
 
-  useFrame(({ clock }) => {
+  useEffect(() => {
+    // 1. Initial Spawn: Break the centering! Instantly snap them to a random valid location.
+    if (navPoints && navPoints.length > 0 && groupRef.current) {
+       const initialPoint = navPoints[Math.floor(Math.random() * navPoints.length)];
+       groupRef.current.position.copy(initialPoint);
+       targetPos.current.copy(initialPoint);
+    }
+  }, [navPoints]);
+
+  useEffect(() => {
+    // 2. Roaming Logic: Periodically pick a new safe topological node to wander towards
+    if (!navPoints || navPoints.length === 0) return;
+    
+    // They will pick a new valid node to settle down on every 15 minutes
+    const interval = setInterval(() => {
+        const newPoint = navPoints[Math.floor(Math.random() * navPoints.length)];
+        targetPos.current.copy(newPoint);
+    }, 15 * 60 * 1000); 
+    
+    return () => clearInterval(interval);
+  }, [navPoints]);
+
+  useFrame(({ clock }, delta) => {
+    // Smooth Physical Translation
+    if (groupRef.current) {
+       groupRef.current.position.lerp(targetPos.current, delta * 1.5);
+       
+       // Orient them gracefully toward their target
+       const dist = groupRef.current.position.distanceTo(targetPos.current);
+       if (dist > 0.05) {
+          const dir = targetPos.current.clone().sub(groupRef.current.position).normalize();
+          const targetYRotation = Math.atan2(dir.x, dir.z);
+          
+          // Shortest path angle interpolation
+          const diff = targetYRotation - groupRef.current.rotation.y;
+          const normalizedDiff = Math.atan2(Math.sin(diff), Math.cos(diff));
+          groupRef.current.rotation.y += normalizedDiff * delta * 4.0;
+       }
+    }
+
     // Glowing orb bob and pulse when working
     if (orbRef.current && isWorking) {
       const t = clock.getElapsedTime();
