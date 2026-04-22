@@ -8,14 +8,16 @@ import React from "react";
 
 // Initiate early network fetching for high-priority onboarding assets so the 3D world loads instantly,
 // avoiding the piecemeal "pop-in" effect as React mounts individual components.
-useGLTF.preload("/models/habitats/Habitat_1.glb");
-useGLTF.preload("/models/habitats/Habitat_2.glb");
+[1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(i => {
+  useGLTF.preload(`/models/habitats/Habitat_${i}.glb`);
+});
 ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].forEach(role => {
   useGLTF.preload(`/models/lobsters/${role}.glb`);
 });
 
-function TerrariumBase({ index = 0 }: { index?: number }) {
-  const modelUrl = index % 2 === 0 ? "/models/habitats/Habitat_1.glb" : "/models/habitats/Habitat_2.glb";
+function TerrariumBase({ index = 0, onNavMeshReady }: { index?: number, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
+  const modelNum = (index % 9) + 1;
+  const modelUrl = `/models/habitats/Habitat_${modelNum}.glb`;
   const { scene } = useGLTF(modelUrl);
 
   // Clone the scene so we can instance it multiple times across the grid
@@ -54,6 +56,39 @@ function TerrariumBase({ index = 0 }: { index?: number }) {
     // Re-update matrix after dropping the island
     clone.updateMatrixWorld(true);
 
+    // --- 3. PROCEDURAL TOPOGRAPHY SCANNER ("Virtual Raindrops") ---
+    // We shower the tile with 80 random vertical rays within a 0.8 unit radius 
+    // to map out the flat, walkable surface area avoiding cliffs and obstacles.
+    const navPoints: THREE.Vector3[] = [];
+    const scanRay = new THREE.Raycaster();
+
+    // Guarantee 0,0,0 is always available as a safe fallback
+    navPoints.push(new THREE.Vector3(0, 0, 0));
+
+    for (let i = 0; i < 80; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const r = Math.random() * 0.8;
+      const px = Math.cos(angle) * r;
+      const pz = Math.sin(angle) * r;
+
+      scanRay.set(new THREE.Vector3(px, 50, pz), new THREE.Vector3(0, -1, 0));
+      const hits = scanRay.intersectObject(clone, true);
+      if (hits.length > 0) {
+        const hit = hits[0];
+        // Check surface normal. if normal.y > 0.85, it is a flat, horizontal walkable plane.
+        if (hit.face && hit.face.normal.y > 0.85) {
+          // Because clone isn't in the global parent group yet, this world point 
+          // is perfectly relative to the localized AgentNeighborhood root coords!
+          navPoints.push(hit.point.clone());
+        }
+      }
+    }
+
+    if (onNavMeshReady && navPoints.length > 0) {
+      // Defer React state update to avoid rendering cycle collisions
+      setTimeout(() => onNavMeshReady(navPoints), 0);
+    }
+
     clone.traverse((child: any) => {
       if (child.isMesh && child.material) {
         // Just like the Lobster, Meshy bakes stunning shadows/highlights directly into the tile's texture.
@@ -76,6 +111,7 @@ function TerrariumBase({ index = 0 }: { index?: number }) {
 }
 
 export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId }: { agents?: any[], onAgentClick?: (id: string) => void, onAgentHover?: (id: string | null) => void, hoveredAgentId?: string | null }) {
+  const [navMap, setNavMap] = React.useState<Record<number, THREE.Vector3[]>>({});
   // Use passed agents or fallback to the hardcoded demo set
   const selectedAgents = useMemo(() => {
     // These are the specific roles we physically possess GLB models for
@@ -90,6 +126,8 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
         };
       });
     }
+    
+    // Fallback if no props are passed
     return knownGlbs.map((key) => {
       const agent = (agentsData as any)[key];
       return {
@@ -102,7 +140,7 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
   }, [agents]);
 
   // Compute Ulam Spiral layout coordinates for the tiled surface
-  const TILE_GAP = 2.3; // Space between tile centers
+  const TILE_GAP = 2; // Space between tile centers
 
   // We eliminated the hardcoded offset entirely via Procedural Floor Snapping
   // LOBSTER_ELEVATION_OFFSET is now officially 0.0
@@ -148,7 +186,7 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
                    Tile the monolithic base out beneath each agent 
                 */}
             <React.Suspense fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
-              <TerrariumBase index={index} />
+              <TerrariumBase index={index} onNavMeshReady={(pts) => setNavMap(prev => ({ ...prev, [index]: pts }))} />
             </React.Suspense>
 
             {/* 
@@ -160,6 +198,7 @@ export function WorldScene({ agents, onAgentClick, onAgentHover, hoveredAgentId 
             <AgentNeighborhood
               agent={agent}
               index={index}
+              navPoints={navMap[index]}
               position={[0, 0, 0]}
               onClick={() => onAgentClick?.(agent.id)}
               onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
