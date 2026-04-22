@@ -8,6 +8,67 @@ lazy_static! {
     pub static ref PRICING_REGISTRY: RwLock<HashMap<String, (f64, f64)>> = RwLock::new(HashMap::new());
 }
 
+// ─── Constants ───────────────────────────────────────────────────────────────
+
+pub const DEFAULT_ANTHROPIC_MODEL: &str = "anthropic/claude-4-6-sonnet";
+pub const DEFAULT_OPENAI_MODEL: &str = "openai/gpt-4o";
+pub const DEFAULT_GEMINI_MODEL: &str = "google/gemini-3-flash-preview";
+
+pub fn get_dynamic_default_model(provider: &str) -> String {
+    use std::fs;
+    let data_dir = if let Some(dir) = dirs::data_dir() {
+        dir.join("Canopy").join("models.json")
+    } else {
+        std::path::PathBuf::from("models.json")
+    };
+    
+    // First try the user data dir (if admin app synced it there), 
+    // otherwise fallback to relative local dev workspace
+    let possible_paths = [
+        data_dir,
+        std::path::PathBuf::from("../shared/models.json"),
+        std::path::PathBuf::from("../../shared/models.json"),
+    ];
+
+    for path in &possible_paths {
+        if let Ok(content) = fs::read_to_string(path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                // If the dynamic registry exists, attempt resolution
+                if let Some(strats) = json.get("strategies") {
+                    let heavy = strats.get("defaultHeavyModel").and_then(|v| v.as_str()).unwrap_or("");
+                    let light = strats.get("defaultLightModel").and_then(|v| v.as_str()).unwrap_or("");
+                    
+                    match provider {
+                        "gemini" => {
+                            // Try to find if gemini is the light or heavy default, else just pull the first gemini model!
+                            if let Some(arr) = json.get("models").and_then(|m| m.as_array()) {
+                                if let Some(first_gemini) = arr.iter().find(|o| o.get("provider").and_then(|v| v.as_str()) == Some("Google Gemini")) {
+                                    return format!("google/{}", first_gemini.get("id").unwrap().as_str().unwrap());
+                                }
+                            }
+                        },
+                        "openai" => {
+                            if heavy.contains("gpt") { return format!("openai/{}", heavy) }
+                            if light.contains("gpt") { return format!("openai/{}", light) }
+                        },
+                        "anthropic" => {
+                            if heavy.contains("claude") || heavy.contains("sonnet") { return format!("anthropic/{}", heavy) }
+                        },
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Ultimate hardcoded fallbacks if sync has never run
+    match provider {
+        "anthropic" => DEFAULT_ANTHROPIC_MODEL.to_string(),
+        "openai" => DEFAULT_OPENAI_MODEL.to_string(),
+        "gemini" | _ => DEFAULT_GEMINI_MODEL.to_string(),
+    }
+}
+
 // ─── Agent Models ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,7 +176,7 @@ impl AgentStats {
                 "gpt-4o-mini" => (0.15, 0.60),
                 "gpt-4o" => (2.50, 10.00),
                 "gemini-3.1-pro" => (3.50, 10.50),
-                "gemini-3.1-flash" => (0.35, 1.05),
+                "gemini-3-flash-preview" => (0.35, 1.05),
                 "grok-beta" => (5.00, 15.00),
                 _ => (1.00, 5.00), // generic fallback
             }
@@ -251,6 +312,16 @@ pub struct PurchaseRecord {
 }
 
 // ─── Data Flow / Handoff Models ──────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderModel {
+    pub id: String,
+    pub provider: String,
+    pub name: String,
+    pub capabilities: Vec<String>,
+    pub recommended: bool,
+    pub created_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DataFlow {

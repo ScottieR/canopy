@@ -130,8 +130,12 @@ pub async fn list_agents(
     let agents = db.list_agents()
         .map_err(|e| format!("Failed to load agents: {}", e))?;
 
-    // Optional: Check gateway health to merge live status
-    let client = Client::new();
+    // Optional: Check gateway health to merge live status, extremely fast timeout to prevent GUI hangs
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(400))
+        .build()
+        .unwrap_or_default();
+        
     if let Ok(resp) = client
         .get(format!("{}/api/status", GATEWAY_URL))
         .header("Authorization", "Bearer canopy_internal_token_2026")
@@ -282,11 +286,42 @@ pub async fn delete_agent(
     agent_id: String,
 ) -> Result<(), String> {
     // Step 1: Remove from OpenClaw container
+    let node_script = r#"
+        const fs = require('fs');
+        const path = require('path');
+        const agentId = process.argv[1];
+        if (!agentId || typeof agentId !== 'string' || agentId.includes('..') || agentId.includes('/')) {
+            console.error('Invalid agent ID provided');
+            process.exit(1);
+        }
+        
+        const cfgPath = '/home/node/.openclaw/openclaw.json';
+        if (fs.existsSync(cfgPath)) {
+            try {
+                let cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+                if (cfg.agents && cfg.agents.list) {
+                    const before = cfg.agents.list.length;
+                    cfg.agents.list = cfg.agents.list.filter(a => a.id !== agentId);
+                    if (cfg.agents.list.length !== before) {
+                        fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+                    }
+                }
+            } catch (e) {
+                console.error('Configuration parsing failed', e);
+            }
+        }
+        
+        const dir = path.join('/home/node/.openclaw/agents', agentId);
+        // Extremely strict validation that we never delete outside of the exact isolated sandbox layer
+        if (dir.startsWith('/home/node/.openclaw/agents/') && dir !== '/home/node/.openclaw/agents/') {
+            if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+        }
+    "#;
+
     let output = get_docker_command()
         .args([
             "exec", "canopy-gateway",
-            "openclaw", "agents", "remove",
-            "--agent", &agent_id,
+            "node", "-e", node_script, &agent_id
         ])
         .output()
         .await
@@ -321,7 +356,7 @@ pub async fn send_message_internal(
     let _ = db.insert_message(&conv_id, "user", message);
 
     // Step 3: Send via native OpenClaw CLI
-    let output = get_docker_command()
+    let cmd_future = get_docker_command()
         .args([
             "exec", "canopy-gateway", 
             "openclaw", "agent", 
@@ -329,9 +364,12 @@ pub async fn send_message_internal(
             "--message", message, 
             "--json"
         ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to send message: {}", e))?;
+        .output();
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(60), cmd_future).await {
+         Ok(res) => res.map_err(|e| format!("Failed to send message: {}", e))?,
+         Err(_) => return Err("The agent failed to respond in time (Gateway Timeout).".into()),
+    };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -509,7 +547,7 @@ pub async fn sync_credentials(
         let provider = match k.as_str() {
             "ANTHROPIC_API_KEY" => "anthropic",
             "OPENAI_API_KEY" => "openai",
-            "GEMINI_API_KEY" => "gemini",
+            "GEMINI_API_KEY" => "google",
             "XAI_API_KEY" => "xai",
             _ => continue,
         };
@@ -526,14 +564,17 @@ pub async fn sync_credentials(
     let auth_json = serde_json::to_string(&auth_profile).unwrap();
     let filepath = format!("/home/node/.openclaw/agents/{}/agent/auth-profiles.json", agent_id);
 
-    let output = get_docker_command()
+    let cmd_future = get_docker_command()
         .args([
             "exec", "-u", "node", "canopy-gateway", "sh", "-c",
-            &format!("mkdir -p $(dirname {}) && cat > {} << 'AUTHEOF'\n{}\nAUTHEOF", filepath, filepath, auth_json)
+            &format!("mkdir -p $(dirname {}) && cat > {} << 'AUTHEOF'\n{}\nAUTHEOF && chmod 600 {}", filepath, filepath, auth_json, filepath)
         ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to write auth profile: {}", e))?;
+        .output();
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(3), cmd_future).await {
+        Ok(res) => res.map_err(|e| format!("Failed to write auth profile: {}", e))?,
+        Err(_) => return Err("Docker command timed out, proxy might be hanging".into()),
+    };
 
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);

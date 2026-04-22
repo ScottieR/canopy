@@ -16,16 +16,17 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
       {/* The Agent (which now includes its own generated Meshy habitat) */}
       {agent && (
         <GLBAgent 
-          fileUrl={agent.fileUrl}
+          fileUrl={agent.visual_identity?.baseModelUrl || agent.fileUrl}
           role={agent.role}
+          accessories={agent.visual_identity?.accessories || []}
           position={index === 0 ? [0.65, -0.23, 0.2] : [0, 0, 0]} 
           navPoints={navPoints}
           scale={0.25} 
           isWorking={isWorking} 
           agentStatus={agent?.status}
           baseColor={agent.color || "#D2D6CE"}
-          robeColor={agent.robeColor || "#A3C4BC"}
-          accentColor={agent.accentColor || "#FFAB91"}
+          robeColor={agent.visual_identity?.color || agent.color || agent.robeColor || "#A3C4BC"}
+          accentColor={agent.visual_identity?.color || agent.accentColor || "#FFAB91"}
         />
       )}
     </group>
