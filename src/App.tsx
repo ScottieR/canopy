@@ -3859,13 +3859,18 @@ function CanopyView() {
   const agents = useWorldStore(s => s.agents);
   const selectedAgent = useWorldStore(s => s.selectedAgent);
   const { setSelectedAgent, setActiveView } = useWorldStore();
+  const theme = useWorldStore(s => s.theme);
+
+  // Soft iridescent gradients tailored to the reference imagery (saturated slightly more so it's highly visible on all monitors)
+  const lightGradient = "radial-gradient(circle at 0% 0%, #E5E1FD 0%, #E1F2FF 35%, #FFEBE6 75%, #FFF7F2 100%)";
+  const darkGradient = "radial-gradient(circle at 85% 15%, #24304A 0%, #1A2133 40%, #111520 80%, #0B0E14 100%)";
 
   return (
-    <div style={{ position: "relative", flex: 1 }}>
+    <div style={{ position: "relative", flex: 1, background: theme === "dark" ? darkGradient : lightGradient }}>
       <Canvas
         style={{ position: "absolute", inset: 0 }}
-        gl={{ antialias: true, alpha: false }}
-        onCreated={({ gl }) => { gl.setClearColor("#F6F8FA"); gl.toneMapping = THREE.LinearToneMapping; gl.toneMappingExposure = 1.0; }}
+        gl={{ antialias: true, alpha: true }}
+        onCreated={({ gl }) => { gl.toneMapping = THREE.LinearToneMapping; gl.toneMappingExposure = 1.0; }}
       >
         <OrthographicCamera makeDefault position={[10, 10, 10]} zoom={65} near={0.1} far={100} />
         <OrbitControls enablePan={true} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping minZoom={50} maxZoom={650} />
