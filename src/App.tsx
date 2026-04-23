@@ -21,6 +21,13 @@ const safeStartGateway = async () => {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// GLOBAL THEME PALETTES
+// ═══════════════════════════════════════════════════════════════════════════════
+const lightGradient = "radial-gradient(circle at 0% 0%, #E5E1FD 0%, #E1F2FF 35%, #FFEBE6 75%, #FFF7F2 100%)";
+const darkGradient = "radial-gradient(circle at 85% 15%, #24304A 0%, #1A2133 40%, #111520 80%, #0B0E14 100%)";
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CANOPY — Monument Valley Isometric World + Architect Agent Detail
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -1229,7 +1236,32 @@ function OnboardingWizard() {
               <ambientLight intensity={0.7} color="#F5E6D8" />
               <directionalLight position={[10, 20, 5]} intensity={0.8} />
               <OrbitControls enableZoom={true} enablePan={true} autoRotate autoRotateSpeed={0.8} />
-              <WorldScene />
+              <WorldScene agents={[
+                {
+                  id: "demo-sloane",
+                  role: "Assistant",
+                  name: "Sloane",
+                  visual_identity: null
+                },
+                {
+                  id: "demo-boots",
+                  role: "Accountant",
+                  name: "Boots",
+                  visual_identity: {
+                    habitatId: 7,
+                    habitatTransform: { rotationY: 0, x: -0.25, y: 1.75, z: -1.75 }
+                  }
+                },
+                {
+                  id: "demo-dev",
+                  role: "Coder",
+                  name: "Dev",
+                  visual_identity: {
+                    habitatId: 5,
+                    habitatTransform: { rotationY: -0.39269908169872414, x: 1.5, y: 0.5, z: -1.25 }
+                  }
+                }
+              ]} />
             </Canvas>
           </div>
 
@@ -2416,10 +2448,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
   const [showDiagnosticsPane, setShowDiagnosticsPane] = useState(false);
   const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
-  const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [showUpdateTip, setShowUpdateTip] = useState(false);
-  const [tempName, setTempName] = useState(agent.name);
-  const [tempRole, setTempRole] = useState(agent.role);
 
   useEffect(() => {
     // Reset Diagnostic UI states when selecting a different agent
@@ -2427,10 +2456,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
     setDiagSuccess("");
     setOpenclawStatusOutput("");
     setShowDiagnosticsPane(false);
-    setIsEditingDetails(false);
     setShowUpdateTip(false);
-    setTempName(agent.name);
-    setTempRole(agent.role);
   }, [agent.id]);
 
   const runDiagnostics = async () => {
@@ -2505,27 +2531,6 @@ function ArchitectView({ agent }: { agent: AgentData }) {
     setTimeout(() => { if (btn) btn.innerText = "Diagnostics"; }, 3000);
   };
 
-  const saveDetails = async () => {
-    if (!tempName.trim()) return;
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke("update_agent_details", {
-        agentId: agent.id,
-        name: tempName,
-        role: tempRole
-      });
-      // Update global store
-      const { setAgents, agents } = useWorldStore.getState();
-      setAgents(agents.map(a => a.id === agent.id ? { ...a, name: tempName, role: tempRole } : a));
-      setIsEditingDetails(false);
-      if (tempName !== agent.name) {
-        setShowUpdateTip(true);
-      }
-    } catch (e) {
-      console.error("Failed to update agent details:", e);
-      setDiagErrors(["Update failed: " + String(e)]);
-    }
-  };
 
   const tabs = [
     { id: "overview", label: "Overview", icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
@@ -2574,92 +2579,37 @@ function ArchitectView({ agent }: { agent: AgentData }) {
           display: "flex", alignItems: "center", gap: 12, fontSize: 13, border: "1px solid rgba(255,255,255,0.1)",
           animation: "slideIn 0.3s ease-out"
         }}>
-          <div style={{ background: "rgba(255,255,255,0.2)", borderRadius: "50%", width: 24, height: 24, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z"></path><path d="M12 16V12"></path><path d="M12 8H12.01"></path></svg>
+          <div style={{ background: "rgba(255,255,255,0.2)", borderRadius: 8, padding: "6px 8px", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
           </div>
-          <div style={{ flex: 1 }}>
-            <strong>Identity Synced.</strong> To match the external Slack app name, update it in your <a href="https://api.slack.com/apps" target="_blank" rel="noopener noreferrer" style={{ color: "#fff", textDecoration: "underline", fontWeight: 700 }}>Slack App Dashboard</a>.
-          </div>
-          <button 
-            onClick={() => setShowUpdateTip(false)}
-            style={{ background: "transparent", border: "none", color: "#fff", cursor: "pointer", padding: 4, opacity: 0.7 }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
-          </button>
+          <span style={{ flex: 1, fontWeight: 600 }}>Agent settings saved</span>
+          <button onClick={() => setShowUpdateTip(false)} style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0 }}>✕</button>
         </div>
       )}
 
-      {/* ── Left Sidebar ── */}
+      {/* Sidebar */}
       <div style={{
-        width: 240, padding: "24px 16px", display: "flex", flexDirection: "column", gap: 4,
-        borderRight: "1px solid rgba(0,0,0,0.06)", background: "var(--glass-light)",
+        width: 220, flexShrink: 0, display: "flex", flexDirection: "column",
+        background: "var(--surface-card)", borderRight: "1px solid rgba(0,0,0,0.06)",
+        padding: "16px 12px", gap: 4, overflowY: "auto"
       }}>
-        {/* Agent identity */}
-        <div style={{ padding: "0 8px 20px", borderBottom: "1px solid rgba(0,0,0,0.06)", marginBottom: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-            <div style={{ position: "relative" }}>
-              <div style={{
-                width: 36, height: 36, borderRadius: "50%", overflow: "hidden",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: `0 0 0 3px rgba(255,255,255,0.6), 0 0 12px ${agent.robeColor}40`,
-                background: `${agent.robeColor}15`,
-              }}>
-                <LobsterIcon size={36} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
-              </div>
-              <div style={{
-                position: "absolute", bottom: -2, right: -2, width: 10, height: 10, borderRadius: "50%",
-                background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
-                border: "2px solid white", zIndex: 2
-              }} />
-            </div>
+        {/* Agent Identity */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+          <div style={{ width: 36, height: 36, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: `${agent.robeColor || "#CCC"}15`, boxShadow: `0 0 0 1px ${agent.robeColor || "#CCC"}40` }}>
+            <LobsterIcon size={32} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
+          </div>
+          <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {isEditingDetails ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                    <input
-                      value={tempName}
-                      onChange={(e) => setTempName(e.target.value)}
-                      autoFocus
-                      style={{
-                        fontSize: 13, fontWeight: 700, padding: "4px 8px", borderRadius: 6,
-                        border: "1px solid rgba(33,131,128,0.3)", outline: "none", width: 140,
-                        background: "rgba(255,255,255,0.8)"
-                      }}
-                    />
-                    <input
-                      value={tempRole}
-                      onChange={(e) => setTempRole(e.target.value)}
-                      style={{
-                        fontSize: 10, padding: "2px 8px", borderRadius: 4,
-                        border: "1px solid rgba(0,0,0,0.1)", outline: "none", width: 140,
-                        background: "rgba(255,255,255,0.6)"
-                      }}
-                    />
-                    <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
-                      <button onClick={saveDetails} style={{ fontSize: 9, padding: "2px 8px", background: "#218380", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}>Save</button>
-                      <button onClick={() => { setIsEditingDetails(false); setTempName(agent.name); setTempRole(agent.role); }} style={{ fontSize: 9, padding: "2px 8px", background: "rgba(0,0,0,0.05)", border: "none", borderRadius: 4, cursor: "pointer" }}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      onClick={() => setIsAgentMenuOpen(!isAgentMenuOpen)}
-                      style={{ display: "flex", alignItems: "center", cursor: "pointer", gap: 6 }}
-                    >
-                      <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{agent.name}</div>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-sub)", transition: "transform 0.2s", transform: isAgentMenuOpen ? "rotate(180deg)" : "rotate(0deg)" }}>
-                        <polyline points="6 9 12 15 18 9"></polyline>
-                      </svg>
-                      <div
-                        onClick={(e) => { e.stopPropagation(); setIsEditingDetails(true); }}
-                        style={{ marginLeft: 4, cursor: "pointer", opacity: 0.4 }}
-                        title="Edit agent details"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--text-sub)", textTransform: "capitalize", marginTop: 2 }}>{agent.role}</div>
-                  </>
-                )}
+                <div
+                  onClick={() => setIsAgentMenuOpen(!isAgentMenuOpen)}
+                  style={{ display: "flex", alignItems: "center", cursor: "pointer", gap: 6 }}
+                >
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{agent.name}</div>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-sub)", transition: "transform 0.2s", transform: isAgentMenuOpen ? "rotate(180deg)" : "rotate(0deg)" }}>
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-sub)", textTransform: "capitalize", marginTop: 2 }}>{agent.role}</div>
               </div>
 
               {/* Custom Dropdown Menu */}
@@ -2905,7 +2855,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         </div>
       ) : (
         <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}>
-          {architectTab === "overview" && <OverviewTab agent={agent} />}
+          {architectTab === "overview" && <OverviewTab agent={agent} onUpdate={() => setShowUpdateTip(true)} />}
           {architectTab === "identity" && <IdentityTab agent={agent} />}
           {architectTab === "personality" && <PersonalityTab agent={agent} />}
           {architectTab === "permissions" && <PermissionsTab agent={agent} />}
@@ -3363,10 +3313,41 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent }: { agent: AgentData }) {
+function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => void }) {
   const [repairLog, setRepairLog] = useState<string | null>(null);
   const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);
   const [hardResetting, setHardResetting] = useState(false);
+  
+  const [isEditingDetails, setIsEditingDetails] = useState(false);
+  const [tempName, setTempName] = useState(agent.name);
+  const [tempRole, setTempRole] = useState(agent.role);
+
+  useEffect(() => {
+    setIsEditingDetails(false);
+    setTempName(agent.name);
+    setTempRole(agent.role);
+  }, [agent.id]);
+
+  const saveDetails = async () => {
+    if (!tempName.trim()) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke("update_agent_details", {
+        agentId: agent.id,
+        name: tempName,
+        role: tempRole
+      });
+      // Update global store
+      const { setAgents, agents } = useWorldStore.getState();
+      setAgents(agents.map(a => a.id === agent.id ? { ...a, name: tempName, role: tempRole } : a));
+      setIsEditingDetails(false);
+      if (tempName !== agent.name && onUpdate) {
+        onUpdate();
+      }
+    } catch (e) {
+      console.error("Failed to update agent details:", e);
+    }
+  };
 
   const handleHardReset = async () => {
     setHardResetting(true);
@@ -3466,13 +3447,42 @@ function OverviewTab({ agent }: { agent: AgentData }) {
       )}
 
       {/* Header */}
-      <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 36, fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
-          {agent.name}: <span style={{ color: "var(--text-sub)", fontWeight: 400 }}>{agent.title}</span>
-        </h1>
-        <p style={{ fontSize: 15, color: "var(--text-sub)", marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
-          {agent.description}
-        </p>
+      <div style={{ marginBottom: 32, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          {isEditingDetails ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input value={tempName} onChange={e => setTempName(e.target.value)} style={{ fontSize: 32, fontWeight: 700, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-main)" }} />
+              <input value={tempRole} onChange={e => setTempRole(e.target.value)} style={{ fontSize: 16, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-sub)" }} />
+              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                <button onClick={saveDetails} style={{ padding: "6px 16px", background: "#4A9E96", color: "white", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Save</button>
+                <button onClick={() => { setIsEditingDetails(false); setTempName(agent.name); setTempRole(agent.role); }} style={{ padding: "6px 16px", background: "transparent", color: "var(--text-sub)", border: "1px solid var(--border-subtle)", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <h1 style={{ fontSize: 36, fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
+                {agent.name}: <span style={{ color: "var(--text-sub)", fontWeight: 400 }}>{agent.title}</span>
+              </h1>
+              <p style={{ fontSize: 15, color: "var(--text-sub)", marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
+                {agent.description}
+              </p>
+            </>
+          )}
+        </div>
+        
+        {!isEditingDetails && (
+          <button 
+            onClick={() => setIsEditingDetails(true)} 
+            style={{ 
+              display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", 
+              borderRadius: 8, border: "1px solid var(--border-subtle)", background: "transparent", 
+              color: "var(--text-sub)", cursor: "pointer", fontSize: 13, fontWeight: 600 
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+            Edit Agent
+          </button>
+        )}
       </div>
 
       {/* Status + Stats row */}
@@ -4907,7 +4917,7 @@ function CanopyView() {
         if (!agent) continue;
         const newVisuals = { ...(agent.visual_identity || {}), habitatTransform: transform };
         updateAgentVisuals(id, newVisuals);
-        await invoke("update_agent_visuals", { agentId: id, visuals: newVisuals });
+        await invoke("update_agent_visuals", { agentId: id, visualIdentity: newVisuals });
       }
     } catch (e) {
       console.error("Failed to save layout:", e);
@@ -4923,8 +4933,6 @@ function CanopyView() {
   };
 
   // Soft iridescent gradients tailored to the reference imagery (saturated slightly more so it's highly visible on all monitors)
-  const lightGradient = "radial-gradient(circle at 0% 0%, #E5E1FD 0%, #E1F2FF 35%, #FFEBE6 75%, #FFF7F2 100%)";
-  const darkGradient = "radial-gradient(circle at 85% 15%, #24304A 0%, #1A2133 40%, #111520 80%, #0B0E14 100%)";
 
   const nudgeBtnStyle = {
     background: "var(--surface-elevated)", color: "var(--text-main)", 
@@ -4934,7 +4942,7 @@ function CanopyView() {
   };
 
   return (
-    <div style={{ position: "relative", flex: 1, background: theme === "dark" ? darkGradient : lightGradient }}>
+    <div style={{ position: "relative", flex: 1 }}>
       <Canvas
         style={{ position: "absolute", inset: 0 }}
         gl={{ antialias: true, alpha: true }}
@@ -4968,19 +4976,19 @@ function CanopyView() {
           <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
             
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-              <button onClick={() => handleNudge("z", -0.5)} style={nudgeBtnStyle}>↑</button>
+              <button onClick={() => handleNudge("z", -0.25)} style={nudgeBtnStyle}>↑</button>
               <div style={{ display: "flex", gap: 4 }}>
-                <button onClick={() => handleNudge("x", -0.5)} style={nudgeBtnStyle}>←</button>
-                <button onClick={() => handleNudge("z", 0.5)} style={nudgeBtnStyle}>↓</button>
-                <button onClick={() => handleNudge("x", 0.5)} style={nudgeBtnStyle}>→</button>
+                <button onClick={() => handleNudge("x", -0.25)} style={nudgeBtnStyle}>←</button>
+                <button onClick={() => handleNudge("z", 0.25)} style={nudgeBtnStyle}>↓</button>
+                <button onClick={() => handleNudge("x", 0.25)} style={nudgeBtnStyle}>→</button>
               </div>
             </div>
 
             <div style={{ width: 1, height: 32, background: "var(--border-subtle)" }} />
 
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-               <button onClick={() => handleNudge("y", 0.5)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>+Y Up</button>
-               <button onClick={() => handleNudge("y", -0.5)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>-Y Dn</button>
+               <button onClick={() => handleNudge("y", 0.25)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>+Y Up</button>
+               <button onClick={() => handleNudge("y", -0.25)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>-Y Dn</button>
             </div>
 
             <div style={{ width: 1, height: 32, background: "var(--border-subtle)" }} />
@@ -5018,7 +5026,11 @@ function CanopyView() {
         {agents.map(a => {
           const isHovered = hoveredAgent === a.id;
           return (
-            <div key={a.id} onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); }} style={{
+            <div key={a.id} 
+                 onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); }} 
+                 onMouseEnter={() => useWorldStore.getState().setHoveredAgent(a.id)}
+                 onMouseLeave={() => useWorldStore.getState().setHoveredAgent(null)}
+                 style={{
               ...glass(selectedAgent === a.id ? 0.7 : 0.45),
               padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
               borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
@@ -5767,6 +5779,9 @@ export default function App() {
           setLoadStatus("Starting infrastructure gateway...");
           await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
 
+          setLoadStatus("Registering agents with gateway...");
+          await invoke("boot_sync_agents").catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
+
           setLoadStatus("Checking DB for Agents...");
           // Sync keys to all legacy agents to prevent silent Failovers into OOM crashes (Exit 137).
           const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
@@ -5888,7 +5903,7 @@ export default function App() {
   return (
     <div style={{
       width: "100vw", height: "100vh",
-      background: activeView === "canopy" ? "#EDE4DB" : "linear-gradient(180deg, #F5F0EB 0%, #EDE4DB 100%)",
+      background: theme === "dark" ? darkGradient : (activeView === "canopy" ? lightGradient : "linear-gradient(180deg, #F5F0EB 0%, #EDE4DB 100%)"),
       fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
       overflow: "hidden",
       display: "flex", flexDirection: "column",
