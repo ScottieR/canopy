@@ -1197,6 +1197,84 @@ pub fn get_global_audit_log(
     state.get_audit_log(None, limit.unwrap_or(100)).map_err(|e| e.to_string())
 }
 
+// ─── Boot Agent Sync ──────────────────────────────────────────────────────────
+
+/// Re-register every SQLite agent with the OpenClaw gateway at startup.
+/// Idempotent — "already exists" is treated as success.
+/// Must run AFTER start_gateway() and BEFORE sync_credentials().
+#[tauri::command]
+pub async fn boot_sync_agents(
+    db: tauri::State<'_, crate::db::Database>,
+) -> Result<String, String> {
+    let agents = db.list_agents().map_err(|e| e.to_string())?;
+
+    if agents.is_empty() {
+        return Ok("No agents to sync".to_string());
+    }
+
+    let mut ok: u32 = 0;
+    let mut errs: u32 = 0;
+
+    for agent in &agents {
+        let id = &agent.id;
+
+        // Step 1: openclaw agents add <id> (idempotent)
+        let add_result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            get_docker_command()
+                .args([
+                    "exec", "-u", "node", "canopy-gateway",
+                    "openclaw", "agents", "add", id,
+                    "--workspace", "/home/node/openclaw/workspace",
+                ])
+                .output(),
+        )
+        .await;
+
+        let registered = match add_result {
+            Ok(Ok(out)) => {
+                let combined = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                out.status.success() || combined.to_lowercase().contains("already exists")
+            }
+            _ => false,
+        };
+
+        if !registered {
+            tracing::warn!("boot_sync_agents: could not register agent {}", id);
+            errs += 1;
+            continue;
+        }
+
+        // Step 2: Re-write SOUL.md from persisted personality data
+        let soul_content = generate_soul_md(&agent.personality);
+        let soul_path = agent_soul_path(id);
+        // Escape single quotes in the soul content for the shell heredoc
+        let escaped_soul = soul_content.replace('\'', "'\\''");
+        let write_cmd = format!(
+            "mkdir -p \"$(dirname '{soul_path}')\" && printf '%s' '{soul}' > '{soul_path}'",
+            soul_path = soul_path,
+            soul = escaped_soul,
+        );
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            get_docker_command()
+                .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
+                .output(),
+        )
+        .await;
+
+        tracing::info!("boot_sync_agents: registered agent {}", id);
+        ok += 1;
+    }
+
+    tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
+    Ok(format!("{} agents synced, {} errors", ok, errs))
+}
+
 // ─── Regression Tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]

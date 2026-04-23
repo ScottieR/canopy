@@ -229,7 +229,18 @@ pub async fn start_gateway() -> Result<String, String> {
 
     let compose = generate_compose_file(&data_dir);
     let compose_path = data_dir.join("docker-compose.yml");
-    std::fs::write(&compose_path, compose).map_err(|e| e.to_string())?;
+
+    // Only write the compose file if it doesn't exist or the content changed.
+    // Writing an identical file causes docker-compose to recreate the container
+    // unnecessarily, wiping OpenClaw's in-memory agent registration list.
+    let needs_write = std::fs::read_to_string(&compose_path)
+        .map(|existing| existing != compose)
+        .unwrap_or(true); // file missing → write it
+
+    if needs_write {
+        tracing::info!("docker-compose.yml changed or missing — writing new version");
+        std::fs::write(&compose_path, compose).map_err(|e| e.to_string())?;
+    }
 
     let mut cmd = get_docker_compose_command();
     

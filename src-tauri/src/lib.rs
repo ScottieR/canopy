@@ -115,6 +115,7 @@ pub fn run() {
             openclaw::get_user_profile,
             openclaw::save_user_profile,
             openclaw::get_global_audit_log,
+            openclaw::boot_sync_agents,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,

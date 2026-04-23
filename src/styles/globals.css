@@ -56,10 +56,11 @@
   --border-strong: rgba(255,255,255,0.15);
   --glass-light: rgba(17,21,32,0.6);
   --glass-heavy: rgba(17,21,32,0.85);
-
   /* Sync legacy CSS vars to Dark too in case they fall through */
   --surface: #0B0E14;
   --on-surface: #F8FAFC;
+  --primary: #59C3B4;
+  --accent: #59C3B4;
 }
 
 * {
