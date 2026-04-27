@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
+import { PasswordInput } from "./shared/PasswordInput";
 
 export function ProvidersVault({ embedded = false, filterProvider }: { embedded?: boolean, filterProvider?: string } = {}) {
   const [keys, setKeys] = useState<Record<string, string>>({});
@@ -151,8 +152,7 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
                 </div>
 
                 <div style={{ position: "relative" }}>
-                  <input 
-                    type="password"
+                  <PasswordInput 
                     placeholder={`Paste your ${p.name} API Key here`}
                     value={keys[p.id] || ""}
                     onChange={(e) => handleUpdateKey(p.id, e.target.value)}
@@ -162,12 +162,14 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
                       fontSize: 14, fontFamily: "monospace", outline: "none",
                       color: hasKey ? p.color : "#303330"
                     }}
+                    rightAction={
+                      hasKey ? (
+                        <button onClick={() => handleUpdateKey(p.id, "")} style={{ background: "transparent", border: "none", color: "#636E72", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+                          Remove
+                        </button>
+                      ) : undefined
+                    }
                   />
-                  {hasKey && (
-                    <button onClick={() => handleUpdateKey(p.id, "")} style={{ position: "absolute", right: 12, top: 12, background: "transparent", border: "none", color: "#636E72", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
-                      Remove
-                    </button>
-                  )}
                 </div>
               </div>
             </div>

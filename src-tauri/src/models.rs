@@ -113,6 +113,7 @@ pub struct Agent {
     pub color: String,
     pub status: AgentStatus,
     pub isolated: bool,
+    pub paused: bool,
     pub container_id: Option<String>,
     pub personality: AgentPersonality,
     pub capabilities: AgentCapabilities,

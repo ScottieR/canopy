@@ -10,7 +10,9 @@ import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
 import { UpdateManager } from "./components/shared/UpdateManager";
-
+import { PasswordInput } from "./components/shared/PasswordInput";
+import MDEditor from '@uiw/react-md-editor';
+import rehypeSanitize from "rehype-sanitize";
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -102,6 +104,7 @@ interface Agent {
   color: string;
   status: "active" | "sleeping" | "thinking" | "stopped" | "error";
   isolated: boolean;
+  paused: boolean;
   container_id: string | null;
   personality: {
     name: string;
@@ -196,10 +199,12 @@ interface WorldState {
   hoveredAgent: string | null;
   activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "profile";
   architectTab: string;
+  gatewayReady: boolean;
   setSelectedAgent: (id: string | null) => void;
   setHoveredAgent: (id: string | null) => void;
   setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "profile") => void;
   setArchitectTab: (tab: string) => void;
+  setGatewayReady: (ready: boolean) => void;
   togglePermission: (agentId: string, permissionId: string) => void;
   updateAgentPosition: (id: string, pos: [number, number, number]) => void;
   updateAgentTarget: (id: string, target: [number, number, number]) => void;
@@ -303,6 +308,7 @@ const useWorldStore = create<WorldState>((set) => ({
   hoveredAgent: null,
   activeView: "loading",
   architectTab: "overview",
+  gatewayReady: false,
   theme: "light",
   toggleTheme: () => set((state) => {
     const nextTheme = state.theme === "light" ? "dark" : "light";
@@ -313,6 +319,7 @@ const useWorldStore = create<WorldState>((set) => ({
   setHoveredAgent: (id) => set({ hoveredAgent: id }),
   setActiveView: (view) => set({ activeView: view }),
   setArchitectTab: (tab) => set({ architectTab: tab }),
+  setGatewayReady: (ready) => set({ gatewayReady: ready }),
   togglePermission: (agentId, permissionId) =>
     set((state) => ({
       agents: state.agents.map((a) =>
@@ -774,7 +781,13 @@ function OnboardingWizard() {
         const { listen } = await import('@tauri-apps/api/event');
         const unlisten1 = await listen('companion-finished', async (e: any) => {
           const { type, key } = e.payload || {};
-          if (key) {
+          if (type === "slack") {
+            // Slack completion from the companion guide means the bot token is saved.
+            // We do NOT try to collect the pairing code here — pairing requires the agent
+            // to already be registered in OpenClaw and the listener to be running, which
+            // can't happen until after create_agent completes. The user will finish pairing
+            // from the Connections tab after the agent is created.
+          } else if (key) {
             setApiKey(key);
             if (type === "gemini") setLlmProvider("Google Gemini");
             else if (type === "openai") setLlmProvider("OpenAI");
@@ -864,32 +877,36 @@ function OnboardingWizard() {
     };
   }, []);
 
-  const [modelStrategies, setModelStrategies] = useState<any>(null);
+  // ── Model catalogue — sourced from Rust, never from localhost:3001 ───────────
+  // localhost:3001/api/models was a dev-only proxy that served stale/phantom model
+  // names (e.g. "gemini-3.1-flash" which does not exist). We now get the list directly
+  // from model_constants.rs via a Tauri command, so the frontend and backend always agree.
+  const [availableModels, setAvailableModels] = useState<any[]>([]);
   useEffect(() => {
-    fetch('http://localhost:3001/api/models')
-      .then(res => res.json())
-      .then(data => setModelStrategies(data))
-      .catch(err => console.warn("Failed to fetch model strategies proxy:", err));
+    invoke<any[]>("get_available_models")
+      .then(models => setAvailableModels(models))
+      .catch(err => console.warn("Failed to fetch available models from Rust:", err));
   }, []);
 
+  // Heavy roles get powerful models; light roles get fast models.
+  const HEAVY_ROLES = ["Strategist", "Analyst", "Researcher", "Engineer"];
+
   const getDynamicRecommendedModel = (role: string) => {
-    if (!modelStrategies || !modelStrategies.strategies) return { provider: "OpenAI", model: "GPT-4o-mini (Fast & Light)", id: "gpt-4o-mini" };
-    const { strategies, models } = modelStrategies;
-    const isHeavy = strategies.heavy.includes(role);
-    const targetId = isHeavy ? strategies.defaultHeavyModel : strategies.defaultLightModel;
-    const match = models.find((m: any) => m.id === targetId);
-    return { provider: match?.provider || "OpenAI", model: `${match?.name} (${match?.description})`, id: match?.id };
+    const isHeavy = HEAVY_ROLES.includes(role);
+    const strategy = isHeavy ? "heavy" : "light";
+    const match = availableModels.find((m: any) => m.strategy === strategy);
+    if (match) return { provider: match.provider, model: `${match.name} — ${match.description}`, id: match.id };
+    return { provider: "Google Gemini", model: "Gemini 3.1 Flash Lite — Fastest Gemini 3 model (Preview)", id: "google/gemini-3.1-flash-lite-preview" };
   };
 
   const getProviderRecommendedModel = (role: string, targetProvider: string) => {
-    if (!modelStrategies || !modelStrategies.strategies) return { model: "Standard Model" };
-    const { strategies, models } = modelStrategies;
-    const isHeavy = strategies.heavy.includes(role);
-    const options = models.filter((m: any) => m.provider === targetProvider && m.strategy === (isHeavy ? "heavy" : "light"));
-    if (options.length > 0) return { model: `${options[0].name} (${options[0].description})` };
-    const fallbacks = models.filter((m: any) => m.provider === targetProvider);
-    if (fallbacks.length > 0) return { model: `${fallbacks[0].name} (${fallbacks[0].description})` };
-    return { model: "Standard Model" };
+    const isHeavy = HEAVY_ROLES.includes(role);
+    const strategy = isHeavy ? "heavy" : "light";
+    const options = availableModels.filter((m: any) => m.provider === targetProvider && m.strategy === strategy);
+    if (options.length > 0) return { model: `${options[0].name} — ${options[0].description}`, id: options[0].id };
+    const fallbacks = availableModels.filter((m: any) => m.provider === targetProvider);
+    if (fallbacks.length > 0) return { model: `${fallbacks[0].name} — ${fallbacks[0].description}`, id: fallbacks[0].id };
+    return { model: "Standard Model", id: "" };
   };
 
   const startImportFlow = async () => {
@@ -1090,11 +1107,39 @@ function OnboardingWizard() {
             }
           }
 
+          // Store the API key under the provider-specific keychain name so boot-time
+          // sync_credentials can find it with the per-agent key → global fallback logic.
           if (apiKey.trim()) {
-            await invoke("store_secret_cmd", {
-              key: `agent_${newAgentData.id}_api_key`,
-              value: apiKey,
-            });
+            const providerKeyName: Record<string, string> = {
+              "Google Gemini": `agent_${newAgentData.id}_gemini_key`,
+              "Anthropic":     `agent_${newAgentData.id}_anthropic_key`,
+              "OpenAI":        `agent_${newAgentData.id}_openai_key`,
+              "xAI Grok":      `agent_${newAgentData.id}_grok_key`,
+            };
+            const keyName = providerKeyName[llmProvider] || `agent_${newAgentData.id}_gemini_key`;
+            await invoke("store_secret_cmd", { key: keyName, value: apiKey.trim() });
+          }
+
+          // Push credentials to OpenClaw immediately — per-agent key wins, global key is fallback.
+          // This is the same logic used at boot time, applied right after creation.
+          {
+            const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
+            const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
+            const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
+            const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
+                                        || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
+
+            const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
+            const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
+            const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
+            const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
+
+            await invoke("sync_credentials", { agentId: newAgentData.id, keys: {
+              "ANTHROPIC_API_KEY": agAnthropic,
+              "OPENAI_API_KEY":    agOpenAI,
+              "GEMINI_API_KEY":    agGemini,
+              "XAI_API_KEY":       agGrok,
+            }}).catch(console.warn);
           }
 
           if (plugins.imessage && selectedIMessageThreads.length > 0) {
@@ -1131,6 +1176,19 @@ function OnboardingWizard() {
               ? { ...a, ...newAgentData, id: newAgentData.id, status: "active", currentAction: "idle" }
               : a)
           }));
+
+          // If Slack was enabled, the bot token was saved by the companion guide to the
+          // "slack-bot-token" keychain entry. Now that the agent is registered in OpenClaw,
+          // sync that token into the gateway config and start the listener so the bot comes
+          // online. The user will DM the bot to get a pairing code, then finish pairing in
+          // the Connections tab — that step requires the bot to be live first.
+          if (plugins.slack) {
+            const slackBotTok = String(await invoke("get_secret_cmd", { key: "slack-bot-token" }).catch(() => "") || "");
+            if (slackBotTok) {
+              await invoke("store_secret_cmd", { key: `agent_${newAgentData.id}_slack_bot_token`, value: slackBotTok }).catch(() => {});
+            }
+            await invoke("start_slack_listener").catch(() => {});
+          }
 
         } else {
           throw new Error("Tauri invoke not found");
@@ -1521,7 +1579,10 @@ function OnboardingWizard() {
                   const newName = e.target.value;
                   setAgentName(newName);
                   if (personalityPrompt.includes(oldName)) {
-                    setPersonalityPrompt(personalityPrompt.replaceAll(oldName, newName || "Agent"));
+                    // Use word boundaries to avoid replacing substrings inside other words
+                    const escapedOldName = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const regex = new RegExp(`\\b${escapedOldName}\\b`, 'g');
+                    setPersonalityPrompt(personalityPrompt.replace(regex, newName || "Agent"));
                   }
                 }}
                 placeholder="e.g., Atlas, Nova, Sage..."
@@ -1559,17 +1620,16 @@ function OnboardingWizard() {
               <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Agent Personality</h3>
               <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
 
-              <textarea
-                value={personalityPrompt}
-                onChange={e => setPersonalityPrompt(e.target.value)}
-                rows={4}
-                style={{
-                  width: "100%", padding: "12px 16px", borderRadius: 12, resize: "vertical",
-                  fontSize: 14, lineHeight: 1.5,
-                  fontFamily: "inherit", color: "var(--text-main)", background: "var(--surface-card)",
-                  outline: "none"
-                }}
-              />
+              <div data-color-mode="light" style={{ borderRadius: 12, overflow: "hidden", border: "1px solid rgba(0,0,0,0.1)" }}>
+                <MDEditor
+                  value={personalityPrompt}
+                  onChange={(val) => setPersonalityPrompt(val || "")}
+                  previewOptions={{
+                    rehypePlugins: [[rehypeSanitize]],
+                  }}
+                  height={400}
+                />
+              </div>
 
               <div style={{ marginTop: 24 }}>
                 <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Recently Read</label>
@@ -1710,14 +1770,13 @@ function OnboardingWizard() {
                     const windowLabel = 'providerCompanion_' + Date.now();
                     const companionWindow = new WebviewWindow(windowLabel, {
                       url: '/index.html?companion=' + providerId,
-                      title: 'Agent Guide',
-                      width: 380,
-                      height: 800,
-                      x: window.screen.availWidth - 400,
+                      title: 'Setup Guide',
+                      width: 420,
+                      height: 760,
+                      x: window.screen.availWidth - 440,
                       y: 50,
                       alwaysOnTop: true,
-                      decorations: false,
-                      transparent: true,
+                      decorations: true,
                     });
 
                     const launchBrowser = async () => {
@@ -1755,8 +1814,7 @@ function OnboardingWizard() {
 
               {apiKeyMode !== "hidden" && (
                 <div style={{ marginTop: 24 }}>
-                  <input
-                    type="password"
+                  <PasswordInput
                     placeholder={`Paste your ${llmProvider || ""} API Key here`}
                     value={apiKey}
                     onChange={e => setApiKey(e.target.value)}
@@ -1891,14 +1949,13 @@ function OnboardingWizard() {
                       const windowLabel = 'slackCompanion_' + Date.now();
                       const companionWindow = new WebviewWindow(windowLabel, {
                         url: '/index.html?companion=slack',
-                        title: 'Agent Guide',
-                        width: 380,
-                        height: 800,
-                        x: window.screen.availWidth - 400,
+                        title: 'Setup Guide',
+                        width: 420,
+                        height: 760,
+                        x: window.screen.availWidth - 440,
                         y: 50,
                         alwaysOnTop: true,
-                        decorations: false,
-                        transparent: true,
+                        decorations: true,
                       });
 
                       const launchBrowser = async () => {
@@ -2703,22 +2760,29 @@ function ArchitectView({ agent }: { agent: AgentData }) {
               <div style={{ fontSize: 10, fontWeight: 800, color: "#C62828", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.05em" }}>Danger Zone</div>
               <button
                 onClick={async () => {
-                  // Pause disables execution permissions locally and backend
                   const { invoke } = await import('@tauri-apps/api/core');
-                  const newPerms = agent.permissions.map(p =>
-                    (p.id === "autonomous" || p.id === "scheduled") ? { ...p, enabled: false } : p
-                  );
-
-                  const capabilitiesObj: any = {};
-                  newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                  const nowPaused = !agent.paused;
+                  // Optimistic update
                   useWorldStore.getState().setAgents(
-                    useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, permissions: newPerms } as AgentData : a)
+                    useWorldStore.getState().agents.map(a =>
+                      a.id === agent.id ? { ...a, paused: nowPaused, status: nowPaused ? "sleeping" as any : a.status } : a
+                    )
                   );
-                  await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+                  try {
+                    await invoke("set_agent_paused", { agentId: agent.id, paused: nowPaused });
+                  } catch (e) {
+                    // Roll back on error
+                    useWorldStore.getState().setAgents(
+                      useWorldStore.getState().agents.map(a =>
+                        a.id === agent.id ? { ...a, paused: !nowPaused } : a
+                      )
+                    );
+                    alert("Failed to " + (nowPaused ? "pause" : "resume") + " agent: " + e);
+                  }
                 }}
-                style={{ width: "100%", padding: "8px 12px", background: "var(--surface-base)", color: "var(--text-sub)", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6 }}
+                style={{ width: "100%", padding: "8px 12px", background: agent.paused ? "rgba(74,158,150,0.1)" : "var(--surface-base)", color: agent.paused ? "#4A9E96" : "var(--text-sub)", border: agent.paused ? "1px solid rgba(74,158,150,0.3)" : "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6 }}
               >
-                Pause Agent
+                {agent.paused ? "▶ Resume Agent" : "⏸ Pause Agent"}
               </button>
               <button
                 onClick={async () => {
@@ -2855,14 +2919,14 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         </div>
       ) : (
         <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}>
-          {architectTab === "overview" && <OverviewTab agent={agent} onUpdate={() => setShowUpdateTip(true)} />}
-          {architectTab === "identity" && <IdentityTab agent={agent} />}
-          {architectTab === "personality" && <PersonalityTab agent={agent} />}
-          {architectTab === "permissions" && <PermissionsTab agent={agent} />}
-          {architectTab === "connections" && <ConnectionsTab agent={agent} />}
-          {architectTab === "memory" && <MemoryTab agent={agent} />}
-          {architectTab === "spend" && <SpendTab agent={agent} />}
-          {architectTab === "chat" && <ChatTab agent={agent} />}
+          {architectTab === "overview" && <OverviewTab key={agent.id} agent={agent} onUpdate={() => setShowUpdateTip(true)} />}
+          {architectTab === "identity" && <IdentityTab key={agent.id} agent={agent} />}
+          {architectTab === "personality" && <PersonalityTab key={agent.id} agent={agent} />}
+          {architectTab === "permissions" && <PermissionsTab key={agent.id} agent={agent} />}
+          {architectTab === "connections" && <ConnectionsTab key={agent.id} agent={agent} />}
+          {architectTab === "memory" && <MemoryTab key={agent.id} agent={agent} />}
+          {architectTab === "spend" && <SpendTab key={agent.id} agent={agent} />}
+          {architectTab === "chat" && <ChatTab key={agent.id} agent={agent} />}
         </div>
       )}
     </div>
@@ -2977,11 +3041,13 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
     // (Tauri rejects new windows whose label matches an already-open window, silently failing.)
     const companionWindow = new WebviewWindow('companion_' + Date.now(), {
       url: `/index.html?companion=${type}`,
-      width: 400,
-      height: 750,
+      title: 'Setup Guide',
+      width: 420,
+      height: 760,
+      x: window.screen.availWidth - 440,
+      y: 50,
       alwaysOnTop: true,
-      decorations: false,
-      transparent: true,
+      decorations: true,
     });
     companionWindow.once('tauri://error', (e) => console.error('Companion window error:', e));
   };
@@ -3118,65 +3184,50 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* Slack */}
           <div style={{ padding: 24, background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)" }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <div style={{ width: "30%" }}>
+            {/* Header row */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
+              <div>
                 <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Slack</div>
-                <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Work chat & agent interaction.</div>
+                <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Work chat & agent interaction via Socket Mode.</div>
               </div>
-              <div style={{ flex: 1, padding: "0 20px" }}>
-                <select value="socket" disabled style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", fontSize: 14, cursor: "not-allowed", color: "var(--text-sub)" }}>
-                  <option value="socket">Private Socket Mode (Local-Only)</option>
-                </select>
-              </div>
-              <div style={{ width: 140, textAlign: "right", display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
-                <button onClick={() => openCompanion('slack')} style={{ padding: "8px 16px", background: "var(--text-main)", color: "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer", width: "100%" }}>
-                  Connect
-                </button>
-                <button
-                  onClick={() => { setShowPairing(v => !v); setPairingStatus("idle"); setPairingError(""); }}
-                  style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase", background: "none", border: "none", padding: 0 }}
-                >
-                  {showPairing ? "Hide ↑" : "Enter Pair Code ↓"}
-                </button>
-              </div>
+              <button onClick={() => openCompanion('slack')} style={{ padding: "8px 20px", background: "var(--text-main)", color: "var(--surface-card)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 }}>
+                {pairingStatus === "success" ? "Reconnect" : "Connect →"}
+              </button>
             </div>
 
-            {/* Inline pairing panel — shown when agent sends a pairing code via Slack DM */}
-            {showPairing && (
-              <div style={{ marginTop: 16, padding: 16, background: "rgba(33,131,128,0.05)", borderRadius: 10, border: "1px solid rgba(33,131,128,0.18)" }}>
-                {pairingStatus === "success" ? (
-                  <div style={{ color: "#218380", fontWeight: 700, fontSize: 14, textAlign: "center", padding: "8px 0" }}>
-                    ✓ Pairing successful — the agent will now respond in Slack!
+            {/* Step 2: Pairing — always shown so user knows it's there */}
+            {pairingStatus === "success" ? (
+              <div style={{ padding: "12px 16px", background: "rgba(33,131,128,0.08)", borderRadius: 10, border: "1px solid rgba(33,131,128,0.2)", color: "#218380", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                <span>✓</span> Slack paired — {agent.name} will respond in your workspace!
+              </div>
+            ) : (
+              <div style={{ padding: "14px 16px", background: "rgba(0,0,0,0.02)", borderRadius: 10, border: "1px solid rgba(0,0,0,0.07)" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Step 2 — Paste Pairing Code</div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 12, lineHeight: 1.5 }}>
+                  After the Setup Guide completes, {agent.name} will DM you a code like <code style={{ background: "rgba(0,0,0,0.06)", padding: "2px 6px", borderRadius: 4, fontFamily: "monospace", fontSize: 13 }}>PH3CV4GT</code> in Slack. Paste it here to authorize.
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    type="text"
+                    value={pairingCode}
+                    onChange={e => { setPairingCode(e.target.value.toUpperCase()); setPairingStatus("idle"); setPairingError(""); }}
+                    onKeyDown={e => { if (e.key === "Enter") handleApprovePairing(); }}
+                    placeholder="Paste 8-character code here"
+                    maxLength={12}
+                    style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 15, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", outline: "none", background: "var(--surface-base)" }}
+                  />
+                  <button
+                    onClick={handleApprovePairing}
+                    disabled={pairingStatus === "loading" || pairingCode.trim().length < 4}
+                    style={{ padding: "10px 20px", background: pairingCode.trim().length >= 4 ? "#218380" : "rgba(0,0,0,0.1)", color: pairingCode.trim().length >= 4 ? "white" : "var(--text-muted)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: pairingCode.trim().length < 4 ? "default" : "pointer", transition: "all 0.15s" }}
+                  >
+                    {pairingStatus === "loading" ? "Approving…" : "Approve"}
+                  </button>
+                </div>
+                {pairingStatus === "error" && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#c0392b", lineHeight: 1.5, padding: "8px 12px", background: "#fef2f2", borderRadius: 8, border: "1px solid #fca5a5" }}>
+                    ✗ {pairingError || "Pairing failed — the code may have expired. DM your bot in Slack again to get a fresh code."}
                   </div>
-                ) : (
-                  <>
-                    <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 10, lineHeight: 1.5 }}>
-                      Your agent sent you a pairing code in Slack (e.g. <code style={{ background: "rgba(0,0,0,0.06)", padding: "1px 5px", borderRadius: 4, fontFamily: "monospace" }}>PH3CV4GT</code>). Paste it here to authorize the connection.
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <input
-                        type="text"
-                        value={pairingCode}
-                        onChange={e => { setPairingCode(e.target.value.toUpperCase()); setPairingStatus("idle"); setPairingError(""); }}
-                        onKeyDown={e => { if (e.key === "Enter") handleApprovePairing(); }}
-                        placeholder="8-character code"
-                        maxLength={12}
-                        style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 15, fontFamily: "monospace", letterSpacing: "0.1em", textTransform: "uppercase", outline: "none" }}
-                      />
-                      <button
-                        onClick={handleApprovePairing}
-                        disabled={pairingStatus === "loading" || pairingCode.trim().length < 4}
-                        style={{ padding: "9px 18px", background: "#218380", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: pairingCode.trim().length < 4 ? "default" : "pointer", opacity: pairingCode.trim().length < 4 ? 0.5 : 1 }}
-                      >
-                        {pairingStatus === "loading" ? "Approving…" : "Approve"}
-                      </button>
-                    </div>
-                    {pairingStatus === "error" && (
-                      <div style={{ marginTop: 8, fontSize: 12, color: "#c0392b", lineHeight: 1.4 }}>
-                        ✗ {pairingError || "Pairing failed. The code may have expired — DM your bot in Slack again to get a fresh code."}
-                      </div>
-                    )}
-                  </>
                 )}
               </div>
             )}
@@ -3198,7 +3249,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
             </div>
             {showTelegram && (
               <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                <input type="password" value={telegramToken} onChange={e => { setTelegramToken(e.target.value); setTelegramStatus("idle"); }} placeholder="123456789:ABCdefGHIjklmno..." style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
+                <PasswordInput value={telegramToken} onChange={e => { setTelegramToken(e.target.value); setTelegramStatus("idle"); }} placeholder="123456789:ABCdefGHIjklmno..." style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Get your token from @BotFather in Telegram → /newbot</span>
                   <button onClick={handleConnectTelegram} disabled={telegramStatus === "loading" || !telegramToken.trim()} style={{ padding: "8px 16px", background: "#218380", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer", opacity: !telegramToken.trim() ? 0.5 : 1 }}>
@@ -3227,7 +3278,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
             </div>
             {showDiscord && (
               <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                <input type="password" value={discordToken} onChange={e => { setDiscordToken(e.target.value); setDiscordStatus("idle"); }} placeholder="Bot Token (discord.com/developers → App → Bot → Reset Token)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
+                <PasswordInput value={discordToken} onChange={e => { setDiscordToken(e.target.value); setDiscordStatus("idle"); }} placeholder="Bot Token (discord.com/developers → App → Bot → Reset Token)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
                 <input type="text" value={discordGuild} onChange={e => setDiscordGuild(e.target.value)} placeholder="Guild ID (optional — leave blank to respond in all servers)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Invite bot with: Send Messages + Read Message History + View Channels</span>
@@ -3257,7 +3308,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
             </div>
             {showGitHub && (
               <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                <input type="password" value={githubToken} onChange={e => { setGithubToken(e.target.value); setGithubStatus("idle"); }} placeholder="ghp_... or github_pat_..." style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
+                <PasswordInput value={githubToken} onChange={e => { setGithubToken(e.target.value); setGithubStatus("idle"); }} placeholder="ghp_... or github_pat_..." style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
                 <input type="text" value={githubUsername} onChange={e => setGithubUsername(e.target.value)} placeholder="GitHub username (optional)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Scopes needed: repo, issues, pull_requests, notifications — <a href="https://github.com/settings/tokens" style={{ color: "#218380" }}>github.com/settings/tokens</a></span>
@@ -3292,7 +3343,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
                 </div>
                 <input type="text" value={waPhoneId} onChange={e => { setWaPhoneId(e.target.value); setWaStatus("idle"); }} placeholder="Phone Number ID (Meta for Developers → WhatsApp → API Setup)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
                 <input type="text" value={waBizId} onChange={e => setWaBizId(e.target.value)} placeholder="Business Account ID" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
-                <input type="password" value={waToken} onChange={e => setWaToken(e.target.value)} placeholder="System User Token (starts with EAA...)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
+                <PasswordInput value={waToken} onChange={e => setWaToken(e.target.value)} placeholder="System User Token (starts with EAA...)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
                   <button onClick={handleConnectWhatsApp} disabled={waStatus === "loading" || !waPhoneId.trim() || !waBizId.trim() || !waToken.trim()} style={{ padding: "8px 16px", background: "#25D366", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer", opacity: (!waPhoneId.trim() || !waBizId.trim() || !waToken.trim()) ? 0.5 : 1 }}>
                     {waStatus === "loading" ? "Connecting…" : "Connect"}
@@ -3314,6 +3365,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
 function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => void }) {
+  const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [repairLog, setRepairLog] = useState<string | null>(null);
   const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);
   const [hardResetting, setHardResetting] = useState(false);
@@ -3366,7 +3418,33 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => v
 
   return (
     <div>
-      {agent.status === "error" && (
+      {agent.paused && (
+        <div style={{ background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 16, padding: 24, marginBottom: 32 }}>
+          <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+            <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--text-muted)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Agent Paused</div>
+              <div style={{ fontSize: 13, color: "var(--text-sub)" }}>This agent won't load into the gateway at startup. Use "▶ Resume Agent" in the Danger Zone to re-activate it.</div>
+            </div>
+          </div>
+        </div>
+      )}
+      {agent.status === "error" && !agent.paused && !gatewayReady && (
+        <div style={{ background: "#fffbf0", border: "1px solid #f4d58a", borderRadius: 16, padding: 24, marginBottom: 32 }}>
+          <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+            <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#F4A83A", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Agent is Waking Up</div>
+              <div style={{ fontSize: 13, color: "var(--text-sub)" }}>The gateway is still starting. This takes up to 90 seconds on a cold start — hang tight.</div>
+            </div>
+          </div>
+        </div>
+      )}
+      {agent.status === "error" && !agent.paused && gatewayReady && (
         <div style={{ background: "#fcf3f3", border: "1px solid #f2bdbd", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
             <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#E57373", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--surface-card)", flexShrink: 0 }}>
@@ -3393,17 +3471,23 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => v
                   setRepairSucceeded(null);
                   try {
                     if (typeof invoke === 'function') {
-                      const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
-                      const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
-                      const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
-                      const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
+                      // Per-agent key takes priority; global key is the fallback.
+                      const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_anthropic_key` }).catch(() => "") || "")
+                                       || String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
+                      const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_openai_key` }).catch(() => "") || "")
+                                       || String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
+                      const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_gemini_key` }).catch(() => "") || "")
+                                       || String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
+                      const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_grok_key` }).catch(() => "") || "")
+                                       || String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
+                                       || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
 
                       await invoke("sync_credentials", {
                         agentId: agent.id, keys: {
-                          "ANTHROPIC_API_KEY": String(anthropic || ""),
-                          "OPENAI_API_KEY": String(openai || ""),
-                          "GEMINI_API_KEY": String(gemini || ""),
-                          "XAI_API_KEY": String(xai || "")
+                          "ANTHROPIC_API_KEY": agAnthropic,
+                          "OPENAI_API_KEY":    agOpenAI,
+                          "GEMINI_API_KEY":    agGemini,
+                          "XAI_API_KEY":       agGrok,
                         }
                       }).catch((err) => console.error("Sync credentials failed:", err));
 
@@ -3411,6 +3495,13 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => v
                       if (btn) btn.innerText = "Repaired!";
                       setRepairLog(String(res));
                       setRepairSucceeded(true);
+
+                      // Clear the error status — the agent is now registered and live.
+                      useWorldStore.setState(state => ({
+                        agents: state.agents.map(a => a.id === agent.id
+                          ? { ...a, status: "active", currentAction: "idle" }
+                          : a)
+                      }));
                     }
                   } catch (e) {
                     if (btn) btn.innerText = "Failed — See Details";
@@ -3492,10 +3583,13 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => v
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 10, height: 10, borderRadius: "50%",
-              background: agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
-              boxShadow: agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
+              background: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
+              boxShadow: agent.paused ? "none" : !gatewayReady ? "0 0 8px rgba(244,168,58,0.5)" : agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
+              animation: (!agent.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
             }} />
-            <span style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)", textTransform: "capitalize" }}>{agent.status === "error" ? "Offline" : agent.currentAction}</span>
+            <span style={{ fontSize: 20, fontWeight: 600, color: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : "var(--text-main)", textTransform: "capitalize" }}>
+              {agent.paused ? "Paused" : !gatewayReady ? "Waking Up" : agent.status === "error" ? "Offline" : agent.currentAction}
+            </span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12, fontSize: 11, color: "var(--text-sub)" }}>
             <span>Uptime</span>
@@ -3804,39 +3898,34 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
   const [customBookInput, setCustomBookInput] = useState("");
   const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
 
-  const [modelStrategies, setModelStrategies] = useState<any>(null);
+  // ── Model list for the Brain tab — sourced from Rust, not localhost:3001 ─────
+  const [brainModels, setBrainModels] = useState<any[]>([]);
   useEffect(() => {
-    fetch('http://localhost:3001/api/models')
-      .then(res => res.json())
-      .then(data => setModelStrategies(data))
-      .catch(err => { /* quiet */ });
+    invoke<any[]>("get_available_models")
+      .then(models => setBrainModels(models))
+      .catch(() => { /* gateway not yet up, will retry on next render */ });
   }, []);
 
+  const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
   const getDynamicRecommendedModel = () => {
-    if (!modelStrategies || !modelStrategies.strategies) return { provider: "OpenAI", model: "GPT-4o-mini (Fast & Light)", id: "gpt-4o-mini" };
-    const { strategies, models } = modelStrategies;
-    const isHeavy = strategies.heavy.includes(agent.role);
-
-    let forceProvider = null;
-    let availableKeys = Object.entries(keys).filter(([_, val]) => val && val.trim().length > 0).map(([k]) => k);
-    if (availableKeys.length === 1) {
-      if (availableKeys[0] === "Gemini") forceProvider = "Google Gemini";
-      else forceProvider = availableKeys[0];
-    }
+    const isHeavy = HEAVY_ROLES_BRAIN.includes(agent.role);
+    // Prefer the provider for which a key is already set in this agent's Brain config
+    const availableProviders = Object.entries(keys)
+      .filter(([_, v]) => v && v.trim().length > 0)
+      .map(([k]) => k === "Gemini" ? "Google Gemini" : k);
 
     let match = null;
-    if (forceProvider) {
-      let provModels = models.filter((m: any) => m.provider === forceProvider);
-      match = provModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"));
-      if (!match && provModels.length > 0) match = provModels[0];
+    if (availableProviders.length > 0) {
+      const prov = availableProviders[0];
+      const strategy = isHeavy ? "heavy" : "light";
+      match = brainModels.find((m: any) => m.provider === prov && m.strategy === strategy)
+           || brainModels.find((m: any) => m.provider === prov);
     }
-
     if (!match) {
-      const targetId = isHeavy ? strategies.defaultHeavyModel : strategies.defaultLightModel;
-      match = models.find((m: any) => m.id === targetId);
+      match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
+           || brainModels[0];
     }
-
-    return { provider: match?.provider || "OpenAI", model: `${match?.name} (${match?.description})`, id: match?.id };
+    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.1 Flash Lite"} — ${match?.description || "Fastest Gemini 3 model (Preview)"}`, id: match?.id || "google/gemini-3.1-flash-lite-preview" };
   };
 
   const [keys, setKeys] = useState<{ [provider: string]: string }>({
@@ -3875,18 +3964,11 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
           }
         }
 
-        const finalModel = selectedModel || defaultModelInfo?.id || "gpt-4o-mini";
+        // Model IDs from get_available_models() are already in "provider/model-name" format
+        // (e.g. "google/gemini-3.1-flash-lite-preview"). No prefix construction needed.
+        // Fallback to the Rust-side default if nothing is selected.
+        const finalModel = selectedModel || defaultModelInfo?.id || "google/gemini-3.1-flash-lite-preview";
 
-        let litellmPrefix = "";
-        if (modelStrategies && modelStrategies.models) {
-          let match = modelStrategies.models.find((m: any) => m.id === finalModel);
-          if (match) {
-            if (match.provider === "OpenAI") litellmPrefix = "openai/";
-            if (match.provider === "Anthropic") litellmPrefix = "anthropic/";
-            if (match.provider === "Google Gemini") litellmPrefix = "google/";
-            if (match.provider === "Grok") litellmPrefix = "xai/";
-          }
-        }
         // Synchronize updated keys directly to OpenClaw's auth-profiles.json layer
         let mappedKeys: Record<string, string> = {};
         if (keys["OpenAI"]) mappedKeys["OPENAI_API_KEY"] = keys["OpenAI"];
@@ -3896,13 +3978,13 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
 
         await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys });
 
-        // Always push personality state to SQLite. If they choose default, it saves as "" cleanly.
+        // Push personality state to SQLite. Use the full provider/model-name string.
         await invoke("update_agent_personality", {
           agentId: agent.id,
-          personality: { ...agent.personality, active_model: selectedModel }
+          personality: { ...agent.personality, active_model: finalModel }
         });
-        // Explicitly format model for LiteLLM schema and force update OpenClaw.
-        await invoke("update_agent_model", { agentId: agent.id, model: litellmPrefix + finalModel });
+        // Update agent model in OpenClaw — model ID is already correctly formatted.
+        await invoke("update_agent_model", { agentId: agent.id, model: finalModel });
       }
       setSaveStatus("success");
       setTimeout(() => setSaveStatus("idle"), 2000);
@@ -3936,9 +4018,19 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
               style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", cursor: "pointer", width: 220 }}
             >
               <option value="">Strategy: {defaultModelInfo.model}</option>
-              <optgroup label="Available Engines">
-                {modelStrategies?.models?.map((m: any) => (
-                  <option key={m.id} value={m.id}>{m.name} ({m.provider})</option>
+              <optgroup label="Anthropic">
+                {brainModels.filter((m: any) => m.provider === "Anthropic").map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
+                ))}
+              </optgroup>
+              <optgroup label="OpenAI">
+                {brainModels.filter((m: any) => m.provider === "OpenAI").map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Google Gemini">
+                {brainModels.filter((m: any) => m.provider === "Google Gemini").map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
                 ))}
               </optgroup>
             </select>
@@ -3956,19 +4048,20 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
                     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                     new WebviewWindow('companion_' + Date.now(), {
                       url: `/index.html?companion=${prov.toLowerCase()}`,
-                      width: 400,
-                      height: 750,
+                      title: 'Setup Guide',
+                      width: 420,
+                      height: 760,
+                      x: window.screen.availWidth - 440,
+                      y: 50,
                       alwaysOnTop: true,
-                      decorations: false,
-                      transparent: true,
+                      decorations: true,
                     });
                   }}
                 >
                   Setup Guide ↗
                 </div>
               </div>
-              <input
-                type="password"
+              <PasswordInput
                 placeholder={prov === "Anthropic" ? "sk-ant-..." : "sk-..."}
                 value={keys[prov]}
                 onChange={(e) => setKeys(prev => ({ ...prev, [prov]: e.target.value }))}
@@ -4485,6 +4578,7 @@ function SpendTab({ agent }: { agent: AgentData }) {
 
 function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boolean }) {
   const { agents, setAgents, setArchitectTab } = useWorldStore();
+  const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [message, setMessage] = useState("");
   const [chatLog, setChatLog] = useState<ChatMessage[]>(agent.chatLog);
   const [loading, setLoading] = useState(false);
@@ -4695,25 +4789,30 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         <input
           value={message}
           onChange={e => setMessage(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && message.trim() && !loading) handleSendMessage(); }}
-          placeholder={`Talk to ${agent.name}...`}
-          disabled={loading}
+          onKeyDown={e => { if (e.key === "Enter" && message.trim() && !loading && gatewayReady && !agent.paused) handleSendMessage(); }}
+          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : `Talk to ${agent.name}...`}
+          disabled={loading || !gatewayReady || agent.paused}
           style={{
             flex: 1, padding: "14px 18px", borderRadius: 14,
             border: "1px solid rgba(0,0,0,0.08)",
             background: "var(--glass-light)",
             fontSize: 13, fontFamily: "inherit", color: "var(--text-main)",
-            outline: "none", opacity: loading ? 0.6 : 1,
+            outline: "none", opacity: (loading || !gatewayReady || agent.paused) ? 0.6 : 1,
           }}
         />
-        <button onClick={handleSendMessage} disabled={!message.trim() || loading} style={{
-          padding: "14px 20px", borderRadius: 14, border: "none",
-          background: (message.trim() && !loading) ? "#3c6663" : "var(--border-subtle)",
-          color: (message.trim() && !loading) ? "var(--surface-card)" : "var(--text-muted)",
-          fontSize: 13, fontWeight: 600, cursor: (message.trim() && !loading) ? "pointer" : "default",
-          fontFamily: "inherit",
-          transition: "all 0.15s ease",
-        }}>Send</button>
+        <button
+          onClick={handleSendMessage}
+          disabled={!message.trim() || loading || !gatewayReady || agent.paused}
+          title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? "Agents are waking up, please wait..." : undefined}
+          style={{
+            padding: "14px 20px", borderRadius: 14, border: "none",
+            background: (message.trim() && !loading && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
+            color: (message.trim() && !loading && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
+            fontSize: 13, fontWeight: 600, cursor: (message.trim() && !loading && gatewayReady && !agent.paused) ? "pointer" : "default",
+            fontFamily: "inherit",
+            transition: "all 0.15s ease",
+          }}
+        >{agent.paused ? "⏸" : !gatewayReady ? "⏳" : "Send"}</button>
       </div>
 
       <style>{`
@@ -4735,7 +4834,7 @@ function TopNav() {
 
   const navItems = [
     { id: "canopy" as const, label: "Canopy" },
-    { id: "architect" as const, label: "Architect" },
+    { id: "architect" as const, label: "Agents" },
     { id: "archive" as const, label: "Archive" },
     // { id: "library" as const, label: "Library" },
     { id: "vault" as const, label: "Vault" },
@@ -4865,6 +4964,7 @@ function CanopyView() {
   const agents = useWorldStore(s => s.agents);
   const selectedAgent = useWorldStore(s => s.selectedAgent);
   const hoveredAgent = useWorldStore(s => s.hoveredAgent);
+  const gatewayReady = useWorldStore(s => s.gatewayReady);
   const { setSelectedAgent, setActiveView, updateAgentVisuals } = useWorldStore();
   const theme = useWorldStore(s => s.theme);
 
@@ -5042,13 +5142,16 @@ function CanopyView() {
                 <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
                 <div style={{
                   position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
-                  background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
+                  background: a.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
                   border: "2px solid white",
+                  animation: (!a.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
                 }} />
               </div>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
-                <div style={{ fontSize: 10, color: "var(--text-sub)", textTransform: "capitalize" }}>{a.status === "error" ? "Offline" : a.currentAction}</div>
+                <div style={{ fontSize: 10, color: a.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : "var(--text-sub)", textTransform: "capitalize" }}>
+                  {a.paused ? "Paused" : !gatewayReady ? "Waking up..." : a.status === "error" ? "Offline" : a.currentAction}
+                </div>
               </div>
             </div>
           )
@@ -5098,7 +5201,38 @@ function CanopyView() {
 // LOADING SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function LoadingScreen() {
+function LoadingScreen({ status }: { status?: string }) {
+  const [showLog, setShowLog] = useState(false);
+  const [logLines, setLogLines] = useState<string[]>([]);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  // Detect when we're in the slow ACPX init phase ("Starting agent runtime...")
+  const isSlowPhase = status?.startsWith("Starting agent runtime");
+
+  // Poll gateway log tail every 3s when the panel is open OR when in the slow phase
+  useEffect(() => {
+    if (!showLog && !isSlowPhase) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const tail = await invoke<string>("get_gateway_log_tail", { lines: 20 });
+        if (!cancelled && tail) {
+          setLogLines(tail.split("\n").filter(Boolean).slice(-20));
+        }
+      } catch { /* non-fatal */ }
+    };
+    poll();
+    const id = setInterval(poll, 3000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [showLog, isSlowPhase]);
+
+  // Auto-scroll log to bottom
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logLines]);
+
   return (
     <div style={{
       width: "100vw", height: "100vh",
@@ -5116,6 +5250,63 @@ function LoadingScreen() {
       <div style={{ fontSize: 24, fontWeight: 600, color: "var(--text-main)" }}>
         Waking up the lobsters...
       </div>
+      {status && (
+        <div style={{
+          fontSize: 13, color: "var(--text-sub)",
+          maxWidth: 320, textAlign: "center",
+          minHeight: 20,
+          transition: "opacity 0.3s",
+        }}>
+          {status}
+        </div>
+      )}
+
+      {/* Show log toggle when in slow ACPX init phase or when user opens it */}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+        <button
+          onClick={() => setShowLog(v => !v)}
+          style={{
+            background: "none", border: "none", cursor: "pointer",
+            fontSize: 12, color: "var(--text-sub)",
+            opacity: 0.6, padding: "4px 8px",
+            textDecoration: "underline", textUnderlineOffset: 3,
+          }}
+        >
+          {showLog ? "hide details" : "show details"}
+        </button>
+
+        {showLog && (
+          <div
+            ref={logRef}
+            style={{
+              width: 540, maxHeight: 180,
+              overflowY: "auto",
+              background: "#1a1a1a",
+              borderRadius: 8,
+              padding: "10px 14px",
+              fontFamily: "'JetBrains Mono', 'Fira Code', 'Menlo', monospace",
+              fontSize: 11,
+              lineHeight: 1.6,
+              color: "#c8c8c0",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+            }}
+          >
+            {logLines.length === 0
+              ? <span style={{ opacity: 0.4 }}>Waiting for gateway logs...</span>
+              : logLines.map((line, i) => {
+                  // Colorize log levels
+                  const isError = /error|ERR|ERRO/i.test(line);
+                  const isWarn = /warn|WARN/i.test(line);
+                  const isReady = /ready|responsive|ACPX/i.test(line);
+                  const color = isError ? "#f87171" : isWarn ? "#fbbf24" : isReady ? "#4ade80" : "#c8c8c0";
+                  return <div key={i} style={{ color }}>{line}</div>;
+                })
+            }
+          </div>
+        )}
+      </div>
+
       <style>{`
         @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
       `}</style>
@@ -5312,31 +5503,15 @@ export function CompanionGuide({ type }: { type: string }) {
   return (
     <div style={{
       width: "100%", height: "100vh", display: "flex", flexDirection: "column",
-      background: "var(--glass-heavy)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
-      borderLeft: "1px solid rgba(0,0,0,0.1)", fontFamily: "'Manrope', system-ui, sans-serif"
+      background: "var(--surface-base)", fontFamily: "'Manrope', system-ui, sans-serif"
     }}>
-      <div style={{ position: "sticky", top: 0, zIndex: 10, display: "flex", width: "100%", background: "linear-gradient(to right, #EDE4DB, #F5E6D8)", borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
-        <div data-tauri-drag-region style={{
-          flex: 1, padding: "16px 20px", display: "flex", alignItems: "center", gap: 12,
-          cursor: "grab"
-        }} onPointerDown={async () => {
-          try {
-            const { getCurrentWindow } = await import('@tauri-apps/api/window');
-            await getCurrentWindow().startDragging();
-          } catch (e) { }
-        }}>
-          <LobsterIcon size={32} shellColor="#3c6663" accentColor="#D9B08C" className="pulse-slow" style={{ pointerEvents: "none" }} />
-          <div style={{ pointerEvents: "none" }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{config.title}</div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)" }}>Companion Walkthrough</div>
-          </div>
+      {/* Companion header — decorative only, native title bar handles close/drag */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "20px 20px 0", userSelect: "none" }}>
+        <LobsterIcon size={36} shellColor="#3c6663" accentColor="#D9B08C" />
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>Setup Guide</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>I'll walk you through creating your Slack app.</div>
         </div>
-        <div style={{ padding: "0 20px", cursor: "pointer", opacity: 0.5, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={async () => {
-          try {
-            const { getCurrentWindow } = await import("@tauri-apps/api/window");
-            await getCurrentWindow().close();
-          } catch (e) { }
-        }}>✕</div>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
@@ -5360,9 +5535,8 @@ export function CompanionGuide({ type }: { type: string }) {
                       <span style={{ marginRight: 6 }}>🔒</span>
                       macOS will securely ask for your password to lock this in the system Keychain.
                     </div>
-                    <input
+                    <PasswordInput
                       autoFocus
-                      type="password"
                       placeholder={s.input.placeholder}
                       value={tokens[s.input.key] || ""}
                       onChange={e => setTokens({ ...tokens, [s.input.key]: e.target.value })}
@@ -5776,34 +5950,56 @@ export default function App() {
         if (loadedAgents.length === 0) {
           setActiveView("onboarding");
         } else {
+          // Pre-flight: clean stale agents from openclaw.json and fix corrupted
+          // auth-profiles.json files on the host bind-mount BEFORE the container starts.
+          // OpenClaw reads these files the instant it boots — corrupted JSON or stale
+          // entries (e.g. "main", "test1", incompletely-deleted agents) cause a
+          // 18 → 300+ PID retry spiral within 30 seconds of startup.
+          setLoadStatus("Running pre-flight checks...");
+          await invoke("preflight_cleanup").catch((e) =>
+            console.warn("preflight_cleanup non-fatal:", e)
+          );
+
           setLoadStatus("Starting infrastructure gateway...");
           await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
 
           setLoadStatus("Registering agents with gateway...");
+          // Listen for per-agent progress events emitted by the Rust side.
+          const { listen } = await import('@tauri-apps/api/event');
+          const unlisten = await listen<string>('boot-sync-progress', (event) => {
+            setLoadStatus(event.payload);
+          });
           await invoke("boot_sync_agents").catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
+          unlisten();
 
           setLoadStatus("Checking DB for Agents...");
           // Sync keys to all legacy agents to prevent silent Failovers into OOM crashes (Exit 137).
-          const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
-          const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
-          const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
-          const xai = await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "");
+          // Load global fallback keys once
+          const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
+          const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
+          const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
+          const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
+                                      || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
 
           setLoadStatus("Keys loaded, pushing sync...");
-          const keysToSync = {
-            "ANTHROPIC_API_KEY": String(anthropic || ""),
-            "OPENAI_API_KEY": String(openai || ""),
-            "GEMINI_API_KEY": String(gemini || ""),
-            "XAI_API_KEY": String(xai || "")
-          };
 
           for (const ag of loadedAgents) {
             setLoadStatus("Syncing Keys: " + ag.id);
-            await invoke("sync_credentials", { agentId: ag.id, keys: keysToSync }).catch(console.warn);
-          }
+            // Per-agent key takes priority over global fallback.
+            // This lets each agent use a separate API key for usage tracking,
+            // while the global key acts as the default for agents without their own.
+            const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
+            const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
+            const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
+            const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
 
-          setLoadStatus("Repairing Gateway config...");
-          await invoke("repair_openclaw_config", { targetModel: null }).catch(console.warn);
+            await invoke("sync_credentials", { agentId: ag.id, keys: {
+              "ANTHROPIC_API_KEY": agAnthropic,
+              "OPENAI_API_KEY":    agOpenAI,
+              "GEMINI_API_KEY":    agGemini,
+              "XAI_API_KEY":       agGrok,
+            }}).catch(console.warn);
+          }
 
           setLoadStatus("Setting up UI Agent Models...");
           // Enrich agents with UI data
@@ -5853,12 +6049,13 @@ export default function App() {
         setInitialized(true);
       }
 
-      // Safe to boot background listeners after all configuration syncs have cleanly finished without racing.
-      try {
-        if (typeof invoke === 'function') {
-          await invoke("start_slack_listener").catch(() => { });
-        }
-      } catch (e) { }
+      // NOTE: start_slack_listener is intentionally NOT called here on every boot.
+      // OpenClaw auto-connects Slack on startup from the persisted openclaw.json config
+      // (confirmed: "slack socket mode connected" appears in gateway logs without any
+      // explicit call). Calling start_slack_listener on every boot rewrites the same
+      // 5 config keys, each triggering a gateway self-SIGTERM restart → OOM cascade.
+      // start_slack_listener should only be called from the Slack settings UI when
+      // actually configuring Slack for the first time or updating tokens.
     };
 
     loadAgents();
@@ -5871,28 +6068,53 @@ export default function App() {
     }
   }, [activeView, selectedAgent, agents]);
 
-  // Background Health Poller (15s)
-  useEffect(() => {
-    const pollInterval = window.setInterval(async () => {
-      try {
-        if (typeof invoke === 'function') {
-          const currentAgents = useWorldStore.getState().agents;
-          let changed = false;
-          const updatedAgents = await Promise.all(currentAgents.map(async (a) => {
-            try {
-              const status = await invoke("check_agent_status", { agentId: a.id });
-              if (status === "error" && a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
-              if (status === "active" && a.status === "error") { changed = true; return { ...a, status: "active" as any }; }
-              return a;
-            } catch (e) {
-              if (a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
-              return a;
+  // Background Health Poller (15s) — also fires once immediately on mount.
+  // Maps check_agent_status responses to UI status:
+  //   "active"  → show as active (green orb)
+  //   "offline" → show as error (grey/red orb + "Offline" label)
+  //   "error"   → show as error
+  // Previously "offline" was silently ignored, leaving failed-to-boot agents
+  // showing as idle/green indefinitely.
+  const runHealthPoll = async () => {
+    try {
+      if (typeof invoke !== 'function') return;
+      const currentAgents = useWorldStore.getState().agents;
+      let changed = false;
+      let anyActive = false;
+      const updatedAgents = await Promise.all(currentAgents.map(async (a) => {
+        try {
+          const status = await invoke("check_agent_status", { agentId: a.id });
+          // active → not error: clear error state
+          if (status === "active") {
+            anyActive = true;
+            if (a.status === "error") {
+              changed = true;
+              return { ...a, status: "active" as any, currentAction: "idle" };
             }
-          }));
-          if (changed) useWorldStore.getState().setAgents(updatedAgents);
+          }
+          // offline or error → mark as error so "Offline" label renders
+          if ((status === "offline" || status === "error") && a.status !== "error") {
+            changed = true;
+            return { ...a, status: "error" as any };
+          }
+          return a;
+        } catch {
+          if (a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
+          return a;
         }
-      } catch (e) { }
-    }, 15000);
+      }));
+      if (changed) useWorldStore.getState().setAgents(updatedAgents);
+      // Mark gateway as ready once at least one agent is confirmed active
+      if (anyActive && !useWorldStore.getState().gatewayReady) {
+        useWorldStore.getState().setGatewayReady(true);
+      }
+    } catch { }
+  };
+
+  useEffect(() => {
+    // Immediate check so status is correct from the first render, not after 15s.
+    runHealthPoll();
+    const pollInterval = window.setInterval(runHealthPoll, 15000);
     return () => clearInterval(pollInterval);
   }, []);
 

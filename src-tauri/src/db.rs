@@ -111,6 +111,15 @@ impl Database {
             [],
         );
 
+        // Migration: Add paused flag.
+        // Paused agents are stored in SQLite but NOT registered with OpenClaw on boot.
+        // This prevents their channels/sidecars from spawning processes, avoiding PID spirals
+        // when multiple agents with heavy plugins (browser, voice, Slack) all initialize at once.
+        let _ = conn.execute(
+            "ALTER TABLE agents ADD COLUMN paused BOOLEAN NOT NULL DEFAULT 0",
+            [],
+        );
+
         // Create conversations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS conversations (
@@ -314,7 +323,7 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json, visual_identity_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json, visual_identity_json, paused
              FROM agents WHERE id = ?1",
         )?;
 
@@ -327,6 +336,7 @@ impl Database {
             let created_at_str: String = row.get(11)?;
             let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
             let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
+            let paused: bool = row.get(15).unwrap_or(false);
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -336,6 +346,7 @@ impl Database {
                 color: row.get(4)?,
                 status: string_to_status(&status_str),
                 isolated: row.get(6)?,
+                paused,
                 container_id: row.get(7)?,
                 personality: serde_json::from_str(&personality_json).unwrap_or_default(),
                 capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
@@ -358,7 +369,7 @@ impl Database {
 
         let mut stmt = conn.prepare(
             "SELECT id, name, role, emoji, color, status, isolated, container_id,
-                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json, visual_identity_json
+                    personality_json, capabilities_json, integrations_json, created_at, stats_json, memories_json, visual_identity_json, paused
              FROM agents ORDER BY created_at DESC",
         )?;
 
@@ -371,6 +382,7 @@ impl Database {
             let created_at_str: String = row.get(11)?;
             let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
             let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
+            let paused: bool = row.get(15).unwrap_or(false);
 
             Ok(Agent {
                 id: row.get(0)?,
@@ -380,6 +392,7 @@ impl Database {
                 color: row.get(4)?,
                 status: string_to_status(&status_str),
                 isolated: row.get(6)?,
+                paused,
                 container_id: row.get(7)?,
                 personality: serde_json::from_str(&personality_json).unwrap_or_default(),
                 capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
@@ -395,6 +408,16 @@ impl Database {
             .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(agents)
+    }
+
+    /// Set paused state for an agent
+    pub fn set_agent_paused(&self, id: &str, paused: bool) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET paused = ?1 WHERE id = ?2",
+            params![paused, id],
+        )?;
+        Ok(())
     }
 
     /// Update an existing agent
@@ -419,8 +442,9 @@ impl Database {
             "UPDATE agents
              SET name = ?1, role = ?2, emoji = ?3, color = ?4, status = ?5,
                  isolated = ?6, container_id = ?7, personality_json = ?8,
-                 capabilities_json = ?9, integrations_json = ?10, stats_json = ?11, memories_json = ?12, visual_identity_json = ?13
-             WHERE id = ?14",
+                 capabilities_json = ?9, integrations_json = ?10, stats_json = ?11, memories_json = ?12, visual_identity_json = ?13,
+                 paused = ?14
+             WHERE id = ?15",
             params![
                 &agent.name,
                 &agent.role,
@@ -435,6 +459,7 @@ impl Database {
                 stats_json,
                 memories_json,
                 vi_json,
+                agent.paused,
                 &agent.id,
             ],
         )?;

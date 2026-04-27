@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::process::Command;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Prevents concurrent repair calls (React Strict Mode fires effects twice in dev;
+/// also guards against the user clicking "Repair" while a repair is already running).
+static REPAIR_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OpenClawAuditReport {
@@ -71,11 +76,26 @@ pub async fn audit_openclaw_config(
     let config: Value = serde_json::from_str(&config_str)
         .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
 
-    // 3. Evaluate active settings
-    let default_model = config.pointer("/agents/defaults/model")
-        .and_then(|v| v.as_str())
-        .unwrap_or(model_constants::DEFAULT_ANTHROPIC_MODEL)
-        .to_string();
+    // 3. Evaluate active settings.
+    // OpenClaw stores model in two possible formats (both must be handled):
+    //   Nested (correct): "model": { "primary": "google/gemini-2.5-flash" }
+    //   Flat (legacy):    "model": "google/gemini-2.5-flash"
+    // Confirmed against working reference: /Users/scottieryan/agents/sloane/config/openclaw.json
+    let default_model = {
+        let model_val = config.pointer("/agents/defaults/model");
+        if let Some(s) = model_val.and_then(|v| v.as_str()) {
+            // Flat string format
+            s.to_string()
+        } else if let Some(p) = model_val
+            .and_then(|v| v.get("primary"))
+            .and_then(|v| v.as_str())
+        {
+            // Nested {primary: "..."} format (the correct OpenClaw format)
+            p.to_string()
+        } else {
+            model_constants::DEFAULT_GEMINI_MODEL.to_string()
+        }
+    };
 
     // 4. Determine the EXPECTED default model based on available API keys.
     // Priority: Anthropic > OpenAI > Gemini (Gemini is last resort, not first choice).
@@ -109,7 +129,23 @@ pub async fn audit_openclaw_config(
         .and_then(|v| v.as_array())
         .map_or(false, |arr| !arr.iter().any(|val| val.as_str().unwrap_or("").contains(&host_port_str)));
 
-    let is_aligned = missing_keys.is_empty() && !port_mismatch && default_model == expected_model;
+    // port_mismatch is informational only — allowedOrigins is CORS for the control UI.
+    // missing_keys is also informational only — it checks global keychain entries, but agents
+    // can use per-agent keys (agent_{id}_{provider}_key) which this audit cannot see.
+    //
+    // is_aligned = true when the configured model is:
+    //   (a) valid format ("provider/model-name" with a known provider), AND
+    //   (b) the configured provider has at least one API key available.
+    //
+    // We do NOT compare against expected_model. The old check (default_model == expected_model)
+    // was too strict: it marked ANY non-default model as misaligned and triggered repair on every
+    // boot, silently overwriting the user's model choice with the hardcoded default. For example,
+    // a user who picked "google/gemini-2.5-flash-preview-04-17" would have it reset to
+    // "google/gemini-2.0-flash" on every launch — the repair acted as a model-picker override.
+    let model_is_valid = model_constants::validate_model_string(&default_model).is_ok();
+    // is_aligned: model format is valid AND its provider has a key configured.
+    // missing_keys is populated only when the *currently configured* model's provider lacks a key.
+    let is_aligned = model_is_valid && missing_keys.is_empty();
 
     Ok(OpenClawAuditReport {
         is_aligned,
@@ -127,7 +163,18 @@ pub async fn repair_openclaw_config(
     app_handle: tauri::AppHandle,
     target_model: Option<String> // specify it exactly, or None to auto-detect
 ) -> Result<String, String> {
-    let mut model_to_set = target_model;
+    // Prevent concurrent repair runs — each run writes config keys that trigger a gateway
+    // self-SIGTERM restart. Two concurrent runs cause overlapping restarts → OOM cascade.
+    if REPAIR_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        tracing::info!("repair_openclaw_config: already running, skipping duplicate call");
+        return Ok("Repair already in progress".to_string());
+    }
+    // Ensure the flag is always cleared when this function returns, even on error.
+    struct RepairGuard;
+    impl Drop for RepairGuard {
+        fn drop(&mut self) { REPAIR_RUNNING.store(false, Ordering::SeqCst); }
+    }
+    let _guard = RepairGuard;
 
     let audit_report = audit_openclaw_config(app_handle.clone()).await?;
     if !audit_report.container_running {
@@ -137,20 +184,81 @@ pub async fn repair_openclaw_config(
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     }
 
-    if model_to_set.is_none() {
-        model_to_set = Some(audit_report.expected_model);
-    }
+    // Decide which model to write.
+    // Priority: explicit caller override → keep existing model if it's valid → fall back to expected.
+    //
+    // The key change from the old logic: we no longer unconditionally overwrite the model.
+    // Previously, repair always wrote expected_model even when the existing model was fine —
+    // this silently reset any user-selected model (e.g. gemini-2.5-flash) back to the
+    // hardcoded default (gemini-2.0-flash) on every boot.
+    let actual_model = if let Some(explicit) = target_model {
+        // Caller explicitly specified a model — use it (after validation below).
+        explicit
+    } else {
+        let current = &audit_report.active_default_model;
+        let current_is_valid = model_constants::validate_model_string(current).is_ok();
+        let current_has_key  = audit_report.missing_keys.is_empty();
 
-    let actual_model = model_to_set.unwrap();
+        if current_is_valid && current_has_key {
+            // Existing model is fine — preserve it. No model write needed.
+            tracing::info!(
+                "repair_openclaw_config: current model '{}' is valid and has a key — skipping model write",
+                current
+            );
+            // Still apply the non-model fixes (trustedProxies, allowedOrigins) then return.
+            let host_port = model_constants::GATEWAY_HOST_PORT;
+            let allowed_origins = format!(
+                "[\"http://localhost:{}\", \"tauri://localhost\", \"https://tauri.localhost\"]",
+                host_port
+            );
+            let non_model_fixes = [
+                ("gateway.trustedProxies", "[\"127.0.0.1\", \"192.168.107.2\"]"),
+                ("gateway.controlUi.allowedOrigins", allowed_origins.as_str()),
+            ];
+            for (key, val) in non_model_fixes.iter() {
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    crate::openclaw::get_docker_command()
+                        .args(["exec", "canopy-gateway", "openclaw", "config", "set", key, val])
+                        .output(),
+                ).await;
+            }
+            let _ = crate::openclaw::get_docker_command()
+                .args(["restart", "canopy-gateway"])
+                .output()
+                .await;
+            return Ok(format!("Gateway configuration verified — model '{}' is valid, no model change needed.", current));
+        } else {
+            // Current model is broken or its provider has no key — fall back to expected.
+            tracing::warn!(
+                "repair_openclaw_config: current model '{}' needs repair (valid={}, has_key={}) — replacing with '{}'",
+                current, current_is_valid, current_has_key, audit_report.expected_model
+            );
+            audit_report.expected_model.clone()
+        }
+    };
 
     // Validate the chosen model string before writing it to the container config.
     // A malformed string here would silently break all agents.
     model_constants::validate_model_string(&actual_model)
         .map_err(|e| format!("Refusing to write invalid model string to gateway: {}", e))?;
 
+    // Build the allowedOrigins array using the host port so the port-alignment check passes.
+    let host_port = model_constants::GATEWAY_HOST_PORT;
+    let allowed_origins = format!(
+        "[\"http://localhost:{}\", \"tauri://localhost\", \"https://tauri.localhost\"]",
+        host_port
+    );
+
     let fixes = [
-        ("agents.defaults.model", actual_model.as_str()),
+        // ⚠️  Use .model.primary to produce the nested {primary:"..."} format OpenClaw expects.
+        // Using .model directly sets a flat string, which may work but diverges from the
+        // format OpenClaw's own config set command produces.
+        ("agents.defaults.model.primary", actual_model.as_str()),
         ("gateway.trustedProxies", "[\"127.0.0.1\", \"192.168.107.2\"]"),
+        // Fix allowedOrigins so the port-alignment audit check passes.
+        // This is CORS for the control UI — it doesn't affect agent API communication.
+        ("gateway.controlUi.allowedOrigins", allowed_origins.as_str()),
         // Note: channels.slack.groupPolicy is intentionally NOT set here.
         // Slack is configured via openclaw config set channels.slack.* — not via repair.
         // Setting it here caused Slack to be configured in a broken state on every repair run.
@@ -172,14 +280,12 @@ pub async fn repair_openclaw_config(
         }
     }
 
-    // A gateway restart is required to apply trustedProxies and groupPolicy changes
-    crate::openclaw::get_docker_command()
-        .args(["restart", "canopy-gateway"])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to restart gateway: {}", e))?;
+    // OpenClaw self-SIGTERMs and restarts whenever a config key is written via config-set,
+    // so we do NOT need an additional explicit docker restart here. A second restart on top
+    // of the self-SIGTERM doubles the memory churn and can cascade into OOM with multiple agents.
+    tracing::info!("repair_openclaw_config: config keys written; OpenClaw will self-restart to apply changes");
 
-    Ok(format!("Successfully aligned defaults to {} and patched security constraints.", actual_model))
+    Ok(format!("Successfully repaired gateway config — model set to '{}' and security constraints patched.", actual_model))
 }
 
 #[tauri::command]

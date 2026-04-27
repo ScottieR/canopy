@@ -1,41 +1,108 @@
 {
+  "Assistant": {
+    "description": "Calendar, email & travel logistics \u2014 your executive right hand",
+    "color": "#7A9EB5",
+    "robeColor": "#6A8EA5",
+    "accentColor": "#B8D4E8",
+    "habitatColor": "#A8C4D8",
+    "habitatLabel": "The Hub",
+    "suggest_in_onboarding": true,
+    "manual_order": 1
+  },
+  "Coder": {
+    "description": "Writes logic, ships code, squashes bugs.",
+    "color": "#545281",
+    "robeColor": "#545281",
+    "accentColor": "#918ECA",
+    "habitatColor": "#7472A5",
+    "habitatLabel": "Engineering",
+    "image": "/agents/Coder.png",
+    "suggest_in_onboarding": true,
+    "manual_order": 2
+  },
+  "Kids Coordinator": {
+    "description": "Manages schedules, activities & fun.",
+    "color": "#BFCB75",
+    "robeColor": "#BFCB75",
+    "accentColor": "#E5EEAF",
+    "habitatColor": "#D8E38E",
+    "habitatLabel": "Family",
+    "image": "/agents/KidsCoordinator.png",
+    "suggest_in_onboarding": true,
+    "manual_order": 3
+  },
+  "Accountant": {
+    "description": "Expense categorization, budgets & tax \u2014 books always balanced",
+    "color": "#8E9EAA",
+    "robeColor": "#8E9EAA",
+    "accentColor": "#D7DFE5",
+    "habitatColor": "#BCCAD6",
+    "habitatLabel": "Finance",
+    "image": "/agents/Accountant.png",
+    "suggest_in_onboarding": true,
+    "manual_order": 4
+  },
   "Researcher": {
-    "description": "Deep dives — data analysis, trends & insights",
+    "description": "Deep dives \u2014 data analysis, trends & insights",
     "color": "#7AAC7A",
     "robeColor": "#5E8E5E",
     "accentColor": "#96C496",
     "habitatColor": "#BDD4BD",
     "habitatLabel": "The Sanctuary",
     "image": "/agents/Researcher.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": true,
+    "manual_order": 5
+  },
+  "Coach": {
+    "description": "Habit tracking, weekly reviews, reflection prompts",
+    "color": "#96A88E",
+    "robeColor": "#96A88E",
+    "accentColor": "#DFF0D8",
+    "habitatColor": "#C8D4C0",
+    "habitatLabel": "The Grove",
+    "suggest_in_onboarding": true,
+    "manual_order": 6
+  },
+  "Marketing Guru": {
+    "description": "Drives traffic, campaigns and virality.",
+    "color": "#F0B466",
+    "robeColor": "#F0B466",
+    "accentColor": "#FCE1B6",
+    "habitatColor": "#F5CC8E",
+    "habitatLabel": "Marketing",
+    "image": "/agents/MarketingGuru.png",
+    "suggest_in_onboarding": true,
+    "manual_order": 7
+  },
+  "Custom": {
+    "description": "A blank slate. You define their role, permissions, and skills.",
+    "color": "#7F8C8D",
+    "robeColor": "#95A5A6",
+    "accentColor": "#BDC3C7",
+    "habitatColor": "#ECF0F1",
+    "habitatLabel": "Unknown",
+    "image": "/agents/Custom.png",
+    "suggest_in_onboarding": true,
+    "manual_order": 8
   },
   "Tutor": {
-    "description": "Teaches & guides — education, onboarding & mentoring",
+    "description": "Teaches & guides \u2014 education, onboarding & mentoring",
     "color": "#A882D8",
     "robeColor": "#8A62C0",
     "accentColor": "#C8A4F0",
     "habitatColor": "#CEC4E4",
     "habitatLabel": "The Axis",
     "image": "/agents/Tutor.png",
-    "suggest_in_onboarding": true
-  },
-  "Assistant": {
-    "description": "Calendar, email & travel logistics — your executive right hand",
-    "color": "#7A9EB5",
-    "robeColor": "#6A8EA5",
-    "accentColor": "#B8D4E8",
-    "habitatColor": "#A8C4D8",
-    "habitatLabel": "The Hub",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "STR Manager": {
-    "description": "Short-term rental ops — listings, guests & maintenance coordination",
+    "description": "Short-term rental ops \u2014 listings, guests & maintenance coordination",
     "color": "#8EB5A0",
     "robeColor": "#7AA590",
     "accentColor": "#C0DDD0",
     "habitatColor": "#A8CDB8",
     "habitatLabel": "The Property",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Interior Designer": {
     "description": "Curates spaces with impeccable style.",
@@ -107,26 +174,6 @@
     "image": "/agents/RelationshipGuru.png",
     "suggest_in_onboarding": false
   },
-  "Kids Coordinator": {
-    "description": "Manages schedules, activities & fun.",
-    "color": "#BFCB75",
-    "robeColor": "#BFCB75",
-    "accentColor": "#E5EEAF",
-    "habitatColor": "#D8E38E",
-    "habitatLabel": "Family",
-    "image": "/agents/KidsCoordinator.png",
-    "suggest_in_onboarding": false
-  },
-  "Accountant": {
-    "description": "Expense categorization, budgets & tax — books always balanced",
-    "color": "#8E9EAA",
-    "robeColor": "#8E9EAA",
-    "accentColor": "#D7DFE5",
-    "habitatColor": "#BCCAD6",
-    "habitatLabel": "Finance",
-    "image": "/agents/Accountant.png",
-    "suggest_in_onboarding": true
-  },
   "Business Strategist": {
     "description": "Plots long-term growth & objectives.",
     "color": "#E2936B",
@@ -135,16 +182,6 @@
     "habitatColor": "#EDAA87",
     "habitatLabel": "Strategy",
     "image": "/agents/BusinessStrategist.png",
-    "suggest_in_onboarding": false
-  },
-  "Marketing Guru": {
-    "description": "Drives traffic, campaigns and virality.",
-    "color": "#F0B466",
-    "robeColor": "#F0B466",
-    "accentColor": "#FCE1B6",
-    "habitatColor": "#F5CC8E",
-    "habitatLabel": "Marketing",
-    "image": "/agents/MarketingGuru.png",
     "suggest_in_onboarding": false
   },
   "Educator": {
@@ -165,16 +202,6 @@
     "habitatColor": "#E29DA3",
     "habitatLabel": "Creative",
     "image": "/agents/Artist.png",
-    "suggest_in_onboarding": false
-  },
-  "Coder": {
-    "description": "Writes logic, ships code, squashes bugs.",
-    "color": "#545281",
-    "robeColor": "#545281",
-    "accentColor": "#918ECA",
-    "habitatColor": "#7472A5",
-    "habitatLabel": "Engineering",
-    "image": "/agents/Coder.png",
     "suggest_in_onboarding": false
   },
   "Architect": {
@@ -224,7 +251,7 @@
     "accentColor": "#E2DFF0",
     "habitatColor": "#C5C0D0",
     "habitatLabel": "The Citadel",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Negotiator": {
     "description": "Deal prep, counter-offer drafts, BATNA analysis",
@@ -233,7 +260,7 @@
     "accentColor": "#EDE0D5",
     "habitatColor": "#D4C5B8",
     "habitatLabel": "The Exchange",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Engineer": {
     "description": "Code review, architecture sketches, debugging partner",
@@ -242,7 +269,7 @@
     "accentColor": "#D5E5F0",
     "habitatColor": "#B8C8D4",
     "habitatLabel": "The Workshop",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   },
   "Editor": {
     "description": "Prose tightening, line edits, style enforcement",
@@ -251,25 +278,6 @@
     "accentColor": "#EDE4D5",
     "habitatColor": "#D4C8B8",
     "habitatLabel": "The Archive",
-    "suggest_in_onboarding": true
-  },
-  "Coach": {
-    "description": "Habit tracking, weekly reviews, reflection prompts",
-    "color": "#96A88E",
-    "robeColor": "#96A88E",
-    "accentColor": "#DFF0D8",
-    "habitatColor": "#C8D4C0",
-    "habitatLabel": "The Grove",
-    "suggest_in_onboarding": true
-  },
-  "Custom": {
-    "description": "A blank slate. You define their role, permissions, and skills.",
-    "color": "#7F8C8D",
-    "robeColor": "#95A5A6",
-    "accentColor": "#BDC3C7",
-    "habitatColor": "#ECF0F1",
-    "habitatLabel": "Unknown",
-    "image": "/agents/Custom.png",
-    "suggest_in_onboarding": true
+    "suggest_in_onboarding": false
   }
 }
