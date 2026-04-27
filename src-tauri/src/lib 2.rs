@@ -22,10 +22,6 @@ use tauri::Manager;
 pub fn run() {
     tracing_subscriber::fmt::init();
 
-    // Seed MODEL_REGISTRY with the hardcoded validated fallback list before any async work.
-    // The async oracle fetch below will overwrite this once the admin server responds.
-    model_constants::init_model_registry();
-
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -82,46 +78,6 @@ pub fn run() {
                 }
             });
 
-            // Sync model list asynchronously from Admin Oracle.
-            // The registry starts with the hardcoded validated fallback list (seeded above);
-            // this overwrites it once the oracle responds. Validation inside
-            // `update_model_registry` drops any phantom / malformed names before storing.
-            tauri::async_runtime::spawn(async move {
-                tracing::info!("Attempting to fetch model list from admin oracle...");
-                match reqwest::get("http://localhost:3001/api/models").await {
-                    Ok(resp) => {
-                        match resp.json::<serde_json::Value>().await {
-                            Ok(body) => {
-                                // Admin oracle returns { "models": [ { id, name, provider, strategy, description, costIn, costOut } ] }
-                                if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
-                                    let fetched: Vec<model_constants::ModelInfo> = arr
-                                        .iter()
-                                        .filter_map(|m| {
-                                            Some(model_constants::ModelInfo {
-                                                id: m.get("id")?.as_str()?.to_string(),
-                                                name: m.get("name")?.as_str()?.to_string(),
-                                                provider: m.get("provider")?.as_str()?.to_string(),
-                                                strategy: m.get("strategy").and_then(|v| v.as_str()).unwrap_or("heavy").to_string(),
-                                                description: m.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                            })
-                                        })
-                                        .collect();
-                                    model_constants::update_model_registry(fetched);
-                                } else {
-                                    tracing::warn!("Admin oracle /api/models missing 'models' array — keeping fallback list");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to parse model list from admin oracle: {} — keeping fallback list", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to reach admin oracle for model list: {} — keeping fallback list", e);
-                    }
-                }
-            });
-
             Ok(())
         })
         // Agent management commands
@@ -144,13 +100,11 @@ pub fn run() {
             openclaw::update_agent_memories,
             openclaw::update_agent_details,
             openclaw::toggle_agent_isolation,
-            openclaw::set_agent_paused,
             openclaw::delete_agent,
             openclaw::send_message,
             openclaw::get_conversation_history,
             openclaw::get_agent_health,
             openclaw::check_agent_status,
-            openclaw::get_gateway_log_tail,
             openclaw::import_agent,
             openclaw::scan_local_agents,
             openclaw::import_discovered_agent,
@@ -161,7 +115,6 @@ pub fn run() {
             openclaw::get_user_profile,
             openclaw::save_user_profile,
             openclaw::get_global_audit_log,
-            openclaw::preflight_cleanup,
             openclaw::boot_sync_agents,
             openclaw::get_available_models,
             // Integrations / Bridges

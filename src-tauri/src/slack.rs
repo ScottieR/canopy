@@ -601,7 +601,7 @@ pub async fn start_slack_listener() -> Result<String, String> {
         ("channels.slack.appToken",  &app_token),
         ("channels.slack.enabled",   "true"),
         ("channels.slack.mode",      "socket"),
-        ("channels.slack.groupPolicy", "allowlist"),
+        ("channels.slack.groupPolicy", "open"),
     ];
 
     for (key, val) in config_steps {
@@ -626,17 +626,11 @@ pub async fn start_slack_listener() -> Result<String, String> {
         }
     }
 
-    // Restart the gateway so the new Slack config takes effect.
-    let restart_output = crate::openclaw::get_docker_command()
-        .args(["restart", "canopy-gateway"])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to restart gateway after Slack config: {}", e))?;
-
-    if !restart_output.status.success() {
-        let stderr = String::from_utf8_lossy(&restart_output.stderr);
-        return Err(format!("Slack config written but gateway restart failed: {}", stderr));
-    }
+    // Do NOT call docker restart here. OpenClaw self-SIGTERMs and restarts automatically
+    // whenever a config key is written via `openclaw config set`. Adding an explicit
+    // docker restart on top doubles the churn and can cascade into OOM with 5 agents.
+    // The self-SIGTERM is sufficient — OpenClaw will reconnect Slack Socket Mode on its
+    // own restart cycle.
 
     // Brief wait for Socket Mode WebSocket to establish
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;

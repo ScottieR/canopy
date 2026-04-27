@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { LobsterIcon } from "../../App";
+import { PasswordInput } from "../shared/PasswordInput";
 
 export function SlackCompanion() {
   const [slackAppToken, setSlackAppToken] = useState("");
@@ -135,8 +136,7 @@ export function SlackCompanion() {
                <li>Click Generate and copy the token starting with <code>xapp-</code> here:</li>
             </ol>
           </div>
-          <input 
-            type="password" 
+          <PasswordInput 
             value={slackAppToken} 
             onChange={e => setSlackAppToken(e.target.value)} 
             placeholder="xapp-..." 
@@ -158,8 +158,7 @@ export function SlackCompanion() {
               <li>Copy the "Bot User OAuth Token" (starts with <code>xoxb-</code>) and paste it here:</li>
             </ol>
           </div>
-          <input 
-            type="password" 
+          <PasswordInput 
             value={slackBotToken} 
             onChange={e => setSlackBotToken(e.target.value)} 
             placeholder="xoxb-..." 

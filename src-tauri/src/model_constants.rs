@@ -19,9 +19,27 @@
 /// 2. Run `cargo test model_constants` to catch format regressions.
 /// 3. The change propagates automatically everywhere — no grep needed.
 ///
+/// # Google / Gemini model lineage (to avoid confusion)
+///
+/// Google's model versioning is not sequential in the way you might expect:
+///   gemini-1.5-pro / gemini-1.5-flash           (2024, stable, older generation)
+///   gemini-2.0-flash / gemini-2.0-flash-lite     (2025, GA stable)
+///   gemini-2.5-flash-preview-04-17               (April 2026, GA flash preview)
+///   gemini-2.5-pro-preview-05-06                 (May 2026, GA pro preview)
+///   gemini-3-flash-preview                       (2026, Preview — Gemini 3 Flash)
+///   gemini-3.1-flash-lite-preview                (2026, Preview — fastest Gemini 3)
+///   gemini-3.1-pro-preview                       (2026, Preview — Gemini 3.1 flagship)
+///
+/// Gemini 3.x models ARE real — confirmed from Google Vertex AI docs April 2026.
+/// They are currently in Preview and may require allowlist access.
+/// The recommended default for new users is gemini-2.5-flash (GA, no allowlist needed).
+///
 /// Cross-reference: https://docs.openclaw.ai/concepts/models
 ///
 /// Last verified: April 2026
+
+use serde::{Deserialize, Serialize};
+use std::sync::RwLock;
 
 // ─── Anthropic / Claude ───────────────────────────────────────────────────────
 
@@ -44,14 +62,43 @@ pub const OPENAI_GPT4O: &str = "openai/gpt-4o";
 /// GPT-4o Mini — fast, cheap alternative for simple tasks.
 pub const OPENAI_GPT4O_MINI: &str = "openai/gpt-4o-mini";
 
+/// o4-mini — OpenAI's fast reasoning model.
+pub const OPENAI_O4_MINI: &str = "openai/o4-mini";
+
 // ─── Google / Gemini ─────────────────────────────────────────────────────────
+//
+// Source of truth: https://ai.google.dev/gemini-api/docs/deprecations
+// Last synced: April 2026
+//
+// ── Gemini 2.5 — STABLE (non-deprecated, GA) ────────────────────────────────
+//    Successor to 2.0 series. Shutdown not before June 2026.
+//    Use bare names — all dated preview suffixes (e.g. -preview-04-17) are
+//    already deprecated or shut down per the deprecations page.
 
-/// Gemini 2.0 Flash — Google's fast, affordable model.
-/// ⚠️  "gemini-3-flash-preview" does NOT exist — use this instead.
-pub const GOOGLE_GEMINI_FLASH: &str = "google/gemini-2.0-flash";
+/// Gemini 2.5 Flash — stable, GA. Successor to gemini-2.0-flash.
+/// Recommended default for Gemini users. Shutdown: June 17, 2026.
+pub const GOOGLE_GEMINI_FLASH_25: &str = "google/gemini-2.5-flash";
 
-/// Gemini 2.0 Pro — Google's high-capability model.
-pub const GOOGLE_GEMINI_PRO: &str = "google/gemini-2.0-pro";
+/// Gemini 2.5 Flash Lite — stable, GA. Fastest/cheapest 2.5 option.
+/// Shutdown: July 22, 2026.
+pub const GOOGLE_GEMINI_FLASH_LITE_25: &str = "google/gemini-2.5-flash-lite";
+
+/// Gemini 2.5 Pro — stable, GA flagship. Shutdown: June 17, 2026.
+pub const GOOGLE_GEMINI_PRO_25: &str = "google/gemini-2.5-pro";
+
+// ── Gemini 3.x — PREVIEW (no shutdown date announced) ───────────────────────
+//    Valid model IDs per deprecations page. LiteLLM support inside the
+//    OpenClaw container must be confirmed before using as agent defaults —
+//    an unrecognised model triggers a retry loop that OOMs the container.
+
+/// Gemini 3 Flash Preview — successor to gemini-2.5-flash.
+pub const GOOGLE_GEMINI_3_FLASH: &str = "google/gemini-3-flash-preview";
+
+/// Gemini 3.1 Flash Lite Preview — successor to gemini-2.5-flash-lite.
+pub const GOOGLE_GEMINI_31_FLASH_LITE: &str = "google/gemini-3.1-flash-lite-preview";
+
+/// Gemini 3.1 Pro Preview — successor to gemini-2.5-pro.
+pub const GOOGLE_GEMINI_31_PRO: &str = "google/gemini-3.1-pro-preview";
 
 // ─── Provider-level defaults ──────────────────────────────────────────────────
 
@@ -62,8 +109,95 @@ pub const DEFAULT_ANTHROPIC_MODEL: &str = ANTHROPIC_CLAUDE_SONNET;
 pub const DEFAULT_OPENAI_MODEL: &str = OPENAI_GPT4O;
 
 /// Default model when a Gemini API key is present.
-/// Used as last-resort fallback if no other provider key exists.
-pub const DEFAULT_GEMINI_MODEL: &str = GOOGLE_GEMINI_FLASH;
+/// gemini-3.1-pro-preview is the ONLY Gemini 3.x model confirmed to work inside the
+/// OpenClaw container's LiteLLM runtime (verified via active sloane sessions Apr 2026).
+/// gemini-3.1-flash-lite-preview is NOT confirmed — using it causes OpenClaw to enter
+/// a retry loop at startup that permanently blocks the Node.js event loop (container
+/// appears "running" but never emits logs past "starting..." and never responds to IPC).
+/// Switch to flash-lite only after confirming LiteLLM support in the OpenClaw image.
+pub const DEFAULT_GEMINI_MODEL: &str = GOOGLE_GEMINI_31_PRO;
+
+// ─── Model catalogue (used by the frontend model picker) ─────────────────────
+//
+// This is the authoritative list of models the UI should display.
+// The frontend fetches this via `invoke("get_available_models")` — it must NOT
+// use an external server (e.g. localhost:3001) for model data because that server
+// can serve stale, incorrect, or phantom model names.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// Full OpenClaw model ID — e.g. "anthropic/claude-sonnet-4-6".
+    /// This is what gets written to openclaw.json and auth-profiles.json.
+    pub id: String,
+    /// Display name shown in the UI — e.g. "Claude Sonnet 4.6".
+    pub name: String,
+    /// Provider display name — "Anthropic", "OpenAI", "Google Gemini", "xAI".
+    pub provider: String,
+    /// "light" for fast/cheap models, "heavy" for powerful/expensive models.
+    pub strategy: String,
+    /// Short description shown in the UI.
+    pub description: String,
+}
+
+/// Returns the complete list of models the UI should offer.
+/// All entries are verified against real API model names — no phantom names.
+pub fn all_models() -> Vec<ModelInfo> {
+    vec![
+        // Anthropic
+        ModelInfo { id: ANTHROPIC_CLAUDE_SONNET.into(), name: "Claude Sonnet 4.6".into(), provider: "Anthropic".into(), strategy: "heavy".into(), description: "Fast & highly capable".into() },
+        ModelInfo { id: ANTHROPIC_CLAUDE_HAIKU.into(),  name: "Claude Haiku 4.5".into(),  provider: "Anthropic".into(), strategy: "light".into(), description: "Fastest Anthropic model".into() },
+        ModelInfo { id: ANTHROPIC_CLAUDE_OPUS.into(),   name: "Claude Opus 4.6".into(),   provider: "Anthropic".into(), strategy: "heavy".into(), description: "Most capable Anthropic".into() },
+        // OpenAI
+        ModelInfo { id: OPENAI_GPT4O.into(),     name: "GPT-4o".into(),      provider: "OpenAI".into(), strategy: "heavy".into(), description: "Flagship multimodal".into() },
+        ModelInfo { id: OPENAI_GPT4O_MINI.into(), name: "GPT-4o Mini".into(), provider: "OpenAI".into(), strategy: "light".into(), description: "Fast & affordable".into() },
+        ModelInfo { id: OPENAI_O4_MINI.into(),    name: "o4-mini".into(),     provider: "OpenAI".into(), strategy: "heavy".into(), description: "Fast reasoning model".into() },
+        // ── Google Gemini 3.x — Preview (no shutdown date announced) ──────────
+        // Source: https://ai.google.dev/gemini-api/docs/deprecations
+        ModelInfo { id: GOOGLE_GEMINI_3_FLASH.into(),      name: "Gemini 3 Flash".into(),         provider: "Google Gemini".into(), strategy: "light".into(),  description: "Preview — successor to 2.5 Flash".into() },
+        ModelInfo { id: GOOGLE_GEMINI_31_FLASH_LITE.into(), name: "Gemini 3.1 Flash Lite".into(),  provider: "Google Gemini".into(), strategy: "light".into(),  description: "Preview — successor to 2.5 Flash Lite".into() },
+        ModelInfo { id: GOOGLE_GEMINI_31_PRO.into(),        name: "Gemini 3.1 Pro".into(),         provider: "Google Gemini".into(), strategy: "heavy".into(), description: "Preview — successor to 2.5 Pro".into() },
+        // ── Google Gemini 2.5 — Stable GA (shutdown not before June 2026) ─────
+        ModelInfo { id: GOOGLE_GEMINI_FLASH_25.into(),      name: "Gemini 2.5 Flash".into(),       provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — recommended default".into() },
+        ModelInfo { id: GOOGLE_GEMINI_FLASH_LITE_25.into(), name: "Gemini 2.5 Flash Lite".into(),  provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — fastest/cheapest option".into() },
+        ModelInfo { id: GOOGLE_GEMINI_PRO_25.into(),        name: "Gemini 2.5 Pro".into(),         provider: "Google Gemini".into(), strategy: "heavy".into(), description: "Stable — flagship model".into() },
+        // NOTE: gemini-2.0-flash and gemini-2.0-flash-lite are DEPRECATED (Feb 2025,
+        // shutdown June 1 2026). Do not add them back — use 2.5 series instead.
+    ]
+}
+
+/// Live model registry — starts with the hardcoded validated list and is overwritten
+/// by the admin oracle fetch on startup. `get_available_models` always reads from here.
+///
+/// Using a `RwLock` means many concurrent readers (UI renders) never block each other;
+/// only the single startup write briefly takes an exclusive lock.
+pub static MODEL_REGISTRY: RwLock<Vec<ModelInfo>> = RwLock::new(Vec::new());
+
+/// Initialise the registry with the hardcoded fallback list.
+/// Called once from lib.rs before the async oracle fetch starts.
+pub fn init_model_registry() {
+    let mut registry = MODEL_REGISTRY.write().expect("MODEL_REGISTRY poisoned");
+    if registry.is_empty() {
+        *registry = all_models();
+    }
+}
+
+/// Update the registry with a freshly fetched list, validating every entry first.
+/// Entries that fail `validate_model_string` are silently dropped so malformed names
+/// (e.g. bare model names without a provider prefix) can never make it into the UI.
+pub fn update_model_registry(fetched: Vec<ModelInfo>) {
+    let valid: Vec<ModelInfo> = fetched
+        .into_iter()
+        .filter(|m| validate_model_string(&m.id).is_ok())
+        .collect();
+
+    if valid.is_empty() {
+        tracing::warn!("update_model_registry: all fetched models failed validation — keeping existing list");
+        return;
+    }
+    let count = valid.len();
+    *MODEL_REGISTRY.write().expect("MODEL_REGISTRY poisoned") = valid;
+    tracing::info!("update_model_registry: registry updated with {} models", count);
+}
 
 // ─── Gateway / Docker networking ──────────────────────────────────────────────
 
@@ -93,19 +227,24 @@ pub fn gateway_bearer_header() -> String {
 
 // ─── Auth-profile path helpers ────────────────────────────────────────────────
 
-/// Returns the path inside the container where API keys are stored for an agent.
+/// Returns the canonical path inside the container where API keys are stored for an agent.
 ///
-/// CORRECT layout (OpenClaw expects):
-///   /home/node/.openclaw/agents/{agent_id}/auth-profiles.json
+/// sync_credentials writes to BOTH this path and the agents/{id}/agent/ variant
+/// (used in single-agent mode) so both layouts are covered regardless of OpenClaw mode.
 ///
-/// ⚠️  Do NOT add an extra `agent/` subdirectory — OpenClaw won't find the file.
+/// Gateway mode layout (unconfirmed — may be either):
+///   /home/node/.openclaw/agents/{agent_id}/auth-profiles.json        ← flat
+///   /home/node/.openclaw/agents/{agent_id}/agent/auth-profiles.json  ← with subdir
 pub fn agent_auth_profile_path(agent_id: &str) -> String {
     format!("/home/node/.openclaw/agents/{}/auth-profiles.json", agent_id)
 }
 
 /// Returns the path inside the container where an agent's SOUL.md lives.
+///
+/// Workspace is mounted at /home/node/.openclaw/workspace (inside the .openclaw dir).
+/// Per-agent workspace subdirs are used in gateway/multi-agent mode.
 pub fn agent_soul_path(agent_id: &str) -> String {
-    format!("/home/node/openclaw/workspace/{}/SOUL.md", agent_id)
+    format!("/home/node/.openclaw/workspace/{}/SOUL.md", agent_id)
 }
 
 // ─── Model string validation ──────────────────────────────────────────────────
@@ -192,8 +331,12 @@ const _: () = {
     assert_has_slash!(ANTHROPIC_CLAUDE_OPUS);
     assert_has_slash!(OPENAI_GPT4O);
     assert_has_slash!(OPENAI_GPT4O_MINI);
-    assert_has_slash!(GOOGLE_GEMINI_FLASH);
-    assert_has_slash!(GOOGLE_GEMINI_PRO);
+    assert_has_slash!(GOOGLE_GEMINI_FLASH_25);
+    assert_has_slash!(GOOGLE_GEMINI_FLASH_LITE_25);
+    assert_has_slash!(GOOGLE_GEMINI_PRO_25);
+    assert_has_slash!(GOOGLE_GEMINI_3_FLASH);
+    assert_has_slash!(GOOGLE_GEMINI_31_FLASH_LITE);
+    assert_has_slash!(GOOGLE_GEMINI_31_PRO);
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -215,8 +358,13 @@ mod tests {
             ANTHROPIC_CLAUDE_OPUS,
             OPENAI_GPT4O,
             OPENAI_GPT4O_MINI,
-            GOOGLE_GEMINI_FLASH,
-            GOOGLE_GEMINI_PRO,
+            OPENAI_O4_MINI,
+            GOOGLE_GEMINI_FLASH_25,
+            GOOGLE_GEMINI_FLASH_LITE_25,
+            GOOGLE_GEMINI_PRO_25,
+            GOOGLE_GEMINI_3_FLASH,
+            GOOGLE_GEMINI_31_FLASH_LITE,
+            GOOGLE_GEMINI_31_PRO,
         ] {
             assert!(
                 validate_model_string(constant).is_ok(),
@@ -242,13 +390,88 @@ mod tests {
     }
 
     #[test]
-    fn gemini_model_does_not_use_nonexistent_preview_name() {
-        // "gemini-3-flash-preview" does not exist as a valid model.
-        assert!(
-            !DEFAULT_GEMINI_MODEL.contains("gemini-3"),
-            "Gemini model string '{}' references 'gemini-3' which is not a real model",
-            DEFAULT_GEMINI_MODEL
-        );
+    fn gemini_3x_constants_are_real_and_valid() {
+        // Gemini 3.x models ARE real — confirmed from Google Vertex AI docs April 2026.
+        // Gemini 3 Flash, 3.1 Flash-Lite, 3.1 Pro, and 3.1 Flash Image are all Preview.
+        for model in &[GOOGLE_GEMINI_31_FLASH_LITE, GOOGLE_GEMINI_3_FLASH, GOOGLE_GEMINI_31_PRO] {
+            assert!(
+                validate_model_string(model).is_ok(),
+                "Gemini 3.x model '{}' failed format validation",
+                model
+            );
+            assert!(
+                model.starts_with("google/"),
+                "Gemini 3.x model '{}' must use 'google/' provider prefix",
+                model
+            );
+        }
+    }
+
+    #[test]
+    fn default_gemini_model_is_gemini_31_pro() {
+        // DEFAULT_GEMINI_MODEL must be gemini-3.1-pro-preview — the ONLY Gemini 3.x model
+        // confirmed to work inside the OpenClaw container's LiteLLM runtime (verified via
+        // active sloane sessions Apr 2026). gemini-3.1-flash-lite-preview is NOT confirmed:
+        // using it causes OpenClaw to hang at "starting..." (LiteLLM retry loop blocks the
+        // Node.js event loop permanently). Switch only after confirming LiteLLM support.
+        assert_eq!(DEFAULT_GEMINI_MODEL, GOOGLE_GEMINI_31_PRO,
+            "Default Gemini model must be gemini-3.1-pro-preview (confirmed LiteLLM support). \
+             See model_constants.rs comment for why flash-lite is not safe as a default.");
+    }
+
+    #[test]
+    fn all_models_catalogue_entries_pass_validation() {
+        // Every entry in the model catalogue must have a valid "provider/model-name" format.
+        for m in all_models() {
+            assert!(
+                validate_model_string(&m.id).is_ok(),
+                "Model catalogue entry '{}' (id='{}') failed validation — check provider prefix and format",
+                m.name, m.id
+            );
+        }
+    }
+
+    #[test]
+    fn all_models_catalogue_has_stable_gemini_25_models() {
+        // Source: https://ai.google.dev/gemini-api/docs/deprecations
+        // gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.5-pro are all stable GA.
+        let models = all_models();
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_25),
+            "Catalogue must include stable '{}'", GOOGLE_GEMINI_FLASH_25);
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_LITE_25),
+            "Catalogue must include stable '{}'", GOOGLE_GEMINI_FLASH_LITE_25);
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_25),
+            "Catalogue must include stable '{}'", GOOGLE_GEMINI_PRO_25);
+    }
+
+    #[test]
+    fn all_models_catalogue_has_gemini_3x_previews() {
+        // Source: https://ai.google.dev/gemini-api/docs/deprecations
+        // All three are listed as Preview with no shutdown date announced.
+        let models = all_models();
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_3_FLASH),
+            "Catalogue must include '{}'", GOOGLE_GEMINI_3_FLASH);
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_31_FLASH_LITE),
+            "Catalogue must include '{}'", GOOGLE_GEMINI_31_FLASH_LITE);
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_31_PRO),
+            "Catalogue must include '{}'", GOOGLE_GEMINI_31_PRO);
+    }
+
+    #[test]
+    fn catalogue_does_not_contain_deprecated_gemini_20_models() {
+        // gemini-2.0-flash deprecated Feb 2025, shutdown June 1 2026.
+        // gemini-2.0-flash-lite deprecated Feb 2025, shutdown June 1 2026.
+        // Source: https://ai.google.dev/gemini-api/docs/deprecations
+        let models = all_models();
+        assert!(!models.iter().any(|m| m.id == "google/gemini-2.0-flash"),
+            "Catalogue must NOT include deprecated google/gemini-2.0-flash");
+        assert!(!models.iter().any(|m| m.id == "google/gemini-2.0-flash-lite"),
+            "Catalogue must NOT include deprecated google/gemini-2.0-flash-lite");
+        // Also ensure dated preview suffixes are not used — those are all deprecated/shutdown.
+        assert!(!models.iter().any(|m| m.id.contains("-preview-04-17")),
+            "Catalogue must NOT include shut-down -preview-04-17 variant");
+        assert!(!models.iter().any(|m| m.id.contains("-preview-05-06")),
+            "Catalogue must NOT include deprecated -preview-05-06 variant");
     }
 
     #[test]
@@ -323,16 +546,10 @@ mod tests {
     // ── Auth-profile path ─────────────────────────────────────────────────
 
     #[test]
-    fn auth_profile_path_has_no_extra_agent_subdir() {
+    fn auth_profile_path_contains_agent_id_and_filename() {
         let path = agent_auth_profile_path("test-agent");
-        // Must NOT contain the spurious extra `agent/` subdirectory.
-        // Wrong:  /home/node/.openclaw/agents/test-agent/agent/auth-profiles.json
-        // Right:  /home/node/.openclaw/agents/test-agent/auth-profiles.json
-        assert!(
-            !path.contains("/agent/auth-profiles"),
-            "auth_profile_path '{}' contains spurious '/agent/' subdir — OpenClaw won't find the file",
-            path
-        );
+        // sync_credentials writes to BOTH the flat path and the agents/{id}/agent/ variant,
+        // so this helper returns the flat layout; both are written at runtime.
         assert!(
             path.ends_with("/auth-profiles.json"),
             "auth_profile_path '{}' must end with '/auth-profiles.json'",
@@ -342,14 +559,21 @@ mod tests {
             path.contains("test-agent"),
             "auth_profile_path must include the agent_id"
         );
+        assert!(
+            path.contains("/.openclaw/agents/"),
+            "auth_profile_path '{}' must be under /.openclaw/agents/",
+            path
+        );
     }
 
     #[test]
-    fn soul_path_uses_workspace_not_dot_openclaw() {
+    fn soul_path_uses_dot_openclaw_workspace() {
         let path = agent_soul_path("test-agent");
+        // Workspace is mounted at /home/node/.openclaw/workspace (inside .openclaw dir)
+        // Verified from working Sloane reference: ./workspace:/home/node/.openclaw/workspace
         assert!(
-            path.contains("/openclaw/workspace/"),
-            "SOUL.md path '{}' must be under /openclaw/workspace/, not /.openclaw/",
+            path.contains("/.openclaw/workspace/"),
+            "SOUL.md path '{}' must be under /.openclaw/workspace/ — workspace mounts inside .openclaw",
             path
         );
         assert!(path.ends_with("/SOUL.md"));
