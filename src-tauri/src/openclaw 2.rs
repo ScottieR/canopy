@@ -98,21 +98,19 @@ pub async fn create_agent(
     }
 
     // ─── Step 2: Configure gateway (best effort — agent is already in SQLite) ──
-    let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"]).output().await;
-    let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.memorySearch.enabled", "false"]).output().await;
-    // ⚠️  Do NOT call `openclaw config set gateway.token` — "gateway.token" is not a valid
-    // schema key in OpenClaw 2026.4.14 and will crash the gateway with a config-invalid error.
-    // Auth is handled entirely via gateway.auth.token (written by preflight_write_openclaw_json).
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"]).output().await;
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.memorySearch.enabled", "false"]).output().await;
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "gateway.token", GATEWAY_INTERNAL_TOKEN]).output().await;
     
     // Set proper tooling and session scopes to match the working 'Sloane' defaults
-    let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "tools.profile", "coding"]).output().await;
-    let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "session.dmScope", "per-channel-peer"]).output().await;
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "tools.profile", "coding"]).output().await;
+    let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "session.dmScope", "per-channel-peer"]).output().await;
 
     if let Some(ref model) = personality.active_model {
         // ⚠️  Use "agents.defaults.model.primary" to produce the nested object format
         // that OpenClaw expects: model: { "primary": "provider/model-id" }
         // Confirmed against working reference at /Users/scottieryan/agents/sloane/config/openclaw.json
-        let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.model.primary", model]).output().await;
+        let _ = get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.model.primary", model]).output().await;
     } else {
         let _ = crate::audit_openclaw::repair_openclaw_config(app_handle.clone(), None).await;
     }
@@ -159,7 +157,7 @@ pub async fn create_agent(
         .await;
 
     let _ = get_docker_command()
-        .args(["exec", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "agents", "set-identity",
+        .args(["exec", "canopy-gateway", "openclaw", "agents", "set-identity",
                "--agent", &agent_id, "--emoji", &emoji])
         .output()
         .await;
@@ -373,73 +371,15 @@ pub async fn set_agent_paused(
         // If this fails (e.g. agent wasn't registered yet) that's fine — the important
         // thing is the DB flag is set so boot_sync_agents won't re-register it.
         let _ = get_docker_command()
-            .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+            .args(["exec", "-u", "node", "canopy-gateway",
                    "openclaw", "agents", "remove", &agent_id])
             .output()
             .await;
         tracing::info!("set_agent_paused: {} paused — removed from OpenClaw", agent_id);
     } else {
-        // Immediately re-register the agent — don't wait for the next boot.
-        // Pattern mirrors boot_sync_agents: mkdir workspace → agents add → write credentials.
-        let workspace_path = format!("/home/node/.openclaw/workspace/{}", agent_id);
-
-        // Step 1: Ensure workspace dir exists (agents add fails silently without it).
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            get_docker_command()
-                .args(["exec", "-u", "node", "canopy-gateway", "mkdir", "-p", &workspace_path])
-                .output(),
-        ).await;
-
-        // Step 2: Register with openclaw agents add.
-        let add_out = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            get_docker_command()
-                .args([
-                    "exec", "-u", "node",
-                    "-e", "NODE_OPTIONS=--v8-pool-size=1",
-                    "canopy-gateway",
-                    "openclaw", "agents", "add", &agent_id,
-                    "--workspace", &workspace_path,
-                ])
-                .output(),
-        ).await;
-
-        match add_out {
-            Ok(Ok(ref o)) if o.status.success() => {
-                tracing::info!("set_agent_paused: {} re-registered in OpenClaw", agent_id);
-
-                // Step 3: Write credentials — same key-lookup logic as boot_sync_agents.
-                let mut keys = std::collections::HashMap::new();
-                let try_key = |k: &str| crate::keychain::get_secret(k).unwrap_or_default();
-                let ag_anthropic = try_key(&format!("agent_{}_anthropic_key", agent_id));
-                let ag_openai    = try_key(&format!("agent_{}_openai_key",    agent_id));
-                let ag_gemini    = try_key(&format!("agent_{}_gemini_key",    agent_id));
-                let ag_grok      = try_key(&format!("agent_{}_grok_key",      agent_id));
-                if !ag_anthropic.trim().is_empty() { keys.insert("ANTHROPIC_API_KEY".into(), ag_anthropic); }
-                else if let Ok(v) = crate::keychain::get_secret("ANTHROPIC_API_KEY") { if !v.trim().is_empty() { keys.insert("ANTHROPIC_API_KEY".into(), v); } }
-                if !ag_openai.trim().is_empty() { keys.insert("OPENAI_API_KEY".into(), ag_openai); }
-                else if let Ok(v) = crate::keychain::get_secret("OPENAI_API_KEY") { if !v.trim().is_empty() { keys.insert("OPENAI_API_KEY".into(), v); } }
-                if !ag_gemini.trim().is_empty() { keys.insert("GEMINI_API_KEY".into(), ag_gemini); }
-                else if let Ok(v) = crate::keychain::get_secret("GEMINI_API_KEY") { if !v.trim().is_empty() { keys.insert("GEMINI_API_KEY".into(), v); } }
-                if !ag_grok.trim().is_empty() { keys.insert("XAI_API_KEY".into(), ag_grok); }
-                else if let Ok(v) = crate::keychain::get_secret("XAI_API_KEY") { if !v.trim().is_empty() { keys.insert("XAI_API_KEY".into(), v); } }
-                write_auth_profiles(&agent_id, &keys).await;
-            }
-            Ok(Ok(ref o)) => {
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                tracing::warn!(
-                    "set_agent_paused: agents add failed for {} (exit {:?}): {} — will retry on next boot",
-                    agent_id, o.status.code(), stderr.trim()
-                );
-            }
-            _ => {
-                tracing::warn!(
-                    "set_agent_paused: timed out registering {} — will retry on next boot",
-                    agent_id
-                );
-            }
-        }
+        // Re-register the agent. Re-use the boot_sync SOUL.md refresh path by running
+        // agents add. The agent's workspace and config are already on disk.
+        tracing::info!("set_agent_paused: {} resumed — will be registered on next boot_sync", agent_id);
     }
 
     Ok(())
@@ -540,17 +480,12 @@ pub async fn send_message_internal(
     let _ = db.insert_message(&conv_id, "user", message);
 
     // Step 3: Send via native OpenClaw CLI
-    // NODE_OPTIONS=--v8-pool-size=1 prevents the Node.js process from trying to create
-    // 4 worker threads at startup (which fails with uv_thread_create/EAGAIN under PID pressure).
-    // The openclaw CLI is a thin IPC client — 1 background thread is sufficient.
     let cmd_future = get_docker_command()
         .args([
-            "exec", "-u", "node",
-            "-e", "NODE_OPTIONS=--v8-pool-size=1",
-            "canopy-gateway",
-            "openclaw", "agent",
-            "--agent", agent_id,
-            "--message", message,
+            "exec", "-u", "node", "canopy-gateway", 
+            "openclaw", "agent", 
+            "--agent", agent_id, 
+            "--message", message, 
             "--json"
         ])
         .output();
@@ -562,11 +497,6 @@ pub async fn send_message_internal(
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    tracing::debug!(
-        "send_message_internal: agent={} exit={:?} stdout_len={} stderr_len={} stderr_preview={}",
-        agent_id, output.status.code(), stdout.len(), stderr.len(),
-        stderr.chars().take(200).collect::<String>()
-    );
 
     if !output.status.success() {
         let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
@@ -590,39 +520,24 @@ pub async fn send_message_internal(
     let body = match serde_json::from_str::<Value>(&stdout) {
         Ok(json) => json,
         Err(_) => {
-            // Plaintext fallback — wrap so extraction logic below can handle it uniformly.
-            json!({ "response": stdout.trim() })
+            // It might be plaintext fallback.
+            json!({
+                "response": stdout.trim()
+            })
         }
     };
 
-    // ── Extract response text ─────────────────────────────────────────────────
-    // OpenClaw's `openclaw agent --json` response shape (confirmed from live run):
-    //   { "payloads": [{ "text": "...", "mediaUrl": null }], "meta": { ... } }
-    //
-    // Older or plaintext fallback shapes we also handle:
-    //   { "response": "..." }   — our own wrapped plaintext case above
-    //   { "content": "..." }    — hypothetical future shape
-    //   { "text": "..." }       — top-level text (some CLI versions)
-    //
-    // The `.unwrap_or_else(|| body.to_string())` last-resort would dump the entire
-    // JSON blob as chat text — that's the bug: payloads[0].text MUST be checked first.
-    let response_text: String = body["payloads"]
-        .as_array()
-        .and_then(|arr| arr.first())
-        .and_then(|p| p["text"].as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .or_else(|| body["response"].as_str().filter(|s| !s.is_empty()).map(String::from))
-        .or_else(|| body["content"].as_str().filter(|s| !s.is_empty()).map(String::from))
-        .or_else(|| body["text"].as_str().filter(|s| !s.is_empty()).map(String::from))
-        .unwrap_or_else(|| {
-            // Nothing extractable — log the full body for debugging then return an error placeholder
-            tracing::warn!("send_message_internal: unrecognised response shape from openclaw, body={}", body);
-            format!("[No response extracted — check logs]")
-        });
+    // Extract response text and log assistant message
+    let response_text = body.get("response")
+        .and_then(|v| v.as_str())
+        .or_else(|| body.get("content").and_then(|v| v.as_str()))
+        .unwrap_or(&body.to_string())
+        .to_string();
 
-    // OpenClaw emits "OpenClaw: <error>" lines when the agent is misconfigured.
-    // Return these as errors so the UI can offer the repair flow.
+    // OpenClaw emits "OpenClaw: <error>" lines when the agent is misconfigured
+    // (e.g. auth-profiles.json has no API key). Return these as errors so the
+    // frontend chat UI can offer the repair flow instead of showing the raw
+    // system message as if it were an agent reply.
     if response_text.starts_with("OpenClaw:") {
         return Err(format!(
             "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
@@ -799,7 +714,7 @@ pub async fn check_agent_status(agent_id: String) -> Result<String, String> {
     // until the async runtime is exhausted. With the timeout, we get "offline" briefly
     // during warmup and "active" once the IPC is available again.
     let exec_future = get_docker_command()
-        .args(["exec", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "agents", "list", "--json"])
+        .args(["exec", "canopy-gateway", "openclaw", "agents", "list", "--json"])
         .output();
 
     match tokio::time::timeout(std::time::Duration::from_secs(8), exec_future).await {
@@ -844,58 +759,6 @@ pub async fn check_agent_status(agent_id: String) -> Result<String, String> {
     }
 
     Ok("offline".to_string())
-}
-
-/// Write auth-profiles.json directly to the container for a given agent.
-///
-/// Internal helper — NOT a Tauri command. No host-dir guard — callers must ensure the
-/// agent is already registered before calling this. Writes to both layout paths so it
-/// works regardless of agent naming origin (imported "sloane" or Canopy-created "agent-sloane").
-async fn write_auth_profiles(agent_id: &str, keys: &std::collections::HashMap<String, String>) {
-    let mut profiles = serde_json::Map::new();
-    for (k, v) in keys {
-        if v.trim().is_empty() { continue; }
-        let (provider, profile_key) = match k.as_str() {
-            "ANTHROPIC_API_KEY" => ("anthropic", "anthropic:default"),
-            "OPENAI_API_KEY"    => ("openai",    "openai:default"),
-            "GEMINI_API_KEY"    => ("google",    "google:default"),
-            "XAI_API_KEY"       => ("xai",       "xai:default"),
-            _ => continue,
-        };
-        profiles.insert(profile_key.to_string(), json!({
-            "type": "api_key", "provider": provider, "key": v.trim()
-        }));
-    }
-    if profiles.is_empty() { return; }
-
-    let auth_json = serde_json::to_string_pretty(&json!({
-        "version": 1,
-        "profiles": profiles
-    })).unwrap_or_default();
-
-    // Write to both paths — agent/ subdir (confirmed layout) and flat (fallback).
-    // mkdir -p ensures the directories are created even if openclaw hasn't written them yet.
-    let p1 = format!("/home/node/.openclaw/agents/{}/agent/auth-profiles.json", agent_id);
-    let p2 = format!("/home/node/.openclaw/agents/{}/auth-profiles.json", agent_id);
-    let write_cmd = format!(
-        "mkdir -p $(dirname '{p1}') && cat > '{p1}' << 'AUTHEOF'\n{json}\nAUTHEOF\nchmod 600 '{p1}' && \
-         mkdir -p $(dirname '{p2}') && cat > '{p2}' << 'AUTHEOF'\n{json}\nAUTHEOF\nchmod 600 '{p2}'",
-        p1 = p1, p2 = p2, json = auth_json,
-    );
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
-            .output(),
-    ).await {
-        Ok(Ok(o)) if o.status.success() =>
-            tracing::info!("write_auth_profiles: credentials written for agent {}", agent_id),
-        Ok(Ok(o)) =>
-            tracing::warn!("write_auth_profiles: write failed for {}: {}", agent_id,
-                           String::from_utf8_lossy(&o.stderr).trim()),
-        _ =>
-            tracing::warn!("write_auth_profiles: timed out writing credentials for {}", agent_id),
-    }
 }
 
 #[tauri::command]
@@ -1269,9 +1132,7 @@ pub async fn repair_gateway(
                 std::time::Duration::from_secs(15),
                 get_docker_command()
                     .args([
-                        "exec", "-u", "node",
-                        "-e", "NODE_OPTIONS=--v8-pool-size=1",
-                        "canopy-gateway",
+                        "exec", "-u", "node", "canopy-gateway",
                         "timeout", container_secs,
                         "openclaw", "agents", "add",
                         &agent_id,
@@ -1427,19 +1288,16 @@ const p='/home/node/.openclaw/openclaw.json';
 let c=JSON.parse(fs.readFileSync(p,'utf8'));
 c.gateway=c.gateway||{{}};
 c.gateway.mode='local';
-// ⚠️  Do NOT write c.gateway.token — "gateway.token" is not a recognised field in
-// OpenClaw 2026.4.14. Writing it causes: "Config invalid — gateway: Unrecognized key: token"
-// which crash-loops the container. Auth is via gateway.auth.token only.
+c.gateway.token='{token}';
 c.agents=c.agents||{{}};
 c.agents.defaults=c.agents.defaults||{{}};
 c.agents.defaults.memorySearch=c.agents.defaults.memorySearch||{{}};
 c.agents.defaults.memorySearch.enabled=false;
-// ⚠️  MUST be an object {{primary: "..."}} — a bare string is silently ignored by OpenClaw
-// and leaves the agent with no model, causing every send_message call to fail.
-c.agents.defaults.model={{primary:'{model}'}};
+c.agents.defaults.model='{model}';
 fs.writeFileSync(p,JSON.stringify(c,null,2));
 console.log('config patched — model set to {model}');
 "#,
+        token = token,
         model = default_model
     );
     let patch_result = tokio::time::timeout(
@@ -1458,7 +1316,7 @@ console.log('config patched — model set to {model}');
     let store_path = format!("/home/node/.openclaw/agents/{}/sessions/sessions.json", agent_id);
     let _ = get_docker_command()
         .args([
-            "exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+            "exec", "-u", "node", "canopy-gateway",
             "openclaw", "sessions", "cleanup",
             "--store", &store_path,
             "--enforce", "--fix-missing",
@@ -1477,7 +1335,7 @@ console.log('config patched — model set to {model}');
     // Run openclaw doctor --fix
     let doctor = tokio::time::timeout(
         std::time::Duration::from_secs(20),
-        get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "doctor", "--fix"]).output(),
+        get_docker_command().args(["exec", "-u", "node", "canopy-gateway", "openclaw", "doctor", "--fix"]).output(),
     ).await;
     match doctor {
         Ok(Ok(out)) => {
@@ -1552,14 +1410,9 @@ console.log('model updated to {model}');
 pub async fn approve_slack_pairing(
     code: String,
 ) -> Result<String, String> {
-    // NODE_OPTIONS=--v8-pool-size=1: prevents uv_thread_create crash at Node startup
-    // (same fix as send_message_internal — all openclaw CLI invocations need this).
     let output = get_docker_command()
         .args([
-            "exec", "-u", "node",
-            "-e", "NODE_OPTIONS=--v8-pool-size=1",
-            "canopy-gateway",
-            "openclaw", "pairing", "approve", "slack", &code
+            "exec", "-u", "node", "canopy-gateway", "openclaw", "pairing", "approve", "slack", &code
         ])
         .output()
         .await
@@ -2029,29 +1882,6 @@ pub async fn boot_sync_agents(
             )
             .await;
             tracing::info!("boot_sync_agents: refreshed SOUL.md for agent {}", id);
-
-            // Also re-sync credentials for already-registered agents.
-            // The agent dir was wiped on boot (start_gateway deletes all agent dirs before
-            // starting the container), so the auth-profiles.json is gone even though the
-            // agent is still registered in openclaw.json from the previous run.
-            // Use the same key-lookup logic as the new-registration path below.
-            let mut keys_existing = std::collections::HashMap::new();
-            let try_key = |k: &str| crate::keychain::get_secret(k).unwrap_or_default();
-            let ag_anthropic = try_key(&format!("agent_{}_anthropic_key", id));
-            let ag_openai    = try_key(&format!("agent_{}_openai_key", id));
-            let ag_gemini    = try_key(&format!("agent_{}_gemini_key", id));
-            let ag_grok      = try_key(&format!("agent_{}_grok_key", id));
-            if !ag_anthropic.trim().is_empty() { keys_existing.insert("ANTHROPIC_API_KEY".into(), ag_anthropic); }
-            else if let Ok(v) = crate::keychain::get_secret("ANTHROPIC_API_KEY") { if !v.trim().is_empty() { keys_existing.insert("ANTHROPIC_API_KEY".into(), v); } }
-            if !ag_openai.trim().is_empty() { keys_existing.insert("OPENAI_API_KEY".into(), ag_openai); }
-            else if let Ok(v) = crate::keychain::get_secret("OPENAI_API_KEY") { if !v.trim().is_empty() { keys_existing.insert("OPENAI_API_KEY".into(), v); } }
-            if !ag_gemini.trim().is_empty() { keys_existing.insert("GEMINI_API_KEY".into(), ag_gemini); }
-            else if let Ok(v) = crate::keychain::get_secret("GEMINI_API_KEY") { if !v.trim().is_empty() { keys_existing.insert("GEMINI_API_KEY".into(), v); } }
-            if !ag_grok.trim().is_empty() { keys_existing.insert("XAI_API_KEY".into(), ag_grok); }
-            else if let Ok(v) = crate::keychain::get_secret("XAI_API_KEY") { if !v.trim().is_empty() { keys_existing.insert("XAI_API_KEY".into(), v); } }
-            // Write directly (bypass the host-dir guard — agent IS registered, dir exists in container)
-            write_auth_profiles(id, &keys_existing).await;
-
             ok += 1;
             continue;
         }
@@ -2087,19 +1917,6 @@ pub async fn boot_sync_agents(
         // Retry:          85s container /  90s Rust — one more chance if still slow.
         // A second timeout means ACPX is stuck and we skip this agent.
         let workspace_path = format!("/home/node/.openclaw/workspace/{}", id);
-
-        // ── Create workspace dir before agents add ────────────────────────────────
-        // `openclaw agents add --workspace <path>` may fail silently if the path doesn't
-        // exist yet. This is especially common for imported agents whose original workspace
-        // was on the host machine (not inside the container bind-mount). Creating the dir
-        // first guarantees openclaw can initialise the agent regardless of naming convention.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            get_docker_command()
-                .args(["exec", "-u", "node", "canopy-gateway", "mkdir", "-p", &workspace_path])
-                .output(),
-        ).await;
-
         let try_agents_add = |rust_timeout_secs: u64| {
             let workspace_path = workspace_path.clone();
             let id = id.clone();
@@ -2111,9 +1928,7 @@ pub async fn boot_sync_agents(
                     std::time::Duration::from_secs(rust_timeout_secs),
                     get_docker_command()
                         .args([
-                            "exec", "-u", "node",
-                            "-e", "NODE_OPTIONS=--v8-pool-size=1",
-                            "canopy-gateway",
+                            "exec", "-u", "node", "canopy-gateway",
                             "timeout", &container_secs,
                             "openclaw", "agents", "add", &id,
                             "--workspace", &workspace_path,
@@ -2205,22 +2020,32 @@ pub async fn boot_sync_agents(
 
         tracing::info!("boot_sync_agents: registered agent {}", id);
 
-        // Step 3: Write auth-profiles.json — load API keys from keychain and write.
+        // Step 3: Write auth-profiles.json now that agents add has created the agent dir.
+        // We do this here (not from the frontend) because:
+        //   a) The agent dir now exists, so sync_credentials can write safely
+        //   b) The frontend's sync_credentials call fires 1s after startup (before agents add)
+        //      and is now gated to skip when the dir doesn't exist, so this is the only place
+        //      credentials get written on boot.
         let mut keys = std::collections::HashMap::new();
-        let try_key = |k: &str| crate::keychain::get_secret(k).unwrap_or_default();
-        let ag_anthropic = try_key(&format!("agent_{}_anthropic_key", id));
-        let ag_openai    = try_key(&format!("agent_{}_openai_key", id));
-        let ag_gemini    = try_key(&format!("agent_{}_gemini_key", id));
-        let ag_grok      = try_key(&format!("agent_{}_grok_key", id));
-        if !ag_anthropic.trim().is_empty() { keys.insert("ANTHROPIC_API_KEY".into(), ag_anthropic); }
+        let try_key = |k: &str| crate::keychain::get_secret(k).unwrap_or_default(); // returns "" on miss/error
+        let agent_anthropic = try_key(&format!("agent_{}_anthropic_key", id));
+        let agent_openai    = try_key(&format!("agent_{}_openai_key", id));
+        let agent_gemini    = try_key(&format!("agent_{}_gemini_key", id));
+        let agent_grok      = try_key(&format!("agent_{}_grok_key", id));
+        // Fall back to global keys if no per-agent key is set
+        if !agent_anthropic.trim().is_empty() { keys.insert("ANTHROPIC_API_KEY".into(), agent_anthropic); }
         else if let Ok(v) = crate::keychain::get_secret("ANTHROPIC_API_KEY") { if !v.trim().is_empty() { keys.insert("ANTHROPIC_API_KEY".into(), v); } }
-        if !ag_openai.trim().is_empty() { keys.insert("OPENAI_API_KEY".into(), ag_openai); }
+        if !agent_openai.trim().is_empty() { keys.insert("OPENAI_API_KEY".into(), agent_openai); }
         else if let Ok(v) = crate::keychain::get_secret("OPENAI_API_KEY") { if !v.trim().is_empty() { keys.insert("OPENAI_API_KEY".into(), v); } }
-        if !ag_gemini.trim().is_empty() { keys.insert("GEMINI_API_KEY".into(), ag_gemini); }
+        if !agent_gemini.trim().is_empty() { keys.insert("GEMINI_API_KEY".into(), agent_gemini); }
         else if let Ok(v) = crate::keychain::get_secret("GEMINI_API_KEY") { if !v.trim().is_empty() { keys.insert("GEMINI_API_KEY".into(), v); } }
-        if !ag_grok.trim().is_empty() { keys.insert("XAI_API_KEY".into(), ag_grok); }
+        if !agent_grok.trim().is_empty() { keys.insert("XAI_API_KEY".into(), agent_grok); }
         else if let Ok(v) = crate::keychain::get_secret("XAI_API_KEY") { if !v.trim().is_empty() { keys.insert("XAI_API_KEY".into(), v); } }
-        write_auth_profiles(id, &keys).await;
+
+        match sync_credentials(id.clone(), keys).await {
+            Ok(_) => tracing::info!("boot_sync_agents: credentials synced for {}", id),
+            Err(e) => tracing::warn!("boot_sync_agents: credentials sync failed for {}: {}", id, e),
+        }
 
         ok += 1;
 
