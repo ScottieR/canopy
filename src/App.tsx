@@ -3049,7 +3049,41 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
       alwaysOnTop: true,
       decorations: true,
     });
-    companionWindow.once('tauri://error', (e) => console.error('Companion window error:', e));
+    
+    if (type === 'slack') {
+      const launchBrowser = async () => {
+        const manifest = {
+          display_information: { name: agent.name || "Sloane", description: agent.role ? `Your ${agent.role} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
+          features: {
+            app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+            bot_user: { display_name: agent.name || "Sloane", always_online: true }
+          },
+          oauth_config: {
+            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
+            pkce_enabled: false
+          },
+          settings: {
+            event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] },
+            interactivity: { is_enabled: true },
+            org_deploy_enabled: false,
+            socket_mode_enabled: true,
+            token_rotation_enabled: false,
+            is_mcp_enabled: false
+          }
+        };
+        const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
+        const { open } = await import('@tauri-apps/plugin-shell');
+        await open(url);
+      };
+
+      companionWindow.once('tauri://created', launchBrowser);
+      companionWindow.once('tauri://error', (e) => {
+        console.error("Window creation error", e);
+        launchBrowser();
+      });
+    } else {
+      companionWindow.once('tauri://error', (e) => console.error('Companion window error:', e));
+    }
   };
 
   const saveConnections = async () => {

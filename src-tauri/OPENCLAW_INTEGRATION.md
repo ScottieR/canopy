@@ -4,6 +4,8 @@ This document captures every non-obvious configuration detail that has caused Ca
 to stop communicating. Read this before modifying anything in `openclaw.rs`, `audit_openclaw.rs`,
 `slack.rs`, `docker.rs`, or `model_constants.rs`.
 
+Last verified against: **OpenClaw 2026.4.14 / Node 24.14.0** inside OrbStack (arm64)
+
 ---
 
 ## 1. Model String Format
@@ -17,8 +19,9 @@ name always comes **before** the version suffix — never after.
 ✅  anthropic/claude-sonnet-4-6      (family "sonnet" then version "4-6")
 ❌  anthropic/claude-4-6-sonnet      (version before family — WRONG, causes silent failure)
 
-✅  google/gemini-2.0-flash
-❌  google/gemini-3-flash-preview    (this model does not exist)
+✅  google/gemini-2.5-flash
+✅  google/gemini-3.1-pro-preview    (confirmed working Apr 2026)
+❌  google/gemini-3-flash-preview    (NOT confirmed in LiteLLM runtime — causes retry loop)
 ```
 
 ### Why it matters
@@ -27,17 +30,45 @@ When OpenClaw receives an unknown model string via `openclaw config set agents.d
 it either errors silently or falls back to a model you have no key for. The agent appears to
 exist and receive messages but never responds.
 
+### Model must be an object — CRITICAL
+
+OpenClaw requires the model to be a nested object, not a bare string:
+
+```json
+// ✅ Correct
+"agents": { "defaults": { "model": { "primary": "google/gemini-3.1-pro-preview" } } }
+
+// ❌ Wrong — silently ignored, agent has no model and never responds
+"agents": { "defaults": { "model": "google/gemini-3.1-pro-preview" } }
+```
+
+When writing model values in JavaScript config patches, use:
+```javascript
+c.agents.defaults.model = {primary: 'google/gemini-3.1-pro-preview'};   // ✅
+c.agents.defaults.model = 'google/gemini-3.1-pro-preview';               // ❌
+```
+
+When using `openclaw config set`, use the dotted-path syntax to produce the nested object:
+```bash
+openclaw config set agents.defaults.model.primary "google/gemini-3.1-pro-preview"
+# ↑ This creates {"agents":{"defaults":{"model":{"primary":"..."}}}}
+```
+
 ### The source of truth
 
 All model strings are defined in `src/model_constants.rs`. **Do not hardcode model strings
 anywhere else in the codebase.** When model versions change, update `model_constants.rs` and
 run `cargo test model_constants` to validate the change.
 
-```rust
-// model_constants.rs — the only place model strings should appear
-pub const ANTHROPIC_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-4-6";
-pub const GOOGLE_GEMINI_FLASH: &str = "google/gemini-2.0-flash";
-```
+### Confirmed working Gemini models (Apr 2026)
+
+| Model | Status | Notes |
+|---|---|---|
+| `google/gemini-3.1-pro-preview` | ✅ Confirmed | Only Gemini 3.x confirmed in LiteLLM runtime |
+| `google/gemini-2.5-flash` | ✅ Stable GA | Shutdown June 2026 |
+| `google/gemini-2.5-pro` | ✅ Stable GA | Shutdown June 2026 |
+| `google/gemini-3.1-flash-lite-preview` | ⚠️ Unconfirmed | Causes retry loop at startup |
+| `google/gemini-2.0-flash` | ❌ Deprecated | Shutdown June 1 2026 |
 
 ### Updating for new model releases
 
@@ -48,7 +79,71 @@ pub const GOOGLE_GEMINI_FLASH: &str = "google/gemini-2.0-flash";
 
 ---
 
-## 2. Gateway Port Mapping
+## 2. Gateway Auth
+
+### The one token field
+
+```json
+{
+  "gateway": {
+    "auth": {
+      "mode": "token",
+      "token": "canopy_internal_token_2026"
+    },
+    "mode": "local",
+    "port": 18789
+  }
+}
+```
+
+`gateway.auth.token` is the only field needed. The CLI reads `gateway.auth.token` from the
+shared `openclaw.json` and uses it to authenticate both sides of the local connection.
+
+### ⚠️ `gateway.token` is NOT a valid field
+
+`gateway.token` (top-level, not nested under `auth`) is **not recognised** by OpenClaw
+2026.4.14 and causes an immediate config validation failure:
+
+```
+Config invalid
+File: ~/.openclaw/openclaw.json
+Problem:
+  - gateway: Unrecognized key: "token"
+```
+
+This crashes the container into a restart loop. Do not write `gateway.token` anywhere —
+not in Rust config writes, not in JavaScript `node -e` patches, not via `openclaw config set`.
+
+### What "pairing required" means
+
+If you see:
+```
+gateway connect failed: GatewayClientRequestError: pairing required
+Gateway agent failed; falling back to embedded
+```
+
+This means the CLI could not authenticate to the gateway. OpenClaw falls back to **embedded
+mode** — running inference directly instead of routing through the gateway. This works (the
+agent will respond) but spawns a full LiteLLM Node.js process per call (~150 PIDs). Under
+PID pressure this can fail. The fix is ensuring `gateway.auth.mode` and `gateway.auth.token`
+are correctly set in `openclaw.json` before the container starts.
+
+### Testing gateway auth inside the container
+
+```bash
+docker exec -u node -e NODE_OPTIONS=--v8-pool-size=1 canopy-gateway \
+  openclaw agent --agent <id> --message "ping" --json
+```
+
+Check stderr — `"gateway connect failed"` means auth isn't set. Verify with:
+
+```bash
+docker exec canopy-gateway cat /home/node/.openclaw/openclaw.json | python3 -m json.tool | grep -A5 '"auth"'
+```
+
+---
+
+## 3. Gateway Port Mapping
 
 ### The mapping
 
@@ -67,15 +162,9 @@ Docker compose:   HOST 18799  →  CONTAINER 18789
 | `allowedOrigins` audit check | **18799** | `GATEWAY_HOST_PORT` |
 | Port scan in `scan_local_agents` | **18799** | `GATEWAY_HOST_PORT` |
 
-### The bug this replaces
-
-The audit function previously checked whether `allowedOrigins` contained `"18789"` (the
-container-internal port). Since host-side config always references `18799`, this check
-permanently reported `port_mismatch = true`, triggering spurious repair runs on every startup.
-
 ---
 
-## 3. Auth-Profile Path
+## 4. Auth-Profile Path
 
 ### Correct layout (OpenClaw expects)
 
@@ -91,11 +180,8 @@ permanently reported `port_mismatch = true`, triggering spurious repair runs on 
                                               this extra subdir breaks everything
 ```
 
-### Why it matters
-
-OpenClaw looks for `auth-profiles.json` directly inside the agent folder. If the file is
-one level deeper (in the spurious `agent/` subdirectory), the gateway silently runs without
-API keys and every agent call fails with an auth error.
+OpenClaw looks for `auth-profiles.json` directly inside the agent folder. The `agent/`
+subdirectory comes from single-agent mode layout and does not apply in gateway (multi-agent) mode.
 
 ### How to build the path
 
@@ -109,7 +195,226 @@ let filepath = agent_auth_profile_path(&agent_id);
 
 ---
 
-## 4. Slack Socket Mode Setup
+## 5. `uv_thread_create` Crash — NODE_OPTIONS Fix
+
+### The crash
+
+```
+node[2583]: std::unique_ptr<...> node::WorkerThreadsTaskRunner::DelayedTaskScheduler::Start()
+  at ../src/node_platform.cc:109
+# Assertion failed: (0) == (uv_thread_create(t.get(), start_thread, this))
+```
+
+### Root cause
+
+Node.js creates 4 worker threads at startup (derived from `cpus: '4.0'` in docker-compose).
+Under PID pressure inside the container (near the 500 PID limit), `pthread_create` returns
+`EAGAIN` and Node.js aborts.
+
+The openclaw CLI is a thin IPC client — it does not need 4 worker threads. One is sufficient.
+
+### Fix
+
+Pass `NODE_OPTIONS=--v8-pool-size=1` via `docker exec -e` on **every** `openclaw` CLI
+invocation inside the container:
+
+```bash
+docker exec -u node -e NODE_OPTIONS=--v8-pool-size=1 canopy-gateway \
+  openclaw agent --agent <id> --message "hello" --json
+```
+
+In Rust, this means every `get_docker_command()` call that invokes openclaw must include:
+
+```rust
+get_docker_command()
+    .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+           "openclaw", ...])
+```
+
+**All 13 openclaw CLI invocations in `openclaw.rs` have this flag applied.** If you add
+new `docker exec ... openclaw` calls, you must add `-e NODE_OPTIONS=--v8-pool-size=1` as well.
+
+---
+
+## 6. Orphaned Processes — Container-Side Timeout
+
+### The problem
+
+`tokio::time::timeout()` cancels the Rust future but does **not** kill the process running
+inside the Docker container. Each timed-out `openclaw agents add` call leaves an orphaned
+Node.js process consuming ~150-200 PIDs. Near the 500-PID limit, `docker exec` itself fails.
+
+### Fix: container-side `timeout` binary
+
+Wrap every long-running `openclaw agents add` call with the container's `timeout` binary,
+set 5 seconds shorter than the Rust timeout:
+
+```rust
+let rust_timeout_secs: u64 = 180;
+let container_secs = rust_timeout_secs.saturating_sub(5).to_string(); // "175"
+
+tokio::time::timeout(
+    std::time::Duration::from_secs(rust_timeout_secs),
+    get_docker_command()
+        .args([
+            "exec", "-u", "node",
+            "-e", "NODE_OPTIONS=--v8-pool-size=1",
+            "canopy-gateway",
+            "timeout", &container_secs,   // ← container binary kills on deadline
+            "openclaw", "agents", "add", &id,
+            "--workspace", &workspace_path,
+        ])
+        .output(),
+)
+.await
+```
+
+Exit code 124 from the container means the container-side `timeout` fired — treat it the same
+as a Rust timeout (i.e., retry once):
+
+```rust
+let timed_out = match &result {
+    Err(_) => true,
+    Ok(Ok(o)) => o.status.code() == Some(124),
+    _ => false,
+};
+```
+
+### Fix: pkill orphan cleanup before registration
+
+Before running `agents add`, kill any leftover `openclaw agents` processes from previous
+boot cycles:
+
+```rust
+let _ = tokio::time::timeout(
+    std::time::Duration::from_secs(5),
+    get_docker_command()
+        .args(["exec", "canopy-gateway", "sh", "-c",
+               "pkill -f 'openclaw agents' 2>/dev/null; true"])
+        .output(),
+).await;
+```
+
+---
+
+## 7. Config Validation — Known Valid and Invalid Fields
+
+OpenClaw 2026.4.14 strictly validates `openclaw.json` on startup. Unrecognized keys cause:
+```
+[openclaw] Failed to start CLI
+Config observe anomaly: openclaw.json (unrecognized-key: gateway.listen)
+```
+
+### INVALID fields (cause hard failure — do not write)
+
+| Field | Notes |
+|---|---|
+| `gateway.token` | **Confirmed invalid in 2026.4.14** — causes crash-loop: "Unrecognized key: token". Auth uses `gateway.auth.token` only. |
+| `gateway.listen` | Not a valid key — use `gateway.port` + `gateway.bind` |
+| `gateway.provider` | Not valid |
+| `gateway.model` | Not valid |
+| `gateway.agents` | Not valid |
+| `agents.defaults.embedding_provider` | Not valid in 2026.4.14 |
+| `channels.slack.groupPolicy: "allowall"` | Invalid value — use `"open"` |
+
+### VALID fields (confirmed working)
+
+| Field | Example value | Notes |
+|---|---|---|
+| `gateway.mode` | `"local"` | Required for local gateway operation |
+| `gateway.port` | `18789` | Container-internal listen port |
+| `gateway.bind` | `"0.0.0.0"` | Optional; defaults to localhost |
+| `gateway.auth.mode` | `"token"` | Enable token auth |
+| `gateway.auth.token` | `"..."` | Server-side: validates incoming requests |
+| `gateway.token` | `"..."` | Client-side: sent by CLI when connecting |
+| `agents.defaults.model` | `{"primary": "..."}` | Must be object, not string |
+| `agents.defaults.workspace` | `"/home/node/.openclaw/workspace"` | |
+| `agents.defaults.memorySearch.enabled` | `false` | Disable vector DB requirement |
+| `channels.slack.enabled` | `false` / `true` | |
+| `channels.slack.botToken` | `"xoxb-..."` | |
+| `channels.slack.appToken` | `"xapp-..."` | |
+| `channels.slack.mode` | `"socket"` | Socket mode for DMs |
+| `channels.slack.groupPolicy` | `"open"` / `"disabled"` / `"allowlist"` | |
+| `session.dmScope` | `"per-channel-peer"` | |
+| `tools.profile` | `"coding"` | |
+| `plugins.entries.browser.enabled` | `true` | Keep enabled — ACPX co-init dependency |
+| `plugins.entries.device-pair.enabled` | `false` | OOM risk in Docker bridge network |
+| `plugins.entries.phone-control.enabled` | `false` | OOM risk in Docker bridge network |
+| `plugins.entries.talk-voice.enabled` | `false` | OOM risk in Docker bridge network |
+| `agents.list` | `[]` | Clear on boot; re-registered via boot_sync_agents |
+
+### Size-drop anomaly
+
+OpenClaw compares the current config size to a numbered backup (`.bak.1`, `.bak.2`, ...). If
+the file shrank, it fires a "size-drop-vs-last-good" anomaly and **restores from backup**,
+overwriting your sanitized config with the previous corrupt one.
+
+**Fix**: Delete all backup files (`openclaw.json.bak.*`, `openclaw.json.clobbered.*`,
+`openclaw.json.last-good`) before each container start. Without a baseline, OpenClaw cannot
+fire the anomaly. After one clean boot it writes a fresh backup — matching your config — so
+the next boot is also clean.
+
+---
+
+## 8. CLI Command Reference
+
+### Sending a chat message
+
+```bash
+# ✅ Correct flags — use --agent and --message (or -m)
+openclaw agent --agent <id> --message "Hello" --json
+openclaw agent --agent <id> -m "Hello" --json    # -m is shorthand for --message
+
+# Default agent name in single-agent mode: "main"
+# In multi-agent gateway mode: use the registered ID (e.g. "sloane", "agent-sloane")
+```
+
+### Agent registration
+
+```bash
+openclaw agents add <id> --workspace /home/node/.openclaw/workspace/<id>
+openclaw agents list          # shows all registered agents
+openclaw agents remove <id>
+```
+
+### Config management
+
+```bash
+openclaw config set gateway.mode local
+openclaw config set gateway.token "canopy_internal_token_2026"
+openclaw config set agents.defaults.model.primary "google/gemini-3.1-pro-preview"
+openclaw config get agents.defaults.model
+```
+
+**Warning**: `openclaw config set` sends OpenClaw a SIGTERM, causing a full process restart.
+Multiple rapid `config set` calls cascade into OOM. Prefer writing openclaw.json directly
+via `node -e` when multiple values need updating.
+
+### Pairing
+
+```bash
+openclaw pairing approve slack <CODE>   # approve a Slack pairing code
+```
+
+### Status and diagnostics
+
+```bash
+openclaw status            # show gateway status, Slack config, active sessions
+openclaw agents list       # show all registered agents with model/routing info
+openclaw doctor --fix      # validate and repair openclaw.json
+```
+
+### Session key formats
+
+```
+agent:main:main                         # direct CLI message (single-agent mode)
+agent:main:slack:direct:<userid>        # Slack DM
+agent:main:slack:channel:<channelid>    # Slack channel message
+```
+
+---
+
+## 9. Slack Socket Mode Setup
 
 ### Two tokens are required
 
@@ -124,15 +429,9 @@ The App-Level Token is **not** obtained via the OAuth redirect. The user must:
 3. Create a token with the `connections:write` scope
 4. Copy the `xapp-...` string and paste it into Canopy Settings → Slack
 
-Without the App-Level Token, Socket Mode cannot open its WebSocket connection. The OAuth
-flow will appear to succeed but agents will never receive Slack messages.
-
 ### Required OAuth bot scopes
 
 `channels:read`, `channels:history`, `chat:write`, `users:read`
-
-These are requested in `start_slack_oauth()`. If you change the scopes there, you must also
-reinstall the Slack app to apply them.
 
 ### How Slack is configured in OpenClaw
 
@@ -146,19 +445,13 @@ openclaw config set channels.slack.enabled   true
 openclaw config set channels.slack.mode      socket
 ```
 
-The previous implementation incorrectly called `openclaw channels add --channel slack ...`
-which does not exist. The `start_slack_listener()` function in `slack.rs` now uses
-`config set` calls.
-
 ---
 
-## 5. Creating/Importing Agents — Model Must Not Be None
-
-### The rule
+## 10. Creating/Importing Agents — Model Must Not Be None
 
 Every agent created or imported into Canopy must have `personality.active_model` set to a
 valid model string. An `active_model: None` value causes the system to fall back to a
-model that may not have an available API key, silently breaking message routing.
+model that may not have an available API key.
 
 ### Key selection priority
 
@@ -169,37 +462,45 @@ No Anthropic/OpenAI?    →  use DEFAULT_GEMINI_MODEL (last resort)
 No keys at all?         →  use DEFAULT_ANTHROPIC_MODEL (so UI prompts for key)
 ```
 
-This logic lives in `model_constants::default_model_from_available_keys()`. Use it whenever
-you need to pick a default model — do not replicate the if/else chain inline.
+This logic lives in `model_constants::default_model_from_available_keys()`.
 
 ---
 
-## 6. Running Diagnostics
+## 11. Running Diagnostics
 
-### Check gateway config alignment
+### Test chat message from terminal
 
 ```bash
-# From the Canopy UI: Settings → Infrastructure → Run Diagnostics
-# Or via CLI inside the container:
-docker exec canopy-gateway openclaw doctor --fix
-docker exec canopy-gateway cat /home/node/.openclaw/openclaw.json
+docker exec -u node -e NODE_OPTIONS=--v8-pool-size=1 canopy-gateway \
+  openclaw agent --agent agent-sloane -m "Are you there?" --json
 ```
 
-### Verify model string in gateway config
+Check stderr for `"gateway connect failed"` (auth issue) or `"uv_thread_create"` (PID issue).
+
+### Check gateway config
 
 ```bash
-docker exec canopy-gateway openclaw config get agents.defaults.model
-# Should return: anthropic/claude-sonnet-4-6  (or whichever model is configured)
+docker exec canopy-gateway cat /home/node/.openclaw/openclaw.json
+docker exec -u node -e NODE_OPTIONS=--v8-pool-size=1 canopy-gateway openclaw doctor --fix
 ```
 
 ### Verify auth-profiles file exists for an agent
 
 ```bash
-docker exec canopy-gateway cat /home/node/.openclaw/agents/agent-myagent/auth-profiles.json
-# Should show: {"anthropic": {"apiKey": "sk-ant-..."}}
+docker exec canopy-gateway cat /home/node/.openclaw/agents/agent-sloane/auth-profiles.json
+# Should show: {"google": {"apiKey": "AIza..."}}
 ```
 
-### Verify Slack is configured
+### Check container PID count (detect spirals early)
+
+```bash
+docker stats canopy-gateway --no-stream --format "PIDs={{.PIDs}} MEM={{.MemUsage}}"
+# Healthy: PIDs=19, MEM~350-400MiB
+# Concerning: PIDs>100 (channel sidecars initializing)
+# Critical: PIDs>400 (approaching 500-PID limit — restart immediately)
+```
+
+### Check Slack is configured
 
 ```bash
 docker exec canopy-gateway openclaw config get channels.slack.enabled
@@ -208,9 +509,9 @@ docker exec canopy-gateway openclaw config get channels.slack.mode
 
 ---
 
-## 7. Regression Test Coverage
+## 12. Regression Test Coverage
 
-The tests in `src/model_constants.rs` cover all of the above. Run them with:
+Run the model-constants tests to catch any format regressions:
 
 ```bash
 cargo test --package canopy-lib model_constants
@@ -221,8 +522,29 @@ Key tests and what they guard:
 | Test | Guards against |
 |---|---|
 | `anthropic_model_string_has_correct_order` | `claude-4-6-sonnet` reversal bug |
-| `gemini_model_does_not_use_nonexistent_preview_name` | `gemini-3-flash-preview` typo |
+| `default_gemini_model_is_gemini_31_pro` | Switching to unconfirmed flash-lite model |
 | `gateway_url_uses_host_port_not_container_port` | using 18789 in GATEWAY_URL |
-| `auth_profile_path_has_no_extra_agent_subdir` | extra `agent/` directory bug |
+| `auth_profile_path_contains_agent_id_and_filename` | extra `agent/` directory bug |
 | `anthropic_key_is_preferred_over_others` | Gemini-first priority inversion |
 | `all_default_constants_pass_validation` | any future typo in model constants |
+| `all_models_catalogue_has_stable_gemini_25_models` | dropping stable Gemini 2.5 |
+| `catalogue_does_not_contain_deprecated_gemini_20_models` | re-adding deprecated models |
+
+---
+
+## 13. Keeping This Document Updated
+
+When OpenClaw releases a new version:
+
+1. Check the changelog at `https://docs.openclaw.ai` for new/removed config keys
+2. Run `docker exec canopy-gateway openclaw --version` to confirm the new version
+3. Run `docker exec canopy-gateway openclaw doctor` and look for new validation warnings
+4. Test `openclaw config set` with any new fields before committing them to Canopy
+5. Update the **valid/invalid fields tables** in section 7 above
+6. Update the **confirmed working models table** in section 1 if LiteLLM support changes
+7. Update the `Last verified against:` line at the top of this file
+
+The most fragile areas across version bumps are:
+- Model string formats (new model IDs, deprecated ones)
+- Config schema (new required fields, removed fields, renamed keys)
+- CLI flag names (`--message` vs `-m`, `--agent` flag requirement)

@@ -125,7 +125,23 @@ pub async fn get_container_status(
 /// - Rust code talking to the gateway from the host uses port 18799 (GATEWAY_HOST_PORT).
 /// - The healthcheck curl runs *inside* the container, so it correctly uses 18789
 ///   (GATEWAY_CONTAINER_PORT). Do NOT change the healthcheck URL to 18799.
-fn generate_compose_file(data_dir: &PathBuf) -> String {
+///
+/// `provider_keys` — API keys read from the macOS Keychain at compose-generation time.
+/// Injected as container env vars so OpenClaw/LiteLLM can discover them without needing
+/// auth-profiles.json written to disk (which is still written as belt-and-suspenders).
+/// The compose file is regenerated on every start_gateway call; if keys change the content
+/// hash changes, triggering a compose-up container recreate automatically.
+fn generate_compose_file(data_dir: &PathBuf, provider_keys: &HashMap<String, String>) -> String {
+    // Build the extra env lines. Keys are YAML-safe (alphanumeric + underscores).
+    // Values are injected as literal strings — no shell quoting needed in YAML block lists.
+    // Sorted for deterministic output (so the content-hash comparison is stable).
+    let mut sorted_keys: Vec<(&String, &String)> = provider_keys.iter().collect();
+    sorted_keys.sort_by_key(|(k, _)| k.as_str());
+    let extra_env: String = sorted_keys
+        .into_iter()
+        .map(|(k, v)| format!("      - {}={}\n", k, v))
+        .collect();
+
     format!(
         r#"services:
   canopy-gateway:
@@ -147,7 +163,7 @@ fn generate_compose_file(data_dir: &PathBuf) -> String {
       - {data}/openclaw-state/workspace:/home/node/.openclaw/workspace
     environment:
       - NODE_ENV=production
-    # init: true runs a minimal init process (PID 1) inside the container that:
+{extra_env}    # init: true runs a minimal init process (PID 1) inside the container that:
     #   1. Forwards signals (SIGTERM/SIGKILL) to the Node.js process — critical for clean shutdown
     #   2. Reaps zombie processes — without this, a PID spiral leaves unkillable zombie PIDs
     #      that accumulate until the kernel's PID table is exhausted
@@ -184,7 +200,8 @@ volumes:
   openclaw-state:
   openclaw-workspace:
 "#,
-        data = data_dir.display()
+        data = data_dir.display(),
+        extra_env = extra_env,
     )
 }
 
@@ -333,24 +350,52 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     let mut cfg: JsonValue = serde_json::json!({});
 
     // ── Gateway auth — always set to our token ────────────────────────────────
+    //
+    // gateway.auth.token  — SERVER-SIDE: the gateway validates incoming requests against
+    //                       this value. Any CLI invocation or HTTP request that doesn't
+    //                       present this token is rejected.
+    //
+    // ⚠️  Do NOT add a top-level `gateway.token` field here. OpenClaw 2026.4.14's schema
+    // does not recognise it and will reject the entire config with:
+    //   "Config invalid — gateway: Unrecognized key: 'token'"
+    // causing the container to crash-loop indefinitely.
+    //
+    // The CLI authenticates to the local gateway by reading `gateway.auth.token` from the
+    // same openclaw.json it shares with the server process. No separate client field is needed
+    // — the presence of auth.mode="token" + auth.token=<value> is sufficient for both sides.
     cfg["gateway"]["auth"]["mode"] = serde_json::json!("token");
     cfg["gateway"]["auth"]["token"] = serde_json::json!(token);
     cfg["gateway"]["mode"] = serde_json::json!("local");
     cfg["gateway"]["port"] = serde_json::json!(18789);
 
-    // ── Disable channels that start heavyweight sidecars ─────────────────────
-    // Slack socket-mode sidecar: ALWAYS disabled at gateway startup.
+    // ── Slack channel — configure from keychain, or disable ──────────────────
+    // Slack's socket-mode sidecar is heavyweight (WebSocket reconnect loops block the
+    // IPC event loop if auth fails). We only enable it if BOTH tokens are in keychain.
     //
-    // The previous code had a conditional bug: it only set enabled=false when slack
-    // was ALREADY false. If a previous run had enabled=true (persisted in the bind-mount
-    // openclaw.json), it was preserved — and Slack would connect, hit pong timeouts,
-    // enter a reconnect loop, and block the IPC event loop indefinitely.
+    // Previously this always force-wrote enabled=false, which meant Slack had to be
+    // re-enabled via `openclaw config set` after every gateway restart — and was then
+    // wiped again on the NEXT restart. The fix: read from keychain here, in preflight,
+    // so the config written to disk before container start already has the correct state.
     //
-    // We ALWAYS force-disable here. When the user connects Slack via the Integrations
-    // tab, we write the tokens to the keychain and restart the gateway with the
-    // SLACK_BOT_TOKEN / SLACK_APP_TOKEN env vars set in docker-compose.yml — that's
-    // the correct way to enable Slack (env vars, not just openclaw.json).
-    cfg["channels"]["slack"]["enabled"] = serde_json::json!(false);
+    // Tokens are stored by start_slack_listener() after the user completes setup.
+    // If tokens are absent (or blank), Slack stays disabled — safe default.
+    {
+        let bot = crate::keychain::get_secret("slack-bot-token").unwrap_or_default();
+        let app = crate::keychain::get_secret("slack-app-token").unwrap_or_default();
+        let bot = bot.trim();
+        let app = app.trim();
+        if !bot.is_empty() && bot.starts_with("xoxb-") && !app.is_empty() && app.starts_with("xapp-") {
+            tracing::info!("preflight: Slack tokens found in keychain — enabling Slack Socket Mode in config");
+            cfg["channels"]["slack"]["enabled"]     = serde_json::json!(true);
+            cfg["channels"]["slack"]["botToken"]    = serde_json::json!(bot);
+            cfg["channels"]["slack"]["appToken"]    = serde_json::json!(app);
+            cfg["channels"]["slack"]["mode"]        = serde_json::json!("socket");
+            cfg["channels"]["slack"]["groupPolicy"] = serde_json::json!("open");
+        } else {
+            tracing::info!("preflight: Slack tokens absent — disabling Slack in config");
+            cfg["channels"]["slack"]["enabled"] = serde_json::json!(false);
+        }
+    }
 
     // ── Surgically remove ONLY the schema-rejected key ───────────────────────
     // OpenClaw validates openclaw.json on startup. Any unrecognized key under
@@ -594,7 +639,32 @@ pub async fn start_gateway() -> Result<String, String> {
     // loop that spirals to 300+ PIDs and OOM-kills the container in under 30 seconds.
     preflight_sanitize_auth_profiles(&data_dir);
 
-    let compose = generate_compose_file(&data_dir);
+    // Read provider API keys from the macOS Keychain so they can be injected as
+    // container env vars. LiteLLM (inside OpenClaw) checks standard env var names
+    // like GEMINI_API_KEY, ANTHROPIC_API_KEY, etc. — no auth-profiles.json needed.
+    // auth-profiles.json is still written by boot_sync_agents as belt-and-suspenders.
+    let provider_keys = {
+        let mut m = HashMap::new();
+        for key in &["GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"] {
+            if let Ok(v) = crate::keychain::get_secret(key) {
+                if !v.trim().is_empty() {
+                    m.insert(key.to_string(), v.trim().to_string());
+                }
+            }
+        }
+        // Include Slack tokens if configured — OpenClaw reads SLACK_BOT_TOKEN / SLACK_APP_TOKEN
+        for key in &["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"] {
+            if let Ok(v) = crate::keychain::get_secret(key) {
+                if !v.trim().is_empty() {
+                    m.insert(key.to_string(), v.trim().to_string());
+                }
+            }
+        }
+        m
+    };
+    tracing::info!("start_gateway: injecting {} provider env var(s) into compose", provider_keys.len());
+
+    let compose = generate_compose_file(&data_dir, &provider_keys);
     let compose_path = data_dir.join("docker-compose.yml");
 
     // Only write the compose file if it doesn't exist or the content changed.
