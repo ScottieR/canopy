@@ -9,6 +9,7 @@ import RAW_AGENT_TYPE_INFO from "../shared/agents.json";
 import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
+import { IntegrationsView } from "./components/IntegrationsView";
 import { UpdateManager } from "./components/shared/UpdateManager";
 import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
@@ -197,12 +198,12 @@ interface WorldState {
   agents: AgentData[];
   selectedAgent: string | null;
   hoveredAgent: string | null;
-  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "profile";
+  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile";
   architectTab: string;
   gatewayReady: boolean;
   setSelectedAgent: (id: string | null) => void;
   setHoveredAgent: (id: string | null) => void;
-  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "profile") => void;
+  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile") => void;
   setArchitectTab: (tab: string) => void;
   setGatewayReady: (ready: boolean) => void;
   togglePermission: (agentId: string, permissionId: string) => void;
@@ -762,7 +763,17 @@ function OnboardingWizard() {
   const [selectedFolderPath, setSelectedFolderPath] = useState("");
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
-  const enabledPlugins = Object.entries(plugins).filter(([k, v]) => v).map(([k]) => k);
+
+  // Workspace-level service connection status (shared across all agents)
+  const [wsSlackConnected, setWsSlackConnected] = useState(false);
+  const [wsGmailConnected, setWsGmailConnected] = useState(false);
+  const [wsCalConnected, setWsCalConnected] = useState(false);
+
+  // Only agent-local plugins go through Step 5 integration testing
+  const AGENT_LOCAL_PLUGINS = ["folders", "imessage", "photos"];
+  const enabledPlugins = Object.entries(plugins)
+    .filter(([k, v]) => v && AGENT_LOCAL_PLUGINS.includes(k))
+    .map(([k]) => k);
 
   const [slackAppToken, setSlackAppToken] = useState("");
   const [slackBotToken, setSlackBotToken] = useState("");
@@ -774,6 +785,24 @@ function OnboardingWizard() {
   const [imessageAccessLevel, setImessageAccessLevel] = useState<"read-only" | "read-send">("read-only");
 
   const [googleTokens, setGoogleTokens] = useState<any>(null);
+
+  // Check workspace-level service connections on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const s = await invoke<{ connected: boolean }>("check_slack_connection");
+        setWsSlackConnected(s?.connected ?? false);
+      } catch {}
+      try {
+        const tok = await invoke<string>("get_secret_cmd", { key: "GMAIL_ACCESS_TOKEN" });
+        setWsGmailConnected(!!tok && tok.length > 10);
+      } catch {}
+      try {
+        const tok = await invoke<string>("get_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
+        setWsCalConnected(!!tok && tok.length > 10);
+      } catch {}
+    })();
+  }, []);
 
   useEffect(() => {
     const setupListener = async () => {
@@ -1845,60 +1874,122 @@ function OnboardingWizard() {
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
             <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
             <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.5 }}>
-              Give your agent the tools they need to interact with your world. We'll configure granular security bounds for these connections — like specific folders, email labels, and message threads — on the next screen.
+              Choose what {agentName || "your agent"} can access. Workspace tools like Slack and Gmail are shared across all your agents — connect them once in Integrations.
             </p>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 32 }}>
-              {(["slack", "email", "calendar", "folders", "imessage", "photos"] as const).map(p => (
-                <div key={p} style={{ display: "flex", flexDirection: "column" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: "16px 20px", borderRadius: plugins[p] && p === "folders" ? "12px 12px 0 0" : 12, border: plugins[p] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
-                    <div>
-                      <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)", textTransform: p === "imessage" || p === "photos" ? "none" : "capitalize" }}>{p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p} Access</div>
-                      <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>Allow {agentName || "the agent"} to interact with your {p === "imessage" ? "iMessage" : p === "photos" ? "Apple Photos" : p}.</div>
-                    </div>
-                    <Toggle enabled={plugins[p]} onChange={() => setPlugins(prev => ({ ...prev, [p]: !prev[p] }))} />
-                  </div>
-                  {p === "folders" && plugins.folders && (
-                    <div style={{ padding: "16px 20px", background: "var(--glass-light)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 12 }}>Select Folder Scope</div>
-                      <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
-                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
-                          <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} />
-                          Specific Folder
-                        </label>
-                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
-                          <input type="radio" checked={folderAccessType === "all"} onChange={() => setFolderAccessType("all")} />
-                          All Folders
-                        </label>
+            {/* ── Workspace Tools (shared, gateway-level) ── */}
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                Workspace Tools
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {([
+                  { key: "slack",    label: "Slack",          icon: "💬", connected: wsSlackConnected, desc: "Send and receive Slack messages" },
+                  { key: "email",    label: "Gmail",          icon: "📧", connected: wsGmailConnected, desc: "Read and send email on your behalf" },
+                  { key: "calendar", label: "Google Calendar",icon: "📅", connected: wsCalConnected,   desc: "View and create calendar events" },
+                ] as const).map(({ key, label, icon, connected, desc }) => (
+                  <div key={key} style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    background: "var(--surface-card)", padding: "14px 18px", borderRadius: 12,
+                    border: plugins[key] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)",
+                    opacity: connected ? 1 : 0.75,
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                      <span style={{ fontSize: 22 }}>{icon}</span>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{label}</span>
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 20,
+                            background: connected ? "rgba(33,131,128,0.12)" : "rgba(0,0,0,0.06)",
+                            color: connected ? "#3c6663" : "var(--text-muted)",
+                            textTransform: "uppercase", letterSpacing: "0.04em",
+                          }}>{connected ? "Connected" : "Not set up"}</span>
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>{desc}</div>
                       </div>
-
-                      {folderAccessType === "specific" && (
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "var(--surface-card)", outline: "none" }} />
-                          <button onClick={async () => {
-                            try {
-                              const { open } = await import('@tauri-apps/plugin-dialog');
-                              const selected = await open({ directory: true, multiple: false });
-                              if (selected) setSelectedFolderPath(selected as string);
-                            } catch (e) {
-                              console.error("No dialog plugin");
-                            }
-                          }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Browse...</button>
-                        </div>
-                      )}
-
-                      {folderAccessType === "all" && (
-                        <div style={{ display: "flex", gap: 10, background: "rgba(212,160,74,0.15)", padding: "12px 16px", borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
-                          <span style={{ fontSize: 18 }}>⚠️</span>
-                          <div style={{ fontSize: 12, color: "#A87212", lineHeight: 1.4 }}>
-                            <strong>Not recommended.</strong> Granting access to all folders poses a security risk. Your agent will be able to read and modify any file on your system.
-                          </div>
-                        </div>
-                      )}
                     </div>
-                  )}
-                </div>
-              ))}
+                    {connected ? (
+                      <Toggle enabled={plugins[key]} onChange={() => setPlugins(prev => ({ ...prev, [key]: !prev[key] }))} />
+                    ) : (
+                      <button onClick={() => setActiveView("integrations")} style={{
+                        padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(60,102,99,0.25)",
+                        background: "rgba(60,102,99,0.06)", color: "#3c6663",
+                        fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+                      }}>Set up →</button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* ── Device Permissions (agent-local) ── */}
+            <div style={{ marginBottom: 32 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                Device Permissions
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {([
+                  { key: "folders", label: "File System",   icon: "📁", desc: `Let ${agentName || "the agent"} read and write files on your Mac` },
+                  { key: "imessage",label: "iMessage",      icon: "💬", desc: `Access your iMessage conversations` },
+                  { key: "photos",  label: "Apple Photos",  icon: "🖼️", desc: `Browse and reference your photo library` },
+                ] as const).map(({ key, label, icon, desc }) => (
+                  <div key={key} style={{ display: "flex", flexDirection: "column" }}>
+                    <div style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      background: "var(--surface-card)", padding: "14px 18px",
+                      borderRadius: plugins[key] && key === "folders" ? "12px 12px 0 0" : 12,
+                      border: plugins[key] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                        <span style={{ fontSize: 22 }}>{icon}</span>
+                        <div>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{label}</div>
+                          <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>{desc}</div>
+                        </div>
+                      </div>
+                      <Toggle enabled={plugins[key]} onChange={() => setPlugins(prev => ({ ...prev, [key]: !prev[key] }))} />
+                    </div>
+                    {key === "folders" && plugins.folders && (
+                      <div style={{ padding: "16px 20px", background: "var(--glass-light)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 12 }}>Select Folder Scope</div>
+                        <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
+                            <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} />
+                            Specific Folder
+                          </label>
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
+                            <input type="radio" checked={folderAccessType === "all"} onChange={() => setFolderAccessType("all")} />
+                            All Folders
+                          </label>
+                        </div>
+                        {folderAccessType === "specific" && (
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "var(--surface-card)", outline: "none" }} />
+                            <button onClick={async () => {
+                              try {
+                                const { open } = await import('@tauri-apps/plugin-dialog');
+                                const selected = await open({ directory: true, multiple: false });
+                                if (selected) setSelectedFolderPath(selected as string);
+                              } catch (e) {
+                                console.error("No dialog plugin");
+                              }
+                            }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Browse...</button>
+                          </div>
+                        )}
+                        {folderAccessType === "all" && (
+                          <div style={{ display: "flex", gap: 10, background: "rgba(212,160,74,0.15)", padding: "12px 16px", borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
+                            <span style={{ fontSize: 18 }}>⚠️</span>
+                            <div style={{ fontSize: 12, color: "#A87212", lineHeight: 1.4 }}>
+                              <strong>Not recommended.</strong> Granting access to all folders poses a security risk. Your agent will be able to read and modify any file on your system.
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
 
           </div>
@@ -1908,6 +1999,7 @@ function OnboardingWizard() {
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
             <button onClick={() => {
+              // Only agent-local plugins need integration testing (Step 5)
               if (enabledPlugins.length > 0) {
                 setTestPluginIndex(0);
                 setStep(5);
@@ -2245,15 +2337,15 @@ function OnboardingWizard() {
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 24, padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8 }}>
                   {enabledPlugins[testPluginIndex] === "email"
-                    ? strategy === "yolo" ? "⚠️ YOLO Mode: requesting read + send + modify access" : "🔒 Secure Mode: requesting read-only access"
-                    : strategy === "yolo" ? "⚠️ YOLO Mode: requesting read + write calendar access" : "🔒 Secure Mode: requesting read-only access"
+                    ? "🔒 Secure Mode: requesting read-only email access"
+                    : "🔒 Secure Mode: requesting read-only calendar access"
                   }
                 </div>
                 <button onClick={async () => {
                   setTestStatus("testing");
                   try {
                     if (typeof invoke === 'function') {
-                      const readOnly = strategy !== "yolo";
+                      const readOnly = true; // Always read-only during onboarding; adjust in Connections tab
                       const tokens = await invoke("start_google_oauth", {
                         scopes: [enabledPlugins[testPluginIndex]],
                         readOnly,
@@ -2461,6 +2553,22 @@ function OnboardingWizard() {
             Your agent is ready. Drop them into The Canopy and watch them work.
           </p>
 
+          {(!wsSlackConnected || !wsGmailConnected || !wsCalConnected) && (
+            <div style={{
+              display: "flex", gap: 12, alignItems: "center",
+              background: "rgba(60,102,99,0.06)", border: "1px solid rgba(60,102,99,0.15)",
+              borderRadius: 12, padding: "14px 18px", marginBottom: 24, maxWidth: 420, margin: "0 auto 24px", textAlign: "left",
+            }}>
+              <span style={{ fontSize: 20 }}>💡</span>
+              <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                <strong style={{ color: "var(--text-main)" }}>Connect your tools</strong> — Slack, Gmail, and Calendar let {agentName || "your agent"} reach you wherever you work.{" "}
+                <span style={{ color: "#3c6663", cursor: "pointer", fontWeight: 600 }} onClick={() => setActiveView("integrations")}>
+                  Set up in Integrations →
+                </span>
+              </div>
+            </div>
+          )}
+
           {createAgentError && (
             <div style={{ marginBottom: 24, padding: "16px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 14 }}>
               <strong style={{ display: "block", marginBottom: 4 }}>Creation Failed</strong>
@@ -2523,6 +2631,13 @@ function ArchitectView({ agent }: { agent: AgentData }) {
     setShowDiagnosticsPane(true);
     try {
       const { invoke } = await import('@tauri-apps/api/core');
+
+      // Always re-run boot_sync_agents during diagnostics — it's idempotent and handles
+      // the case where the agent dir never got created (agents add timed out on a previous boot).
+      // sync_credentials silently skips agents whose dir doesn't exist yet, so this is the
+      // only path that will actually fix an unregistered agent.
+      await invoke("boot_sync_agents").catch((e: any) => console.warn("boot_sync in diag:", e));
+
       const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
       const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
       const gemini = await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "");
@@ -2572,12 +2687,12 @@ function ArchitectView({ agent }: { agent: AgentData }) {
       }
     } catch (e) {
       const errStr = String(e);
-      if (errStr.includes("Timeout") || errStr.includes("hanging")) {
+      // Do NOT auto-heal on Timeout — restarting the VM makes slow containers worse.
+      if (errStr.includes("stopped container") || errStr.includes("OOM")) {
         setIsHealing(true);
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke("hard_reset_infrastructure").catch(ex => console.error("Healing failed:", ex));
         setIsHealing(false);
-        // Gently notify them to try again if it didn't auto-resolve gracefully
         setDiagErrors(["Infrastructure was cleanly rebooted. Please try running diagnostics again."]);
         if (btn) btn.innerText = "Diagnostics";
         return;
@@ -2881,6 +2996,8 @@ function ArchitectView({ agent }: { agent: AgentData }) {
                   try {
                     const { invoke } = await import('@tauri-apps/api/core');
                     await invoke("repair_openclaw_config");
+                    // Re-register any agents whose dirs were never created.
+                    await invoke("boot_sync_agents").catch((e: any) => console.warn("boot_sync in repair:", e));
                     if (btn) {
                       btn.innerText = "Repaired! Re-Run Diagnostics \u2192";
                       btn.style.background = "#15803D";
@@ -2934,464 +3051,401 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 }
 
 // ─── Connections Tab ─────────────────────────────────────────────────────────
+// Per-agent: toggles + channel/contact pickers only. No OAuth here.
+// All gateway-level service setup lives in the top-level Integrations tab.
 
 function ConnectionsTab({ agent }: { agent: AgentData }) {
-  const initialEmail = agent.integrations.find(s => s.startsWith("email_"))?.replace("email_", "") || "oauth_read";
-  const initialCalendar = agent.integrations.find(s => s.startsWith("calendar_"))?.replace("calendar_", "") || "oauth_read";
-  const initialStrategy = agent.integrations.find(s => s.startsWith("strategy_"))?.replace("strategy_", "") || "secure";
+  const { setActiveView } = useWorldStore();
 
-  const [strategy, setStrategy] = useState(initialStrategy);
-  const [emailSetting, setEmailSetting] = useState(initialEmail);
-  const [calendarSetting, setCalendarSetting] = useState(initialCalendar);
-  const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  // Gateway connection statuses (read-only here)
+  const [slackConnected, setSlackConnected] = useState(false);
+  const [gmailConnected, setGmailConnected] = useState(false);
+  const [calConnected, setCalConnected] = useState(false);
+  const [iMsgConnected, setIMsgConnected] = useState(false);
 
-  // Slack pairing code state — replaces the janky window.prompt()
-  const [showPairing, setShowPairing] = useState(false);
-  const [pairingCode, setPairingCode] = useState("");
-  const [pairingStatus, setPairingStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [pairingError, setPairingError] = useState("");
+  // Per-agent Slack channel allowlist
+  const [slackEnabled, setSlackEnabled] = useState(agent.integrations.includes("slack"));
+  const [slackChannels, setSlackChannels] = useState<Array<{ id: string; name: string; member_count: number }>>([]);
+  const [allowedSlack, setAllowedSlack] = useState<string[]>([]);
+  const [slackPickerOpen, setSlackPickerOpen] = useState(false);
+  const [slackSearch, setSlackSearch] = useState("");
 
-  const handleApprovePairing = async () => {
-    const code = pairingCode.trim().toUpperCase();
-    if (!code || code.length < 4) return;
-    setPairingStatus("loading");
-    setPairingError("");
-    try {
-      await invoke("approve_slack_pairing", { code });
-      setPairingStatus("success");
-      setPairingCode("");
-    } catch (e) {
-      setPairingStatus("error");
-      setPairingError(String(e));
-    }
-  };
+  // Per-agent iMessage thread allowlist
+  const [iMsgEnabled, setIMsgEnabled] = useState(agent.integrations.includes("imessage"));
+  const [iMsgThreads, setIMsgThreads] = useState<Array<{ chat_identifier: string; display_name: string; last_message_date: string }>>([]);
+  const [allowedThreads, setAllowedThreads] = useState<string[]>([]);
+  const [iMsgPickerOpen, setIMsgPickerOpen] = useState(false);
+  const [iMsgSearch, setIMsgSearch] = useState("");
 
-  // ── Telegram connector ─────────────────────────────────────────────────────
-  const [showTelegram, setShowTelegram] = useState(false);
-  const [telegramToken, setTelegramToken] = useState("");
-  const [telegramStatus, setTelegramStatus] = useState<"idle"|"loading"|"success"|"error">("idle");
-  const [telegramError, setTelegramError] = useState("");
-  const handleConnectTelegram = async () => {
-    setTelegramStatus("loading"); setTelegramError("");
-    try {
-      await invoke("configure_telegram", { botToken: telegramToken });
-      setTelegramStatus("success");
-    } catch (e) { setTelegramStatus("error"); setTelegramError(String(e)); }
-  };
+  // Per-agent email mode (uses user's Gmail vs dedicated address)
+  const [emailMode, setEmailMode] = useState<"none" | "read" | "write" | "dedicated">(
+    agent.integrations.includes("email_write") ? "write"
+    : agent.integrations.includes("email_read") ? "read"
+    : agent.integrations.includes("email_dedicated") ? "dedicated"
+    : "none"
+  );
+  const [dedicatedEmail, setDedicatedEmail] = useState("");
+  const [dedicatedPassword, setDedicatedPassword] = useState("");
+  const [emailSaving, setEmailSaving] = useState(false);
 
-  // ── Discord connector ──────────────────────────────────────────────────────
-  const [showDiscord, setShowDiscord] = useState(false);
-  const [discordToken, setDiscordToken] = useState("");
-  const [discordGuild, setDiscordGuild] = useState("");
-  const [discordStatus, setDiscordStatus] = useState<"idle"|"loading"|"success"|"error">("idle");
-  const [discordError, setDiscordError] = useState("");
-  const handleConnectDiscord = async () => {
-    setDiscordStatus("loading"); setDiscordError("");
-    try {
-      await invoke("configure_discord", { botToken: discordToken, guildId: discordGuild.trim() || null });
-      setDiscordStatus("success");
-    } catch (e) { setDiscordStatus("error"); setDiscordError(String(e)); }
-  };
-
-  // ── GitHub connector ───────────────────────────────────────────────────────
-  const [showGitHub, setShowGitHub] = useState(false);
-  const [githubToken, setGithubToken] = useState("");
-  const [githubUsername, setGithubUsername] = useState("");
-  const [githubStatus, setGithubStatus] = useState<"idle"|"loading"|"success"|"error">("idle");
-  const [githubError, setGithubError] = useState("");
-  const handleConnectGitHub = async () => {
-    setGithubStatus("loading"); setGithubError("");
-    try {
-      await invoke("configure_github", { personalAccessToken: githubToken, username: githubUsername.trim() || null });
-      setGithubStatus("success");
-    } catch (e) { setGithubStatus("error"); setGithubError(String(e)); }
-  };
-
-  // ── WhatsApp connector ─────────────────────────────────────────────────────
-  const [showWhatsApp, setShowWhatsApp] = useState(false);
-  const [waPhoneId, setWaPhoneId] = useState("");
-  const [waBizId, setWaBizId] = useState("");
-  const [waToken, setWaToken] = useState("");
-  const [waStatus, setWaStatus] = useState<"idle"|"loading"|"success"|"error">("idle");
-  const [waError, setWaError] = useState("");
-  const handleConnectWhatsApp = async () => {
-    setWaStatus("loading"); setWaError("");
-    try {
-      await invoke("configure_whatsapp", { phoneNumberId: waPhoneId, businessAccountId: waBizId, apiToken: waToken });
-      setWaStatus("success");
-    } catch (e) { setWaStatus("error"); setWaError(String(e)); }
-  };
+  // Saving state
+  const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
 
   useEffect(() => {
-    if (strategy === "lockdown") {
-      setEmailSetting("dedicated");
-      setCalendarSetting("dedicated");
-    } else if (strategy === "secure") {
-      setEmailSetting("oauth_read");
-      setCalendarSetting("oauth_read");
-    } else if (strategy === "yolo") {
-      setEmailSetting("oauth_write");
-      setCalendarSetting("oauth_write");
-    }
-  }, [strategy]);
+    checkGatewayStatus();
+    loadAllowlists();
+  }, [agent.id]);
 
-  const openCompanion = async (type: string) => {
-    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    // Use a timestamp suffix so multiple companions can coexist and re-opening always works.
-    // (Tauri rejects new windows whose label matches an already-open window, silently failing.)
-    const companionWindow = new WebviewWindow('companion_' + Date.now(), {
-      url: `/index.html?companion=${type}`,
-      title: 'Setup Guide',
-      width: 420,
-      height: 760,
-      x: window.screen.availWidth - 440,
-      y: 50,
-      alwaysOnTop: true,
-      decorations: true,
-    });
-    
-    if (type === 'slack') {
-      const launchBrowser = async () => {
-        const manifest = {
-          display_information: { name: agent.name || "Sloane", description: agent.role ? `Your ${agent.role} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
-          features: {
-            app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
-            bot_user: { display_name: agent.name || "Sloane", always_online: true }
-          },
-          oauth_config: {
-            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
-            pkce_enabled: false
-          },
-          settings: {
-            event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] },
-            interactivity: { is_enabled: true },
-            org_deploy_enabled: false,
-            socket_mode_enabled: true,
-            token_rotation_enabled: false,
-            is_mcp_enabled: false
-          }
-        };
-        const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
-        const { open } = await import('@tauri-apps/plugin-shell');
-        await open(url);
-      };
+  const checkGatewayStatus = async () => {
+    try {
+      const s = await invoke<{ connected: boolean }>("check_slack_connection");
+      setSlackConnected(s.connected);
+      if (s.connected) {
+        const chs = await invoke<Array<{ id: string; name: string; member_count: number }>>("list_slack_channels").catch(() => []);
+        setSlackChannels(chs);
+      }
+    } catch { setSlackConnected(false); }
 
-      companionWindow.once('tauri://created', launchBrowser);
-      companionWindow.once('tauri://error', (e) => {
-        console.error("Window creation error", e);
-        launchBrowser();
-      });
-    } else {
-      companionWindow.once('tauri://error', (e) => console.error('Companion window error:', e));
-    }
+    try {
+      const tok = await invoke<string>("get_secret_cmd", { key: "GMAIL_ACCESS_TOKEN" });
+      setGmailConnected(!!tok);
+    } catch { setGmailConnected(false); }
+
+    try {
+      const tok = await invoke<string>("get_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
+      setCalConnected(!!tok);
+    } catch { setCalConnected(false); }
+
+    try {
+      const granted = await invoke<boolean>("check_full_disk_access");
+      setIMsgConnected(granted);
+      if (granted) {
+        const threads = await invoke<Array<{ chat_identifier: string; display_name: string; last_message_date: string }>>("list_imessage_threads").catch(() => []);
+        setIMsgThreads(threads);
+      }
+    } catch { setIMsgConnected(false); }
   };
 
-  const saveConnections = async () => {
-    setSaveStatus("loading");
+  const loadAllowlists = async () => {
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      const newIntegrations = [
-        `strategy_${strategy}`,
-        `email_${emailSetting}`,
-        `calendar_${calendarSetting}`
-      ];
-      await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
-      // Update global state
-      useWorldStore.getState().setAgents(
-        useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
-      );
-      setSaveStatus("success");
-      setTimeout(() => setSaveStatus("idle"), 2000);
-    } catch (e) {
-      console.error(e);
-      setSaveStatus("error");
-    }
+      const sl = await invoke<string[]>("get_allowed_slack_channels", { agentId: agent.id });
+      setAllowedSlack(sl || []);
+    } catch {}
+    try {
+      const im = await invoke<string[]>("get_allowed_imessage_threads", { agentId: agent.id });
+      setAllowedThreads(im || []);
+    } catch {}
+    // Load dedicated email creds if set
+    try {
+      const cred = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_email_dedicated` });
+      if (cred) {
+        const [em, pw] = cred.split(" : ");
+        setDedicatedEmail(em || "");
+        setDedicatedPassword(pw || "");
+      }
+    } catch {}
+  };
+
+  const saveSlackAllowlist = async (ids: string[]) => {
+    try {
+      await invoke("update_allowed_slack_channels", { agentId: agent.id, channelIds: ids });
+      setAllowedSlack(ids);
+    } catch (e) { console.error(e); }
+  };
+
+  const saveIMsgAllowlist = async (ids: string[]) => {
+    try {
+      await invoke("update_allowed_imessage_threads", { agentId: agent.id, threadIds: ids });
+      setAllowedThreads(ids);
+    } catch (e) { console.error(e); }
+  };
+
+  const saveDedicatedEmail = async () => {
+    if (!dedicatedEmail.trim() || !dedicatedPassword.trim()) return;
+    setEmailSaving(true);
+    try {
+      // Store agent-scoped credential: "email : app-password"
+      await invoke("store_secret_cmd", {
+        key: `agent_${agent.id}_email_dedicated`,
+        value: `${dedicatedEmail.trim()} : ${dedicatedPassword.trim()}`,
+      });
+      setEmailMode("dedicated");
+    } catch (e) { console.error(e); }
+    setEmailSaving(false);
+  };
+
+  // ── Row component for each service
+  const ServiceRow = ({
+    icon, name, subtitle, connected, gatewayLabel, enabled, onToggle, children,
+  }: {
+    icon: React.ReactNode; name: string; subtitle: string;
+    connected: boolean; gatewayLabel?: string;
+    enabled?: boolean; onToggle?: (v: boolean) => void;
+    children?: React.ReactNode;
+  }) => {
+    const [open, setOpen] = useState(false);
+    return (
+      <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
+          <div style={{ width: 34, height: 34, borderRadius: 8, background: "var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            {icon}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{name}</span>
+              {connected
+                ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Connected{gatewayLabel ? ` · ${gatewayLabel}` : ""}</span>
+                : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Not set up</span>
+              }
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 2 }}>{subtitle}</div>
+          </div>
+          {!connected ? (
+            <button onClick={() => setActiveView("integrations")} style={{
+              padding: "5px 12px", border: "1px solid var(--border-subtle)", borderRadius: 6,
+              background: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
+              color: "#3c6663", fontFamily: "inherit",
+            }}>
+              Set up →
+            </button>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              {children && (
+                <button onClick={() => setOpen(v => !v)} style={{
+                  fontSize: 11, fontWeight: 600, color: "var(--text-sub)", background: "none",
+                  border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "5px 10px",
+                  cursor: "pointer", fontFamily: "inherit",
+                }}>
+                  {open ? "Done" : "Configure"}
+                </button>
+              )}
+              {onToggle && (
+                <button onClick={() => onToggle(!enabled)} style={{
+                  width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
+                  background: enabled ? "#3c6663" : "#d1d5db", position: "relative", transition: "background 0.2s",
+                  flexShrink: 0,
+                }}>
+                  <span style={{
+                    position: "absolute", top: 3, left: enabled ? 21 : 3,
+                    width: 16, height: 16, borderRadius: "50%", background: "#fff",
+                    transition: "left 0.2s", display: "block",
+                  }} />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        {connected && open && children && (
+          <div style={{ borderTop: "1px solid var(--border-subtle)", padding: "14px 16px" }}>
+            {children}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Multi-select picker
+  const MultiPicker = ({
+    items, selected, onToggle, searchValue, onSearch, idKey, labelKey,
+    sublabelKey,
+  }: {
+    items: any[]; selected: string[]; onToggle: (id: string) => void;
+    searchValue: string; onSearch: (v: string) => void;
+    idKey: string; labelKey: string; sublabelKey?: string;
+  }) => {
+    const filtered = items.filter(i =>
+      i[labelKey]?.toLowerCase().includes(searchValue.toLowerCase())
+    );
+    return (
+      <div>
+        <input
+          value={searchValue}
+          onChange={e => onSearch(e.target.value)}
+          placeholder="Search…"
+          style={{
+            width: "100%", padding: "6px 10px", border: "1px solid var(--border-subtle)",
+            borderRadius: 6, fontSize: 12, fontFamily: "inherit", marginBottom: 8,
+            background: "var(--surface-card)", color: "var(--text-main)",
+          }}
+        />
+        <div style={{ maxHeight: 180, overflow: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+          {filtered.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--text-sub)", padding: "8px 0" }}>No results</div>
+          ) : filtered.map(item => {
+            const id = item[idKey];
+            const checked = selected.includes(id);
+            return (
+              <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", cursor: "pointer", borderRadius: 5 }}>
+                <input type="checkbox" checked={checked} onChange={() => onToggle(id)} style={{ accentColor: "#3c6663" }} />
+                <span style={{ fontSize: 12, color: "var(--text-main)", fontWeight: checked ? 600 : 400 }}>
+                  #{item[labelKey]}
+                  {sublabelKey && item[sublabelKey] && (
+                    <span style={{ fontSize: 10, color: "var(--text-sub)", marginLeft: 4, fontWeight: 400 }}>
+                      · {item[sublabelKey]}
+                    </span>
+                  )}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        {selected.length > 0 && (
+          <div style={{ fontSize: 11, color: "#3c6663", marginTop: 6 }}>
+            {selected.length} selected — agent only receives messages from these
+          </div>
+        )}
+        {selected.length === 0 && (
+          <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>
+            No filter — agent receives messages from all channels/DMs
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
-    <div style={{ maxWidth: 800, margin: "0 auto", paddingBottom: 60, width: "100%" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 40 }}>
-        <div>
-          <h2 style={{ fontSize: 24, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Connections & Permissions</h2>
-          <p style={{ fontSize: 14, color: "var(--text-sub)", lineHeight: 1.5 }}>
-            Manage how this agent connects to external services. You can set a global strategy or customize individually.
-          </p>
-        </div>
-        <button onClick={saveConnections} disabled={saveStatus === "loading"} style={{
-          padding: "10px 24px", borderRadius: 12, border: "none", cursor: "pointer",
-          background: "#3c6663", color: "var(--surface-card)", fontWeight: 600, fontSize: 14, boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+      {/* Info banner */}
+      <div style={{
+        background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10,
+        padding: "10px 14px", fontSize: 12, color: "#0369a1", lineHeight: 1.5,
+      }}>
+        Gateway-level service connections are managed in the{" "}
+        <button onClick={() => setActiveView("integrations")} style={{
+          background: "none", border: "none", color: "#0369a1", fontWeight: 700,
+          cursor: "pointer", textDecoration: "underline", fontSize: 12, padding: 0, fontFamily: "inherit",
         }}>
-          {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Integrations"}
+          Integrations tab
         </button>
+        . Configure here which services are active for <strong>{agent.name}</strong> and which channels/contacts it can access.
       </div>
 
-      <div style={{ marginBottom: 40 }}>
-        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 16 }}>Global Connection Strategy</h3>
-        <div style={{ display: "flex", gap: 12 }}>
-          {/* Lockdown */}
-          <button onClick={() => setStrategy("lockdown")} style={{
-            flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
-            border: strategy === "lockdown" ? "2px solid #2E7D32" : "1px solid rgba(0,0,0,0.06)",
-            background: strategy === "lockdown" ? "#e8f5e9" : "var(--surface-card)",
-          }}>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#2E7D32", marginBottom: 4 }}>Total Lock Down</div>
-            <div style={{ fontSize: 12, color: strategy === "lockdown" ? "#1B5E20" : "var(--text-sub)" }}>Agent uses isolated, dedicated sandbox accounts.</div>
-          </button>
-
-          {/* Secure */}
-          <button onClick={() => setStrategy("secure")} style={{
-            flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
-            border: strategy === "secure" ? "2px solid #00ACC1" : "1px solid rgba(0,0,0,0.06)",
-            background: strategy === "secure" ? "#e0f7fa" : "var(--surface-card)",
-          }}>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#00ACC1", marginBottom: 4 }}>Secure Power</div>
-            <div style={{ fontSize: 12, color: strategy === "secure" ? "#006064" : "var(--text-sub)" }}>Read-only OAuth access to your real accounts.</div>
-          </button>
-
-          {/* YOLO */}
-          <button onClick={() => setStrategy("yolo")} style={{
-            flex: 1, padding: 20, textAlign: "left", borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
-            border: strategy === "yolo" ? "2px solid #C62828" : "1px solid rgba(0,0,0,0.06)",
-            background: strategy === "yolo" ? "#fdeaea" : "var(--surface-card)",
-          }}>
-            <div style={{ fontSize: 16, fontWeight: 800, color: "#C62828", marginBottom: 4 }}>YOLO Mode ⚠️</div>
-            <div style={{ fontSize: 12, color: strategy === "yolo" ? "#b71c1c" : "var(--text-sub)" }}>Full Read/Write access to user accounts.</div>
-          </button>
+      {/* Slack */}
+      <ServiceRow
+        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>}
+        name="Slack"
+        subtitle="Control which Slack channels route messages to this agent"
+        connected={slackConnected}
+        enabled={slackEnabled}
+        onToggle={setSlackEnabled}
+      >
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
+          Channel allowlist
         </div>
-      </div>
+        <MultiPicker
+          items={slackChannels}
+          selected={allowedSlack}
+          onToggle={id => {
+            const next = allowedSlack.includes(id)
+              ? allowedSlack.filter(x => x !== id)
+              : [...allowedSlack, id];
+            setAllowedSlack(next);
+            saveSlackAllowlist(next);
+          }}
+          searchValue={slackSearch}
+          onSearch={setSlackSearch}
+          idKey="id"
+          labelKey="name"
+          sublabelKey="member_count"
+        />
+      </ServiceRow>
 
-      <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 16 }}>Function Settings</h3>
-      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-        {/* Email */}
-        <div style={{ padding: 24, background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
-          <div style={{ width: "30%" }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Email Access</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Interact with email.</div>
-          </div>
-          <div style={{ flex: 1, padding: "0 20px" }}>
-            <select value={emailSetting} onChange={(e) => {
-              setEmailSetting(e.target.value);
-              setStrategy("custom");
-            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", fontSize: 14 }}>
-              <option value="dedicated">Dedicated Agent Account (IMAP Forwarded)</option>
-              <option value="oauth_read">User's Real Email via OAuth (Read-Only)</option>
-              <option value="oauth_write">User's Real Email via OAuth (Read/Write ⚠️)</option>
-            </select>
-          </div>
-          <div style={{ width: 120, textAlign: "right" }}>
-            <button onClick={() => openCompanion(`email_${emailSetting}`)} style={{ padding: "8px 16px", background: "var(--text-main)", color: "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>Connect</button>
-          </div>
+      {/* Gmail */}
+      <ServiceRow
+        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2z" fill="#fff" stroke="#E8EAED" strokeWidth="1.5"/><path d="M2 6l10 7 10-7" stroke="#EA4335" strokeWidth="2" strokeLinecap="round"/></svg>}
+        name="Gmail"
+        subtitle="Read and send emails using your Google account"
+        connected={gmailConnected}
+        enabled={emailMode !== "none"}
+        onToggle={v => setEmailMode(v ? "read" : "none")}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
+          {(["read", "write"] as const).map(m => (
+            <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
+              <input type="radio" name={`email-mode-${agent.id}`} checked={emailMode === m} onChange={() => setEmailMode(m)} style={{ accentColor: "#3c6663" }} />
+              <span style={{ color: "var(--text-main)", fontWeight: emailMode === m ? 600 : 400 }}>
+                {m === "read" ? "Read-only — monitor inbox, search, summarise" : "Read + Send — can draft and send replies"}
+              </span>
+            </label>
+          ))}
         </div>
+      </ServiceRow>
 
-        {/* Calendar */}
-        <div style={{ padding: 24, background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center" }}>
-          <div style={{ width: "30%" }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Calendar Access</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Schedule & reading events.</div>
+      {/* Agent's own email */}
+      <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)" }}>
+        <div style={{ padding: "14px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>Dedicated agent email</span>
+            <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Optional</span>
           </div>
-          <div style={{ flex: 1, padding: "0 20px" }}>
-            <select value={calendarSetting} onChange={(e) => {
-              setCalendarSetting(e.target.value);
-              setStrategy("custom");
-            }} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", fontSize: 14 }}>
-              <option value="dedicated">Dedicated Sandbox Calendar (Isolated)</option>
-              <option value="oauth_read">User's Real Calendar via OAuth (Read-Only)</option>
-              <option value="oauth_write">User's Real Calendar via OAuth (Read/Write ⚠️)</option>
-            </select>
-          </div>
-          <div style={{ width: 120, textAlign: "right" }}>
-            <button onClick={() => {
-              if (calendarSetting !== "dedicated") {
-                openCompanion(`calendar_${calendarSetting}`);
-              } else {
-                alert("Dedicated Calendar is provisioned automatically locally. No credentials needed!");
-              }
-            }} style={{ padding: "8px 16px", background: calendarSetting === "dedicated" ? "#e0e0e0" : "var(--text-main)", color: calendarSetting === "dedicated" ? "#888" : "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: calendarSetting === "dedicated" ? "default" : "pointer" }}>
-              {calendarSetting === "dedicated" ? "Active" : "Connect"}
+          <p style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, margin: "0 0 12px" }}>
+            Give <strong>{agent.name}</strong> their own email identity. Create a Gmail account for them, then generate an App Password under <em>Google Account → Security → 2-Step Verification → App Passwords</em>.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              value={dedicatedEmail}
+              onChange={e => setDedicatedEmail(e.target.value)}
+              placeholder="agent@gmail.com"
+              style={{ flex: "1 1 180px", padding: "7px 10px", border: "1px solid var(--border-subtle)", borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
+            />
+            <PasswordInput
+              value={dedicatedPassword}
+              onChange={e => setDedicatedPassword(e.target.value)}
+              placeholder="xxxx-xxxx-xxxx-xxxx (App Password)"
+              style={{ flex: "1 1 200px", padding: "7px 10px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
+            />
+            <button onClick={saveDedicatedEmail} disabled={emailSaving || !dedicatedEmail || !dedicatedPassword} style={{
+              padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
+              borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              opacity: (!dedicatedEmail || !dedicatedPassword) ? 0.5 : 1,
+            }}>
+              {emailSaving ? "Saving…" : "Save"}
             </button>
           </div>
         </div>
-
-        {/* App Integrations section */}
-        <h3 style={{ fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: 16, marginTop: 24 }}>App Integrations</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Slack */}
-          <div style={{ padding: 24, background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)" }}>
-            {/* Header row */}
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 16 }}>
-              <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Slack</div>
-                <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Work chat & agent interaction via Socket Mode.</div>
-              </div>
-              <button onClick={() => openCompanion('slack')} style={{ padding: "8px 20px", background: "var(--text-main)", color: "var(--surface-card)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: "pointer", flexShrink: 0 }}>
-                {pairingStatus === "success" ? "Reconnect" : "Connect →"}
-              </button>
-            </div>
-
-            {/* Step 2: Pairing — always shown so user knows it's there */}
-            {pairingStatus === "success" ? (
-              <div style={{ padding: "12px 16px", background: "rgba(33,131,128,0.08)", borderRadius: 10, border: "1px solid rgba(33,131,128,0.2)", color: "#218380", fontWeight: 700, fontSize: 14, display: "flex", alignItems: "center", gap: 8 }}>
-                <span>✓</span> Slack paired — {agent.name} will respond in your workspace!
-              </div>
-            ) : (
-              <div style={{ padding: "14px 16px", background: "rgba(0,0,0,0.02)", borderRadius: 10, border: "1px solid rgba(0,0,0,0.07)" }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Step 2 — Paste Pairing Code</div>
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 12, lineHeight: 1.5 }}>
-                  After the Setup Guide completes, {agent.name} will DM you a code like <code style={{ background: "rgba(0,0,0,0.06)", padding: "2px 6px", borderRadius: 4, fontFamily: "monospace", fontSize: 13 }}>PH3CV4GT</code> in Slack. Paste it here to authorize.
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    type="text"
-                    value={pairingCode}
-                    onChange={e => { setPairingCode(e.target.value.toUpperCase()); setPairingStatus("idle"); setPairingError(""); }}
-                    onKeyDown={e => { if (e.key === "Enter") handleApprovePairing(); }}
-                    placeholder="Paste 8-character code here"
-                    maxLength={12}
-                    style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 15, fontFamily: "monospace", letterSpacing: "0.12em", textTransform: "uppercase", outline: "none", background: "var(--surface-base)" }}
-                  />
-                  <button
-                    onClick={handleApprovePairing}
-                    disabled={pairingStatus === "loading" || pairingCode.trim().length < 4}
-                    style={{ padding: "10px 20px", background: pairingCode.trim().length >= 4 ? "#218380" : "rgba(0,0,0,0.1)", color: pairingCode.trim().length >= 4 ? "white" : "var(--text-muted)", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 13, cursor: pairingCode.trim().length < 4 ? "default" : "pointer", transition: "all 0.15s" }}
-                  >
-                    {pairingStatus === "loading" ? "Approving…" : "Approve"}
-                  </button>
-                </div>
-                {pairingStatus === "error" && (
-                  <div style={{ marginTop: 10, fontSize: 12, color: "#c0392b", lineHeight: 1.5, padding: "8px 12px", background: "#fef2f2", borderRadius: 8, border: "1px solid #fca5a5" }}>
-                    ✗ {pairingError || "Pairing failed — the code may have expired. DM your bot in Slack again to get a fresh code."}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Telegram */}
-          <div style={{ padding: "20px 24px", background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)" }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <div style={{ width: "30%" }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Telegram</div>
-                <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Bot messaging via @BotFather token.</div>
-              </div>
-              <div style={{ flex: 1, padding: "0 20px", fontSize: 13, color: "var(--text-muted)" }}>
-                {telegramStatus === "success" ? <span style={{ color: "#218380", fontWeight: 700 }}>✓ Connected</span> : "Requires a Bot Token from @BotFather"}
-              </div>
-              <button onClick={() => setShowTelegram(v => !v)} style={{ padding: "8px 16px", background: telegramStatus === "success" ? "rgba(33,131,128,0.1)" : "var(--text-main)", color: telegramStatus === "success" ? "#218380" : "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
-                {showTelegram ? "Close" : telegramStatus === "success" ? "Reconnect" : "Configure"}
-              </button>
-            </div>
-            {showTelegram && (
-              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                <PasswordInput value={telegramToken} onChange={e => { setTelegramToken(e.target.value); setTelegramStatus("idle"); }} placeholder="123456789:ABCdefGHIjklmno..." style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Get your token from @BotFather in Telegram → /newbot</span>
-                  <button onClick={handleConnectTelegram} disabled={telegramStatus === "loading" || !telegramToken.trim()} style={{ padding: "8px 16px", background: "#218380", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer", opacity: !telegramToken.trim() ? 0.5 : 1 }}>
-                    {telegramStatus === "loading" ? "Connecting…" : "Connect"}
-                  </button>
-                </div>
-                {telegramStatus === "error" && <div style={{ fontSize: 12, color: "#c0392b" }}>✗ {telegramError}</div>}
-                {telegramStatus === "success" && <div style={{ fontSize: 12, color: "#218380", fontWeight: 600 }}>✓ Telegram bot connected. Your agent will respond to Telegram messages.</div>}
-              </div>
-            )}
-          </div>
-
-          {/* Discord */}
-          <div style={{ padding: "20px 24px", background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)" }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <div style={{ width: "30%" }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Discord</div>
-                <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Bot presence in your server.</div>
-              </div>
-              <div style={{ flex: 1, padding: "0 20px", fontSize: 13, color: "var(--text-muted)" }}>
-                {discordStatus === "success" ? <span style={{ color: "#218380", fontWeight: 700 }}>✓ Connected</span> : "Requires a Bot Token from Discord Developer Portal"}
-              </div>
-              <button onClick={() => setShowDiscord(v => !v)} style={{ padding: "8px 16px", background: discordStatus === "success" ? "rgba(33,131,128,0.1)" : "var(--text-main)", color: discordStatus === "success" ? "#218380" : "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
-                {showDiscord ? "Close" : discordStatus === "success" ? "Reconnect" : "Configure"}
-              </button>
-            </div>
-            {showDiscord && (
-              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                <PasswordInput value={discordToken} onChange={e => { setDiscordToken(e.target.value); setDiscordStatus("idle"); }} placeholder="Bot Token (discord.com/developers → App → Bot → Reset Token)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
-                <input type="text" value={discordGuild} onChange={e => setDiscordGuild(e.target.value)} placeholder="Guild ID (optional — leave blank to respond in all servers)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Invite bot with: Send Messages + Read Message History + View Channels</span>
-                  <button onClick={handleConnectDiscord} disabled={discordStatus === "loading" || !discordToken.trim()} style={{ padding: "8px 16px", background: "#5865F2", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer", opacity: !discordToken.trim() ? 0.5 : 1 }}>
-                    {discordStatus === "loading" ? "Connecting…" : "Connect"}
-                  </button>
-                </div>
-                {discordStatus === "error" && <div style={{ fontSize: 12, color: "#c0392b" }}>✗ {discordError}</div>}
-                {discordStatus === "success" && <div style={{ fontSize: 12, color: "#218380", fontWeight: 600 }}>✓ Discord bot connected. Your agent will respond to Discord messages.</div>}
-              </div>
-            )}
-          </div>
-
-          {/* GitHub */}
-          <div style={{ padding: "20px 24px", background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)" }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <div style={{ width: "30%" }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>GitHub</div>
-                <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Issues, PRs & notifications.</div>
-              </div>
-              <div style={{ flex: 1, padding: "0 20px", fontSize: 13, color: "var(--text-muted)" }}>
-                {githubStatus === "success" ? <span style={{ color: "#218380", fontWeight: 700 }}>✓ Connected</span> : "Requires a Personal Access Token (ghp_...)"}
-              </div>
-              <button onClick={() => setShowGitHub(v => !v)} style={{ padding: "8px 16px", background: githubStatus === "success" ? "rgba(33,131,128,0.1)" : "var(--text-main)", color: githubStatus === "success" ? "#218380" : "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
-                {showGitHub ? "Close" : githubStatus === "success" ? "Reconnect" : "Configure"}
-              </button>
-            </div>
-            {showGitHub && (
-              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                <PasswordInput value={githubToken} onChange={e => { setGithubToken(e.target.value); setGithubStatus("idle"); }} placeholder="ghp_... or github_pat_..." style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
-                <input type="text" value={githubUsername} onChange={e => setGithubUsername(e.target.value)} placeholder="GitHub username (optional)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Scopes needed: repo, issues, pull_requests, notifications — <a href="https://github.com/settings/tokens" style={{ color: "#218380" }}>github.com/settings/tokens</a></span>
-                  <button onClick={handleConnectGitHub} disabled={githubStatus === "loading" || !githubToken.trim()} style={{ padding: "8px 16px", background: "#24292e", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer", opacity: !githubToken.trim() ? 0.5 : 1 }}>
-                    {githubStatus === "loading" ? "Connecting…" : "Connect"}
-                  </button>
-                </div>
-                {githubStatus === "error" && <div style={{ fontSize: 12, color: "#c0392b" }}>✗ {githubError}</div>}
-                {githubStatus === "success" && <div style={{ fontSize: 12, color: "#218380", fontWeight: 600 }}>✓ GitHub connected. Your agent can now read issues, PRs, and notifications.</div>}
-              </div>
-            )}
-          </div>
-
-          {/* WhatsApp */}
-          <div style={{ padding: "20px 24px", background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.06)" }}>
-            <div style={{ display: "flex", alignItems: "center" }}>
-              <div style={{ width: "30%" }}>
-                <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>WhatsApp</div>
-                <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>Business messaging via Meta Cloud API.</div>
-              </div>
-              <div style={{ flex: 1, padding: "0 20px", fontSize: 13, color: "var(--text-muted)" }}>
-                {waStatus === "success" ? <span style={{ color: "#218380", fontWeight: 700 }}>✓ Connected</span> : "Requires a verified Meta Business account"}
-              </div>
-              <button onClick={() => setShowWhatsApp(v => !v)} style={{ padding: "8px 16px", background: waStatus === "success" ? "rgba(33,131,128,0.1)" : "var(--text-main)", color: waStatus === "success" ? "#218380" : "var(--surface-card)", border: "none", borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: "pointer" }}>
-                {showWhatsApp ? "Close" : waStatus === "success" ? "Reconnect" : "Configure"}
-              </button>
-            </div>
-            {showWhatsApp && (
-              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ padding: "10px 12px", background: "rgba(255,193,7,0.1)", borderRadius: 8, border: "1px solid rgba(255,193,7,0.3)", fontSize: 12, color: "#856404", lineHeight: 1.5 }}>
-                  ⚠️ <strong>Requires a verified Meta Business account</strong> with an approved WhatsApp Business API phone number. Personal WhatsApp accounts cannot be used. Set up at <a href="https://developers.facebook.com/apps" style={{ color: "#218380" }}>developers.facebook.com</a>.
-                </div>
-                <input type="text" value={waPhoneId} onChange={e => { setWaPhoneId(e.target.value); setWaStatus("idle"); }} placeholder="Phone Number ID (Meta for Developers → WhatsApp → API Setup)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
-                <input type="text" value={waBizId} onChange={e => setWaBizId(e.target.value)} placeholder="Business Account ID" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, outline: "none" }} />
-                <PasswordInput value={waToken} onChange={e => setWaToken(e.target.value)} placeholder="System User Token (starts with EAA...)" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.15)", fontSize: 13, fontFamily: "monospace", outline: "none" }} />
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <button onClick={handleConnectWhatsApp} disabled={waStatus === "loading" || !waPhoneId.trim() || !waBizId.trim() || !waToken.trim()} style={{ padding: "8px 16px", background: "#25D366", color: "white", border: "none", borderRadius: 8, fontWeight: 700, fontSize: 12, cursor: "pointer", opacity: (!waPhoneId.trim() || !waBizId.trim() || !waToken.trim()) ? 0.5 : 1 }}>
-                    {waStatus === "loading" ? "Connecting…" : "Connect"}
-                  </button>
-                </div>
-                {waStatus === "error" && <div style={{ fontSize: 12, color: "#c0392b" }}>✗ {waError}</div>}
-                {waStatus === "success" && <div style={{ fontSize: 12, color: "#218380", fontWeight: 600 }}>✓ WhatsApp Business connected. Your agent will now respond to WhatsApp messages.</div>}
-              </div>
-            )}
-          </div>
-
-        </div>
-
       </div>
+
+      {/* iMessage */}
+      <ServiceRow
+        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.02 2 11c0 2.64 1.15 5.02 3 6.71V22l4.29-2.13C10.12 20.28 11.04 20.5 12 20.5c5.52 0 10-3.58 10-8s-4.48-8-10-8z" fill="#34C759"/></svg>}
+        name="iMessage"
+        subtitle="Choose which contacts and group threads this agent can read and reply to"
+        connected={iMsgConnected}
+        enabled={iMsgEnabled}
+        onToggle={setIMsgEnabled}
+      >
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
+          Contact / thread allowlist
+        </div>
+        <MultiPicker
+          items={iMsgThreads}
+          selected={allowedThreads}
+          onToggle={id => {
+            const next = allowedThreads.includes(id)
+              ? allowedThreads.filter(x => x !== id)
+              : [...allowedThreads, id];
+            setAllowedThreads(next);
+            saveIMsgAllowlist(next);
+          }}
+          searchValue={iMsgSearch}
+          onSearch={setIMsgSearch}
+          idKey="chat_identifier"
+          labelKey="display_name"
+        />
+      </ServiceRow>
+
+      {/* Calendar */}
+      <ServiceRow
+        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4285F4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>}
+        name="Google Calendar"
+        subtitle="Read events and create calendar items"
+        connected={calConnected}
+        enabled={agent.integrations.includes("calendar")}
+        onToggle={() => {}} // calendar enable/disable handled in integrations
+      />
+
     </div>
   );
 }
@@ -3441,7 +3495,17 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => v
     setRepairSucceeded(null);
     try {
       await invoke("hard_reset_infrastructure");
-      setRepairLog("✓ Hard Reset complete — OrbStack VM restarted and gateway container rebuilt.\n\nClick \"Re-Initialize Setup\" to register this agent again.");
+      setRepairLog("✓ Hard Reset complete — OrbStack VM restarted. Re-registering agents...");
+      // Re-run boot_sync_agents so agents are registered and credentials written
+      // after the container comes back up. Without this, agents.list is restored
+      // but no auth-profiles.json is written and the gateway can't authenticate.
+      try {
+        await invoke("boot_sync_agents");
+        setRepairLog("✓ Hard Reset complete — gateway restarted and agents re-initialized.");
+      } catch (syncErr) {
+        console.warn("boot_sync after hard reset:", syncErr);
+        setRepairLog("✓ Hard Reset complete — gateway restarted.\n(Agent re-sync ran in background.)");
+      }
       setRepairSucceeded(true);
     } catch (e) {
       setRepairLog(`✗ Hard Reset failed:\n${String(e)}\n\nMake sure OrbStack is installed and try opening it manually.`);
@@ -4617,6 +4681,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   const [chatLog, setChatLog] = useState<ChatMessage[]>(agent.chatLog);
   const [loading, setLoading] = useState(false);
   const [needsRepair, setNeedsRepair] = useState(false);
+  const [isHealing, setIsHealing] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -4685,12 +4750,23 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       setChatLog(prev => [...prev, agentMsg]);
     } catch (error) {
       let friendlyError = String(error);
-      if (friendlyError.includes("Timeout") || friendlyError.includes("hanging") || friendlyError.includes("stopped container") || friendlyError.includes("OOM")) {
+      if (friendlyError.includes("stopped container") || friendlyError.includes("OOM")) {
+        // Only auto-heal on actual container-stopped / OOM errors — NOT on Gateway Timeout.
+        // A Gateway Timeout means the agent is slow (container under load) — restarting
+        // the OrbStack VM makes it worse, not better. Let the user retry manually.
         setIsHealing(true);
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke("hard_reset_infrastructure").catch(ex => console.error("Healing failed:", ex));
+        await invoke("hard_reset_infrastructure").catch(ex => console.error("Hard reset failed:", ex));
+        await invoke("boot_sync_agents").catch(ex => console.warn("boot_sync after heal:", ex));
         setIsHealing(false);
-        friendlyError = "The infrastructure gracefully auto-healed after an overload. Please try sending your message again!";
+        friendlyError = "The gateway was restarted and agents re-initialized. Please try sending your message again!";
+      } else if (friendlyError.includes("taking a long time") || friendlyError.includes("Gateway Timeout")) {
+        // Timeout — agent may not be registered yet (dir missing → agents add timed out on a previous boot).
+        // Fire boot_sync_agents in the background so the NEXT send attempt succeeds.
+        // We don't await it so the error message shows immediately. No VM restart — safe.
+        const { invoke: inv } = await import('@tauri-apps/api/core');
+        inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
+        friendlyError = "The agent is taking a while to respond. Registration is being refreshed — please try again in 30 seconds.";
       } else if (friendlyError.includes("No API key found for provider")) {
         const match = friendlyError.match(/No API key found for provider "([^"]+)"/);
         if (match) {
@@ -4870,8 +4946,7 @@ function TopNav() {
     { id: "canopy" as const, label: "Canopy" },
     { id: "architect" as const, label: "Agents" },
     { id: "archive" as const, label: "Archive" },
-    // { id: "library" as const, label: "Library" },
-    { id: "vault" as const, label: "Vault" },
+    { id: "integrations" as const, label: "Integrations" },
   ];
 
   const filteredAgents = searchQuery ? agents.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase()) || a.role.toLowerCase().includes(searchQuery.toLowerCase())) : [];
@@ -5415,8 +5490,7 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Name the token 'canopy-app-token' and click Generate. Copy the xapp-... token and paste it here.", input: { key: "slack-app-token", placeholder: "xapp-..." } },
         { text: "Almost done! Now click 'OAuth & Permissions' on the left sidebar." },
         { text: "Click the 'Install to Workspace' button and click Allow." },
-        { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } },
-        { text: "Last step! Go to your Slack workspace and DM your new bot. It will respond with an 8-character pairing code. Paste that code here to authorize the connection.", input: { key: "slack-pairing-code", placeholder: "MPWKJ5KQ" } }
+        { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } }
       ]
     },
     email_dedicated: {
@@ -5498,22 +5572,12 @@ export function CompanionGuide({ type }: { type: string }) {
             const { emit } = await import('@tauri-apps/api/event');
             await emit('companion-finished', { type, key: tokens[currentStepData.input.key] });
 
-            // If it was Slack, we need to immediately test the connection so App.tsx can show it's connected
+            // If it was Slack, finalize the connection via start_slack_listener which
+            // writes botToken + appToken into openclaw.json via config set. No pairing
+            // code needed — Socket Mode authenticates with the xapp- token directly.
             if (type === "slack") {
               await emit('slack-credentials-saved');
               const { invoke } = await import('@tauri-apps/api/core');
-
-              // Finalize the physical device pairing securely with the agent gateway
-              const pairingCode = tokens["slack-pairing-code"];
-              if (pairingCode && pairingCode.trim() !== "") {
-                try {
-                  await invoke("approve_slack_pairing", { code: pairingCode.trim() });
-                } catch (pairingErr) {
-                  console.error("Pairing approval failed:", pairingErr);
-                  alert("Warning: Pairing failed. Your code may have expired. You can regenerate the pairing code via DM in Slack and approve it from the Architect View Connections tab.\n\n" + String(pairingErr));
-                }
-              }
-
               await invoke("start_slack_listener").catch(() => { });
             }
           } catch (evtErr) { }
@@ -6185,9 +6249,9 @@ export default function App() {
           </div>
         </div>
       )}
-      {activeView === "vault" && (
-        <div style={{ flex: 1, overflow: "auto" }}>
-          <ProvidersVault />
+      {(activeView === "vault" || activeView === "integrations") && (
+        <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <IntegrationsView agents={agents} />
         </div>
       )}
       {activeView === "profile" && (

@@ -15,6 +15,16 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
     { id: "grok", name: "xAI Grok", url: "https://console.x.ai", color: "#000000", description: "High-speed custom reasoning streams" }
   ];
 
+  // Map provider id → keychain key name. Grok uses XAI_API_KEY to match the Rust
+  // keychain conventions used by boot_sync_agents and write_auth_profiles.
+  const providerKeyName: Record<string, string> = {
+    openai:    "OPENAI_API_KEY",
+    anthropic: "ANTHROPIC_API_KEY",
+    gemini:    "GEMINI_API_KEY",
+    grok:      "XAI_API_KEY",   // stored as XAI_API_KEY — what boot_sync_agents expects
+  };
+  const getKeyName = (providerId: string) => providerKeyName[providerId] ?? `${providerId}_API_KEY`.toUpperCase();
+
   useEffect(() => {
     loadKeys();
   }, []);
@@ -23,7 +33,7 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
     let currentKeys: Record<string, string> = {};
     for (const p of providers) {
       try {
-        const secret = await invoke<string>("get_secret_cmd", { key: `${p.id}_API_KEY`.toUpperCase() });
+        const secret = await invoke<string>("get_secret_cmd", { key: getKeyName(p.id) });
         if (secret) currentKeys[p.id] = secret;
       } catch (err) {
         // Not found, ignore
@@ -54,10 +64,14 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
   };
 
   const handleUpdateKey = async (providerId: string, value: string) => {
-    const keyName = `${providerId}_API_KEY`.toUpperCase();
+    const keyName = getKeyName(providerId);
     try {
       if (value.trim() === "") {
          await invoke("delete_secret_cmd", { key: keyName });
+         // Also remove the legacy GROK_API_KEY if it exists (migration from old name)
+         if (providerId === "grok") {
+           await invoke("delete_secret_cmd", { key: "GROK_API_KEY" }).catch(() => {});
+         }
       } else {
          await invoke("store_secret_cmd", { key: keyName, value });
       }

@@ -176,7 +176,7 @@ fn generate_compose_file(data_dir: &PathBuf, provider_keys: &HashMap<String, Str
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 16G
           cpus: '4.0'
           # ⚠️  Use deploy.resources.limits.pids, NOT top-level pids_limit.
           # docker-compose v2 (OrbStack) rejects having both set simultaneously.
@@ -186,18 +186,28 @@ fn generate_compose_file(data_dir: &PathBuf, provider_keys: &HashMap<String, Str
           #   - Core OpenClaw runtime + tini: ~50 PIDs
           #   - ACPX embedded runtime: ~30 PIDs
           #   - Headroom + retry grace: 2x buffer
-          # 500 acts as a circuit-breaker against runaway spirals while allowing
+          # 1000 acts as a circuit-breaker against runaway spirals while allowing
           # normal Chromium + OpenClaw operation. Raise if multi-agent + browser is needed.
-          pids: 500
+          pids: 1000
     healthcheck:
       # ⚠️  This curl runs INSIDE the container — use container port 18789, not host port 18799
       test: ["CMD", "curl", "-f", "http://localhost:18789/status"]
       interval: 30s
       timeout: 10s
       retries: 3
+      
+  canopy-chroma:
+    image: chromadb/chroma:latest
+    container_name: canopy-chroma
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - {data}/chroma-data:/chroma/chroma
 
 volumes:
   openclaw-state:
+  chroma-data:
   openclaw-workspace:
 "#,
         data = data_dir.display(),
@@ -346,8 +356,18 @@ fn preflight_sanitize_auth_profiles(data_dir: &PathBuf) {
 fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     let config_path = data_dir.join("openclaw-state").join("openclaw.json");
 
-    // Always start from a clean slate — never read the existing file.
+    // Always start from a clean slate — never read the existing file's operational state.
+    // However, we MUST preserve the `meta` field if it exists, otherwise OpenClaw detects
+    // a `missing-meta-vs-last-good` anomaly and goes into a recovery loop.
     let mut cfg: JsonValue = serde_json::json!({});
+
+    if let Ok(content) = std::fs::read_to_string(&config_path) {
+        if let Ok(existing_cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(meta) = existing_cfg.get("meta") {
+                cfg["meta"] = meta.clone();
+            }
+        }
+    }
 
     // ── Gateway auth — always set to our token ────────────────────────────────
     //
@@ -416,9 +436,11 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
         gw.remove("bonjour"); // schema-rejected; causes doctor --fix loop if present
     }
 
-    // ── Workspace path — must match the volume mount inside the container ─────
-    // Verified from working reference: ./workspace:/home/node/.openclaw/workspace
-    cfg["agents"]["defaults"]["workspace"] = serde_json::json!("/home/node/.openclaw/workspace");
+    // ── Workspace path — Removed ──────────────────────────────────────────────
+    // Do NOT set agents.defaults.workspace to the root /home/node/.openclaw/workspace
+    // This causes OpenClaw to recursively index all agents' folders on startup, leading
+    // to an exponential memory leak and PID exhaustion. Each agent gets its workspace
+    // explicitly defined via `--workspace` in `openclaw agents add` instead.
 
     // ── Force-set a known-good default model ─────────────────────────────────
     // When a PID spiral corrupts the openclaw.json (e.g. writing "openai/gpt-5.4",
@@ -427,23 +449,41 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     // minutes trying to connect/validate, which blocks the entire Node.js event loop —
     // IPC never responds even though the gateway reports "ready".
     //
-    // Always override to our stable default (gemini-3.1-flash-lite-preview). This is safe
+    // Always override to a known-good model chosen based on which API keys are in the
+    // macOS Keychain at boot time. Priority: Anthropic → OpenAI → Gemini. This is safe
     // because:
     //   • Each agent gets its own model set via `openclaw agents add --model X`
     //   • agents.defaults.model is only the fallback for agents with no explicit model
-    //   • Google keys are already configured in every Canopy deployment
+    //   • We select from keys the user has actually configured — no mismatch possible
     //
     // ⚠️  CRITICAL: OpenClaw requires model to be an OBJECT `{"primary": "..."}`, NOT a
     // bare string. A plain string is silently ignored — the agent has no model and every
     // openclaw agent --message call returns "OpenClaw: model not found" (or times out).
-    let default_model = crate::model_constants::DEFAULT_GEMINI_MODEL;
+    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_openai    = crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_gemini    = crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let default_model = crate::model_constants::default_model_from_available_keys(has_anthropic, has_openai, has_gemini);
+    tracing::info!(
+        "preflight: selecting gateway default model '{}' (anthropic={}, openai={}, gemini={})",
+        default_model, has_anthropic, has_openai, has_gemini
+    );
     cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": default_model });
     // Register the model in the models map so ACPX knows it is a valid selection.
     // The empty-object value tells OpenClaw to use global defaults for that model.
     cfg["agents"]["defaults"]["models"][default_model] = serde_json::json!({});
 
-    // ── Disable memory search (requires vector DB, causes startup lag) ────────
-    cfg["agents"]["defaults"]["memorySearch"]["enabled"] = serde_json::json!(false);
+    // ── Enable memory search with ChromaDB (for long-term RAG memory) ─────────
+    cfg["agents"]["defaults"]["memorySearch"]["enabled"] = serde_json::json!(true);
+    cfg["agents"]["defaults"]["memorySearch"]["provider"] = serde_json::json!("chroma");
+    cfg["agents"]["defaults"]["memorySearch"]["remote"] = serde_json::json!({
+        "baseUrl": "http://canopy-chroma:8000"
+    });
+
+    // ── Restrict skills to the requested Executive Assistant baseline ─────────
+    // We explicitly specify the heavy plugins (browser, coding) so they are available,
+    // but we PREVENT OpenClaw from defaulting to "unrestricted" which would load 
+    // all 15+ installed plugins (voice, vision, proxy, canvas, etc) and crash the container.
+    cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize", "browser", "coding"]);
 
     // ── Disable heavyweight plugins — prevents per-agent sidecar OOM ──────────
     // When these plugins are enabled, OpenClaw spawns per-agent sidecar processes
@@ -477,22 +517,16 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     cfg["plugins"]["entries"]["google"]["enabled"]        = serde_json::json!(true);
 
     // ── Clear the registered agents list ─────────────────────────────────────
-    // When agents are in agents.list, OpenClaw tries to initialize them at startup
-    // (loading SOUL.md, workspace, credentials) before completing the plugin pipeline.
-    // If the agent directories were wiped (as we do in start_gateway()), OpenClaw
-    // hits missing files and HANGS — the event loop blocks waiting for file I/O that
-    // never completes. ACPX, browser, and heartbeat never start; IPC is permanently
-    // blocked even though the gateway reports "ready".
+    // This produces a stable, deterministic config that start_gateway() can compare
+    // against the ".openclaw-applied" marker to decide whether a container restart
+    // is needed. Including agents.list would make the config dynamic (agents are
+    // added/removed during normal use) and cause spurious restart decisions.
     //
-    // WHY this doesn't cause a size-drop anomaly (unlike before):
-    //   We now DELETE all backup files (bak.1, bak.2, …) before each container start.
-    //   Without a "last-good" backup to compare against, OpenClaw has no baseline —
-    //   it cannot fire the size-drop anomaly regardless of how much the config shrinks.
-    //   After a clean boot, OpenClaw creates a NEW small backup from our clean config.
-    //   On the next boot, the backup size matches our config → no anomaly.
-    //
-    // boot_sync_agents() re-registers all agents via IPC once the gateway is up.
-    // openclaw agents add is idempotent — it replaces stale entries with fresh data.
+    // start_gateway() saves the existing agents list BEFORE calling this function
+    // and restores it to openclaw.json after writing (but only when NOT recreating
+    // the container), so OpenClaw boots with known agents on normal restarts.
+    // On container recreate, the agents list stays cleared to prevent hangs when
+    // OpenClaw tries to load agents whose dirs were just wiped.
     cfg["agents"]["list"] = serde_json::json!([]);
 
     if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
@@ -513,35 +547,6 @@ pub async fn start_gateway() -> Result<String, String> {
     std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(state_dir.join("workspace")).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(state_dir.join("agents")).map_err(|e| e.to_string())?;
-
-    // ── Wipe agent directories before every container start ──────────────────
-    // OpenClaw scans agents/ at startup and immediately begins starting channel
-    // sidecars (Slack, browser, talk-voice, etc.) for EVERY directory it finds.
-    // If agent dirs exist from a previous run, those sidecars start before our
-    // openclaw tokens/configs are in place — Slack with no token enters a tight
-    // retry loop, spawning ~3 worker processes per minute that never exit.
-    // After ~5 minutes you have 30+ processes consuming all CPU/RAM.
-    //
-    // Deleting agent dirs ensures OpenClaw boots with zero agents → zero sidecars
-    // → IPC is immediately responsive.
-    //
-    // This is safe:
-    //   • SOUL.md / workspace files live in openclaw-state/workspace/{id}/ — NOT in agents/
-    //   • Agent metadata (name, role, emoji, keys) is in SQLite — boot_sync_agents re-registers all agents
-    //   • Slack credentials live in openclaw-state/credentials/ — NOT in agents/
-    //   • Only per-session runtime state (session logs, channel auth state) is discarded — it's transient
-    let agents_dir = state_dir.join("agents");
-    if let Ok(entries) = std::fs::read_dir(&agents_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                tracing::info!("start_gateway: clearing agent dir {:?} to prevent stale sidecar init", path.file_name().unwrap_or_default());
-                if let Err(e) = std::fs::remove_dir_all(&path) {
-                    tracing::warn!("start_gateway: could not remove {:?}: {}", path, e);
-                }
-            }
-        }
-    }
 
     // ── Wipe Bonjour/mDNS device state ──────────────────────────────────────
     // openclaw-state/devices/ persists Bonjour mDNS peer discovery state across
@@ -605,6 +610,30 @@ pub async fn start_gateway() -> Result<String, String> {
         }
     }
 
+    // ── Save agents.list BEFORE preflight overwrites openclaw.json ───────────────────────────
+    // preflight_write_openclaw_json always clears agents.list so that the resulting config
+    // is deterministic and stable — suitable for comparing against the ".openclaw-applied"
+    // marker to detect genuine config changes without agents add/remove triggering restarts.
+    //
+    // On normal restarts (no container recreate), we restore the saved list AFTER the
+    // container cleanup block so that OpenClaw boots with its registered agents already
+    // in-memory, letting boot_sync_agents use the fast "already_registered" path and skip
+    // the 40-100s `openclaw agents add` per agent.
+    //
+    // On container recreate, the saved list is discarded — we wiped the agent dirs, so
+    // OpenClaw must NOT see agents in its config (it would hang on missing dir I/O).
+    let saved_agents_list: Option<serde_json::Value> = {
+        let cfg_path = state_dir.join("openclaw.json");
+        std::fs::read_to_string(&cfg_path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|cfg| cfg.pointer("/agents/list").cloned())
+            .filter(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
+    };
+    if saved_agents_list.is_some() {
+        tracing::info!("start_gateway: saved existing agents.list for potential restore after preflight");
+    }
+
     // Write a clean openclaw.json BEFORE the container starts, then check whether the
     // config that's actually RUNNING in the container matches what we just wrote.
     //
@@ -626,8 +655,27 @@ pub async fn start_gateway() -> Result<String, String> {
     let applied_config = std::fs::read_to_string(&applied_marker).unwrap_or_default();
 
     // Flag: does the running container need to be replaced to pick up the new config?
-    // Used below in the container cleanup block to force rm -f on the canonical container.
-    let config_needs_restart = applied_config != desired_config;
+    // We must compare the JSON structurally and IGNORE the `meta` object.
+    // OpenClaw updates `meta.lastTouchedAt` continuously during operation. If we
+    // do a simple string comparison, it will ALWAYS differ, causing the container
+    // to be needlessly destroyed (and agent dirs wiped) on every single app restart.
+    let config_needs_restart = {
+        let mut needs_restart = applied_config != desired_config;
+        if needs_restart {
+            if let (Ok(mut app_json), Ok(mut des_json)) = (
+                serde_json::from_str::<serde_json::Value>(&applied_config),
+                serde_json::from_str::<serde_json::Value>(&desired_config)
+            ) {
+                if let (Some(app_obj), Some(des_obj)) = (app_json.as_object_mut(), des_json.as_object_mut()) {
+                    app_obj.remove("meta");
+                    des_obj.remove("meta");
+                    needs_restart = app_obj != des_obj;
+                }
+            }
+        }
+        needs_restart
+    };
+
     if config_needs_restart {
         tracing::info!("start_gateway: openclaw.json differs from last applied config — will force-remove and recreate container");
     } else {
@@ -723,6 +771,79 @@ pub async fn start_gateway() -> Result<String, String> {
                     Ok(ref o) => tracing::warn!("start_gateway: could not remove canopy-gateway: {}", String::from_utf8_lossy(&o.stderr).trim()),
                     Err(e)    => tracing::warn!("start_gateway: docker rm error: {}", e),
                 }
+                // ── Wipe agent directories — only when actually recreating the container ──
+                // OpenClaw scans agents/ at startup and immediately begins starting channel
+                // sidecars (Slack, browser, talk-voice, etc.) for EVERY directory it finds.
+                // If agent dirs exist from a previous run with stale/missing tokens, those
+                // sidecars enter a tight retry loop spawning ~3 worker processes per minute.
+                //
+                // We only wipe when the container itself is being force-recreated, so
+                // boot_sync_agents must run `openclaw agents add` for every agent anyway.
+                // On normal restarts where the container stays running, the existing agent
+                // dirs (with valid auth-profiles.json) are left intact — OpenClaw continues
+                // running agents with valid credentials, and `boot_sync_agents` only needs
+                // to refresh SOUL.md and auth-profiles (no 40-100s `agents add` per agent).
+                let agents_dir = state_dir.join("agents");
+                if let Ok(entries) = std::fs::read_dir(&agents_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            tracing::info!("start_gateway: clearing agent dir {:?} (container recreate)", path.file_name().unwrap_or_default());
+                            if let Err(e) = std::fs::remove_dir_all(&path) {
+                                tracing::warn!("start_gateway: could not remove {:?}: {}", path, e);
+                            }
+                        }
+                    }
+                }
+
+                // ── Clear agents.list from openclaw.json — must stay in sync with agent dirs ──
+                // preflight_write_openclaw_json now intentionally preserves agents.list so that
+                // normal restarts (no recreate) can boot quickly without calling `agents add`.
+                // When we DO wipe agent dirs, we must also clear agents.list here — otherwise
+                // OpenClaw starts with agents in its config but missing dirs and HANGS waiting
+                // for file I/O that never completes (ACPX and IPC are permanently blocked).
+                //
+                // boot_sync_agents() re-registers all agents via `openclaw agents add` once ready.
+                let config_path = state_dir.join("openclaw.json");
+                if let Ok(content) = std::fs::read_to_string(&config_path) {
+                    if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                        cfg["agents"]["list"] = serde_json::json!([]);
+                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                            if let Err(e) = std::fs::write(&config_path, &updated) {
+                                tracing::warn!("start_gateway: could not clear agents.list: {}", e);
+                            } else {
+                                tracing::info!("start_gateway: cleared agents.list in openclaw.json (agent dirs wiped)");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Restore agents.list for normal restarts (no container recreate) ───────────────────────
+    // If the container stayed running (compose file unchanged AND openclaw.json unchanged),
+    // put the saved agents list back into openclaw.json now — BEFORE compose-up — so that
+    // OpenClaw continues running with its registered agents in-memory and boot_sync_agents
+    // can use the fast "already_registered" path instead of re-running `agents add` for every
+    // agent (~40-100s per agent).
+    //
+    // We skip the restore when needs_write || config_needs_restart because in those cases
+    // we force-removed the container AND wiped agent dirs above — agents.list must stay
+    // empty until boot_sync_agents runs `openclaw agents add` for each agent.
+    if !needs_write && !config_needs_restart {
+        if let Some(agents_list) = saved_agents_list {
+            let cfg_path = state_dir.join("openclaw.json");
+            if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
+                    cfg["agents"]["list"] = agents_list;
+                    if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                        match std::fs::write(&cfg_path, &updated) {
+                            Ok(_) => tracing::info!("start_gateway: restored agents.list — normal restart, fast boot path active"),
+                            Err(e) => tracing::warn!("start_gateway: could not restore agents.list: {}", e),
+                        }
+                    }
+                }
             }
         }
     }
@@ -747,19 +868,25 @@ pub async fn start_gateway() -> Result<String, String> {
             String::from_utf8_lossy(&output.stderr).trim());
         tracing::info!("start_gateway: docker-compose up -d succeeded: {}", out);
 
-        // Update the applied-config marker ONLY if the container was actually
-        // (re)started — not if compose reported it was already "Running" unchanged.
-        // If we write the marker when the container didn't restart, the next launch
-        // would think the config is applied when it isn't, skipping the necessary restart.
+        // Always write the applied-config marker so the next launch can compare it
+        // against the then-current openclaw.json and decide whether to force-restart.
+        //
+        // Previous behaviour deleted the marker when compose reported the container was
+        // already "Running" (no restart). That caused the NEXT launch to always see
+        // applied_config="" vs desired_config=<content>, setting config_needs_restart=true
+        // and force-recreating the container on every other app start — wiping all agent
+        // dirs and triggering a full re-registration (~40-100s per agent) each time.
+        //
+        // Correct behaviour: the marker should always reflect "the openclaw.json that the
+        // running container was started with." If compose made no changes, the container is
+        // still running the desired config — write it. Only a genuine config change will
+        // set config_needs_restart=true on the next launch and trigger a real recreate.
         let container_was_restarted = out.contains("Starting") || out.contains("Started") || out.contains("Creating");
+        let _ = std::fs::write(&applied_marker, &desired_config);
         if container_was_restarted {
-            let _ = std::fs::write(&applied_marker, &desired_config);
-            tracing::info!("start_gateway: applied-config marker updated (container was recreated)");
+            tracing::info!("start_gateway: applied-config marker written (container was recreated)");
         } else {
-            // Container was already running and compose made no changes.
-            // Delete the marker so the next launch knows to restart.
-            let _ = std::fs::remove_file(&applied_marker);
-            tracing::info!("start_gateway: container unchanged (compose: Running) — marker cleared for next launch restart");
+            tracing::info!("start_gateway: applied-config marker written (container already running with correct config)");
         }
 
         Ok("Gateway started".to_string())
