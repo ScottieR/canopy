@@ -198,6 +198,42 @@ pub async fn list_agents(
 }
 
 #[tauri::command]
+pub async fn read_workspace_file(agent_id: String, filename: String) -> Result<String, String> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err("Invalid filename".into());
+    }
+    let workspace = dirs::data_dir()
+        .ok_or("No data dir")?
+        .join("Canopy")
+        .join("openclaw-state")
+        .join("workspace")
+        .join(&agent_id);
+
+    let file_path = workspace.join(&filename);
+    if !file_path.exists() {
+        return Ok("".to_string());
+    }
+    std::fs::read_to_string(&file_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn write_workspace_file(agent_id: String, filename: String, content: String) -> Result<(), String> {
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err("Invalid filename".into());
+    }
+    let workspace = dirs::data_dir()
+        .ok_or("No data dir")?
+        .join("Canopy")
+        .join("openclaw-state")
+        .join("workspace")
+        .join(&agent_id);
+
+    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+    let file_path = workspace.join(&filename);
+    std::fs::write(&file_path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn get_agent(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
@@ -826,8 +862,10 @@ pub async fn check_agent_status(agent_id: String) -> Result<String, String> {
                     }
                 }
             }
-            // IPC worked but agent not in list — not yet registered
-            return Ok("offline".to_string());
+            // IPC worked but agent not in list (empty array during boot, or not yet registered).
+            // Fall through to check the disk config so we don't incorrectly toggle to "offline"
+            // while `agents add` is still initializing it!
+            tracing::debug!("check_agent_status: IPC returned empty or missing agent {}, falling back to disk", agent_id);
         }
         Ok(Ok(_)) => {
             // docker exec returned non-zero (container not running, etc.)
@@ -1163,11 +1201,34 @@ pub async fn import_discovered_agent(
         }
     } else {
         let agent_path = std::path::PathBuf::from(&path);
-        let soul_path = agent_path.join("workspace").join("SOUL.md");
-        std::fs::read_to_string(&soul_path).unwrap_or_else(|_| {
+        let src_workspace = agent_path.join("workspace");
+        
+        let soul_path = src_workspace.join("SOUL.md");
+        let content = std::fs::read_to_string(&soul_path).unwrap_or_else(|_| {
             std::fs::read_to_string(agent_path.join("SOUL.md"))
                 .unwrap_or_else(|_| "# SOUL.md - Imported Agent".to_string())
-        })
+        });
+
+        // Pre-emptively copy any existing markdown files to the target workspace
+        // so that `boot_sync_agents` doesn't just create empty versions of them.
+        if let Some(target_workspace) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace").join(&agent_id)) {
+            let _ = std::fs::create_dir_all(&target_workspace);
+            let dirs_to_check = [src_workspace, agent_path];
+            for d in dirs_to_check {
+                if let Ok(entries) = std::fs::read_dir(&d) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md") {
+                            if let Some(name) = path.file_name() {
+                                let _ = std::fs::copy(&path, target_workspace.join(name));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        content
     };
         
     let name = agent_id.clone();
@@ -2061,7 +2122,7 @@ pub async fn boot_sync_agents(
             let write_cmd = format!(
                 "mkdir -p \"$(dirname '{soul_path}')\" && \
                  printf '%s' '{soul}' > '{soul_path}' && \
-                 touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/IDENTITY.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
+                 touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/IDENTITY.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md \"$(dirname '{soul_path}')\"/PREFERENCES.md",
                 soul_path = soul_path,
                 soul = escaped_soul,
             );
@@ -2073,6 +2134,8 @@ pub async fn boot_sync_agents(
             )
             .await;
             tracing::info!("boot_sync_agents: refreshed SOUL.md for agent {}", id);
+            seed_user_md(&db, id);
+            seed_preferences_md(id);
 
             // Re-sync credentials for already-registered agents whose dir exists.
             // auth-profiles.json may have been overwritten or have stale/missing keys
@@ -2318,7 +2381,7 @@ pub async fn boot_sync_agents(
         let write_cmd = format!(
             "mkdir -p \"$(dirname '{soul_path}')\" && \
              printf '%s' '{soul}' > '{soul_path}' && \
-             touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/IDENTITY.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
+             touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/IDENTITY.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md \"$(dirname '{soul_path}')\"/PREFERENCES.md",
             soul_path = soul_path,
             soul = escaped_soul,
         );
@@ -2334,6 +2397,9 @@ pub async fn boot_sync_agents(
 
         // Step 3: Write auth-profiles.json — load API keys from keychain and write.
         write_auth_profiles(id, &get_creds_for_agent(id)).await;
+        
+        seed_user_md(&db, id);
+        seed_preferences_md(id);
 
         ok += 1;
 
@@ -2512,5 +2578,57 @@ mod tests {
             "Anthropic must be preferred over Gemini when both keys present, got '{}'",
             model
         );
+    }
+}
+
+/// Helper function to seed USER.md with the current UserProfile if it's empty or missing.
+fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
+    if let Some(workspace) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)) {
+        let user_md_path = workspace.join("USER.md");
+        if !user_md_path.exists() || std::fs::metadata(&user_md_path).map(|m| m.len()).unwrap_or(0) == 0 {
+            if let Ok(profile) = db.get_user_profile() {
+                if profile.name.trim() == "Admin" || profile.name.trim().is_empty() {
+                    return;
+                }
+                let mut content = format!("# User Context\n\n**Name:** {}\n", profile.name);
+                if !profile.working_hours.is_empty() && profile.working_hours != "9:00 AM - 5:00 PM" {
+                    content.push_str(&format!("**Context / Work:** {}\n", profile.working_hours));
+                }
+                let _ = std::fs::write(&user_md_path, content);
+            }
+        }
+    }
+}
+
+/// Helper function to seed PREFERENCES.md with the default prompt if it's empty or missing.
+fn seed_preferences_md(agent_id: &str) {
+    if let Some(workspace) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)) {
+        let prefs_md_path = workspace.join("PREFERENCES.md");
+        if !prefs_md_path.exists() || std::fs::metadata(&prefs_md_path).map(|m| m.len()).unwrap_or(0) == 0 {
+            let mut content = String::from("#PREFERENCES.md - Your Human's Preferences\n_Read this file. Everything in here is a fact about how I live, what I like, and how I want you to behave. Do not ask me to set things up; if you need a piece of information to complete a task and it isn't in here, look it up or make a best guess based on the 'vibe' of my other preferences. If you get it wrong, I will correct you once, and you should update this file immediately so you never ask again._\n");
+            
+            // Try to read dynamic template
+            if let Some(template_path) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("preferences_template.md")) {
+                if template_path.exists() {
+                    if let Ok(custom_content) = std::fs::read_to_string(&template_path) {
+                        if !custom_content.trim().is_empty() {
+                            content = custom_content;
+                        }
+                    }
+                }
+            }
+
+            let _ = std::fs::write(&prefs_md_path, content);
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn set_preferences_template(content: String) -> Result<(), String> {
+    if let Some(template_path) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("preferences_template.md")) {
+        std::fs::write(&template_path, content).map_err(|e| e.to_string())?;
+        Ok(())
+    } else {
+        Err("Could not resolve app data dir".into())
     }
 }
