@@ -14,6 +14,7 @@ import { UpdateManager } from "./components/shared/UpdateManager";
 import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
+import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, Activity, Terminal, Shield, RefreshCw, Layers, Lock } from "lucide-react";
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -89,7 +90,7 @@ export function LobsterIcon({ size = 48, className = "", role, agentImage }: { s
     <img
       src={imageSrc}
       alt="Lobster Agent"
-      style={{ width: size, height: size, objectFit: "contain" }}
+      style={{ width: size, height: size, objectFit: "cover", borderRadius: "50%" }}
       className={className}
     />
   );
@@ -3126,6 +3127,154 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 // Per-agent: toggles + channel/contact pickers only. No OAuth here.
 // All gateway-level service setup lives in the top-level Integrations tab.
 
+const ServiceRow = ({
+  icon, name, subtitle, connected, gatewayLabel, enabled, onToggle, children, statusBadge, onSetup
+}: {
+  icon: React.ReactNode; name: string; subtitle: string;
+  connected: boolean; gatewayLabel?: string;
+  enabled?: boolean; onToggle?: (v: boolean) => void;
+  children?: React.ReactNode;
+  statusBadge?: React.ReactNode;
+  onSetup?: () => void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const setActiveView = useWorldStore(s => s.setActiveView);
+  return (
+    <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
+        <div style={{ width: 34, height: 34, borderRadius: 8, background: "var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          {icon}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{name}</span>
+            {statusBadge ? statusBadge : (
+              connected
+                ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Connected{gatewayLabel ? ` · ${gatewayLabel}` : ""}</span>
+                : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Not set up</span>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 2 }}>{subtitle}</div>
+        </div>
+        {!connected ? (
+          <button onClick={() => onSetup ? onSetup() : setActiveView("integrations")} style={{
+            padding: "5px 12px", border: "1px solid var(--border-subtle)", borderRadius: 6,
+            background: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
+            color: "#3c6663", fontFamily: "inherit",
+          }}>
+            Set up →
+          </button>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {children && (
+              <button onClick={() => setOpen(v => !v)} style={{
+                fontSize: 11, fontWeight: 600, color: "var(--text-sub)", background: "none",
+                border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "5px 10px",
+                cursor: "pointer", fontFamily: "inherit",
+              }}>
+                {open ? "Done" : "Configure"}
+              </button>
+            )}
+            {onToggle && (
+              <button onClick={() => onToggle(!enabled)} style={{
+                width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
+                background: enabled ? "#3c6663" : "#d1d5db", position: "relative", transition: "background 0.2s",
+                flexShrink: 0,
+              }}>
+                <span style={{
+                  position: "absolute", top: 3, left: enabled ? 21 : 3,
+                  width: 16, height: 16, borderRadius: "50%", background: "#fff",
+                  transition: "left 0.2s", display: "block",
+                }} />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      {connected && open && children && (
+        <div style={{ borderTop: "1px solid var(--border-subtle)", padding: "14px 16px" }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ── Multi-select picker
+const MultiPicker = ({
+  items, selected, onToggle, searchValue, onSearch, idKey, labelKey,
+  sublabelKey,
+}: {
+  items: any[]; selected: string[]; onToggle: (id: string) => void;
+  searchValue: string; onSearch: (v: string) => void;
+  idKey: string; labelKey: string; sublabelKey?: string;
+}) => {
+  const filtered = items.filter(i =>
+    i[labelKey]?.toLowerCase().includes(searchValue.toLowerCase())
+  );
+  return (
+    <div>
+      <input
+        value={searchValue}
+        onChange={e => onSearch(e.target.value)}
+        placeholder="Search…"
+        style={{
+          width: "100%", padding: "6px 10px", border: "1px solid var(--border-subtle)",
+          borderRadius: 6, fontSize: 12, fontFamily: "inherit", marginBottom: 8,
+          background: "var(--surface-card)", color: "var(--text-main)",
+        }}
+      />
+      <div style={{ maxHeight: 180, overflow: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+        {filtered.length === 0 ? (
+          <div style={{ fontSize: 12, color: "var(--text-sub)", padding: "8px 0" }}>No results</div>
+        ) : filtered.map(item => {
+          const id = item[idKey];
+          const checked = selected.includes(id);
+          return (
+            <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", cursor: "pointer", borderRadius: 5 }}>
+              <input type="checkbox" checked={checked} onChange={() => onToggle(id)} style={{ accentColor: "#3c6663" }} />
+              <span style={{ fontSize: 12, color: "var(--text-main)", fontWeight: checked ? 600 : 400 }}>
+                #{item[labelKey]}
+                {sublabelKey && item[sublabelKey] && (
+                  <span style={{ fontSize: 10, color: "var(--text-sub)", marginLeft: 4, fontWeight: 400 }}>
+                    · {item[sublabelKey]}
+                  </span>
+                )}
+              </span>
+            </label>
+          );
+        })}
+        {searchValue.trim().length > 0 && !items.find(i => i[labelKey]?.toLowerCase() === searchValue.trim().toLowerCase()) && (
+          <button
+            onClick={() => {
+              if (!selected.includes(searchValue.trim())) {
+                onToggle(searchValue.trim());
+              }
+              onSearch("");
+            }}
+            style={{
+              padding: "6px 8px", background: "var(--border-subtle)", border: "none", borderRadius: 5,
+              fontSize: 12, color: "var(--text-main)", cursor: "pointer", textAlign: "left", marginTop: 4
+            }}
+          >
+            + Add "{searchValue.trim()}"
+          </button>
+        )}
+      </div>
+      {selected.length > 0 && (
+        <div style={{ fontSize: 11, color: "#3c6663", marginTop: 6 }}>
+          {selected.length} selected — agent only receives messages from these
+        </div>
+      )}
+      {selected.length === 0 && (
+        <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>
+          No filter — agent receives messages from all channels/DMs
+        </div>
+      )}
+    </div>
+  );
+};
+
 function ConnectionsTab({ agent }: { agent: AgentData }) {
   const { setActiveView } = useWorldStore();
 
@@ -3133,7 +3282,30 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [slackConnected, setSlackConnected] = useState(false);
   const [gmailConnected, setGmailConnected] = useState(false);
   const [calConnected, setCalConnected] = useState(false);
+  const [gDriveConnected, setGDriveConnected] = useState(false);
+  const [githubConnected, setGithubConnected] = useState(false);
+  const [telegramConnected, setTelegramConnected] = useState(false);
   const [iMsgConnected, setIMsgConnected] = useState(false);
+
+  // Dynamic Connectors
+  const [connectors, setConnectors] = useState<any[]>([]);
+  const [dynamicEnabled, setDynamicEnabled] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    fetch('http://localhost:3001/api/connectors')
+      .then(res => res.json())
+      .then(data => {
+         if (Array.isArray(data)) {
+           setConnectors(data);
+           const initialEnabled: Record<string, boolean> = {};
+           data.forEach(c => {
+             initialEnabled[c.id] = agent.integrations.includes(c.id);
+           });
+           setDynamicEnabled(initialEnabled);
+         }
+      })
+      .catch(e => console.error("Failed to load connectors:", e));
+  }, [agent.integrations]);
 
   // Per-agent Slack channel allowlist
   const [slackEnabled, setSlackEnabled] = useState(agent.integrations.includes("slack"));
@@ -3141,6 +3313,20 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [allowedSlack, setAllowedSlack] = useState<string[]>([]);
   const [slackPickerOpen, setSlackPickerOpen] = useState(false);
   const [slackSearch, setSlackSearch] = useState("");
+  const [slackAppToken, setSlackAppToken] = useState("");
+  const [slackBotToken, setSlackBotToken] = useState("");
+  const [slackTokensSaving, setSlackTokensSaving] = useState(false);
+  const [slackPairingCode, setSlackPairingCode] = useState("");
+  const [slackPairingStatus, setSlackPairingStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [slackPairingError, setSlackPairingError] = useState("");
+
+  useEffect(() => {
+    if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_app_token` }).then(t => setSlackAppToken(t as string)).catch(() => {});
+      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_bot_token` }).then(t => setSlackBotToken(t as string)).catch(() => {});
+    }
+  }, [agent.id]);
 
   // Per-agent iMessage thread allowlist
   const [iMsgEnabled, setIMsgEnabled] = useState(agent.integrations.includes("imessage"));
@@ -3163,6 +3349,131 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
   // Saving state
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
 
+  // ── Budget & Spend ──
+  const [budget, setBudget] = useState<any>(null);
+  const [budgetLoading, setBudgetLoading] = useState(true);
+  const [budgetSaving, setBudgetSaving] = useState(false);
+
+  useEffect(() => {
+    const fetchBudget = async () => {
+      setBudgetLoading(true);
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const budgetRes = await invoke('get_agent_budget', { agentId: agent.id });
+        setBudget(budgetRes);
+      } catch (e) {
+        console.error("Failed to load budget data", e);
+      }
+      setBudgetLoading(false);
+    };
+    fetchBudget();
+  }, [agent.id]);
+
+  const updateBudgetProp = (key: string, val: any) => {
+    if (!budget) return;
+    setBudget({ ...budget, [key]: val });
+  };
+
+  const handleSaveBudget = async () => {
+    if (!budget) return;
+    setBudgetSaving(true);
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('update_agent_budget', { budget });
+      setTimeout(() => setBudgetSaving(false), 800);
+    } catch (e) {
+      console.error("Failed to save budget", e);
+      setBudgetSaving(false);
+    }
+  };
+
+  // ── Cognitive Engines (LLM) ──
+  const [brainModels, setBrainModels] = useState<any[]>([]);
+  useEffect(() => {
+    invoke<any[]>("get_available_models")
+      .then(models => setBrainModels(models))
+      .catch(() => { /* gateway not yet up, will retry on next render */ });
+  }, []);
+
+  const [keys, setKeys] = useState<{ [provider: string]: string }>({
+    "OpenAI": "", "Anthropic": "", "Gemini": "", "Grok": ""
+  });
+  const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+  const [llmSaveStatus, setLlmSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+
+  const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
+  const getDynamicRecommendedModel = () => {
+    const isHeavy = HEAVY_ROLES_BRAIN.includes(agent.role);
+    const availableProviders = Object.entries(keys)
+      .filter(([_, v]) => v && v.trim().length > 0)
+      .map(([k]) => k === "Gemini" ? "Google Gemini" : k);
+
+    let match = null;
+    if (availableProviders.length > 0) {
+      const prov = availableProviders[0];
+      const strategy = isHeavy ? "heavy" : "light";
+      match = brainModels.find((m: any) => m.provider === prov && m.strategy === strategy)
+           || brainModels.find((m: any) => m.provider === prov);
+    }
+    if (!match) {
+      match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
+           || brainModels[0];
+    }
+    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.1 Flash Lite"} — ${match?.description || "Fastest Gemini 3 model (Preview)"}`, id: match?.id || "google/gemini-3.1-flash-lite-preview" };
+  };
+
+  const defaultModelInfo = getDynamicRecommendedModel();
+
+  useEffect(() => {
+    if (typeof invoke === 'function') {
+      const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
+      providers.forEach(prov => {
+        invoke("get_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` })
+          .then(k => setKeys(prev => ({ ...prev, [prov]: k as string })))
+          .catch(() => { });
+      });
+    }
+  }, [agent.id]);
+
+  const saveOverrides = async () => {
+    setLlmSaveStatus("loading");
+    try {
+      if (typeof invoke === 'function') {
+        const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
+        for (const prov of providers) {
+          const val = keys[prov];
+          try {
+            if (val && val.trim()) {
+              await invoke("store_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key`, value: val.trim() });
+            } else {
+              await invoke("delete_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` });
+            }
+          } catch (err) {}
+        }
+
+        const finalModel = selectedModel || defaultModelInfo?.id || "google/gemini-3.1-flash-lite-preview";
+
+        let mappedKeys: Record<string, string> = {};
+        if (keys["OpenAI"]) mappedKeys["OPENAI_API_KEY"] = keys["OpenAI"];
+        if (keys["Anthropic"]) mappedKeys["ANTHROPIC_API_KEY"] = keys["Anthropic"];
+        if (keys["Gemini"]) mappedKeys["GEMINI_API_KEY"] = keys["Gemini"];
+        if (keys["Grok"]) mappedKeys["XAI_API_KEY"] = keys["Grok"];
+
+        await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys });
+        await invoke("update_agent_personality", {
+          agentId: agent.id,
+          personality: { ...agent.personality, active_model: finalModel }
+        });
+        await invoke("update_agent_model", { agentId: agent.id, model: finalModel });
+      }
+      setLlmSaveStatus("success");
+      setTimeout(() => setLlmSaveStatus("idle"), 2000);
+    } catch (e) {
+      console.error(e);
+      setLlmSaveStatus("error");
+    }
+  };
+
   useEffect(() => {
     checkGatewayStatus();
     loadAllowlists();
@@ -3170,9 +3481,11 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
 
   const checkGatewayStatus = async () => {
     try {
-      const s = await invoke<{ connected: boolean }>("check_slack_connection");
-      setSlackConnected(s.connected);
-      if (s.connected) {
+      const appTok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_slack_app_token` }).catch(() => "");
+      const botTok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_slack_bot_token` }).catch(() => "");
+      const isConnected = !!(appTok && botTok);
+      setSlackConnected(isConnected);
+      if (isConnected) {
         const chs = await invoke<Array<{ id: string; name: string; member_count: number }>>("list_slack_channels").catch(() => []);
         setSlackChannels(chs);
       }
@@ -3247,136 +3560,93 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
   };
 
   // ── Row component for each service
-  const ServiceRow = ({
-    icon, name, subtitle, connected, gatewayLabel, enabled, onToggle, children,
-  }: {
-    icon: React.ReactNode; name: string; subtitle: string;
-    connected: boolean; gatewayLabel?: string;
-    enabled?: boolean; onToggle?: (v: boolean) => void;
-    children?: React.ReactNode;
-  }) => {
-    const [open, setOpen] = useState(false);
-    return (
-      <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>
-          <div style={{ width: 34, height: 34, borderRadius: 8, background: "var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            {icon}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{name}</span>
-              {connected
-                ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Connected{gatewayLabel ? ` · ${gatewayLabel}` : ""}</span>
-                : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Not set up</span>
-              }
-            </div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 2 }}>{subtitle}</div>
-          </div>
-          {!connected ? (
-            <button onClick={() => setActiveView("integrations")} style={{
-              padding: "5px 12px", border: "1px solid var(--border-subtle)", borderRadius: 6,
-              background: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
-              color: "#3c6663", fontFamily: "inherit",
-            }}>
-              Set up →
-            </button>
-          ) : (
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              {children && (
-                <button onClick={() => setOpen(v => !v)} style={{
-                  fontSize: 11, fontWeight: 600, color: "var(--text-sub)", background: "none",
-                  border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "5px 10px",
-                  cursor: "pointer", fontFamily: "inherit",
-                }}>
-                  {open ? "Done" : "Configure"}
-                </button>
-              )}
-              {onToggle && (
-                <button onClick={() => onToggle(!enabled)} style={{
-                  width: 40, height: 22, borderRadius: 11, border: "none", cursor: "pointer",
-                  background: enabled ? "#3c6663" : "#d1d5db", position: "relative", transition: "background 0.2s",
-                  flexShrink: 0,
-                }}>
-                  <span style={{
-                    position: "absolute", top: 3, left: enabled ? 21 : 3,
-                    width: 16, height: 16, borderRadius: "50%", background: "#fff",
-                    transition: "left 0.2s", display: "block",
-                  }} />
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-        {connected && open && children && (
-          <div style={{ borderTop: "1px solid var(--border-subtle)", padding: "14px 16px" }}>
-            {children}
-          </div>
-        )}
-      </div>
-    );
-  };
 
-  // ── Multi-select picker
-  const MultiPicker = ({
-    items, selected, onToggle, searchValue, onSearch, idKey, labelKey,
-    sublabelKey,
-  }: {
-    items: any[]; selected: string[]; onToggle: (id: string) => void;
-    searchValue: string; onSearch: (v: string) => void;
-    idKey: string; labelKey: string; sublabelKey?: string;
-  }) => {
-    const filtered = items.filter(i =>
-      i[labelKey]?.toLowerCase().includes(searchValue.toLowerCase())
-    );
-    return (
-      <div>
-        <input
-          value={searchValue}
-          onChange={e => onSearch(e.target.value)}
-          placeholder="Search…"
-          style={{
-            width: "100%", padding: "6px 10px", border: "1px solid var(--border-subtle)",
-            borderRadius: 6, fontSize: 12, fontFamily: "inherit", marginBottom: 8,
-            background: "var(--surface-card)", color: "var(--text-main)",
-          }}
-        />
-        <div style={{ maxHeight: 180, overflow: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
-          {filtered.length === 0 ? (
-            <div style={{ fontSize: 12, color: "var(--text-sub)", padding: "8px 0" }}>No results</div>
-          ) : filtered.map(item => {
-            const id = item[idKey];
-            const checked = selected.includes(id);
-            return (
-              <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", cursor: "pointer", borderRadius: 5 }}>
-                <input type="checkbox" checked={checked} onChange={() => onToggle(id)} style={{ accentColor: "#3c6663" }} />
-                <span style={{ fontSize: 12, color: "var(--text-main)", fontWeight: checked ? 600 : 400 }}>
-                  #{item[labelKey]}
-                  {sublabelKey && item[sublabelKey] && (
-                    <span style={{ fontSize: 10, color: "var(--text-sub)", marginLeft: 4, fontWeight: 400 }}>
-                      · {item[sublabelKey]}
-                    </span>
-                  )}
-                </span>
-              </label>
-            );
-          })}
-        </div>
-        {selected.length > 0 && (
-          <div style={{ fontSize: 11, color: "#3c6663", marginTop: 6 }}>
-            {selected.length} selected — agent only receives messages from these
-          </div>
-        )}
-        {selected.length === 0 && (
-          <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>
-            No filter — agent receives messages from all channels/DMs
-          </div>
-        )}
-      </div>
-    );
-  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Connections & Permissions</h1>
+      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28, flexShrink: 0 }}>Configure how {agent.name} interacts with the outside world.</p>
+
+      {/* Advanced Provider Configuration */}
+      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 24, marginBottom: 24, flexShrink: 0 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>Cognitive Engines (LLM)</div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
+              Override the global API vault for explicitly isolating this agent. Keep empty to use standard globals.
+            </div>
+          </div>
+          <div style={{ textAlign: "right", background: "rgba(33,131,128,0.1)", padding: "12px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Core Model Override</div>
+            <select
+              value={selectedModel}
+              onChange={e => setSelectedModel(e.target.value)}
+              style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", cursor: "pointer", width: 220 }}
+            >
+              <option value="">Strategy: {defaultModelInfo.model}</option>
+              <optgroup label="Anthropic">
+                {brainModels.filter((m: any) => m.provider === "Anthropic").map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
+                ))}
+              </optgroup>
+              <optgroup label="OpenAI">
+                {brainModels.filter((m: any) => m.provider === "OpenAI").map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Google Gemini">
+                {brainModels.filter((m: any) => m.provider === "Google Gemini").map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
+                ))}
+              </optgroup>
+            </select>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+          {["OpenAI", "Anthropic", "Gemini", "Grok"].map(prov => (
+            <div key={prov}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-main)" }}>{prov} API Key</div>
+                <div
+                  style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
+                  onClick={async () => {
+                    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                    new WebviewWindow('companion_' + Date.now(), {
+                      url: `/index.html?companion=${prov.toLowerCase()}`,
+                      title: 'Setup Guide',
+                      width: 420,
+                      height: 760,
+                      x: window.screen.availWidth - 440,
+                      y: 50,
+                      alwaysOnTop: true,
+                      decorations: true,
+                    });
+                  }}
+                >
+                  Setup Guide ↗
+                </div>
+              </div>
+              <PasswordInput
+                placeholder={prov === "Anthropic" ? "sk-ant-..." : "sk-..."}
+                value={keys[prov]}
+                onChange={(e) => setKeys(prev => ({ ...prev, [prov]: e.target.value }))}
+                style={{ padding: "10px 14px", width: "100%", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--glass-light)" }}
+              />
+            </div>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={saveOverrides} disabled={llmSaveStatus === "loading"} style={{
+            padding: "10px 24px", borderRadius: 8, border: "none", cursor: "pointer",
+            background: "#3c6663", color: "var(--surface-card)", fontWeight: 600, fontSize: 13, minWidth: 120
+          }}>
+            {llmSaveStatus === "loading" ? "Saving..." : llmSaveStatus === "success" ? "Saved!" : llmSaveStatus === "error" ? "Error" : "Save Overrides"}
+          </button>
+        </div>
+      </div>
 
       {/* Info banner */}
       <div style={{
@@ -3401,9 +3671,58 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         connected={slackConnected}
         enabled={slackEnabled}
         onToggle={setSlackEnabled}
+        onSetup={async () => {
+          try {
+            const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+            const windowLabel = 'companion_slack_' + Date.now();
+            const companionWindow = new WebviewWindow(windowLabel, {
+              url: `/index.html?companion=slack&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
+              title: 'Setup Guide',
+              width: 420,
+              height: 760,
+              x: window.screen.availWidth - 440,
+              y: 50,
+              alwaysOnTop: true,
+              decorations: true,
+            });
+
+            const launchBrowser = async () => {
+              const manifest = {
+                display_information: { name: agent.name || "Sloane", description: agent.role ? `Your ${agent.role} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
+                features: {
+                  app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+                  bot_user: { display_name: agent.name || "Sloane", always_online: true }
+                },
+                oauth_config: {
+                  scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
+                  pkce_enabled: false
+                },
+                settings: {
+                  event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] },
+                  interactivity: { is_enabled: true },
+                  org_deploy_enabled: false,
+                  socket_mode_enabled: true,
+                  token_rotation_enabled: false,
+                  is_mcp_enabled: false
+                }
+              };
+              const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
+              const { open } = await import('@tauri-apps/plugin-shell');
+              await open(url);
+            };
+
+            companionWindow.once('tauri://created', launchBrowser);
+            companionWindow.once('tauri://error', (e) => {
+              console.error("Window creation error", e);
+              launchBrowser();
+            });
+          } catch (e) {
+            console.error("Setup Slack failed:", e);
+          }
+        }}
       >
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
-          Channel allowlist
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>Channel allowlist</span>
         </div>
         <MultiPicker
           items={slackChannels}
@@ -3421,6 +3740,102 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
           labelKey="name"
           sublabelKey="member_count"
         />
+
+        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Pair with OpenClaw</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8, lineHeight: 1.5 }}>
+            Now go to Slack and send your bot a direct message with the word <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3 }}>pair</code>, then return and enter the code it replies with here.
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              value={slackPairingCode}
+              onChange={e => setSlackPairingCode(e.target.value.toUpperCase())}
+              placeholder="XXXXXX"
+              maxLength={12}
+              style={{
+                width: 120, padding: "7px 11px", border: "1px solid var(--border-subtle)",
+                borderRadius: 7, fontSize: 14, fontFamily: "monospace", letterSpacing: "0.15em",
+                background: "var(--surface-card)", color: "var(--text-main)", textTransform: "uppercase",
+              }}
+            />
+            <button
+              onClick={async () => {
+                const trimmed = slackPairingCode.trim().toUpperCase();
+                if (!trimmed || trimmed.length < 4) return;
+                setSlackPairingStatus("loading");
+                setSlackPairingError("");
+                try {
+                  const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                  await invoke("approve_slack_pairing", { code: trimmed });
+                  setSlackPairingStatus("success");
+                  setSlackPairingCode("");
+                } catch (e: any) {
+                  setSlackPairingStatus("error");
+                  setSlackPairingError(e?.toString() || "Pairing failed");
+                }
+              }}
+              disabled={slackPairingStatus === "loading" || !slackPairingCode.trim()}
+              style={{
+                padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
+                borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              {slackPairingStatus === "loading" ? "Pairing…" : "Approve"}
+            </button>
+            {slackPairingStatus === "success" && <span style={{ fontSize: 12, color: "#22c55e", fontWeight: 600 }}>✓ Paired</span>}
+          </div>
+          {slackPairingStatus === "error" && <div style={{ fontSize: 12, color: "#ef4444", marginTop: 6 }}>{slackPairingError}</div>}
+        </div>
+
+        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 12 }}>Agent-Specific Tokens</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 4 }}>Bot Token (xoxb-...)</div>
+              <PasswordInput
+                value={slackBotToken}
+                onChange={e => setSlackBotToken(e.target.value)}
+                placeholder="xoxb-..."
+                style={{ width: "100%", padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)", boxSizing: "border-box" }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 4 }}>App Token (xapp-...)</div>
+              <PasswordInput
+                value={slackAppToken}
+                onChange={e => setSlackAppToken(e.target.value)}
+                placeholder="xapp-1-..."
+                style={{ width: "100%", padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)", boxSizing: "border-box" }}
+              />
+            </div>
+            <button
+              onClick={async () => {
+                setSlackTokensSaving(true);
+                try {
+                   const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                   await invoke("store_batch_secrets_cmd", {
+                     secrets: { 
+                        [`agent_${agent.id}_slack_app_token`]: slackAppToken,
+                        [`agent_${agent.id}_slack_bot_token`]: slackBotToken
+                     }
+                   });
+                   // Optionally re-boot agent to pick up token
+                   await invoke("boot_sync_agents");
+                } catch (e) {
+                   console.error(e);
+                }
+                setTimeout(() => setSlackTokensSaving(false), 1000);
+              }}
+              disabled={slackTokensSaving}
+              style={{
+                alignSelf: "flex-start", padding: "6px 14px", background: "var(--surface-card)", color: "var(--text-main)", border: "1px solid var(--border-subtle)",
+                borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginTop: 4
+              }}
+            >
+              {slackTokensSaving ? "Saving..." : "Save Tokens"}
+            </button>
+          </div>
+        </div>
       </ServiceRow>
 
       {/* Gmail */}
@@ -3508,15 +3923,288 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         />
       </ServiceRow>
 
-      {/* Calendar */}
+      {/* File System */}
       <ServiceRow
-        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#4285F4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>}
-        name="Google Calendar"
-        subtitle="Read events and create calendar items"
-        connected={calConnected}
-        enabled={agent.integrations.includes("calendar")}
-        onToggle={() => {}} // calendar enable/disable handled in integrations
-      />
+        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>}
+        name="Workspace (File System)"
+        subtitle="Allow agent to read and mutate local files in their designated workspace directory."
+        connected={true}
+        enabled={agent.permissions.some(p => ["file_read", "file_write"].includes(p.id) && p.enabled)}
+        statusBadge={
+          agent.permissions.some(p => ["file_read", "file_write"].includes(p.id) && p.enabled)
+            ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
+            : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
+        }
+        onToggle={async (enabled) => {
+           const { invoke } = await import('@tauri-apps/api/core');
+           const toggle = useWorldStore.getState().togglePermission;
+           
+           // Apply toggle locally
+           if (enabled) {
+              if (!agent.permissions.find(p => p.id === "file_read")?.enabled) toggle(agent.id, "file_read");
+           } else {
+              if (agent.permissions.find(p => p.id === "file_read")?.enabled) toggle(agent.id, "file_read");
+              if (agent.permissions.find(p => p.id === "file_write")?.enabled) toggle(agent.id, "file_write");
+           }
+
+           // Push to backend
+           setTimeout(async () => {
+             const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+             if (!currentAgent) return;
+             const capabilitiesObj: any = {};
+             currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+             try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+           }, 100);
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
+          {(["read", "write"] as const).map(m => {
+            const hasWrite = agent.permissions.find(p => p.id === "file_write")?.enabled;
+            const isChecked = m === "write" ? hasWrite : !hasWrite;
+            return (
+              <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
+                <input type="radio" name={`fs-mode-${agent.id}`} checked={isChecked} onChange={async () => {
+                   const { invoke } = await import('@tauri-apps/api/core');
+                   const toggle = useWorldStore.getState().togglePermission;
+                   
+                   if (m === "write" && !hasWrite) toggle(agent.id, "file_write");
+                   else if (m === "read" && hasWrite) toggle(agent.id, "file_write");
+                   
+                   setTimeout(async () => {
+                     const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                     if (!currentAgent) return;
+                     const capabilitiesObj: any = {};
+                     currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                     try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                   }, 100);
+                }} style={{ accentColor: "#3c6663" }} />
+                <span style={{ color: "var(--text-main)", fontWeight: isChecked ? 600 : 400 }}>
+                  {m === "read" ? "Read-only — can view logs, read documents, search workspace" : "Read & Write — can create, modify, and delete files"}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </ServiceRow>
+
+      {/* Dynamic Connectors from Admin */}
+      {connectors.filter(c => c.isVisible && !['slack', 'gmail', 'imessage', 'filesystem'].includes(c.id)).map(c => {
+        let IconComponent: any = Link;
+        if (c.icon === 'calendar') IconComponent = Calendar;
+        if (c.icon === 'hard-drive') IconComponent = HardDrive;
+        if (c.icon === 'github') IconComponent = Github;
+        if (c.icon === 'send' || c.icon === 'message-circle') IconComponent = MessageCircle;
+        if (c.icon === 'cloud') IconComponent = Cloud;
+        if (c.icon === 'database') IconComponent = Database;
+        if (c.icon === 'slack') IconComponent = ({size, color}: any) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>;
+
+        return (
+          <ServiceRow
+            key={c.id}
+            icon={<IconComponent size={18} color="#3c6663" />}
+            name={c.name}
+            subtitle={c.subtitle}
+            connected={false} // Would ideally check secret store or global state
+            enabled={dynamicEnabled[c.id]}
+            onToggle={(enabled) => {
+              setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));
+              const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+              // We'd push this to the backend as agent capabilities toggle
+            }}
+            onSetup={async () => {
+              if (c.needsCompanion) {
+                 const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                 const compName = c.id.charAt(0).toUpperCase() + c.id.slice(1) + 'Companion.tsx';
+                 new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
+                   url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
+                   title: `Setup ${c.name}`,
+                   width: 420,
+                   height: 760,
+                   x: window.screen.availWidth - 440,
+                   y: 50,
+                   alwaysOnTop: true,
+                   decorations: true,
+                 });
+              } else {
+                 if (c.isGlobal) {
+                   setActiveView("integrations");
+                 } else {
+                   alert(`Setup for ${c.name} is coming soon!`);
+                 }
+              }
+            }}
+          />
+        );
+      })}
+
+      {/* System & Autonomy */}
+      <ServiceRow
+        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6B6BAE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>}
+        name="System & Autonomy"
+        subtitle="Manage agent autonomy and internet access capabilities."
+        connected={true}
+        enabled={agent.permissions.some(p => ["ext_network", "autonomous"].includes(p.id) && p.enabled)}
+        statusBadge={
+          agent.permissions.some(p => ["ext_network", "autonomous"].includes(p.id) && p.enabled)
+            ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
+            : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
+        }
+        onToggle={async (enabled) => {
+           const { invoke } = await import('@tauri-apps/api/core');
+           const toggle = useWorldStore.getState().togglePermission;
+           
+           ["ext_network", "autonomous"].forEach(pid => {
+              const p = agent.permissions.find(x => x.id === pid);
+              if (p && p.enabled !== enabled) toggle(agent.id, pid);
+           });
+
+           setTimeout(async () => {
+             const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+             if (!currentAgent) return;
+             const capabilitiesObj: any = {};
+             currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+             try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+           }, 100);
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {agent.permissions.filter(p => ["ext_network", "autonomous"].includes(p.id)).map((p, i, arr) => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none", paddingBottom: i < arr.length - 1 ? 12 : 0 }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{p.label}</div>
+                <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
+              </div>
+              <Toggle enabled={p.enabled} onChange={async () => {
+                const { invoke } = await import('@tauri-apps/api/core');
+                useWorldStore.getState().togglePermission(agent.id, p.id);
+                setTimeout(async () => {
+                  const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                  if (!currentAgent) return;
+                  const capabilitiesObj: any = {};
+                  currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                  try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                }, 100);
+              }} />
+            </div>
+          ))}
+        </div>
+      </ServiceRow>
+
+      {/* Payments & Financials */}
+      <ServiceRow
+        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2EB67D" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>}
+        name="Payments & Spending"
+        subtitle="Manage agent spending limits, virtual cards, and payment execution."
+        connected={true}
+        enabled={agent.permissions.some(p => ["payments", "spend_auto"].includes(p.id) && p.enabled) || budget?.payments_enabled}
+        statusBadge={
+          (agent.permissions.some(p => ["payments", "spend_auto"].includes(p.id) && p.enabled) || budget?.payments_enabled)
+            ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
+            : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
+        }
+        onToggle={async (enabled) => {
+           const { invoke } = await import('@tauri-apps/api/core');
+           const toggle = useWorldStore.getState().togglePermission;
+           
+           ["payments", "spend_auto"].forEach(pid => {
+              const p = agent.permissions.find(x => x.id === pid);
+              if (p && p.enabled !== enabled) toggle(agent.id, pid);
+           });
+           
+           if (budget) {
+             const newBudget = { ...budget, payments_enabled: enabled };
+             setBudget(newBudget);
+             try { await invoke('update_agent_budget', { budget: newBudget }); } catch (e) { console.error(e); }
+           }
+
+           setTimeout(async () => {
+             const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+             if (!currentAgent) return;
+             const capabilitiesObj: any = {};
+             currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+             try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+           }, 100);
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* Permissions Toggles */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            {agent.permissions.filter(p => ["payments", "spend_auto"].includes(p.id)).map((p, i, arr) => (
+              <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0,0,0,0.04)", paddingBottom: 12 }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{p.label}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
+                </div>
+                <Toggle enabled={p.enabled} onChange={async () => {
+                  const { invoke } = await import('@tauri-apps/api/core');
+                  useWorldStore.getState().togglePermission(agent.id, p.id);
+                  setTimeout(async () => {
+                    const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                    if (!currentAgent) return;
+                    const capabilitiesObj: any = {};
+                    currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                    try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                  }, 100);
+                }} />
+              </div>
+            ))}
+          </div>
+          
+          {/* Budget UI */}
+          {budgetLoading ? (
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Loading budget data...</div>
+          ) : !budget ? (
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Failed to load budget data.</div>
+          ) : (
+            <>
+              <div style={{ padding: 16, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Virtual Card Access</div>
+                  <Toggle enabled={budget.payments_enabled} onChange={v => updateBudgetProp("payments_enabled", v)} />
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 20 }}>When disabled, the agent cannot issue any real-world merchant charges. It will simulate approvals.</div>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Require Approval for New Merchants</div>
+                  <Toggle enabled={budget.require_approval_new_merchant} onChange={v => updateBudgetProp("require_approval_new_merchant", v)} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Require Approval for Subscriptions</div>
+                  <Toggle enabled={budget.require_approval_recurring} onChange={v => updateBudgetProp("require_approval_recurring", v)} />
+                </div>
+              </div>
+
+              <div style={{ padding: 16, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 20 }}>Limits & Thresholds</div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Per-Transaction Limit ($)</div>
+                  <input type="number" value={budget.per_transaction_limit_cents / 100} onChange={e => updateBudgetProp("per_transaction_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 90, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right", fontSize: 12 }} />
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Auto-Approve Threshold ($)</div>
+                  <input type="number" value={budget.auto_approve_threshold_cents / 100} onChange={e => updateBudgetProp("auto_approve_threshold_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 90, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right", fontSize: 12 }} />
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Daily Budget Total ($)</div>
+                  <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateBudgetProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 90, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right", fontSize: 12 }} />
+                </div>
+                
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
+                  <button onClick={handleSaveBudget} disabled={budgetSaving} style={{
+                    padding: "8px 16px", borderRadius: 8, background: budgetSaving ? "#4A9E96" : "#3c6663", color: "var(--surface-card)", fontSize: 12, fontWeight: 600, border: "none", cursor: budgetSaving ? "default" : "pointer", transition: "0.2s"
+                  }}>
+                    {budgetSaving ? "Saved ✓" : "Commit Limits"}
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </ServiceRow>
 
     </div>
   );
@@ -3524,7 +4212,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => void }) {
+function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpdate?: () => void; onNavigate?: (tab: string) => void }) {
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [repairLog, setRepairLog] = useState<string | null>(null);
   const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);
@@ -3708,42 +4396,71 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => v
       )}
 
       {/* Header */}
-      <div style={{ marginBottom: 32, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          {isEditingDetails ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <input value={tempName} onChange={e => setTempName(e.target.value)} style={{ fontSize: 32, fontWeight: 700, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-main)" }} />
-              <input value={tempRole} onChange={e => setTempRole(e.target.value)} style={{ fontSize: 16, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-sub)" }} />
-              <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                <button onClick={saveDetails} style={{ padding: "6px 16px", background: "#4A9E96", color: "white", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Save</button>
-                <button onClick={() => { setIsEditingDetails(false); setTempName(agent.name); setTempRole(agent.role); }} style={{ padding: "6px 16px", background: "transparent", color: "var(--text-sub)", border: "1px solid var(--border-subtle)", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Cancel</button>
+      <div style={{ marginBottom: 32, display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: 24, borderRadius: 20, border: "1px solid var(--border-subtle)", boxShadow: "0 4px 20px rgba(0,0,0,0.03)" }}>
+        <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
+          <div style={{ width: 72, height: 72, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: `${agent.robeColor || "#CCC"}15`, boxShadow: `0 0 0 1px ${agent.robeColor || "#CCC"}40`, flexShrink: 0 }}>
+            <LobsterIcon size={72} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
+          </div>
+          <div>
+            {isEditingDetails ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <input value={tempName} onChange={e => setTempName(e.target.value)} style={{ fontSize: 24, fontWeight: 700, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-main)" }} />
+                <input value={tempRole} onChange={e => setTempRole(e.target.value)} style={{ fontSize: 14, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-sub)" }} />
+                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                  <button onClick={saveDetails} style={{ padding: "6px 16px", background: "#4A9E96", color: "white", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Save</button>
+                  <button onClick={() => { setIsEditingDetails(false); setTempName(agent.name); setTempRole(agent.role); }} style={{ padding: "6px 16px", background: "transparent", color: "var(--text-sub)", border: "1px solid var(--border-subtle)", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                </div>
               </div>
-            </div>
-          ) : (
-            <>
-              <h1 style={{ fontSize: 36, fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.02em", margin: 0, lineHeight: 1.1 }}>
-                {agent.name}: <span style={{ color: "var(--text-sub)", fontWeight: 400 }}>{agent.title}</span>
-              </h1>
-              <p style={{ fontSize: 15, color: "var(--text-sub)", marginTop: 8, maxWidth: 600, lineHeight: 1.6 }}>
-                {agent.description}
-              </p>
-            </>
-          )}
+            ) : (
+              <>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                  <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.01em", margin: 0, lineHeight: 1.1 }}>
+                    {agent.name}
+                  </h1>
+                  <div style={{ fontSize: 16, color: "var(--text-sub)", fontWeight: 500 }}>{agent.title}</div>
+                </div>
+                <p style={{ fontSize: 14, color: "var(--text-sub)", marginTop: 6, maxWidth: 600, lineHeight: 1.5 }}>
+                  {agent.description}
+                </p>
+              </>
+            )}
+          </div>
         </div>
-        
-        {!isEditingDetails && (
-          <button 
-            onClick={() => setIsEditingDetails(true)} 
-            style={{ 
-              display: "flex", alignItems: "center", gap: 6, padding: "8px 12px", 
-              borderRadius: 8, border: "1px solid var(--border-subtle)", background: "transparent", 
-              color: "var(--text-sub)", cursor: "pointer", fontSize: 13, fontWeight: 600 
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-            Edit Agent
-          </button>
-        )}
+        <button onClick={() => setIsEditingDetails(true)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 12, cursor: "pointer", color: "var(--text-sub)", fontSize: 13, fontWeight: 600 }}>
+          <Edit2 size={16} />
+          Edit Agent
+        </button>
+      </div>
+      {/* Visual Library */}
+      <div style={{ marginBottom: 32 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 16 }}>Agent Library</div>
+        <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 16, minHeight: 130 }}>
+          {(() => {
+             const booksMatch = (agent.personalityPrompt || "").match(/\n\nRecently Read Books: You have recently read the following books and found them very interesting: (.*?)(?=\n\n|$)/);
+             const booksStr = booksMatch ? booksMatch[1] : "";
+             const books = booksStr ? booksStr.replace(/\.$/, "").split(", ").filter(Boolean) : [];
+             const bookColors = ["#FFAB91", "#FFD54F", "#FFF59D", "#DCE775", "#AED581", "#81C784", "#4DB6AC", "#4DD0E1", "#4FC3F7", "#64B5F6"];
+             if (books.length === 0) return <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", alignSelf: "flex-end" }}>No books in library.</div>;
+             return books.map((book, i) => (
+               <div key={i} style={{
+                 width: 44, height: 120, background: bookColors[i % bookColors.length],
+                 borderRadius: "4px 6px 6px 4px", border: "1px solid rgba(0,0,0,0.1)",
+                 display: "flex", alignItems: "center", justifyContent: "center",
+                 boxShadow: "inset -6px 0 16px rgba(0,0,0,0.06), 6px 6px 12px rgba(0,0,0,0.08)",
+                 position: "relative",
+                 flexShrink: 0
+               }}>
+                 <div style={{ transform: "rotate(-90deg)", whiteSpace: "nowrap", fontSize: 12, fontWeight: 700, color: "rgba(0,0,0,0.6)", width: 100, textAlign: "center" }}>
+                   {book.length > 22 ? book.substring(0, 20) + "..." : book}
+                 </div>
+                 {/* Book spine line details */}
+                 <div style={{ position: "absolute", top: 12, left: 6, right: 6, height: 2, background: "rgba(0,0,0,0.1)" }} />
+                 <div style={{ position: "absolute", bottom: 12, left: 6, right: 6, height: 2, background: "rgba(0,0,0,0.1)" }} />
+               </div>
+             ));
+          })()}
+        </div>
+        <div style={{ height: 16, background: "var(--surface-card)", borderRadius: 6, borderBottom: "4px solid rgba(0,0,0,0.05)", borderTop: "1px solid rgba(0,0,0,0.05)", boxShadow: "0 6px 12px rgba(0,0,0,0.05)", marginTop: -16, marginX: -8, zIndex: -1, position: "relative" }} />
       </div>
 
       {/* Status + Stats row */}
@@ -3798,31 +4515,51 @@ function OverviewTab({ agent, onUpdate }: { agent: AgentData; onUpdate?: () => v
         </div>
       </div>
 
-      {/* Core Nature + Permissions quick view */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1.5fr", gap: 16 }}>
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Core Nature</div>
-          <div style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic", lineHeight: 1.5 }}>
-            "{agent.personalityPrompt}"
+      {/* Access Level + Recent History */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, marginBottom: 32 }}>
+        {/* Access Level */}
+        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center" }}>
+          {(() => {
+            const hasHighPrivilege = agent.permissions.some(p => p.enabled && ["autonomous", "payments", "file_write"].includes(p.id));
+            return (
+              <>
+                <div style={{ width: 64, height: 64, borderRadius: "50%", background: hasHighPrivilege ? "#fff0f0" : "#f0fdf4", color: hasHighPrivilege ? "#ef4444" : "#22c55e", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
+                  {hasHighPrivilege ? (
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                  ) : (
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
+                  )}
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
+                  {hasHighPrivilege ? "Highly Privileged" : "Locked Down"}
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
+                  {hasHighPrivilege ? "This agent has access to sensitive autonomous or write actions." : "This agent is restricted to read-only tools and draft modes."}
+                </div>
+              </>
+            );
+          })()}
+        </div>
+
+        {/* Recent History */}
+        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
+          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Recent History</div>
+          <div style={{ flex: 1, overflowY: "auto", marginBottom: 16, minHeight: 120 }}>
+            {agent.history && agent.history.length > 0 ? (
+               agent.history.slice(-3).map((msg: any, i: number) => (
+                 <div key={i} style={{ fontSize: 13, color: "var(--text-main)", marginBottom: 8, padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
+                   <strong>{msg.role === "user" ? "You" : agent.name}:</strong> {msg.content.substring(0, 100)}{msg.content.length > 100 ? "..." : ""}
+                 </div>
+               ))
+            ) : (
+               <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>No recent history.</div>
+            )}
           </div>
-        </div>
-
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Key Permissions</div>
-          {agent.permissions.filter(p => ["autonomous", "payments", "ext_network", "file_write"].includes(p.id)).map(p => (
-            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-main)" }}>{p.label}</div>
-                <div style={{ fontSize: 11, color: "var(--text-sub)" }}>{p.description}</div>
-              </div>
-              <Toggle enabled={p.enabled} onChange={() => useWorldStore.getState().togglePermission(agent.id, p.id)} size="small" />
-            </div>
-          ))}
-        </div>
-
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16, display: "flex", flexDirection: "column", maxHeight: 300 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Quick Comms</div>
-          <ChatTab agent={agent} compact={true} />
+          <button 
+             onClick={() => onNavigate && onNavigate("chat")}
+             style={{ width: "100%", padding: "12px", borderRadius: 8, background: "#3c6663", color: "white", fontWeight: 600, border: "none", cursor: "pointer", fontSize: 13 }}>
+            Continue Chatting
+          </button>
         </div>
       </div>
     </div>
@@ -3902,6 +4639,17 @@ function IdentityTab({ agent }: { agent: AgentData }) {
       .catch(() => { });
   }, []);
 
+  const [habitats, setHabitats] = useState<any[]>([]);
+  useEffect(() => {
+    fetch('http://localhost:3001/api/habitats')
+      .then(r => r.json())
+      .then(d => setHabitats(d))
+      .catch(() => { });
+  }, []);
+
+  const selectedHabitat = habitats.find(h => h.id === (stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1));
+  const placement = selectedHabitat?.placement || { x: 0, y: 0, z: 0, rotationY: 0 };
+
   const visibleAccessories = React.useMemo(() => {
     if (!catalog || !catalog.items) return ACCESSORIES;
     return ACCESSORIES.filter(path => {
@@ -3929,27 +4677,27 @@ function IdentityTab({ agent }: { agent: AgentData }) {
           <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
             <ambientLight intensity={0.8} color="#F5E6D8" />
             <directionalLight position={[10, 20, 5]} intensity={1} />
-            <OrbitControls autoRotate autoRotateSpeed={1.5} enablePan={false} />
+            <OrbitControls enablePan={false} />
             <group position={[0, -0.6, 0]}>
-              {stagedVisuals?.habitatId ? (
-                <React.Suspense fallback={null}>
-                  <group position={[0, -0.1, 0]} scale={1.0} rotation={[0, Math.PI / 4, 0]}>
-                    <TerrariumBase habitatId={stagedVisuals.habitatId} />
-                  </group>
-                </React.Suspense>
-              ) : (
-                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.01, 0]}>
-                  <planeGeometry args={[10, 10]} />
-                  <shadowMaterial transparent opacity={0.2} />
-                </mesh>
-              )}
+              <React.Suspense fallback={null}>
+                <group 
+                  position={[-placement.x * 10.0, (-0.1 - placement.y) * 10.0, -placement.z * 10.0]} 
+                  scale={10.0} 
+                  rotation={[0, Math.PI / 4 - (placement.rotationY * Math.PI / 180), 0]}
+                >
+                  <TerrariumBase 
+                    habitatId={selectedHabitat?.id || stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1} 
+                    modelUrl={selectedHabitat?.path} 
+                  />
+                </group>
+              </React.Suspense>
               <GLBAgent
                 fileUrl={stagedVisuals?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
                 accessories={stagedVisuals?.accessories || []}
                 agentStatus={agent.status}
                 scale={1.0}
                 robeColor={stagedVisuals?.color || agent.color}
-              //forceAnimation="Long_Breathe_and_Look_Around"
+                forceAnimation="none"
               />
               {/* Fallback Accessory Stickers for Preview */}
               <React.Suspense fallback={null}>
@@ -4217,89 +4965,11 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Brain</h1>
       <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28, flexShrink: 0 }}>Shape how {agent.name} thinks, acts, and appears.</p>
 
-      {/* Advanced Provider Configuration */}
-      <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 24, marginBottom: 24, flexShrink: 0 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>Cognitive Engines (LLM)</div>
-            <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
-              Override the global API vault for explicitly isolating this agent. Keep empty to use standard globals.
-            </div>
-          </div>
-          <div style={{ textAlign: "right", background: "rgba(33,131,128,0.1)", padding: "12px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Core Model Override</div>
-            <select
-              value={selectedModel}
-              onChange={e => setSelectedModel(e.target.value)}
-              style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", cursor: "pointer", width: 220 }}
-            >
-              <option value="">Strategy: {defaultModelInfo.model}</option>
-              <optgroup label="Anthropic">
-                {brainModels.filter((m: any) => m.provider === "Anthropic").map((m: any) => (
-                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
-                ))}
-              </optgroup>
-              <optgroup label="OpenAI">
-                {brainModels.filter((m: any) => m.provider === "OpenAI").map((m: any) => (
-                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
-                ))}
-              </optgroup>
-              <optgroup label="Google Gemini">
-                {brainModels.filter((m: any) => m.provider === "Google Gemini").map((m: any) => (
-                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
-                ))}
-              </optgroup>
-            </select>
-          </div>
-        </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
-          {["OpenAI", "Anthropic", "Gemini", "Grok"].map(prov => (
-            <div key={prov}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-main)" }}>{prov} API Key</div>
-                <div
-                  style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
-                  onClick={async () => {
-                    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                    new WebviewWindow('companion_' + Date.now(), {
-                      url: `/index.html?companion=${prov.toLowerCase()}`,
-                      title: 'Setup Guide',
-                      width: 420,
-                      height: 760,
-                      x: window.screen.availWidth - 440,
-                      y: 50,
-                      alwaysOnTop: true,
-                      decorations: true,
-                    });
-                  }}
-                >
-                  Setup Guide ↗
-                </div>
-              </div>
-              <PasswordInput
-                placeholder={prov === "Anthropic" ? "sk-ant-..." : "sk-..."}
-                value={keys[prov]}
-                onChange={(e) => setKeys(prev => ({ ...prev, [prov]: e.target.value }))}
-                style={{ padding: "10px 14px", width: "100%", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--glass-light)" }}
-              />
-            </div>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
-          <button onClick={saveOverrides} disabled={saveStatus === "loading"} style={{
-            padding: "10px 24px", borderRadius: 8, border: "none", cursor: "pointer",
-            background: "#3c6663", color: "var(--surface-card)", fontWeight: 600, fontSize: 13, minWidth: 120
-          }}>
-            {saveStatus === "loading" ? "Saving..." : saveStatus === "success" ? "Saved!" : saveStatus === "error" ? "Error" : "Save Overrides"}
-          </button>
-        </div>
-      </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20, flex: 1 }}>
         <div style={{ display: "flex", gap: 12 }}>
-          {["Library", "USER.md", "PREFERENCES.md", "IDENTITY.md", "TOOLS.md", "SOUL.md"].map(f => (
+          {["Library", "Memory", "USER.md", "PREFERENCES.md", "IDENTITY.md", "TOOLS.md", "SOUL.md"].map(f => (
             <button
               key={f}
               onClick={() => setSelectedFile(f)}
@@ -4360,6 +5030,10 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
                 }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
               </div>
             </div>
+          </div>
+        ) : selectedFile === "Memory" ? (
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            <MemoryTab agent={agent} isEmbedded={true} />
           </div>
         ) : (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative" }}>
@@ -4525,7 +5199,7 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
 
 // ─── Memory Tab ──────────────────────────────────────────────────────────────
 
-function MemoryTab({ agent }: { agent: AgentData }) {
+function MemoryTab({ agent, isEmbedded }: { agent: AgentData; isEmbedded?: boolean }) {
   const memories = agent.memories || [];
   const { setAgents } = useWorldStore();
   const [newMemoryText, setNewMemoryText] = useState("");
@@ -4578,11 +5252,15 @@ function MemoryTab({ agent }: { agent: AgentData }) {
   };
 
   return (
-    <div>
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Memory</h1>
-      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28 }}>
-        What {agent.name} has learned and remembers. Memories are versioned and can be pruned.
-      </p>
+    <div style={{ height: isEmbedded ? "100%" : "auto" }}>
+      {!isEmbedded && (
+        <>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Memory</h1>
+          <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28 }}>
+            What {agent.name} has learned and remembers. Memories are versioned and can be pruned.
+          </p>
+        </>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
         {["All", "Learned", "Experience", "Preference"].map(f => (
@@ -4659,7 +5337,10 @@ function SpendTab({ agent }: { agent: AgentData }) {
   const [budget, setBudget] = useState<any>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+
+  // Filters
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("All");
 
   useEffect(() => {
     const fetchData = async () => {
@@ -4678,93 +5359,60 @@ function SpendTab({ agent }: { agent: AgentData }) {
     fetchData();
   }, [agent.id]);
 
-  const handleSave = async () => {
-    if (!budget) return;
-    setSaving(true);
-    try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('update_agent_budget', { budget });
-      setTimeout(() => setSaving(false), 800);
-    } catch (e) {
-      console.error("Failed to save budget", e);
-      setSaving(false);
-    }
-  };
-
-  const updateProp = (key: string, val: any) => {
-    if (!budget) return;
-    setBudget({ ...budget, [key]: val });
-  };
-
   if (loading) return <div style={{ color: "var(--text-sub)", fontSize: 14 }}>Loading financial data...</div>;
   if (!budget) return <div style={{ color: "var(--text-sub)", fontSize: 14 }}>Failed to map budget pipeline...</div>;
+
+  const filteredHistory = history.filter(record => {
+    const matchesSearch = record.merchant?.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          record.category?.toLowerCase().includes(searchQuery.toLowerCase());
+    
+    let isApproved = record.decision === "Approved" || record.decision === "approved" || record.decision?.Approved === null;
+    let isDenied = record.decision === "Denied" || record.decision === "denied" || record.decision?.Denied;
+    
+    let matchesStatus = true;
+    if (statusFilter === "Approved") matchesStatus = isApproved;
+    if (statusFilter === "Denied") matchesStatus = isDenied;
+
+    return matchesSearch && matchesStatus;
+  });
 
   return (
     <div style={{ paddingBottom: 64 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24 }}>
         <div>
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Financial Guardrails</h1>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Purchase Execution Log</h1>
           <p style={{ fontSize: 14, color: "var(--text-sub)", margin: 0 }}>
-            Manage limits and capabilities for {agent.name}'s autonomous spending.
+            History of {agent.name}'s simulated and executed real-world transactions.
           </p>
         </div>
-        <button onClick={handleSave} disabled={saving} style={{
-          padding: "10px 24px", borderRadius: 10, background: saving ? "#4A9E96" : "#3c6663", color: "var(--surface-card)", fontSize: 13, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "0.2s"
-        }}>
-          {saving ? "Saved ✓" : "Commit Limits"}
-        </button>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, marginBottom: 32 }}>
-        <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Virtual Card Payments</div>
-            <Toggle checked={budget.payments_enabled} onChange={v => updateProp("payments_enabled", v)} />
-          </div>
-          <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 20 }}>When disabled, the agent cannot issue any real-world merchant charges or API payments. It will simulate approvals.</div>
-
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Require Approval for New Merchants</div>
-            <Toggle checked={budget.require_approval_new_merchant} onChange={v => updateProp("require_approval_new_merchant", v)} />
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Require Approval for Subscriptions</div>
-            <Toggle checked={budget.require_approval_recurring} onChange={v => updateProp("require_approval_recurring", v)} />
-          </div>
-        </div>
-
-        <div style={{ ...glass(0.6), padding: 24, borderRadius: 16 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 20 }}>Limits & Thresholds</div>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Per-Transaction Limit ($)</div>
-            <input type="number" value={budget.per_transaction_limit_cents / 100} onChange={e => updateProp("per_transaction_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right" }} />
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Auto-Approve Threshold ($)</div>
-            <input type="number" value={budget.auto_approve_threshold_cents / 100} onChange={e => updateProp("auto_approve_threshold_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right" }} />
-          </div>
-
-          <div style={{ height: 1, background: "var(--border-subtle)", margin: "16px 0" }} />
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>Daily Budget Total ($)</div>
-            <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 100, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right" }} />
-          </div>
-        </div>
-      </div>
-
-      <div style={{ marginBottom: 24, fontSize: 16, fontWeight: 700, color: "var(--text-main)", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        Purchase Execution Log
-        <div style={{ fontSize: 12, fontWeight: 500, color: "var(--text-sub)", background: "var(--border-subtle)", padding: "4px 12px", borderRadius: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", background: "var(--glass-light)", padding: "8px 16px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.05)" }}>
           Daily Spend: ${(budget.daily_spent_cents / 100).toFixed(2)} / Monthly: ${(budget.monthly_spent_cents / 100).toFixed(2)}
         </div>
       </div>
 
-      {history.length === 0 ? (
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 20 }}>
+        <input 
+          type="text" 
+          placeholder="Search merchant or category..." 
+          value={searchQuery}
+          onChange={e => setSearchQuery(e.target.value)}
+          style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-card)", fontSize: 13, outline: "none" }}
+        />
+        <select 
+          value={statusFilter} 
+          onChange={e => setStatusFilter(e.target.value)}
+          style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-card)", fontSize: 13, outline: "none", cursor: "pointer" }}
+        >
+          <option value="All">All Statuses</option>
+          <option value="Approved">Approved</option>
+          <option value="Denied">Denied</option>
+        </select>
+      </div>
+
+      {filteredHistory.length === 0 ? (
         <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-sub)", fontSize: 14, ...glass(0.4), borderRadius: 16 }}>
-          There are no recent agent transactions on record.
+          {history.length === 0 ? "There are no recent agent transactions on record." : "No transactions match your filters."}
         </div>
       ) : (
         <div style={{ ...glass(0.6), borderRadius: 16, overflow: "hidden" }}>
@@ -4779,7 +5427,7 @@ function SpendTab({ agent }: { agent: AgentData }) {
               </tr>
             </thead>
             <tbody>
-              {history.map((record, i) => (
+              {filteredHistory.map((record, i) => (
                 <tr key={record.id || i} style={{ borderTop: "1px solid rgba(0,0,0,0.04)" }}>
                   <td style={{ padding: "14px 20px", fontSize: 13, color: "var(--text-main)" }}>{new Date(record.timestamp || Date.now()).toLocaleString()}</td>
                   <td style={{ padding: "14px 20px", fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{record.merchant}</td>
@@ -4826,28 +5474,59 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
   useEffect(() => {
     if (typeof invoke === 'function') {
-      invoke("get_conversation_history", { agentId: agent.id, limit: 100 })
-        .then((resp: any) => {
+      const fetchHistory = async () => {
+        try {
+          const resp: any = await invoke("get_conversation_history", { agentId: agent.id, limit: 100 });
+          let localMessages: any[] = [];
+          
           if (Array.isArray(resp) && resp.length > 0) {
-            const mapped = resp.map(r => ({
+            localMessages = resp.map(r => ({
               id: r.id,
               sender: r.role === "user" ? "user" : "agent",
               text: r.content,
-              time: new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              time: new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+              ts: new Date(r.timestamp).getTime()
             }));
-
-            // Retain any locally generated UI messages (like system errors) that aren't in the canonical backend
-            const localOnly = agent.chatLog.filter(msg => !mapped.some((m: any) => m.id === msg.id) && msg.text.includes("⚠️ **System"));
-            setChatLog([...mapped, ...localOnly]);
-          } else {
-            // Restore local errors if no remote history yet
-            const localOnly = agent.chatLog.filter(msg => msg.text.includes("⚠️ **System"));
-            if (localOnly.length > 0) {
-              setChatLog(localOnly);
-            }
           }
-        })
-        .catch(err => console.error("Failed to fetch chat history:", err));
+
+          // Fetch external Slack messages
+          let slackMessages: any[] = [];
+          try {
+            const allowedChannels: string[] = await invoke("get_allowed_slack_channels", { agentId: agent.id });
+            for (const channelId of allowedChannels) {
+               const msgs: any = await invoke("read_slack_messages", { agentId: agent.id, channelId, limit: 30 });
+               if (Array.isArray(msgs)) {
+                 const mapped = msgs.map(m => ({
+                   id: `slack-${m.ts}`,
+                   // Simple heuristic: if there's no user or it's empty, or if we had a way to check bot_id we would. For now assume user unless it has specific indicators, but really we just map everything as user for now or agent if we detect it's an assistant response.
+                   sender: m.user ? "user" : "agent", 
+                   text: `💬 *[Slack]* ${m.text}`,
+                   time: new Date(parseFloat(m.ts) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                   ts: parseFloat(m.ts) * 1000
+                 }));
+                 slackMessages.push(...mapped);
+               }
+            }
+          } catch (e) {
+            console.error("Slack fetch error:", e);
+          }
+
+          // Merge, sort chronologically, and deduplicate simple overlap
+          const allMessages = [...localMessages, ...slackMessages].sort((a, b) => a.ts - b.ts);
+          
+          // Retain any locally generated UI messages (like system errors) that aren't in the canonical backend
+          const localOnly = agent.chatLog.filter(msg => !allMessages.some((m: any) => m.id === msg.id) && msg.text.includes("⚠️ **System"));
+          
+          if (allMessages.length > 0 || localOnly.length > 0) {
+            setChatLog([...allMessages, ...localOnly]);
+          }
+
+        } catch (err) {
+          console.error("Failed to fetch chat history:", err);
+        }
+      };
+      
+      fetchHistory();
     }
   }, [agent.id]);
 
@@ -6247,12 +6926,18 @@ export default function App() {
           // Enrich agents with UI data
           const enrichedAgents: AgentData[] = loadedAgents.map(agent => {
             const roleInfo = AGENT_TYPE_INFO[agent.role] || AGENT_TYPE_INFO["Assistant"];
+            const vi = agent.visual_identity || {};
+            const dbPaused = (agent as any).paused === true || (agent as any).paused === 1;
+            
             return {
               ...agent,
+              paused: dbPaused,
+              visual_identity: vi,
               title: `The ${agent.role}`,
               description: roleInfo.description,
-              robeColor: roleInfo.robeColor,
-              accentColor: roleInfo.accentColor,
+              robeColor: vi.robeColor || vi.color || roleInfo.robeColor,
+              accentColor: vi.accentColor || vi.color || roleInfo.accentColor,
+              color: vi.color || roleInfo.color,
               position: [Math.random() * 4 - 2, 0, Math.random() * 4 - 2],
               targetPosition: [Math.random() * 4 - 2, 0, Math.random() * 4 - 2],
               currentAction: "idle",

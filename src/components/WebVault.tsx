@@ -1,0 +1,139 @@
+import React, { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { PasswordInput } from "./shared/PasswordInput";
+import { Globe, Plus, Trash2 } from "lucide-react";
+
+export function WebVault() {
+  const [credentials, setCredentials] = useState<{ domain: string, username: string }[]>([]);
+  const [isAdding, setIsAdding] = useState(false);
+  const [domain, setDomain] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("web_vault_credentials");
+      if (stored) {
+        setCredentials(JSON.parse(stored));
+      }
+    } catch (e) {
+      console.error("Failed to parse web vault credentials", e);
+    }
+    setLoading(false);
+  }, []);
+
+  const handleSave = async () => {
+    if (!domain.trim() || !username.trim() || !password.trim()) {
+      setError("Please fill in all fields.");
+      return;
+    }
+
+    try {
+      // Store in keychain: key format: web_{domain}_{username}
+      const key = `web_${domain.trim()}_${username.trim()}`;
+      await invoke("store_secret_cmd", { key, value: password });
+      
+      const newCreds = [...credentials, { domain: domain.trim(), username: username.trim() }];
+      setCredentials(newCreds);
+      localStorage.setItem("web_vault_credentials", JSON.stringify(newCreds));
+      
+      setDomain("");
+      setUsername("");
+      setPassword("");
+      setIsAdding(false);
+      setError("");
+    } catch (e: any) {
+      setError(e?.toString() || "Failed to save credential securely.");
+    }
+  };
+
+  const handleDelete = async (domain: string, username: string) => {
+    try {
+      const newCreds = credentials.filter(c => c.domain !== domain || c.username !== username);
+      setCredentials(newCreds);
+      localStorage.setItem("web_vault_credentials", JSON.stringify(newCreds));
+    } catch (e: any) {
+      console.error(e);
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 12, padding: "18px 20px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-main)" }}>
+            <Globe size={18} />
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Web Credentials</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>Securely store website logins for your agents</div>
+          </div>
+        </div>
+        <button onClick={() => setIsAdding(!isAdding)} style={{
+          display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", border: "1px solid var(--border-subtle)", borderRadius: 7,
+          background: "transparent", fontSize: 12, fontWeight: 600, cursor: "pointer", color: "var(--text-main)"
+        }}>
+          <Plus size={14} /> Add Login
+        </button>
+      </div>
+
+      {isAdding && (
+        <div style={{ background: "var(--background)", padding: 16, borderRadius: 8, marginBottom: 16, border: "1px solid var(--border-subtle)" }}>
+          <div style={{ display: "flex", gap: 12, marginBottom: 12 }}>
+            <input 
+              value={domain} onChange={e => setDomain(e.target.value)}
+              placeholder="Domain (e.g. amazon.com)"
+              style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border-subtle)", background: "var(--surface-card)", fontSize: 13, color: "var(--text-main)", outline: "none" }}
+            />
+            <input 
+              value={username} onChange={e => setUsername(e.target.value)}
+              placeholder="Username / Email"
+              style={{ flex: 1, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border-subtle)", background: "var(--surface-card)", fontSize: 13, color: "var(--text-main)", outline: "none" }}
+            />
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <PasswordInput
+              value={password} onChange={e => setPassword(e.target.value)}
+              placeholder="Password"
+              style={{ flex: 2, padding: "8px 12px", borderRadius: 6, border: "1px solid var(--border-subtle)", background: "var(--surface-card)", fontSize: 13, color: "var(--text-main)" }}
+            />
+            <button onClick={handleSave} style={{
+              flex: 1, padding: "8px 16px", background: "#3c6663", color: "#fff", border: "none",
+              borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: "pointer"
+            }}>
+              Save Securely
+            </button>
+          </div>
+          {error && <div style={{ color: "#ef4444", fontSize: 12, marginTop: 10 }}>{error}</div>}
+        </div>
+      )}
+
+      {credentials.length > 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {credentials.map((cred, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--background)", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <Globe size={16} color="var(--text-sub)" />
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{cred.domain}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)" }}>{cred.username}</div>
+                </div>
+              </div>
+              <button onClick={() => handleDelete(cred.domain, cred.username)} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-sub)" }}>
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ textAlign: "center", padding: "20px", color: "var(--text-sub)", fontSize: 13 }}>
+          No web credentials stored yet.
+        </div>
+      )}
+    </div>
+  );
+}
