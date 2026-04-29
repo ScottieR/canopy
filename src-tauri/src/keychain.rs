@@ -115,7 +115,8 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
-        "GROK_API_KEY"
+        "XAI_API_KEY",   // current xAI env var name
+        "GROK_API_KEY",  // legacy xAI env var name (some users still have this)
     ];
 
     for path in paths_to_check {
@@ -135,16 +136,22 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
                                 // strip quotes if any
                                 val = val.trim_matches('"').trim_matches('\'').to_string();
                                 
-                                // map internal name
+                                // Map env var name → short provider id used by ProvidersVault.
+                                // Both XAI_API_KEY and GROK_API_KEY map to "grok" so ProvidersVault
+                                // stores them as XAI_API_KEY via getKeyName("grok").
                                 let provider = match *key {
-                                    "OPENAI_API_KEY" => "openai",
+                                    "OPENAI_API_KEY"    => "openai",
                                     "ANTHROPIC_API_KEY" => "anthropic",
-                                    "GEMINI_API_KEY" => "gemini",
-                                    "GROK_API_KEY" => "grok",
+                                    "GEMINI_API_KEY"    => "gemini",
+                                    "XAI_API_KEY"       => "grok",
+                                    "GROK_API_KEY"      => "grok",
                                     _ => continue,
                                 };
-                                
-                                discovered.insert(provider.to_string(), val);
+
+                                // Don't overwrite a key already discovered (XAI wins over GROK)
+                                if !discovered.contains_key(provider) {
+                                    discovered.insert(provider.to_string(), val);
+                                }
                             }
                         }
                     }
