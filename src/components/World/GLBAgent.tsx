@@ -70,16 +70,22 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     // GLB EXPORT PATCH: Track renaming due to export
     const idleAnim = names.find(n => n === "Long_Breathe_and_Look_Around") || names[0];
 
-    let activeActionName = idleAnim;
+    let activeActionName: string | null = idleAnim;
 
     // Explicit override for the Identity Builder
-    if (forceAnimation && names.includes(forceAnimation)) {
+    if (forceAnimation === "none") {
+      activeActionName = null;
+    } else if (forceAnimation && names.includes(forceAnimation)) {
       activeActionName = forceAnimation;
     } else if (forceAnimation) {
       const fuzzy = names.find(n => n.includes("Breathe") || n.includes("Idle"));
       if (fuzzy) activeActionName = fuzzy;
     }
-    const action = actions[activeActionName];
+    
+    let action: THREE.AnimationAction | null = null;
+    if (activeActionName) {
+      action = actions[activeActionName] || null;
+    }
 
     if (action) {
       // Advance our global phase clock by 100ms for each spawned agent

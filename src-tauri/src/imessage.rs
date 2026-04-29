@@ -119,7 +119,7 @@ fn open_imessage_db() -> Result<Connection, String> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
         .map_err(|e| {
-            error!("Failed to open iMessage database: {}", e);
+            debug!("Failed to open iMessage database: {}", e);
             format!(
                 "Cannot access iMessage database. Error: {}. Grant Full Disk Access in System Settings > Privacy & Security > Full Disk Access.",
                 e
@@ -388,7 +388,7 @@ pub async fn check_full_disk_access() -> Result<bool, String> {
             Ok(true)
         }
         Err(e) => {
-            warn!("Full Disk Access check failed: {}", e);
+            debug!("Full Disk Access check failed: {}", e);
             Err(format!(
                 "Full Disk Access required. Go to System Settings > Privacy & Security > Full Disk Access and add Claude. Error: {}",
                 e

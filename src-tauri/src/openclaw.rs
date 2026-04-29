@@ -2411,6 +2411,62 @@ pub async fn boot_sync_agents(
             tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
         }
     }
+    // ── Configure Per-Agent Slack Applications ──────────────────────────────
+    let mut slack_accounts = serde_json::Map::new();
+    let mut slack_bindings = Vec::new();
+    
+    for agent in &active_agents {
+        let app_token = crate::keychain::get_secret(&format!("agent_{}_slack_app_token", agent.id));
+        let bot_token = crate::keychain::get_secret(&format!("agent_{}_slack_bot_token", agent.id));
+        
+        if let (Ok(app), Ok(bot)) = (app_token, bot_token) {
+            let app = app.trim().to_string();
+            let bot = bot.trim().to_string();
+            
+            if !app.is_empty() && !bot.is_empty() {
+                let mut account = serde_json::Map::new();
+                account.insert("appToken".to_string(), serde_json::Value::String(app));
+                account.insert("botToken".to_string(), serde_json::Value::String(bot));
+                slack_accounts.insert(agent.id.clone(), serde_json::Value::Object(account));
+                
+                slack_bindings.push(serde_json::json!({
+                    "agentId": agent.id,
+                    "match": {
+                        "channel": "slack",
+                        "accountId": agent.id
+                    }
+                }));
+            }
+        }
+    }
+    
+    // Inject into openclaw.json
+    let patch_slack_script = format!(
+        r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.channels=c.channels||{{}};
+c.channels.slack=c.channels.slack||{{}};
+c.channels.slack.enabled={};
+c.channels.slack.mode='socket';
+c.channels.slack.groupPolicy='open';
+c.channels.slack.accounts={};
+c.bindings={};
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+console.log('slack config patched');
+"#,
+        if slack_accounts.is_empty() { "false" } else { "true" },
+        serde_json::to_string(&slack_accounts).unwrap_or_else(|_| "{}".to_string()),
+        serde_json::to_string(&slack_bindings).unwrap_or_else(|_| "[]".to_string())
+    );
+
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_slack_script])
+            .output(),
+    ).await;
+    tracing::info!("boot_sync_agents: updated per-agent Slack bindings");
 
     tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
 

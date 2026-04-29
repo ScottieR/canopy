@@ -15,10 +15,10 @@ import React from "react";
   useGLTF.preload(`/models/lobsters/${role}.glb`);
 });
 
-export function TerrariumBase({ index = 0, habitatId, onNavMeshReady }: { index?: number, habitatId?: number, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
+export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }: { index?: number, habitatId?: number, modelUrl?: string, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
   const modelNum = habitatId || ((index % 9) + 1);
-  const modelUrl = `/models/habitats/Habitat_${modelNum}.glb`;
-  const { scene } = useGLTF(modelUrl);
+  const finalModelUrl = modelUrl || `/models/habitats/Habitat_${modelNum}.glb`;
+  const { scene } = useGLTF(finalModelUrl);
 
   // Clone the scene so we can instance it multiple times across the grid
   const clonedScene = useMemo(() => {

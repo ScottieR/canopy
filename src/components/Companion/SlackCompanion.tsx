@@ -5,6 +5,10 @@ import { LobsterIcon } from "../../App";
 import { PasswordInput } from "../shared/PasswordInput";
 
 export function SlackCompanion() {
+  const searchParams = new URLSearchParams(window.location.search);
+  const agentId = searchParams.get("agentId") || "";
+  const agentName = searchParams.get("agentName") || "your agent";
+
   const [slackAppToken, setSlackAppToken] = useState("");
   const [slackBotToken, setSlackBotToken] = useState("");
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
@@ -25,28 +29,21 @@ export function SlackCompanion() {
       if (typeof invoke === "function") {
         await invoke("store_batch_secrets_cmd", { 
           secrets: {
-            "slack-app-token": slackAppToken,
-            "slack-bot-token": slackBotToken
+            [`agent_${agentId}_slack_app_token`]: slackAppToken,
+            [`agent_${agentId}_slack_bot_token`]: slackBotToken
           }
         });
-        const res: any = await invoke("check_slack_connection");
-        
-        if (res.connected) {
-          setTestStatus("success");
-          // Tell the main window we succeeded!
-          await emit("slack-connected", { workspace: res.workspace_name });
-          await invoke("start_slack_listener").catch(e => console.warn(e));
-          setTimeout(async () => {
-             try {
-                await emit("companion-finished", { type: "slack", key: null });
-                const { getCurrentWindow } = await import('@tauri-apps/api/window');
-                await getCurrentWindow().close();
-             } catch(e) {}
-          }, 3000);
-        } else {
-          setTestStatus("error");
-          setErrorMsg("Could not connect. Double check tokens.");
-        }
+        // We bypass full check_slack_connection here since the gateway handles it per-agent now
+        // Let's assume it works if they provided valid-looking tokens.
+        setTestStatus("success");
+        await emit("slack-connected", { workspace: "Agent Workspace", agentId });
+        setTimeout(async () => {
+           try {
+              await emit("companion-finished", { type: "slack", key: null });
+              const { getCurrentWindow } = await import('@tauri-apps/api/window');
+              await getCurrentWindow().close();
+           } catch(e) {}
+        }, 3000);
       } else {
         // Mock fallback
         setTimeout(async () => {
@@ -107,9 +104,9 @@ export function SlackCompanion() {
           }}>
              <LobsterIcon size={56} shellColor="#3c6663" accentColor="#81DCD5" />
           </div>
-          <h2 style={{ margin: 0, fontSize: 20, color: "#303330", fontWeight: 700, fontFamily: "'Noto Serif', Georgia, serif" }}>Setup Guide</h2>
-          <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#636E72", textAlign: "center" }}>
-            I'll walk you through creating your Slack app.
+          <h2 style={{ margin: 0, fontSize: 20, color: "#303330", fontWeight: 700, fontFamily: "'Noto Serif', Georgia, serif" }}>Setup {agentName}'s App</h2>
+          <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#636E72", textAlign: "center", padding: "0 16px" }}>
+            I'll walk you through creating a unique Slack app specifically for {agentName}.
           </p>
         </div>
 

@@ -2,7 +2,9 @@ import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 import { ProvidersVault } from "./ProvidersVault";
+import { WebVault } from "./WebVault";
 import { PasswordInput } from "./shared/PasswordInput";
+import { Link, Calendar, HardDrive, Github, MessageCircle, Cloud, Database } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -275,7 +277,7 @@ function PairingPanel() {
   return (
     <div>
       <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8, lineHeight: 1.5 }}>
-        DM your Slack bot the word <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3 }}>pair</code> and paste the code it replies with here.
+        Now go to Slack and send your bot a direct message with the word <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3 }}>pair</code>, then return and enter the code it replies with here.
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input
@@ -409,6 +411,17 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
   const [discordLoading, setDiscordLoading] = useState(false);
   const [showTelegramInput, setShowTelegramInput] = useState(false);
   const [showDiscordInput, setShowDiscordInput] = useState(false);
+
+  const [connectors, setConnectors] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch('http://localhost:3001/api/connectors')
+      .then(res => res.json())
+      .then(data => {
+         if (Array.isArray(data)) setConnectors(data);
+      })
+      .catch(console.error);
+  }, []);
 
   const checkStatuses = useCallback(async () => {
     // Slack
@@ -614,6 +627,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               subtitle="Global API keys used by all agents. Individual agents can override with their own keys in their Overview tab."
             />
             <ProvidersVault />
+            <WebVault />
           </>
         )}
 
@@ -751,6 +765,31 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
                 </div>
               </div>
             )}
+
+            {/* Dynamic Global Connectors from Admin */}
+            {connectors.filter(c => c.isVisible && c.isGlobal && !['slack', 'gmail', 'imessage', 'filesystem', 'telegram', 'discord'].includes(c.id)).map(c => {
+              let IconComponent: any = Link;
+              if (c.icon === 'calendar') IconComponent = Calendar;
+              if (c.icon === 'hard-drive') IconComponent = HardDrive;
+              if (c.icon === 'github') IconComponent = Github;
+              if (c.icon === 'send' || c.icon === 'message-circle') IconComponent = MessageCircle;
+              if (c.icon === 'cloud') IconComponent = Cloud;
+              if (c.icon === 'database') IconComponent = Database;
+
+              return (
+                <ServiceCard
+                  key={c.id}
+                  icon={<IconComponent size={20} color="#3c6663" />}
+                  name={c.name}
+                  description={c.subtitle}
+                  status={{ connected: false }} // In a real scenario, this would check global settings
+                  agentCount={agentCount(c.id)}
+                  onConnect={() => {
+                     alert(`Global setup for ${c.name} is coming soon!`);
+                  }}
+                />
+              );
+            })}
 
           </div>
         )}
