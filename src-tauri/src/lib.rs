@@ -164,6 +164,9 @@ pub fn run() {
             openclaw::preflight_cleanup,
             openclaw::boot_sync_agents,
             openclaw::get_available_models,
+            openclaw::read_workspace_file,
+            openclaw::write_workspace_file,
+            openclaw::set_preferences_template,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,

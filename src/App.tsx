@@ -748,6 +748,9 @@ function OnboardingWizard() {
   const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "starting" | "ready">("checking");
   const [engineError, setEngineError] = useState("");
 
+  const [userName, setUserName] = useState("");
+  const [userContext, setUserContext] = useState("");
+
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [agentName, setAgentName] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -800,6 +803,14 @@ function OnboardingWizard() {
       try {
         const tok = await invoke<string>("get_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
         setWsCalConnected(!!tok && tok.length > 10);
+      } catch {}
+
+      try {
+        const profile = await invoke<any>("get_user_profile");
+        if (profile) {
+            setUserName(profile.name || "");
+            setUserContext(profile.working_hours || "");
+        }
       } catch {}
     })();
   }, []);
@@ -1374,7 +1385,7 @@ function OnboardingWizard() {
                 Your agents live here. Let's set up your first one!
               </p>
               <button
-                onClick={() => setStep(1)}
+                onClick={() => setStep(0.5)}
                 style={{
                   pointerEvents: "auto",
                   padding: "18px 48px", borderRadius: 16, border: "none",
@@ -1390,6 +1401,71 @@ function OnboardingWizard() {
             </div>
           </div>
         </>
+      )}
+
+      {/* Step 0.5: User Info */}
+      {step === 0.5 && (
+        <div style={{ maxWidth: 640, width: "90%", background: "var(--surface-card)", padding: 40, borderRadius: 24, boxShadow: "0 12px 48px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}>
+          <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
+            First, who are you?
+          </h1>
+          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
+            Tell the agents what to call you and a little bit about what you do, so they can better assist you. You can change this later.
+          </p>
+
+          <div style={{ marginBottom: 24 }}>
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>What should we call you?</label>
+            <input
+              type="text"
+              placeholder="e.g. Scottie"
+              value={userName}
+              onChange={e => setUserName(e.target.value)}
+              style={{ width: "100%", padding: "16px", borderRadius: 12, border: "1px solid #E2E8F0", fontSize: 16, outline: "none", background: "#F8FAFC" }}
+            />
+          </div>
+
+          <div style={{ marginBottom: 32 }}>
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>What would you like your agents to know about you?</label>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8 }}>(Optional. Your agents can also learn over time.)</div>
+            <textarea
+              placeholder="e.g. I run a short-term rental business and do a lot of software engineering..."
+              value={userContext}
+              onChange={e => setUserContext(e.target.value)}
+              rows={3}
+              style={{ width: "100%", padding: "16px", borderRadius: 12, border: "1px solid #E2E8F0", fontSize: 16, outline: "none", background: "#F8FAFC", resize: "none" }}
+            />
+          </div>
+
+          <button
+            disabled={!userName.trim()}
+            onClick={async () => {
+              try {
+                await invoke("save_user_profile", {
+                  profile: {
+                    name: userName,
+                    email: "",
+                    phone: "",
+                    timezone: "UTC",
+                    working_hours: userContext,
+                    communication_tone: "Professional",
+                    global_directives: "Always cite your sources and optimize for safety."
+                  }
+                });
+              } catch (e) {
+                console.warn("Failed to save user profile", e);
+              }
+              setStep(1);
+            }}
+            style={{
+              padding: "16px 32px", borderRadius: 12, border: "none",
+              background: userName.trim() ? "var(--text-main)" : "#CBD5E1",
+              color: "white", fontSize: 16, fontWeight: 600, cursor: userName.trim() ? "pointer" : "not-allowed",
+              alignSelf: "flex-end"
+            }}
+          >
+            Continue
+          </button>
+        </div>
       )}
 
       {/* Step 2: Choose Role */}
@@ -2709,9 +2785,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
     { id: "chat", label: "Chat", icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
     { id: "identity", label: "3D Identity", icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
     { id: "personality", label: "Brain", icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
-    { id: "permissions", label: "Permissions", icon: <path d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /> },
     { id: "connections", label: "Connections", icon: <path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /> },
-    { id: "memory", label: "Memory", icon: <path d="M4 7v10c0 2 1 3 3 3h10c2 0 3-1 3-3V7M4 7c0-2 1-3 3-3h10c2 0 3 1 3 3M4 7h16M10 11h4" /> },
     { id: "spend", label: "Spend", icon: <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" /> },
   ];
 
@@ -3036,12 +3110,10 @@ function ArchitectView({ agent }: { agent: AgentData }) {
         </div>
       ) : (
         <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}>
-          {architectTab === "overview" && <OverviewTab key={agent.id} agent={agent} onUpdate={() => setShowUpdateTip(true)} />}
+          {architectTab === "overview" && <OverviewTab key={agent.id} agent={agent} onUpdate={() => setShowUpdateTip(true)} onNavigate={setArchitectTab} />}
           {architectTab === "identity" && <IdentityTab key={agent.id} agent={agent} />}
           {architectTab === "personality" && <PersonalityTab key={agent.id} agent={agent} />}
-          {architectTab === "permissions" && <PermissionsTab key={agent.id} agent={agent} />}
           {architectTab === "connections" && <ConnectionsTab key={agent.id} agent={agent} />}
-          {architectTab === "memory" && <MemoryTab key={agent.id} agent={agent} />}
           {architectTab === "spend" && <SpendTab key={agent.id} agent={agent} />}
           {architectTab === "chat" && <ChatTab key={agent.id} agent={agent} />}
         </div>
@@ -3996,6 +4068,52 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
   const [customBookInput, setCustomBookInput] = useState("");
   const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
 
+  const [selectedFile, setSelectedFile] = useState("Library");
+  const [fileContent, setFileContent] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [fileSaveStatus, setFileSaveStatus] = useState("");
+
+  useEffect(() => {
+    if (selectedFile === "Library") return;
+    setFileSaveStatus("");
+    invoke<string>("read_workspace_file", { agentId: agent.id, filename: selectedFile })
+      .then(content => setFileContent(content))
+      .catch(err => {
+        console.warn("Failed to read file", err);
+        setFileContent("");
+      });
+  }, [agent.id, selectedFile]);
+
+  const handleSaveFile = async () => {
+    setIsSaving(true);
+    setFileSaveStatus("Saving...");
+    try {
+      await invoke("write_workspace_file", { agentId: agent.id, filename: selectedFile, content: fileContent });
+      setFileSaveStatus("Saved successfully!");
+      setTimeout(() => setFileSaveStatus(""), 3000);
+    } catch (e) {
+      setFileSaveStatus("Error saving file: " + e);
+    }
+    setIsSaving(false);
+  };
+
+  const savePersonalityChanges = async (newRecentlyRead: string[]) => {
+    try {
+      if (typeof invoke === 'function') {
+        let finalPrompt = prompt;
+        if (newRecentlyRead.length > 0) {
+          finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${newRecentlyRead.join(', ')}.`;
+        }
+        await invoke("update_agent_personality", {
+          agentId: agent.id,
+          personality: { ...agent.personality, custom_instructions: finalPrompt }
+        });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   // ── Model list for the Brain tab — sourced from Rust, not localhost:3001 ─────
   const [brainModels, setBrainModels] = useState<any[]>([]);
   useEffect(() => {
@@ -4179,84 +4297,99 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        {/* Training Books */}
-        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Training Books</div>
-          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>These books are injected into the agent's context to subtly shift their default decision making.</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 20, flex: 1 }}>
+        <div style={{ display: "flex", gap: 12 }}>
+          {["Library", "USER.md", "PREFERENCES.md", "IDENTITY.md", "TOOLS.md", "SOUL.md"].map(f => (
+            <button
+              key={f}
+              onClick={() => setSelectedFile(f)}
+              style={{
+                padding: "8px 16px", borderRadius: 8, border: "none",
+                background: selectedFile === f ? "#218380" : "rgba(0,0,0,0.05)",
+                color: selectedFile === f ? "#FFF" : "var(--text-main)",
+                fontWeight: 600, cursor: "pointer", fontSize: 13
+              }}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
 
-          <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
-              {recentlyRead.length === 0 && <span style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic" }}>No books assigned.</span>}
-              {recentlyRead.map(book => (
-                <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "var(--surface-card)", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
-                  {book}
-                  <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => setRecentlyRead(recentlyRead.filter(b => b !== book))}>×</span>
-                </div>
-              ))}
-            </div>
+        {selectedFile === "Library" ? (
+          <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column", flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Training Books</div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>These books are injected into the agent's context to subtly shift their default decision making.</div>
 
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                value={customBookInput}
-                onChange={e => setCustomBookInput(e.target.value)}
-                placeholder="Type a custom book title..."
-                style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }}
-                onKeyDown={e => {
-                  if (e.key === "Enter" && customBookInput.trim()) {
-                    setRecentlyRead([...recentlyRead, customBookInput.trim()]);
+            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+                {recentlyRead.length === 0 && <span style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic" }}>No books assigned.</span>}
+                {recentlyRead.map(book => (
+                  <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "var(--surface-card)", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                    {book}
+                    <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => {
+                        const nextRead = recentlyRead.filter(b => b !== book);
+                        setRecentlyRead(nextRead);
+                        savePersonalityChanges(nextRead);
+                    }}>×</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
+                <input
+                  value={customBookInput}
+                  onChange={e => setCustomBookInput(e.target.value)}
+                  placeholder="Type a custom book title..."
+                  style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && customBookInput.trim()) {
+                      const nextRead = [...recentlyRead, customBookInput.trim()];
+                      setRecentlyRead(nextRead);
+                      setCustomBookInput("");
+                      savePersonalityChanges(nextRead);
+                    }
+                  }}
+                />
+                <button onClick={() => {
+                  if (customBookInput.trim()) {
+                    const nextRead = [...recentlyRead, customBookInput.trim()];
+                    setRecentlyRead(nextRead);
                     setCustomBookInput("");
+                    savePersonalityChanges(nextRead);
                   }
-                }}
-              />
-              <button onClick={() => {
-                if (customBookInput.trim()) {
-                  setRecentlyRead([...recentlyRead, customBookInput.trim()]);
-                  setCustomBookInput("");
-                }
-              }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+                }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+              </div>
             </div>
           </div>
-        </div>
-
-        {/* Personality Prompt */}
-        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Personality Seed</div>
-          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>Describe how this agent should behave. This shapes their decision-making and communication style.</div>
-          <textarea value={prompt} onChange={e => setPrompt(e.target.value)} rows={6} style={{
-            flex: 1, padding: 12, borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)",
-            background: "var(--surface-base)", fontSize: 13, fontFamily: "inherit",
-            color: "var(--text-main)", resize: "none", outline: "none", lineHeight: 1.6,
-          }} />
-          <button
-            onClick={async () => {
-              const btn = document.getElementById('save-pers-btn');
-              if (btn) btn.innerText = "Saving...";
-              try {
-                if (typeof invoke === 'function') {
-                  let finalPrompt = prompt;
-                  if (recentlyRead.length > 0) {
-                    finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
-                  }
-                  await invoke("update_agent_personality", {
-                    agentId: agent.id,
-                    personality: { ...agent.personality, custom_instructions: finalPrompt }
-                  });
-                  if (btn) btn.innerText = "Saved!";
-                }
-              } catch (e) {
-                if (btn) btn.innerText = "Error";
-              }
-              setTimeout(() => { if (btn) btn.innerText = "Save Changes"; }, 2000);
-            }}
-            id="save-pers-btn"
-            style={{
-              marginTop: 12, padding: "8px 16px", borderRadius: 8, border: "none",
-              background: "#3c6663", color: "var(--surface-card)", fontSize: 12, fontWeight: 600,
-              cursor: "pointer", fontFamily: "inherit", alignSelf: "flex-end",
-              transition: "all 0.2s ease"
-            }}>Save Changes</button>
-        </div>
+        ) : (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative" }}>
+            <textarea
+              value={fileContent}
+              onChange={e => setFileContent(e.target.value)}
+              style={{
+                flex: 1, width: "100%", padding: 20, borderRadius: 12,
+                border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-bg)",
+                color: "var(--text-main)", fontSize: 14, fontFamily: "'Fira Code', monospace",
+                resize: "none", outline: "none", minHeight: 300
+              }}
+            />
+            <div style={{ position: "absolute", bottom: 20, right: 20, display: "flex", alignItems: "center", gap: 12 }}>
+              {fileSaveStatus && <span style={{ fontSize: 13, color: fileSaveStatus.includes("Error") ? "#E57373" : "#218380", fontWeight: 600 }}>{fileSaveStatus}</span>}
+              <button
+                onClick={handleSaveFile}
+                disabled={isSaving}
+                style={{
+                  padding: "10px 24px", borderRadius: 8, border: "none",
+                  background: "#3c6663", color: "#FFF", fontWeight: 700,
+                  cursor: isSaving ? "not-allowed" : "pointer", fontSize: 14,
+                  boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
+                }}
+              >
+                {isSaving ? "Saving..." : "Save File"}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
     </div>
@@ -6043,6 +6176,17 @@ export default function App() {
   useEffect(() => {
     const loadAgents = async () => {
       try {
+        // Sync preferences template from admin API to Rust before boot
+        try {
+          const settingsRes = await fetch('http://localhost:3001/api/settings');
+          const settings = await settingsRes.json();
+          if (settings.preferencesTemplate) {
+            await invoke("set_preferences_template", { content: settings.preferencesTemplate });
+          }
+        } catch (e) {
+          console.warn("Could not fetch preferences template from admin API:", e);
+        }
+
         const loadedAgents = await invoke("list_agents") as Agent[];
 
         if (loadedAgents.length === 0) {
