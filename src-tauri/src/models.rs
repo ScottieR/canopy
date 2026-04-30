@@ -146,15 +146,40 @@ pub struct AgentPersonality {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentCapabilities {
+    #[serde(default)]
     pub ext_network: bool,
+    #[serde(default)]
     pub int_network: bool,
+    #[serde(default)]
     pub autonomous: bool,
+    #[serde(default)]
     pub scheduled: bool,
+    #[serde(default)]
     pub memory_write: bool,
+    #[serde(default)]
     pub file_read: bool,
+    #[serde(default)]
     pub file_write: bool,
+    #[serde(default)]
     pub payments: bool,
+    #[serde(default)]
     pub spend_auto: bool,
+
+    // OpenClaw Skills
+    #[serde(default)]
+    pub browser: bool,
+    #[serde(default)]
+    pub proxy: bool,
+    #[serde(default)]
+    pub vision: bool,
+    #[serde(default)]
+    pub canvas: bool,
+    #[serde(default)]
+    pub coding: bool,
+    #[serde(default)]
+    pub gog: bool,
+    #[serde(default)]
+    pub summarize: bool,
 }
 
 impl Default for AgentCapabilities {
@@ -169,6 +194,13 @@ impl Default for AgentCapabilities {
             file_write: false,
             payments: false,
             spend_auto: false,
+            browser: true,        // Default OpenClaw skills
+            proxy: false,         // Default OpenClaw doesn't include proxy
+            vision: false,
+            canvas: false,
+            coding: true,
+            gog: true,
+            summarize: true,
         }
     }
 }

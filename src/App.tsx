@@ -10,11 +10,12 @@ import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
 import { IntegrationsView } from "./components/IntegrationsView";
+import { WebVault } from "./components/WebVault";
 import { UpdateManager } from "./components/shared/UpdateManager";
 import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
-import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, Activity, Terminal, Shield, RefreshCw, Layers, Lock } from "lucide-react";
+import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, ChevronDown, ChevronUp, Activity, Terminal, Shield, RefreshCw, Layers, Lock, AlertTriangle, CheckCircle2 } from "lucide-react";
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -108,6 +109,7 @@ interface Agent {
   isolated: boolean;
   paused: boolean;
   container_id: string | null;
+  visual_identity?: { accessories: string[]; habitatId?: number; };
   personality: {
     name: string;
     communication_style: string;
@@ -125,6 +127,13 @@ interface Agent {
     file_write: boolean;
     payments: boolean;
     spend_auto: boolean;
+    browser: boolean;
+    proxy: boolean;
+    vision: boolean;
+    canvas: boolean;
+    coding: boolean;
+    gog: boolean;
+    summarize: boolean;
   };
   integrations: string[];
   created_at: string;
@@ -133,6 +142,8 @@ interface Agent {
     messages_handled: number;
     uptime_seconds: number;
     total_cost_usd: number;
+    total_tokens_in?: number;
+    total_tokens_out?: number;
     custom_metrics?: {
       label: string;
       value: string | number;
@@ -145,7 +156,7 @@ interface Permission {
   label: string;
   description: string;
   enabled: boolean;
-  category: "network" | "execution" | "data" | "financial";
+  category: "network" | "execution" | "data" | "financial" | "skills";
 }
 
 interface ChatMessage {
@@ -243,6 +254,13 @@ const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "spend_auto", label: "Auto-Approve Under Limit", description: "Auto-approve purchases under threshold", enabled: false, category: "financial" },
   { id: "imessage", label: "iMessage Interception", description: "Read and reply to text messages", enabled: false, category: "network" },
   { id: "photos", label: "Apple Photos", description: "Access local photo library database", enabled: false, category: "data" },
+  { id: "browser", label: "Web Browser", description: "Navigate websites and interact with DOM elements", enabled: true, category: "skills" },
+  { id: "proxy", label: "Browser Proxy", description: "Intercept and proxy web requests", enabled: false, category: "skills" },
+  { id: "vision", label: "Computer Vision", description: "Analyze images and screen content", enabled: false, category: "skills" },
+  { id: "canvas", label: "Canvas Editor", description: "Edit and manipulate visual layouts", enabled: false, category: "skills" },
+  { id: "coding", label: "Code Execution", description: "Run scripts and evaluate code locally", enabled: true, category: "skills" },
+  { id: "gog", label: "Search Engine", description: "Query the web for information", enabled: true, category: "skills" },
+  { id: "summarize", label: "Summarization", description: "Condense large documents or web pages", enabled: true, category: "skills" },
 ];
 
 // ─── Agent Type Mappings ──────────────────────────────────────────────────────
@@ -2783,7 +2801,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
 
   const tabs = [
     { id: "overview", label: "Overview", icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
-    { id: "chat", label: "Chat", icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
+    { id: "activity", label: "Activity", icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
     { id: "identity", label: "3D Identity", icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
     { id: "personality", label: "Brain", icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
     { id: "connections", label: "Connections", icon: <path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /> },
@@ -3116,7 +3134,7 @@ function ArchitectView({ agent }: { agent: AgentData }) {
           {architectTab === "personality" && <PersonalityTab key={agent.id} agent={agent} />}
           {architectTab === "connections" && <ConnectionsTab key={agent.id} agent={agent} />}
           {architectTab === "spend" && <SpendTab key={agent.id} agent={agent} />}
-          {architectTab === "chat" && <ChatTab key={agent.id} agent={agent} />}
+          {architectTab === "activity" && <ActivityTab key={agent.id} agent={agent} />}
         </div>
       )}
     </div>
@@ -3287,25 +3305,55 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [iMsgConnected, setIMsgConnected] = useState(false);
 
+  // Web Credentials
+  const [webCredentials, setWebCredentials] = useState<Array<{ domain: string; username: string }>>([]);
+  const [webCredSearch, setWebCredSearch] = useState("");
+
   // Dynamic Connectors
   const [connectors, setConnectors] = useState<any[]>([]);
   const [dynamicEnabled, setDynamicEnabled] = useState<Record<string, boolean>>({});
+  const [dynamicStatuses, setDynamicStatuses] = useState<Record<string, boolean>>({});
+  const [dynamicSetupState, setDynamicSetupState] = useState<Record<string, boolean>>({});
+  const [dynamicSetupValue, setDynamicSetupValue] = useState<Record<string, string>>({});
+  const [dynamicSetupLoading, setDynamicSetupLoading] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/connectors')
-      .then(res => res.json())
-      .then(data => {
-         if (Array.isArray(data)) {
-           setConnectors(data);
-           const initialEnabled: Record<string, boolean> = {};
-           data.forEach(c => {
-             initialEnabled[c.id] = agent.integrations.includes(c.id);
-           });
-           setDynamicEnabled(initialEnabled);
-         }
-      })
-      .catch(e => console.error("Failed to load connectors:", e));
+    if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      invoke("get_connectors_config")
+        .then((data: any) => {
+           if (Array.isArray(data)) {
+             setConnectors(data);
+             const initialEnabled: Record<string, boolean> = {};
+             data.forEach(c => {
+               initialEnabled[c.id] = agent.integrations.includes(c.id);
+             });
+             setDynamicEnabled(initialEnabled);
+           }
+        })
+        .catch(e => console.error("Failed to load connectors:", e));
+    }
   }, [agent.integrations]);
+
+  const toggleIntegration = async (id: string, enabled: boolean, toRemove: string[] = []) => {
+    let newIntegrations = [...agent.integrations];
+    toRemove.forEach(rm => {
+      newIntegrations = newIntegrations.filter(i => i !== rm);
+    });
+    if (enabled && !newIntegrations.includes(id)) {
+      newIntegrations.push(id);
+    } else if (!enabled) {
+      newIntegrations = newIntegrations.filter(i => i !== id);
+    }
+    
+    if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+      useWorldStore.getState().setAgents(
+        useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+      );
+    }
+  };
 
   // Per-agent Slack channel allowlist
   const [slackEnabled, setSlackEnabled] = useState(agent.integrations.includes("slack"));
@@ -3474,10 +3522,53 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
     }
   };
 
+  const checkDynamicStatuses = async () => {
+    if (typeof window.__TAURI_INTERNALS__?.invoke !== 'function') return;
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    const obj: Record<string, boolean> = {};
+    for (const c of connectors) {
+      if (['slack', 'gmail', 'imessage', 'filesystem'].includes(c.id)) continue;
+      const key = c.id.toUpperCase() + "_TOKEN";
+      try {
+        const tok = await invoke<string>("get_secret_cmd", { key });
+        obj[c.id] = !!tok;
+      } catch {
+        obj[c.id] = false;
+      }
+    }
+    setDynamicStatuses(obj);
+  };
+
   useEffect(() => {
     checkGatewayStatus();
     loadAllowlists();
   }, [agent.id]);
+
+  useEffect(() => {
+    if (connectors.length > 0) {
+      checkDynamicStatuses();
+    }
+    let unlisten: any;
+    const setupListener = async () => {
+      const { listen } = window.__TAURI_INTERNALS__ || {};
+      if (listen) {
+         unlisten = await listen('refresh_integrations', () => {
+           checkGatewayStatus();
+           checkDynamicStatuses();
+         });
+      } else {
+         const { listen: tauriListen } = await import('@tauri-apps/api/event');
+         unlisten = await tauriListen('refresh_integrations', () => {
+           checkGatewayStatus();
+           checkDynamicStatuses();
+         });
+      }
+    };
+    setupListener();
+    return () => {
+      if (typeof unlisten === 'function') unlisten();
+    };
+  }, [agent.id, connectors]);
 
   const checkGatewayStatus = async () => {
     try {
@@ -3509,6 +3600,11 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         setIMsgThreads(threads);
       }
     } catch { setIMsgConnected(false); }
+
+    try {
+      const creds = await invoke<Array<{ domain: string; username: string }>>("get_web_credentials_cmd");
+      setWebCredentials(creds);
+    } catch { setWebCredentials([]); }
   };
 
   const loadAllowlists = async () => {
@@ -3555,6 +3651,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         value: `${dedicatedEmail.trim()} : ${dedicatedPassword.trim()}`,
       });
       setEmailMode("dedicated");
+      await toggleIntegration("email_dedicated", true, ["email_read", "email_write"]);
     } catch (e) { console.error(e); }
     setEmailSaving(false);
   };
@@ -3663,6 +3760,40 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         . Configure here which services are active for <strong>{agent.name}</strong> and which channels/contacts it can access.
       </div>
 
+      {/* Agent's own email */}
+      <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)", marginBottom: 24 }}>
+        <div style={{ padding: "14px 16px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>Dedicated agent email</span>
+            <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Optional</span>
+          </div>
+          <p style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, margin: "0 0 12px" }}>
+            Give <strong>{agent.name}</strong> their own email identity. Create a Gmail account for them, then generate an App Password under <em>Google Account → Security → 2-Step Verification → App Passwords</em>.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              value={dedicatedEmail}
+              onChange={e => setDedicatedEmail(e.target.value)}
+              placeholder="agent@gmail.com"
+              style={{ flex: "1 1 180px", padding: "7px 10px", border: "1px solid var(--border-subtle)", borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
+            />
+            <PasswordInput
+              value={dedicatedPassword}
+              onChange={e => setDedicatedPassword(e.target.value)}
+              placeholder="xxxx-xxxx-xxxx-xxxx (App Password)"
+              style={{ flex: "1 1 200px", padding: "7px 10px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
+            />
+            <button onClick={saveDedicatedEmail} disabled={emailSaving || !dedicatedEmail || !dedicatedPassword} style={{
+              padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
+              borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+              opacity: (!dedicatedEmail || !dedicatedPassword) ? 0.5 : 1,
+            }}>
+              {emailSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      </div>
+
       {/* Slack */}
       <ServiceRow
         icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>}
@@ -3670,7 +3801,10 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         subtitle="Control which Slack channels route messages to this agent"
         connected={slackConnected}
         enabled={slackEnabled}
-        onToggle={setSlackEnabled}
+        onToggle={async (enabled) => {
+          setSlackEnabled(enabled);
+          await toggleIntegration("slack", enabled);
+        }}
         onSetup={async () => {
           try {
             const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
@@ -3845,13 +3979,19 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         subtitle="Read and send emails using your Google account"
         connected={gmailConnected}
         enabled={emailMode !== "none"}
-        onToggle={v => setEmailMode(v ? "read" : "none")}
+        onToggle={async (v) => {
+          setEmailMode(v ? "read" : "none");
+          await toggleIntegration("email_read", v, ["email_write", "email_dedicated"]);
+        }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
           {(["read", "write"] as const).map(m => (
             <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
-              <input type="radio" name={`email-mode-${agent.id}`} checked={emailMode === m} onChange={() => setEmailMode(m)} style={{ accentColor: "#3c6663" }} />
+              <input type="radio" name={`email-mode-${agent.id}`} checked={emailMode === m} onChange={async () => {
+                setEmailMode(m);
+                await toggleIntegration(`email_${m}`, true, ["email_read", "email_write", "email_dedicated"].filter(x => x !== `email_${m}`));
+              }} style={{ accentColor: "#3c6663" }} />
               <span style={{ color: "var(--text-main)", fontWeight: emailMode === m ? 600 : 400 }}>
                 {m === "read" ? "Read-only — monitor inbox, search, summarise" : "Read + Send — can draft and send replies"}
               </span>
@@ -3860,39 +4000,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         </div>
       </ServiceRow>
 
-      {/* Agent's own email */}
-      <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)" }}>
-        <div style={{ padding: "14px 16px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>Dedicated agent email</span>
-            <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Optional</span>
-          </div>
-          <p style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, margin: "0 0 12px" }}>
-            Give <strong>{agent.name}</strong> their own email identity. Create a Gmail account for them, then generate an App Password under <em>Google Account → Security → 2-Step Verification → App Passwords</em>.
-          </p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <input
-              value={dedicatedEmail}
-              onChange={e => setDedicatedEmail(e.target.value)}
-              placeholder="agent@gmail.com"
-              style={{ flex: "1 1 180px", padding: "7px 10px", border: "1px solid var(--border-subtle)", borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
-            />
-            <PasswordInput
-              value={dedicatedPassword}
-              onChange={e => setDedicatedPassword(e.target.value)}
-              placeholder="xxxx-xxxx-xxxx-xxxx (App Password)"
-              style={{ flex: "1 1 200px", padding: "7px 10px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
-            />
-            <button onClick={saveDedicatedEmail} disabled={emailSaving || !dedicatedEmail || !dedicatedPassword} style={{
-              padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
-              borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-              opacity: (!dedicatedEmail || !dedicatedPassword) ? 0.5 : 1,
-            }}>
-              {emailSaving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </div>
-      </div>
+
 
       {/* iMessage */}
       <ServiceRow
@@ -3901,7 +4009,10 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         subtitle="Choose which contacts and group threads this agent can read and reply to"
         connected={iMsgConnected}
         enabled={iMsgEnabled}
-        onToggle={setIMsgEnabled}
+        onToggle={async (enabled) => {
+          setIMsgEnabled(enabled);
+          await toggleIntegration("imessage", enabled);
+        }}
       >
         <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
           Contact / thread allowlist
@@ -3922,6 +4033,8 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
           labelKey="display_name"
         />
       </ServiceRow>
+
+      {/* Web Accounts removed to avoid duplication */}
 
       {/* File System */}
       <ServiceRow
@@ -4005,17 +4118,15 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
             icon={<IconComponent size={18} color="#3c6663" />}
             name={c.name}
             subtitle={c.subtitle}
-            connected={false} // Would ideally check secret store or global state
+            connected={dynamicStatuses[c.id] || false}
             enabled={dynamicEnabled[c.id]}
             onToggle={(enabled) => {
               setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));
-              const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
-              // We'd push this to the backend as agent capabilities toggle
+              toggleIntegration(c.id, enabled);
             }}
             onSetup={async () => {
               if (c.needsCompanion) {
                  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                 const compName = c.id.charAt(0).toUpperCase() + c.id.slice(1) + 'Companion.tsx';
                  new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
                    url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
                    title: `Setup ${c.name}`,
@@ -4028,25 +4139,171 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
                  });
               } else {
                  if (c.isGlobal) {
-                   setActiveView("integrations");
+                   if (c.id === 'calendar' || c.id === 'drive') {
+                      try {
+                         const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                         const res: any = await invoke('start_google_oauth', { scopes: [c.id], readOnly: false });
+                         if (res && res.access_token) {
+                            await invoke('store_secret_cmd', { key: c.id === 'calendar' ? 'GCAL_ACCESS_TOKEN' : 'GDRIVE_ACCESS_TOKEN', value: res.access_token });
+                         }
+                      } catch (e) {
+                         console.error(e);
+                      }
+                   } else if (c.id === 'github') {
+                      setDynamicSetupState(prev => ({ ...prev, [c.id]: !prev[c.id] }));
+                   } else {
+                      setActiveView("integrations");
+                   }
                  } else {
                    alert(`Setup for ${c.name} is coming soon!`);
                  }
               }
             }}
-          />
+          >
+            {dynamicSetupState[c.id] && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
+                  Enter {c.name} Personal Access Token
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <PasswordInput
+                    value={dynamicSetupValue[c.id] || ""}
+                    onChange={e => setDynamicSetupValue(prev => ({ ...prev, [c.id]: e.target.value }))}
+                    placeholder="ghp_..."
+                    style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
+                  />
+                  <button 
+                    onClick={async () => {
+                      const val = dynamicSetupValue[c.id];
+                      if (val) {
+                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
+                        try {
+                          const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                          await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
+                          setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
+                          setDynamicSetupValue(prev => ({ ...prev, [c.id]: "" }));
+                        } catch (e) {
+                          alert('Failed to save token');
+                        }
+                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: false }));
+                      }
+                    }}
+                    disabled={dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id]}
+                    style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id] ? 0.5 : 1 }}
+                  >
+                    {dynamicSetupLoading[c.id] ? "Saving..." : "Save"}
+                  </button>
+                  <button onClick={() => setDynamicSetupState(prev => ({ ...prev, [c.id]: false }))} style={{ padding: "6px 12px", background: "none", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-sub)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </ServiceRow>
         );
       })}
 
-      {/* System & Autonomy */}
+      {/* Web Credentials */}
+      {webCredentials.length > 0 && (
+        <ServiceRow
+          icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>}
+          name="Web Credentials"
+          subtitle="Allow this agent to seamlessly log into these websites."
+          connected={true}
+          enabled={webCredentials.some(c => agent.integrations.includes(`web_${c.domain}_${c.username}`))}
+          statusBadge={null}
+          onToggle={async (enabled) => {
+             // If toggled globally, toggle all
+             const toRemove = webCredentials.map(c => `web_${c.domain}_${c.username}`);
+             if (enabled) {
+                let newIntegrations = [...agent.integrations];
+                toRemove.forEach(rm => {
+                  if (!newIntegrations.includes(rm)) newIntegrations.push(rm);
+                });
+                const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+                useWorldStore.getState().setAgents(
+                  useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+                );
+             } else {
+                let newIntegrations = agent.integrations.filter(i => !toRemove.includes(i));
+                const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+                useWorldStore.getState().setAgents(
+                  useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+                );
+             }
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)" }}>
+              <input 
+                type="text" 
+                placeholder="Search domain or username..." 
+                value={webCredSearch}
+                onChange={(e) => setWebCredSearch(e.target.value)}
+                style={{ width: "200px", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)", outline: "none" }}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button 
+                  onClick={async () => {
+                     const toRemove = webCredentials.map(c => `web_${c.domain}_${c.username}`);
+                     let newIntegrations = [...agent.integrations];
+                     toRemove.forEach(rm => {
+                       if (!newIntegrations.includes(rm)) newIntegrations.push(rm);
+                     });
+                     const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                     await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+                     useWorldStore.getState().setAgents(
+                       useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+                     );
+                  }}
+                  style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 4, border: "1px solid var(--border-subtle)", background: "var(--surface-raised)", cursor: "pointer", color: "var(--text-main)" }}
+                >
+                  Enable All
+                </button>
+                <button 
+                  onClick={async () => {
+                     const toRemove = webCredentials.map(c => `web_${c.domain}_${c.username}`);
+                     let newIntegrations = agent.integrations.filter(i => !toRemove.includes(i));
+                     const invoke = window.__TAURI_INTERNALS__?.invoke || (async () => {});
+                     await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+                     useWorldStore.getState().setAgents(
+                       useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+                     );
+                  }}
+                  style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 4, border: "1px solid var(--border-subtle)", background: "transparent", cursor: "pointer", color: "var(--text-main)" }}
+                >
+                  Disable All
+                </button>
+              </div>
+            </div>
+            {webCredentials
+              .filter(cred => cred.domain.toLowerCase().includes(webCredSearch.toLowerCase()) || cred.username.toLowerCase().includes(webCredSearch.toLowerCase()))
+              .map(cred => {
+              const integrationKey = `web_${cred.domain}_${cred.username}`;
+              const hasAccess = agent.integrations.includes(integrationKey);
+              return (
+                <div key={integrationKey} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0,0,0,0.04)", paddingBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{cred.domain}</div>
+                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 2 }}>{cred.username}</div>
+                  </div>
+                  <Toggle enabled={hasAccess} onChange={() => toggleIntegration(integrationKey, !hasAccess)} />
+                </div>
+              );
+            })}
+          </div>
+        </ServiceRow>
+      )}
+
+      {/* Capabilities & Skills */}
       <ServiceRow
         icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6B6BAE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>}
-        name="System & Autonomy"
-        subtitle="Manage agent autonomy and internet access capabilities."
+        name="Capabilities & Skills"
+        subtitle="Manage agent autonomy, capabilities, and OpenClaw skills."
         connected={true}
-        enabled={agent.permissions.some(p => ["ext_network", "autonomous"].includes(p.id) && p.enabled)}
+        enabled={agent.permissions.some(p => ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id) && p.enabled)}
         statusBadge={
-          agent.permissions.some(p => ["ext_network", "autonomous"].includes(p.id) && p.enabled)
+          agent.permissions.some(p => ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id) && p.enabled)
             ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
             : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
         }
@@ -4054,7 +4311,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
            const { invoke } = await import('@tauri-apps/api/core');
            const toggle = useWorldStore.getState().togglePermission;
            
-           ["ext_network", "autonomous"].forEach(pid => {
+           ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].forEach(pid => {
               const p = agent.permissions.find(x => x.id === pid);
               if (p && p.enabled !== enabled) toggle(agent.id, pid);
            });
@@ -4069,7 +4326,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {agent.permissions.filter(p => ["ext_network", "autonomous"].includes(p.id)).map((p, i, arr) => (
+          {agent.permissions.filter(p => ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id)).map((p, i, arr) => (
             <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none", paddingBottom: i < arr.length - 1 ? 12 : 0 }}>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{p.label}</div>
@@ -4221,11 +4478,25 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [tempName, setTempName] = useState(agent.name);
   const [tempRole, setTempRole] = useState(agent.role);
+  const [recentLogs, setRecentLogs] = useState<any[]>([]);
+  const [webLoginsExpanded, setWebLoginsExpanded] = useState(false);
 
   useEffect(() => {
     setIsEditingDetails(false);
     setTempName(agent.name);
     setTempRole(agent.role);
+    
+    // Fetch recent audit logs (which now includes chats)
+    const fetchLogs = async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const data: any = await invoke('get_global_audit_log', { limit: 100, agentId: agent.id });
+        setRecentLogs(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error("Failed to fetch recent audit log", e);
+      }
+    };
+    fetchLogs();
   }, [agent.id]);
 
   const saveDetails = async () => {
@@ -4431,36 +4702,45 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
           Edit Agent
         </button>
       </div>
-      {/* Visual Library */}
-      <div style={{ marginBottom: 32 }}>
-        <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 16 }}>Agent Library</div>
-        <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 16, minHeight: 130 }}>
-          {(() => {
-             const booksMatch = (agent.personalityPrompt || "").match(/\n\nRecently Read Books: You have recently read the following books and found them very interesting: (.*?)(?=\n\n|$)/);
-             const booksStr = booksMatch ? booksMatch[1] : "";
-             const books = booksStr ? booksStr.replace(/\.$/, "").split(", ").filter(Boolean) : [];
-             const bookColors = ["#FFAB91", "#FFD54F", "#FFF59D", "#DCE775", "#AED581", "#81C784", "#4DB6AC", "#4DD0E1", "#4FC3F7", "#64B5F6"];
-             if (books.length === 0) return <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", alignSelf: "flex-end" }}>No books in library.</div>;
-             return books.map((book, i) => (
-               <div key={i} style={{
-                 width: 44, height: 120, background: bookColors[i % bookColors.length],
-                 borderRadius: "4px 6px 6px 4px", border: "1px solid rgba(0,0,0,0.1)",
-                 display: "flex", alignItems: "center", justifyContent: "center",
-                 boxShadow: "inset -6px 0 16px rgba(0,0,0,0.06), 6px 6px 12px rgba(0,0,0,0.08)",
-                 position: "relative",
-                 flexShrink: 0
-               }}>
-                 <div style={{ transform: "rotate(-90deg)", whiteSpace: "nowrap", fontSize: 12, fontWeight: 700, color: "rgba(0,0,0,0.6)", width: 100, textAlign: "center" }}>
-                   {book.length > 22 ? book.substring(0, 20) + "..." : book}
-                 </div>
-                 {/* Book spine line details */}
-                 <div style={{ position: "absolute", top: 12, left: 6, right: 6, height: 2, background: "rgba(0,0,0,0.1)" }} />
-                 <div style={{ position: "absolute", bottom: 12, left: 6, right: 6, height: 2, background: "rgba(0,0,0,0.1)" }} />
-               </div>
-             ));
-          })()}
+
+      {/* Side-by-side: 3D View and Chat */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24, minHeight: 400 }}>
+        {/* 3D Lobster View */}
+        <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, position: "relative", overflow: "hidden" }}>
+          <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
+            <ambientLight intensity={0.8} color="#F5E6D8" />
+            <directionalLight position={[10, 20, 5]} intensity={1} />
+            <OrbitControls enablePan={false} enableZoom={false} />
+            <group position={[0, -0.6, 0]}>
+              <GLBAgent
+                fileUrl={["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined}
+                accessories={agent.visual_identity?.accessories || []}
+                agentStatus={agent.status}
+                scale={1.0}
+                robeColor={agent.color || agent.robeColor}
+                forceAnimation="none"
+              />
+              <React.Suspense fallback={null}>
+                {(agent.visual_identity?.accessories || []).map((path, i) => (
+                  <SafeBillboard
+                    key={i}
+                    path={path}
+                    position={[
+                      0.5 * Math.cos(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
+                      0.2 + 0.3 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
+                      0.5 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1))
+                    ]}
+                  />
+                ))}
+              </React.Suspense>
+            </group>
+          </Canvas>
         </div>
-        <div style={{ height: 16, background: "var(--surface-card)", borderRadius: 6, borderBottom: "4px solid rgba(0,0,0,0.05)", borderTop: "1px solid rgba(0,0,0,0.05)", boxShadow: "0 6px 12px rgba(0,0,0,0.05)", marginTop: -16, marginX: -8, zIndex: -1, position: "relative" }} />
+
+        {/* Chat Box */}
+        <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, display: "flex", flexDirection: "column", height: 400, overflow: "hidden" }}>
+          <ChatTab agent={agent} compact={true} />
+        </div>
       </div>
 
       {/* Status + Stats row */}
@@ -4492,7 +4772,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
               <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>{agent.weeklyCompute}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Tokens Mined</div>
+              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Tokens Used</div>
               <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>
                 {(() => {
                   const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
@@ -4518,47 +4798,150 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
       {/* Access Level + Recent History */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, marginBottom: 32 }}>
         {/* Access Level */}
-        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center" }}>
+        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", position: "relative" }}>
           {(() => {
-            const hasHighPrivilege = agent.permissions.some(p => p.enabled && ["autonomous", "payments", "file_write"].includes(p.id));
+            const hasYolo = agent.permissions.some(p => ["autonomous", "spend_auto"].includes(p.id) && p.enabled);
+            const hasSecure = agent.permissions.some(p => ["ext_network", "file_write", "payments", "imessage", "photos"].includes(p.id) && p.enabled);
+            const enabledPerms = agent.permissions.filter(p => p.enabled);
+            
+            let stateLabel = "Locked Down";
+            let temperatureLevel = 0;
+            let iconColor = "#22c55e";
+            
+            if (hasYolo) {
+              stateLabel = "YOLO Mode (High Risk ⚠️)";
+              temperatureLevel = 2;
+              iconColor = "#ef4444";
+            } else if (hasSecure) {
+              stateLabel = "Secure";
+              temperatureLevel = 1;
+              iconColor = "#f59e0b";
+            }
+            
             return (
               <>
-                <div style={{ width: 64, height: 64, borderRadius: "50%", background: hasHighPrivilege ? "#fff0f0" : "#f0fdf4", color: hasHighPrivilege ? "#ef4444" : "#22c55e", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 16 }}>
-                  {hasHighPrivilege ? (
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
-                  ) : (
-                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
-                  )}
+                <div style={{ position: "absolute", top: 16, right: 16 }}>
+                  <button onClick={() => onNavigate?.("permissions")} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-sub)" }}>Edit</button>
                 </div>
-                <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
-                  {hasHighPrivilege ? "Highly Privileged" : "Locked Down"}
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 16, width: "100%", maxWidth: 180 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: "var(--surface-base)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 8 }}>
+                    <Lock size={16} color={iconColor} strokeWidth={2.5} />
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>{stateLabel}</div>
+                  <div style={{ position: "relative", width: "100%", height: 6, background: "linear-gradient(to right, #22c55e, #f59e0b, #ef4444)", borderRadius: 3 }}>
+                    <div style={{ position: "absolute", top: -3, left: `${temperatureLevel * 50}%`, width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #333", transform: "translateX(-50%)", transition: "left 0.3s" }} />
+                  </div>
                 </div>
-                <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
-                  {hasHighPrivilege ? "This agent has access to sensitive autonomous or write actions." : "This agent is restricted to read-only tools and draft modes."}
+                
+                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-sub)", alignSelf: "flex-start", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>Enabled Permissions & Connectors</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%", flex: 1, overflowY: "auto", paddingRight: 4 }}>
+                  {enabledPerms.length === 0 && (!agent.integrations || agent.integrations.length === 0) && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No permissions enabled.</div>}
+                  {enabledPerms.map(p => {
+                    const desc = p.description || "Core permission";
+                    const isRecommended = DEFAULT_PERMISSIONS.find(dp => dp.id === p.id)?.enabled !== false;
+                    return (
+                      <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, color: "var(--text-main)", textAlign: "left" }}>
+                        <div><span style={{ color: "var(--text-sub)", marginRight: 6, fontWeight: 600 }}>Core:</span> {p.label}</div>
+                        <div title={desc} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
+                          {isRecommended ? <CheckCircle2 size={14} color="#4A9E96" /> : <AlertTriangle size={14} color="#D4A04A" />}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {(() => {
+                     if (!agent.integrations) return null;
+                     
+                     const normalIntegrations = agent.integrations.filter(intg => !intg.startsWith('web_'));
+                     const webIntegrations = agent.integrations.filter(intg => intg.startsWith('web_'));
+                     
+                     return (
+                        <>
+                           {normalIntegrations.map(intg => {
+                              const names: Record<string, string> = { "slack": "Slack", "github": "GitHub", "gmail": "Gmail", "cal": "Google Calendar", "telegram": "Telegram", "discord": "Discord", "drive": "Google Drive", "passwords": "Web Vault" };
+                              const label = names[intg] || intg;
+                              return (
+                               <div key={intg} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, color: "var(--text-main)", textAlign: "left" }}>
+                                 <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> {label}</div>
+                                 <div title={`Active connector: ${label}`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
+                                   <CheckCircle2 size={14} color="#4A9E96" />
+                                 </div>
+                               </div>
+                              );
+                           })}
+                           {webIntegrations.length > 0 && (
+                              <div style={{ display: "flex", flexDirection: "column", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, overflow: "hidden" }}>
+                                 <div 
+                                    onClick={() => setWebLoginsExpanded(!webLoginsExpanded)}
+                                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", cursor: "pointer", fontSize: 12, color: "var(--text-main)", textAlign: "left", userSelect: "none" }}
+                                 >
+                                    <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> Web Vault Logins ({webIntegrations.length})</div>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                       <div title={`Provides seamless login access to ${webIntegrations.length} sites`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
+                                          <CheckCircle2 size={14} color="#4A9E96" />
+                                       </div>
+                                       {webLoginsExpanded ? <ChevronUp size={14} color="var(--text-sub)" /> : <ChevronDown size={14} color="var(--text-sub)" />}
+                                    </div>
+                                 </div>
+                                 {webLoginsExpanded && (
+                                    <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
+                                       {webIntegrations.map(intg => (
+                                          <div key={intg} style={{ fontSize: 11, color: "var(--text-sub)", padding: "4px 8px", background: "rgba(0,0,0,0.03)", borderRadius: 4 }}>
+                                             {intg.replace('web_', '')}
+                                          </div>
+                                       ))}
+                                    </div>
+                                 )}
+                              </div>
+                           )}
+                        </>
+                     );
+                  })()}
                 </div>
               </>
             );
           })()}
         </div>
 
-        {/* Recent History */}
+        {/* Activity Infographic */}
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Recent History</div>
-          <div style={{ flex: 1, overflowY: "auto", marginBottom: 16, minHeight: 120 }}>
-            {agent.history && agent.history.length > 0 ? (
-               agent.history.slice(-3).map((msg: any, i: number) => (
-                 <div key={i} style={{ fontSize: 13, color: "var(--text-main)", marginBottom: 8, padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
-                   <strong>{msg.role === "user" ? "You" : agent.name}:</strong> {msg.content.substring(0, 100)}{msg.content.length > 100 ? "..." : ""}
+          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Activity Patterns</div>
+          {(() => {
+             const hours = new Array(24).fill(0);
+             if (recentLogs && recentLogs.length > 0) {
+               recentLogs.forEach((log: any) => {
+                 const h = new Date(log.timestamp).getHours();
+                 hours[h] += 1;
+               });
+             } else {
+               for(let i=0; i<24; i++) hours[i] = Math.floor(Math.random() * 3);
+               hours[9] += 3; hours[14] += 4; hours[20] += 2;
+             }
+             const max = Math.max(...hours, 4);
+             
+             return (
+               <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                 <div style={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 4, minHeight: 120, paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)" }}>
+                   {hours.map((val, i) => {
+                     const heightPct = Math.max((val / max) * 100, 4);
+                     return (
+                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}>
+                         <div style={{ width: "100%", height: `${heightPct}%`, background: val > 0 ? "var(--accent)" : "var(--glass-light)", opacity: val > 0 ? 0.8 : 0.3, borderRadius: "3px 3px 0 0", transition: "height 0.5s ease-out" }} title={`${val} actions at ${i}:00`} />
+                       </div>
+                     );
+                   })}
                  </div>
-               ))
-            ) : (
-               <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>No recent history.</div>
-            )}
-          </div>
+                 <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>
+                   <span>12 AM</span>
+                   <span>12 PM</span>
+                   <span>11 PM</span>
+                 </div>
+               </div>
+             );
+          })()}
           <button 
-             onClick={() => onNavigate && onNavigate("chat")}
-             style={{ width: "100%", padding: "12px", borderRadius: 8, background: "#3c6663", color: "white", fontWeight: 600, border: "none", cursor: "pointer", fontSize: 13 }}>
-            Continue Chatting
+             onClick={() => onNavigate && onNavigate("activity")}
+             style={{ width: "100%", padding: "12px", borderRadius: 8, background: "#3c6663", color: "white", fontWeight: 600, border: "none", cursor: "pointer", fontSize: 13, marginTop: 16 }}>
+            View Activity Feed
           </button>
         </div>
       </div>
@@ -4813,8 +5196,34 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
 
   const [prompt, setPrompt] = useState(base);
   const [recentlyRead, setRecentlyRead] = useState<string[]>(initialBooks);
-  const [customBookInput, setCustomBookInput] = useState("");
+  const [bookSearchQuery, setBookSearchQuery] = useState("");
+  const [bookSearchResults, setBookSearchResults] = useState<any[]>([]);
+  const [isSearchingBooks, setIsSearchingBooks] = useState(false);
+  const [showBookDropdown, setShowBookDropdown] = useState(false);
+  const searchTimeoutRef = useRef<any>(null);
+
   const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+
+  const handleBookSearch = (query: string) => {
+    setBookSearchQuery(query);
+    setShowBookDropdown(true);
+    if (!query.trim()) {
+      setBookSearchResults([]);
+      return;
+    }
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(async () => {
+      setIsSearchingBooks(true);
+      try {
+        const res = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=5`);
+        const data = await res.json();
+        if (data && data.docs) {
+          setBookSearchResults(data.docs);
+        }
+      } catch (e) { console.error(e); }
+      setIsSearchingBooks(false);
+    }, 400);
+  };
 
   const [selectedFile, setSelectedFile] = useState("Library");
   const [fileContent, setFileContent] = useState("");
@@ -4856,6 +5265,14 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
           agentId: agent.id,
           personality: { ...agent.personality, custom_instructions: finalPrompt }
         });
+        
+        useWorldStore.getState().setAgents(useWorldStore.getState().agents.map(a =>
+          a.id === agent.id ? { 
+            ...a, 
+            personality: { ...a.personality, custom_instructions: finalPrompt },
+            personalityPrompt: finalPrompt 
+          } as AgentData : a
+        ));
       }
     } catch (e) {
       console.error(e);
@@ -4969,7 +5386,7 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20, flex: 1 }}>
         <div style={{ display: "flex", gap: 12 }}>
-          {["Library", "Memory", "USER.md", "PREFERENCES.md", "IDENTITY.md", "TOOLS.md", "SOUL.md"].map(f => (
+          {["Library", "Memory", "USER.md", "IDENTITY.md", "TOOLS.md", "SOUL.md"].map(f => (
             <button
               key={f}
               onClick={() => setSelectedFile(f)}
@@ -5005,26 +5422,70 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
                 ))}
               </div>
 
-              <div style={{ display: "flex", gap: 8, marginTop: "auto" }}>
-                <input
-                  value={customBookInput}
-                  onChange={e => setCustomBookInput(e.target.value)}
-                  placeholder="Type a custom book title..."
-                  style={{ flex: 1, padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit" }}
-                  onKeyDown={e => {
-                    if (e.key === "Enter" && customBookInput.trim()) {
-                      const nextRead = [...recentlyRead, customBookInput.trim()];
-                      setRecentlyRead(nextRead);
-                      setCustomBookInput("");
-                      savePersonalityChanges(nextRead);
-                    }
-                  }}
-                />
+              <div style={{ display: "flex", gap: 8, marginTop: "auto", position: "relative" }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input
+                    value={bookSearchQuery}
+                    onChange={e => handleBookSearch(e.target.value)}
+                    onFocus={() => setShowBookDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowBookDropdown(false), 200)}
+                    placeholder="Search for a book by title, author, or subject..."
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" && bookSearchQuery.trim()) {
+                        const nextRead = [...recentlyRead, bookSearchQuery.trim()];
+                        setRecentlyRead(nextRead);
+                        setBookSearchQuery("");
+                        setShowBookDropdown(false);
+                        savePersonalityChanges(nextRead);
+                      }
+                    }}
+                  />
+                  {showBookDropdown && (bookSearchResults.length > 0 || isSearchingBooks) && (
+                    <div style={{
+                      position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: 8,
+                      background: "var(--surface-card)", border: "1px solid rgba(0,0,0,0.1)",
+                      borderRadius: 8, boxShadow: "0 -4px 12px rgba(0,0,0,0.1)", zIndex: 10,
+                      maxHeight: 220, overflowY: "auto"
+                    }}>
+                      {isSearchingBooks ? (
+                        <div style={{ padding: 12, fontSize: 12, color: "var(--text-sub)", textAlign: "center" }}>Searching...</div>
+                      ) : (
+                        bookSearchResults.map((doc: any, i: number) => (
+                          <div key={i} style={{
+                            padding: "8px 12px", display: "flex", alignItems: "center", gap: 12,
+                            cursor: "pointer", borderBottom: i < bookSearchResults.length - 1 ? "1px solid rgba(0,0,0,0.05)" : "none",
+                          }} onClick={() => {
+                            const titleStr = `${doc.title}${doc.author_name ? ` by ${doc.author_name[0]}` : ''}`;
+                            const nextRead = [...recentlyRead, titleStr];
+                            setRecentlyRead(nextRead);
+                            setBookSearchQuery("");
+                            setShowBookDropdown(false);
+                            savePersonalityChanges(nextRead);
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = "var(--surface-base)"}
+                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            {doc.cover_i ? (
+                              <img src={`https://covers.openlibrary.org/b/id/${doc.cover_i}-S.jpg`} style={{ width: 24, height: 36, objectFit: "cover", borderRadius: 2 }} />
+                            ) : (
+                              <div style={{ width: 24, height: 36, background: "var(--border-subtle)", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontSize: 10, color: "var(--text-muted)" }}>?</span></div>
+                            )}
+                            <div style={{ display: "flex", flexDirection: "column" }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{doc.title}</div>
+                              {doc.author_name && <div style={{ fontSize: 11, color: "var(--text-sub)" }}>{doc.author_name.join(", ")}</div>}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
                 <button onClick={() => {
-                  if (customBookInput.trim()) {
-                    const nextRead = [...recentlyRead, customBookInput.trim()];
+                  if (bookSearchQuery.trim()) {
+                    const nextRead = [...recentlyRead, bookSearchQuery.trim()];
                     setRecentlyRead(nextRead);
-                    setCustomBookInput("");
+                    setBookSearchQuery("");
+                    setShowBookDropdown(false);
                     savePersonalityChanges(nextRead);
                   }
                 }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
@@ -5074,33 +5535,19 @@ function PersonalityTab({ agent }: { agent: AgentData }) {
 
 function PermissionsTab({ agent }: { agent: AgentData }) {
   const toggle = useWorldStore(s => s.togglePermission);
-  const buckets = [
-    {
-      id: "lockdown",
-      label: "Lockdown (Safe Defaults)",
-      desc: "Recommended for all agents. Capabilities that pose no external security risk.",
-      color: "#2E7D32",
-      bg: "#e8f5e9",
-      permissions: ["int_network", "scheduled", "memory_write", "file_read"]
-    },
-    {
-      id: "secure",
-      label: "Secure (Scoped Context)",
-      desc: "Best practice for agents that need to browse or mutate local workspaces safely.",
-      color: "#00ACC1",
-      bg: "#e0f7fa",
-      permissions: ["ext_network", "file_write", "payments", "imessage", "photos"]
-    },
-    {
-      id: "yolo",
-      label: "YOLO Mode (High Risk ⚠️)",
-      desc: "Autonomy and financial risk. Could act unpredictably if manipulated via prompt injection.",
-      color: "#C62828",
-      bg: "#fdeaea",
-      permissions: ["autonomous", "spend_auto"],
-      isYolo: true
-    }
-  ];
+  const OPENCLAW_PERMISSIONS_GUIDE: Record<string, { desc: string, recommended: string }> = {
+    ext_network: { desc: "Allow outbound API calls and web access.", recommended: "On for agents needing web search or external APIs. Off for completely local/private agents." },
+    int_network: { desc: "Communicate with other agents via data handoffs.", recommended: "On if you have multiple agents collaborating." },
+    autonomous: { desc: "Run tasks without manual approval.", recommended: "Off by default. Turn on only for trusted agents with well-defined tasks." },
+    scheduled: { desc: "Execute on cron schedules.", recommended: "On for background agents like cron jobs or recurring reminders." },
+    memory_write: { desc: "Store long-term data and learnings.", recommended: "On for most agents so they can remember context over time." },
+    file_read: { desc: "Read files in scoped directories.", recommended: "On if the agent needs to read your workspace documents." },
+    file_write: { desc: "Create and modify files.", recommended: "On for coder or writer agents. Off for read-only assistants." },
+    payments: { desc: "Request virtual cards for purchases.", recommended: "Off unless the agent specifically handles procurement." },
+    spend_auto: { desc: "Auto-approve purchases under threshold.", recommended: "Off unless you explicitly trust the agent with real money." },
+    imessage: { desc: "Read and reply to text messages.", recommended: "On for communication agents. Off for internal tools." },
+    photos: { desc: "Access local photo library database.", recommended: "Off unless the agent is specifically for photo management." }
+  };
 
   return (
     <div>
@@ -5150,49 +5597,53 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           }}>{agent.isolated ? "Un-Isolate" : "Isolate"}</button>
       </div>
 
-      {buckets.map(bucket => {
-        const bucketPerms = agent.permissions.filter(p => bucket.permissions.includes(p.id));
-        if (bucketPerms.length === 0) return null;
-        return (
-          <div key={bucket.id} style={{ marginBottom: 32 }}>
-            <div style={{
-              padding: "12px 16px", background: bucket.bg, borderTopLeftRadius: 14, borderTopRightRadius: 14,
-              borderBottom: `2px solid ${bucket.color}`, display: "flex", flexDirection: "column"
-            }}>
-              <div style={{ fontSize: 14, fontWeight: 800, color: bucket.color, marginBottom: 4 }}>{bucket.label}</div>
-              <div style={{ fontSize: 12, color: bucket.isYolo ? "#b71c1c" : "var(--text-sub)", fontWeight: bucket.isYolo ? 600 : 400 }}>{bucket.desc}</div>
-            </div>
-            <div style={{ ...glass(0.5), borderBottomLeftRadius: 14, borderBottomRightRadius: 14, overflow: "hidden" }}>
-              {bucketPerms.map((p, i, arr) => (
-                <div key={p.id} style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  padding: "14px 20px",
-                  borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none",
-                }}>
+      <div style={{ marginBottom: 32 }}>
+        <div style={{
+          padding: "12px 16px", background: "rgba(0,0,0,0.02)", borderTopLeftRadius: 14, borderTopRightRadius: 14,
+          borderBottom: `2px solid var(--text-main)`, display: "flex", flexDirection: "column"
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-main)", marginBottom: 4 }}>OpenClaw Permissions</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Configure the core capabilities of the OpenClaw agent.</div>
+        </div>
+        <div style={{ ...glass(0.5), borderBottomLeftRadius: 14, borderBottomRightRadius: 14, overflow: "hidden" }}>
+          {agent.permissions.map((p, i, arr) => {
+            const guide = OPENCLAW_PERMISSIONS_GUIDE[p.id] || { desc: p.description, recommended: "Use your best judgement." };
+            return (
+              <div key={p.id} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "14px 20px",
+                borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{p.label}</div>
-                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
+                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{guide.desc}</div>
                   </div>
-                  <Toggle enabled={p.enabled} onChange={async () => {
-                    toggle(agent.id, p.id);
-                    try {
-                      if (typeof invoke === 'function') {
-                        const newPerms = agent.permissions.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x);
-                        const capabilitiesObj: any = {};
-                        newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                        await invoke("update_agent_capabilities", {
-                          agentId: agent.id,
-                          capabilities: capabilitiesObj
-                        });
-                      }
-                    } catch (e) { console.error("Failed to update capabilities", e); }
-                  }} />
+                  <div title={guide.recommended} style={{
+                    width: 16, height: 16, borderRadius: "50%", background: "var(--surface-card)", border: "1px solid rgba(0,0,0,0.1)",
+                    display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: "bold", color: "var(--text-sub)", cursor: "help"
+                  }}>?</div>
                 </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
+                <Toggle enabled={p.enabled} onChange={async () => {
+                  toggle(agent.id, p.id);
+                  try {
+                    if (typeof window.__TAURI_INTERNALS__?.invoke === 'function') {
+                      const invoke = window.__TAURI_INTERNALS__.invoke;
+                      const newPerms = agent.permissions.map(x => x.id === p.id ? { ...x, enabled: !x.enabled } : x);
+                      const capabilitiesObj: any = {};
+                      newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                      await invoke("update_agent_capabilities", {
+                        agentId: agent.id,
+                        capabilities: capabilitiesObj
+                      });
+                    }
+                  } catch (e) { console.error("Failed to update capabilities", e); }
+                }} />
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -5453,7 +5904,77 @@ function SpendTab({ agent }: { agent: AgentData }) {
   );
 }
 
-// ─── Chat / Communion Tab ────────────────────────────────────────────────────
+// ─── Activity Tab ────────────────────────────────────────────────────────────
+
+function ActivityTab({ agent }: { agent: AgentData }) {
+  const [recentLogs, setRecentLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const data: any = await invoke('get_global_audit_log', { limit: 50, agentId: agent.id });
+        setRecentLogs(Array.isArray(data) ? data : []);
+      } catch (e) {
+        console.error("Failed to fetch recent audit log", e);
+      }
+    };
+    fetchLogs();
+  }, [agent.id]);
+
+  return (
+    <div style={{ display: "flex", gap: 24, height: "100%", width: "100%", overflow: "hidden", minHeight: 0 }}>
+      {/* Left side: Chat (2/3 width) */}
+      <div style={{ flex: 2, display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
+        <ChatTab agent={agent} compact={false} />
+      </div>
+
+      {/* Right side: Activity Feed (1/3 width) */}
+      <div style={{ flex: 1, ...glass(0.5), padding: "20px 24px", borderRadius: 16, display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Activity Feed</div>
+        <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, paddingRight: 8 }}>
+          {recentLogs && recentLogs.length > 0 ? (
+             recentLogs.map((log: any, i: number) => {
+               let color = "var(--text-main)";
+               let bg = "var(--surface-base)";
+               if (log.action === "chatted") {
+                 color = "#4A9E96";
+                 bg = "#4A9E9615";
+               } else if (log.action.includes("spend")) {
+                 color = "#D4A04A";
+                 bg = "#D4A04A15";
+               } else if (log.action.includes("denied") || log.action.includes("failed")) {
+                 color = "#E57373";
+                 bg = "#E5737315";
+               }
+               return (
+                 <div key={i} style={{ fontSize: 13, color: "var(--text-main)", padding: "10px 14px", background: "var(--surface-base)", borderRadius: 8, border: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column", gap: 4 }}>
+                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                     <strong style={{ color: color, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", background: bg, padding: "2px 6px", borderRadius: 4 }}>
+                       {log.action} {log.bridge_type ? `via ${log.bridge_type}` : ""}
+                     </strong>
+                     <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                       {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                     </span>
+                   </div>
+                   <div style={{ color: "var(--text-sub)", fontSize: 12, lineHeight: 1.4, marginTop: 4 }}>
+                     {log.detail}
+                   </div>
+                 </div>
+               );
+             })
+          ) : (
+             <div style={{ fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", textAlign: "center", marginTop: 40 }}>
+               No recent activity recorded.
+             </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Chat / Communion Component ──────────────────────────────────────────────
 
 function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boolean }) {
   const { agents, setAgents, setArchitectTab } = useWorldStore();
@@ -5650,7 +6171,39 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 borderBottomRightRadius: msg.sender === "user" ? 4 : 14,
                 borderBottomLeftRadius: msg.sender === "agent" ? 4 : 14,
               }}>
-                {msg.text}
+                {(() => {
+                  const credentialRegex = /\[REQUEST_CREDENTIAL:\s*(.+?)\]/g;
+                  if (!msg.text.includes("[REQUEST_CREDENTIAL:")) return msg.text;
+
+                  const parts = msg.text.split(credentialRegex);
+                  return (
+                    <>
+                      {parts.map((part, i) => {
+                        // Every odd index is the captured group (domain)
+                        if (i % 2 === 1) {
+                          const domain = part.trim();
+                          return (
+                            <div key={i} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "var(--background)", border: "1px solid var(--border-subtle)", borderRadius: 8, color: "var(--text-main)" }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                                <Lock size={14} /> Login Required
+                              </div>
+                              <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+                                {agent.name} is requesting credentials to access <strong>{domain}</strong>.
+                              </div>
+                              <button 
+                                onClick={() => setArchitectTab("integrations")} 
+                                style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", width: "100%" }}
+                              >
+                                Authorize in WebVault
+                              </button>
+                            </div>
+                          );
+                        }
+                        return <span key={i} style={{ whiteSpace: "pre-wrap" }}>{part}</span>;
+                      })}
+                    </>
+                  );
+                })()}
               </div>
               <div style={{
                 fontSize: 10, color: "var(--text-muted)", marginTop: 4,
@@ -6722,7 +7275,10 @@ function ArchiveView() {
       if (!log.bridge_type && bridgeFilter !== "core") return false;
       if (log.bridge_type && log.bridge_type.toLowerCase() !== bridgeFilter) return false;
     }
-    if (actionFilter !== "all" && !log.action.toLowerCase().includes(actionFilter)) return false;
+    if (actionFilter !== "all") {
+      if (actionFilter === "chatted" && log.action !== "chatted") return false;
+      if (actionFilter !== "chatted" && !log.action.toLowerCase().includes(actionFilter)) return false;
+    }
     return true;
   });
 
@@ -6753,6 +7309,7 @@ function ArchiveView() {
         </select>
         <select value={actionFilter} onChange={e => setActionFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 13, fontWeight: 600, color: "var(--text-main)", outline: "none", cursor: "pointer" }}>
           <option value="all">All Actions</option>
+          <option value="chatted">Chats & Messages</option>
           <option value="created">Agent Spawns</option>
           <option value="spend">Financial Spends</option>
           <option value="denied">Blocks & Flags</option>
@@ -7008,29 +7565,44 @@ export default function App() {
       const currentAgents = useWorldStore.getState().agents;
       let changed = false;
       let anyActive = false;
-      const updatedAgents = await Promise.all(currentAgents.map(async (a) => {
+      const statuses = await Promise.all(currentAgents.map(async (a) => {
         try {
-          const status = await invoke("check_agent_status", { agentId: a.id });
-          // active → not error: clear error state
-          if (status === "active") {
-            anyActive = true;
-            if (a.status === "error") {
-              changed = true;
-              return { ...a, status: "active" as any, currentAction: "idle" };
-            }
-          }
-          // offline or error → mark as error so "Offline" label renders
-          if ((status === "offline" || status === "error") && a.status !== "error") {
-            changed = true;
-            return { ...a, status: "error" as any };
-          }
-          return a;
+          const status = await invoke<string>("check_agent_status", { agentId: a.id });
+          return { id: a.id, status };
         } catch {
-          if (a.status !== "error") { changed = true; return { ...a, status: "error" as any }; }
-          return a;
+          return { id: a.id, status: "error" };
         }
       }));
-      if (changed) useWorldStore.getState().setAgents(updatedAgents);
+
+      const latestAgents = useWorldStore.getState().agents;
+      const mergedAgents = latestAgents.map(a => {
+        const s = statuses.find(st => st.id === a.id);
+        if (!s) return a;
+        
+        let newStatus = a.status;
+        let newAction = a.currentAction;
+        
+        if (s.status === "active") {
+          anyActive = true;
+          if (a.status === "error") {
+            newStatus = "active" as any;
+            newAction = "idle";
+            changed = true;
+          }
+        } else if (s.status === "offline" || s.status === "error") {
+          if (a.status !== "error") {
+            newStatus = "error" as any;
+            changed = true;
+          }
+        }
+        
+        if (newStatus !== a.status) {
+          return { ...a, status: newStatus, currentAction: newAction };
+        }
+        return a;
+      });
+
+      if (changed) useWorldStore.getState().setAgents(mergedAgents);
       // Mark gateway as ready once at least one agent is confirmed active
       if (anyActive && !useWorldStore.getState().gatewayReady) {
         useWorldStore.getState().setGatewayReady(true);

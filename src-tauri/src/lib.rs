@@ -164,6 +164,7 @@ pub fn run() {
             openclaw::preflight_cleanup,
             openclaw::boot_sync_agents,
             openclaw::get_available_models,
+            openclaw::get_connectors_config,
             openclaw::read_workspace_file,
             openclaw::write_workspace_file,
             openclaw::set_preferences_template,
@@ -189,6 +190,7 @@ pub fn run() {
             keychain::get_secret_cmd,
             keychain::delete_secret_cmd,
             keychain::auto_discover_keys_cmd,
+            keychain::get_web_credentials_cmd,
             // Payment gateway (deterministic)
             payment::evaluate_purchase,
             payment::get_agent_budget,

@@ -67,19 +67,33 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
   useEffect(() => {
     if (names.length === 0) return;
 
-    // GLB EXPORT PATCH: Track renaming due to export
-    const idleAnim = names.find(n => n === "Long_Breathe_and_Look_Around") || names[0];
+    // GLB EXPORT PATCH: Track renaming due to export (names got swapped)
+    const ANIMATION_MAP: Record<string, string> = {
+      "breathe": "Walking", // The 'Walking' animation is actually the breathe animation
+      "idle": "Walking",
+      "walk": "Long_Breathe_and_Look_Around", // The 'Long Breathe' is actually walking
+      "walking": "Long_Breathe_and_Look_Around",
+      "run": "Running",
+      "fast": "run_fast_8_inplace"
+    };
+
+    const idleAnim = names.find(n => n === "Walking") || names[0];
 
     let activeActionName: string | null = idleAnim;
 
-    // Explicit override for the Identity Builder
+    // Explicit override
     if (forceAnimation === "none") {
       activeActionName = null;
-    } else if (forceAnimation && names.includes(forceAnimation)) {
-      activeActionName = forceAnimation;
     } else if (forceAnimation) {
-      const fuzzy = names.find(n => n.includes("Breathe") || n.includes("Idle"));
-      if (fuzzy) activeActionName = fuzzy;
+      const normalized = forceAnimation.toLowerCase();
+      if (ANIMATION_MAP[normalized] && names.includes(ANIMATION_MAP[normalized])) {
+        activeActionName = ANIMATION_MAP[normalized];
+      } else if (names.includes(forceAnimation)) {
+        activeActionName = forceAnimation;
+      } else {
+        const fuzzy = names.find(n => n.toLowerCase().includes(normalized));
+        if (fuzzy) activeActionName = fuzzy;
+      }
     }
     
     let action: THREE.AnimationAction | null = null;

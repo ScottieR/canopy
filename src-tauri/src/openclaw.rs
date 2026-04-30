@@ -198,6 +198,18 @@ pub async fn list_agents(
 }
 
 #[tauri::command]
+pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let path = std::path::Path::new(manifest_dir).join("../../shared/connectors.json");
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read connectors.json at {:?}: {}", path, e))?;
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
+    Ok(parsed)
+}
+
+#[tauri::command]
 pub async fn read_workspace_file(agent_id: String, filename: String) -> Result<String, String> {
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err("Invalid filename".into());
@@ -307,16 +319,50 @@ pub async fn update_agent_capabilities(
     agent_id: String,
     capabilities: AgentCapabilities,
 ) -> Result<(), String> {
+    // 1. Save to SQLite
     if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
-        agent.capabilities = capabilities;
+        agent.capabilities = capabilities.clone();
         let _ = db.update_agent(&agent);
         let _ = db.log_audit(&agent_id, "update_capabilities", Some("security"), "Agent capabilities and network permissions updated", None);
     } else {
         return Err("Agent not found".to_string());
     }
     
-    // In a full implementation, we would relay these network restrictions directly to the Docker container's iptables or the gateway proxy.
-    // For now, the Tauri bridge acts as the gateway proxy and evaluates these capabilities from SQLite during any outgoing intercept.
+    // 2. Push to OpenClaw Container
+    // Get the current agents.list to find the index of this agent
+    let output = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "get", "agents.list"])
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(agents) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(agents_array) = agents.as_array() {
+                if let Some(index) = agents_array.iter().position(|a| a.get("id").and_then(|v| v.as_str()) == Some(&agent_id)) {
+                    // Construct the skills array based on capabilities
+                    let mut skills = Vec::new();
+                    if capabilities.browser { skills.push("browser"); }
+                    if capabilities.proxy { skills.push("proxy"); }
+                    if capabilities.vision { skills.push("vision"); }
+                    if capabilities.canvas { skills.push("canvas"); }
+                    if capabilities.coding { skills.push("coding"); }
+                    if capabilities.gog { skills.push("gog"); }
+                    if capabilities.summarize { skills.push("summarize"); }
+
+                    let skills_json = serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string());
+
+                    // Set it in OpenClaw config
+                    let path = format!("agents.list[{}].skills", index);
+                    let _ = get_docker_command()
+                        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", &path, &skills_json, "--strict-json"])
+                        .output()
+                        .await;
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1118,6 +1164,11 @@ fn generate_soul_md(personality: &AgentPersonality) -> String {
         soul.push('\n');
     }
 
+    const CANOPY_PROTOCOLS: &str = include_str!("../CANOPY_PROTOCOLS.md");
+    soul.push_str("\n");
+    soul.push_str(CANOPY_PROTOCOLS);
+    soul.push_str("\n\n");
+
     soul
 }
 
@@ -1690,9 +1741,10 @@ pub fn save_user_profile(
 #[tauri::command]
 pub fn get_global_audit_log(
     limit: Option<u32>,
+    agent_id: Option<String>,
     state: tauri::State<'_, crate::db::Database>,
 ) -> Result<Vec<crate::db::AuditEntry>, String> {
-    state.get_audit_log(None, limit.unwrap_or(100)).map_err(|e| e.to_string())
+    state.get_audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map_err(|e| e.to_string())
 }
 
 // ─── Boot Agent Sync ──────────────────────────────────────────────────────────
@@ -2135,7 +2187,6 @@ pub async fn boot_sync_agents(
             .await;
             tracing::info!("boot_sync_agents: refreshed SOUL.md for agent {}", id);
             seed_user_md(&db, id);
-            seed_preferences_md(id);
 
             // Re-sync credentials for already-registered agents whose dir exists.
             // auth-profiles.json may have been overwritten or have stale/missing keys
@@ -2399,7 +2450,6 @@ pub async fn boot_sync_agents(
         write_auth_profiles(id, &get_creds_for_agent(id)).await;
         
         seed_user_md(&db, id);
-        seed_preferences_md(id);
 
         ok += 1;
 
@@ -2637,44 +2687,42 @@ mod tests {
     }
 }
 
-/// Helper function to seed USER.md with the current UserProfile if it's empty or missing.
+/// Helper function to seed USER.md with the current UserProfile and settings template if it's empty or missing.
 fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
     if let Some(workspace) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)) {
         let user_md_path = workspace.join("USER.md");
         if !user_md_path.exists() || std::fs::metadata(&user_md_path).map(|m| m.len()).unwrap_or(0) == 0 {
-            if let Ok(profile) = db.get_user_profile() {
-                if profile.name.trim() == "Admin" || profile.name.trim().is_empty() {
-                    return;
-                }
-                let mut content = format!("# User Context\n\n**Name:** {}\n", profile.name);
-                if !profile.working_hours.is_empty() && profile.working_hours != "9:00 AM - 5:00 PM" {
-                    content.push_str(&format!("**Context / Work:** {}\n", profile.working_hours));
-                }
-                let _ = std::fs::write(&user_md_path, content);
-            }
-        }
-    }
-}
-
-/// Helper function to seed PREFERENCES.md with the default prompt if it's empty or missing.
-fn seed_preferences_md(agent_id: &str) {
-    if let Some(workspace) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)) {
-        let prefs_md_path = workspace.join("PREFERENCES.md");
-        if !prefs_md_path.exists() || std::fs::metadata(&prefs_md_path).map(|m| m.len()).unwrap_or(0) == 0 {
-            let mut content = String::from("#PREFERENCES.md - Your Human's Preferences\n_Read this file. Everything in here is a fact about how I live, what I like, and how I want you to behave. Do not ask me to set things up; if you need a piece of information to complete a task and it isn't in here, look it up or make a best guess based on the 'vibe' of my other preferences. If you get it wrong, I will correct you once, and you should update this file immediately so you never ask again._\n");
+            let mut content = String::new();
             
-            // Try to read dynamic template
-            if let Some(template_path) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("preferences_template.md")) {
+            if let Ok(profile) = db.get_user_profile() {
+                if profile.name.trim() != "Admin" && !profile.name.trim().is_empty() {
+                    content.push_str(&format!("# User Context\n\n**Name:** {}\n", profile.name));
+                    if !profile.working_hours.is_empty() && profile.working_hours != "9:00 AM - 5:00 PM" {
+                        content.push_str(&format!("**Context / Work:** {}\n", profile.working_hours));
+                    }
+                    content.push_str("\n---\n\n");
+                }
+            }
+            
+            // Append the global userTemplate if it exists
+            let mut template_content = String::from("#USER.md - Your Human's Preferences\n_Read this file. Everything in here is a fact about how I live, what I like, and how I want you to behave. Do not ask me to set things up; if you need a piece of information to complete a task and it isn't in here, look it up or make a best guess based on the 'vibe' of my other preferences. If you get it wrong, I will correct you once, and you should update this file immediately so you never ask again._\n");
+            
+            if let Some(template_path) = dirs::data_dir().map(|d| d.join("Canopy").join("shared").join("settings.json")) {
                 if template_path.exists() {
-                    if let Ok(custom_content) = std::fs::read_to_string(&template_path) {
-                        if !custom_content.trim().is_empty() {
-                            content = custom_content;
+                    if let Ok(settings_json) = std::fs::read_to_string(&template_path) {
+                        if let Ok(settings) = serde_json::from_str::<serde_json::Value>(&settings_json) {
+                            if let Some(custom) = settings.get("userTemplate").and_then(|v| v.as_str()) {
+                                if !custom.trim().is_empty() {
+                                    template_content = custom.to_string();
+                                }
+                            }
                         }
                     }
                 }
             }
-
-            let _ = std::fs::write(&prefs_md_path, content);
+            content.push_str(&template_content);
+            
+            let _ = std::fs::write(&user_md_path, content);
         }
     }
 }

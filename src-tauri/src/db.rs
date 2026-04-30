@@ -769,7 +769,16 @@ impl Database {
         let (query, params_vec): (String, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(agent_id) = agent_id {
             (
                 "SELECT id, timestamp, agent_id, action, bridge_type, detail, content_hash
-                 FROM audit_log
+                 FROM (
+                     SELECT id, timestamp, agent_id, action, bridge_type, detail, content_hash
+                     FROM audit_log
+                     UNION ALL
+                     SELECT (m.rowid + 10000000) as id, m.timestamp, c.agent_id, 'chatted' as action, 
+                            CASE WHEN m.role = 'user' THEN 'user' ELSE 'app' END as bridge_type, 
+                            substr(m.content, 1, 150) as detail, NULL as content_hash
+                     FROM messages m
+                     JOIN conversations c ON m.conversation_id = c.id
+                 )
                  WHERE agent_id = ?1
                  ORDER BY timestamp DESC
                  LIMIT ?2".to_string(),
@@ -778,7 +787,16 @@ impl Database {
         } else {
             (
                 "SELECT id, timestamp, agent_id, action, bridge_type, detail, content_hash
-                 FROM audit_log
+                 FROM (
+                     SELECT id, timestamp, agent_id, action, bridge_type, detail, content_hash
+                     FROM audit_log
+                     UNION ALL
+                     SELECT (m.rowid + 10000000) as id, m.timestamp, c.agent_id, 'chatted' as action, 
+                            CASE WHEN m.role = 'user' THEN 'user' ELSE 'app' END as bridge_type, 
+                            substr(m.content, 1, 150) as detail, NULL as content_hash
+                     FROM messages m
+                     JOIN conversations c ON m.conversation_id = c.id
+                 )
                  ORDER BY timestamp DESC
                  LIMIT ?1".to_string(),
                 vec![Box::new(limit as i32)],
