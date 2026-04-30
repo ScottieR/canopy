@@ -43,14 +43,14 @@ interface ServiceCardProps {
   name: string;
   description: string;
   status: ServiceStatus;
-  agentCount?: number;
-  onConnect: () => void;
+  connectedAgents?: Array<{ id: string; name: string }>;
+  onConnect?: () => void;
   onDisconnect?: () => void;
   isLoading?: boolean;
   children?: React.ReactNode; // inline config shown when connected
 }
 
-function ServiceCard({ icon, name, description, status, agentCount, onConnect, onDisconnect, isLoading, children }: ServiceCardProps) {
+function ServiceCard({ icon, name, description, status, connectedAgents, onConnect, onDisconnect, isLoading, children }: ServiceCardProps) {
   const [showConfig, setShowConfig] = useState(false);
 
   return (
@@ -74,7 +74,7 @@ function ServiceCard({ icon, name, description, status, agentCount, onConnect, o
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{name}</span>
-            <StatusDot connected={status.connected} />
+            {status.connected && <StatusDot connected={status.connected} />}
             {status.connected && status.label && (
               <span style={{ fontSize: 11, color: "var(--text-sub)", fontWeight: 400 }}>{status.label}</span>
             )}
@@ -82,12 +82,7 @@ function ServiceCard({ icon, name, description, status, agentCount, onConnect, o
           <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2, lineHeight: 1.4 }}>{description}</div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-          {status.connected && agentCount !== undefined && (
-            <span style={{ fontSize: 11, color: "var(--text-sub)", background: "var(--border-subtle)", padding: "2px 8px", borderRadius: 20 }}>
-              {agentCount} agent{agentCount !== 1 ? "s" : ""}
-            </span>
-          )}
-          {status.connected ? (
+          {status.connected && onDisconnect && (
             <>
               {children && (
                 <button onClick={() => setShowConfig(v => !v)} style={{
@@ -98,17 +93,16 @@ function ServiceCard({ icon, name, description, status, agentCount, onConnect, o
                   {showConfig ? "Done" : "Configure"}
                 </button>
               )}
-              {onDisconnect && (
-                <button onClick={onDisconnect} style={{
-                  padding: "6px 14px", border: "1px solid #fca5a5", borderRadius: 7,
-                  background: "transparent", fontSize: 12, fontWeight: 600, cursor: "pointer",
-                  color: "#ef4444", fontFamily: "inherit",
-                }}>
-                  Disconnect
-                </button>
-              )}
+              <button onClick={onDisconnect} style={{
+                padding: "6px 14px", border: "1px solid #fca5a5", borderRadius: 7,
+                background: "transparent", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                color: "#ef4444", fontFamily: "inherit",
+              }}>
+                Disconnect
+              </button>
             </>
-          ) : (
+          )}
+          {!status.connected && onConnect && (
             <button onClick={onConnect} disabled={isLoading} style={{
               padding: "7px 18px", background: "#3c6663", color: "#fff", border: "none",
               borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: isLoading ? "default" : "pointer",
@@ -120,6 +114,21 @@ function ServiceCard({ icon, name, description, status, agentCount, onConnect, o
         </div>
       </div>
 
+      {/* Connected Agents List */}
+      {connectedAgents && connectedAgents.length > 0 && (
+        <div style={{ marginTop: 8, borderTop: "1px solid rgba(0,0,0,0.04)", paddingTop: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8, letterSpacing: "0.04em" }}>Connected Agents</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {connectedAgents.map(a => (
+               <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 16 }}>
+                 <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4A9E96" }} />
+                 <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</span>
+               </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Inline config (shown when connected + Configure clicked) */}
       {status.connected && showConfig && children && (
         <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 14 }}>
@@ -130,293 +139,27 @@ function ServiceCard({ icon, name, description, status, agentCount, onConnect, o
   );
 }
 
-// ─── Slack Setup Panel ────────────────────────────────────────────────────────
-
-function SlackSetupPanel({ onConnected }: { onConnected: () => void }) {
-  const [step, setStep] = useState<"bot" | "app" | "done">("bot");
-  const [appToken, setAppToken] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleOAuth = async () => {
-    setIsLoading(true);
-    setError("");
-    try {
-      await invoke("start_slack_oauth");
-      setStep("app");
-    } catch (e: any) {
-      setError(e?.toString() || "OAuth failed");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleSaveAppToken = async () => {
-    const tok = appToken.trim();
-    if (!tok.startsWith("xapp-")) {
-      setError("App token must start with xapp-");
-      return;
-    }
-    setIsLoading(true);
-    setError("");
-    try {
-      await invoke("store_secret_cmd", { key: "slack-app-token", value: tok });
-      await invoke("start_slack_listener");
-      setStep("done");
-      onConnected();
-    } catch (e: any) {
-      setError(e?.toString() || "Failed to activate Slack");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16, padding: "4px 0" }}>
-      {/* Step 1 */}
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-        <div style={{
-          width: 24, height: 24, borderRadius: "50%", flexShrink: 0, display: "flex",
-          alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700,
-          background: step === "bot" ? "#3c6663" : "#22c55e", color: "#fff",
-        }}>
-          {step === "bot" ? "1" : "✓"}
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>
-            Connect your Slack workspace
-          </div>
-          <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8, lineHeight: 1.5 }}>
-            Authorises Canopy as a bot in your workspace. You'll need a Slack app with scopes:
-            <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3, fontSize: 11, marginLeft: 4 }}>
-              channels:read, channels:history, chat:write, users:read
-            </code>
-          </div>
-          {step === "bot" && (
-            <button onClick={handleOAuth} disabled={isLoading} style={{
-              padding: "7px 16px", background: "#4a154b", color: "#fff", border: "none",
-              borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-            }}>
-              {isLoading ? "Opening browser…" : "Sign in with Slack"}
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Step 2 */}
-      {(step === "app" || step === "done") && (
-        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-          <div style={{
-            width: 24, height: 24, borderRadius: "50%", flexShrink: 0, display: "flex",
-            alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700,
-            background: step === "done" ? "#22c55e" : "#3c6663", color: "#fff",
-          }}>
-            {step === "done" ? "✓" : "2"}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>
-              Add App-Level Token (Socket Mode)
-            </div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8, lineHeight: 1.5 }}>
-              Go to <strong>api.slack.com → Your App → Settings → App-Level Tokens</strong>.
-              Create a token with <code style={{ background: "var(--border-subtle)", padding: "1px 4px", borderRadius: 3, fontSize: 11 }}>connections:write</code> scope.
-              Paste the <code style={{ background: "var(--border-subtle)", padding: "1px 4px", borderRadius: 3, fontSize: 11 }}>xapp-</code> token below.
-            </div>
-            {step === "app" && (
-              <div style={{ display: "flex", gap: 8 }}>
-                <PasswordInput
-                  value={appToken}
-                  onChange={e => setAppToken(e.target.value)}
-                  placeholder="xapp-1-..."
-                  style={{ flex: 1, padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)" }}
-                />
-                <button onClick={handleSaveAppToken} disabled={isLoading || !appToken.trim()} style={{
-                  padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
-                  borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                  opacity: !appToken.trim() ? 0.5 : 1,
-                }}>
-                  {isLoading ? "Activating…" : "Activate"}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div style={{ fontSize: 12, color: "#ef4444", background: "#fef2f2", padding: "8px 12px", borderRadius: 7 }}>
-          {error}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Pairing Code Panel ───────────────────────────────────────────────────────
-
-function PairingPanel() {
-  const [code, setCode] = useState("");
-  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
-  const [error, setError] = useState("");
-
-  const handleApprove = async () => {
-    const trimmed = code.trim().toUpperCase();
-    if (!trimmed || trimmed.length < 4) return;
-    setStatus("loading");
-    setError("");
-    try {
-      await invoke("approve_slack_pairing", { code: trimmed });
-      setStatus("success");
-      setCode("");
-    } catch (e: any) {
-      setStatus("error");
-      setError(e?.toString() || "Pairing failed");
-    }
-  };
-
-  return (
-    <div>
-      <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8, lineHeight: 1.5 }}>
-        Now go to Slack and send your bot a direct message with the word <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3 }}>pair</code>, then return and enter the code it replies with here.
-      </div>
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <input
-          value={code}
-          onChange={e => setCode(e.target.value.toUpperCase())}
-          placeholder="XXXXXX"
-          maxLength={12}
-          style={{
-            width: 120, padding: "7px 11px", border: "1px solid var(--border-subtle)",
-            borderRadius: 7, fontSize: 14, fontFamily: "monospace", letterSpacing: "0.15em",
-            background: "var(--surface-card)", color: "var(--text-main)", textTransform: "uppercase",
-          }}
-        />
-        <button onClick={handleApprove} disabled={status === "loading" || !code.trim()} style={{
-          padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
-          borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-        }}>
-          {status === "loading" ? "Pairing…" : "Approve"}
-        </button>
-        {status === "success" && <span style={{ fontSize: 12, color: "#22c55e", fontWeight: 600 }}>✓ Paired</span>}
-      </div>
-      {status === "error" && <div style={{ fontSize: 12, color: "#ef4444", marginTop: 6 }}>{error}</div>}
-    </div>
-  );
-}
-
-// ─── Slack Config Panel ───────────────────────────────────────────────────────
-
-function SlackConfigPanel() {
-  const [appToken, setAppToken] = useState("");
-  const [botToken, setBotToken] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
-
-  useEffect(() => {
-    Promise.all([
-      invoke<string>("get_secret_cmd", { key: "slack-app-token" }).catch(() => ""),
-      invoke<string>("get_secret_cmd", { key: "slack-bot-token" }).catch(() => "")
-    ]).then(([app, bot]) => {
-      setAppToken(app);
-      setBotToken(bot);
-    });
-  }, []);
-
-  const handleUpdateTokens = async () => {
-    setIsLoading(true);
-    setError("");
-    setSuccess(false);
-    try {
-      if (appToken) await invoke("store_secret_cmd", { key: "slack-app-token", value: appToken.trim() });
-      if (botToken) await invoke("store_secret_cmd", { key: "slack-bot-token", value: botToken.trim() });
-      await invoke("start_slack_listener");
-      setSuccess(true);
-      setTimeout(() => setSuccess(false), 3000);
-      if (typeof window !== "undefined" && window.location) {
-          // Trigger a global check status refresh if possible
-          const event = new CustomEvent("slack-updated");
-          window.dispatchEvent(event);
-      }
-    } catch (e: any) {
-      setError(e?.toString() || "Failed to update tokens");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <PairingPanel />
-      <div style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: 16 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
-          Update Slack Tokens
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 4 }}>Bot Token (xoxb-...)</div>
-            <PasswordInput
-              value={botToken}
-              onChange={e => setBotToken(e.target.value)}
-              placeholder="xoxb-..."
-              style={{ width: "100%", padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)", boxSizing: "border-box" }}
-            />
-          </div>
-          <div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 4 }}>App Token (xapp-...)</div>
-            <PasswordInput
-              value={appToken}
-              onChange={e => setAppToken(e.target.value)}
-              placeholder="xapp-1-..."
-              style={{ width: "100%", padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)", boxSizing: "border-box" }}
-            />
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <button onClick={handleUpdateTokens} disabled={isLoading} style={{
-              padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
-              borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit"
-            }}>
-              {isLoading ? "Updating..." : "Update Tokens & Restart"}
-            </button>
-            {success && <span style={{ fontSize: 12, color: "#22c55e", fontWeight: 600 }}>✓ Updated</span>}
-          </div>
-          {error && <div style={{ fontSize: 12, color: "#ef4444", marginTop: 4, lineHeight: 1.4 }}>{error}</div>}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── Main IntegrationsView ────────────────────────────────────────────────────
 
 export function IntegrationsView({ agents }: { agents: Array<{ id: string; name: string; integrations: string[] }> }) {
   const [section, setSection] = useState<Section>("services");
 
-  // Gateway-level connection statuses
-  const [slackStatus, setSlackStatus] = useState<ServiceStatus>({ connected: false });
   const [gmailStatus, setGmailStatus] = useState<ServiceStatus>({ connected: false });
   const [calendarStatus, setCalendarStatus] = useState<ServiceStatus>({ connected: false });
   const [iMessageStatus, setIMessageStatus] = useState<ServiceStatus>({ connected: false });
   const [telegramStatus, setTelegramStatus] = useState<ServiceStatus>({ connected: false });
   const [discordStatus, setDiscordStatus] = useState<ServiceStatus>({ connected: false });
+  const [githubStatus, setGithubStatus] = useState<ServiceStatus>({ connected: false });
 
   // UI states
-  const [showSlackSetup, setShowSlackSetup] = useState(false);
-  const [slackLoading, setSlackLoading] = useState(false);
   const [gmailLoading, setGmailLoading] = useState(false);
   const [calLoading, setCalLoading] = useState(false);
-  const [telegramToken, setTelegramToken] = useState("");
-  const [discordToken, setDiscordToken] = useState("");
-  const [telegramLoading, setTelegramLoading] = useState(false);
-  const [discordLoading, setDiscordLoading] = useState(false);
-  const [showTelegramInput, setShowTelegramInput] = useState(false);
-  const [showDiscordInput, setShowDiscordInput] = useState(false);
+
 
   const [connectors, setConnectors] = useState<any[]>([]);
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/connectors')
-      .then(res => res.json())
+    invoke<any[]>("get_connectors_config")
       .then(data => {
          if (Array.isArray(data)) setConnectors(data);
       })
@@ -424,11 +167,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
   }, []);
 
   const checkStatuses = useCallback(async () => {
-    // Slack
-    try {
-      const s = await invoke<{ connected: boolean; workspace_name?: string; bot_name?: string }>("check_slack_connection");
-      setSlackStatus({ connected: s.connected, label: s.workspace_name || s.bot_name });
-    } catch { setSlackStatus({ connected: false }); }
+    // Slack is now per-agent, so no global status check needed here
 
     // Gmail — check if token is in keychain
     try {
@@ -449,6 +188,12 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       setIMessageStatus({ connected: granted });
     } catch { setIMessageStatus({ connected: false }); }
 
+    // Github
+    try {
+      const tok = await invoke<string>("get_secret_cmd", { key: "GITHUB_TOKEN" });
+      setGithubStatus({ connected: !!tok });
+    } catch { setGithubStatus({ connected: false }); }
+
     // Telegram
     try {
       const tok = await invoke<string>("get_secret_cmd", { key: "telegram-bot-token" });
@@ -466,12 +211,30 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
     checkStatuses(); 
     const handleUpdate = () => checkStatuses();
     window.addEventListener("slack-updated", handleUpdate);
-    return () => window.removeEventListener("slack-updated", handleUpdate);
+    window.addEventListener("refresh_integrations", handleUpdate);
+    return () => {
+      window.removeEventListener("slack-updated", handleUpdate);
+      window.removeEventListener("refresh_integrations", handleUpdate);
+    };
   }, [checkStatuses]);
 
-  // Agent counts per service
-  const agentCount = (integration: string) =>
-    agents.filter(a => a.integrations?.some(i => i.includes(integration))).length;
+  const launchCompanion = async (id: string, name: string) => {
+    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+    new WebviewWindow('companion_' + id + '_' + Date.now(), {
+      url: `/index.html?companion=${id}&agentName=Shared`,
+      title: `Setup ${name}`,
+      width: 420,
+      height: 760,
+      x: window.screen.availWidth - 440,
+      y: 50,
+      alwaysOnTop: true,
+      decorations: true,
+    });
+  };
+
+  // Agents connected to each service
+  const connectedAgents = (integration: string) =>
+    agents.filter(a => a.integrations?.some(i => i.includes(integration))).map(a => ({ id: a.id, name: a.name }));
 
   // ── Gmail connect
   const connectGmail = async () => {
@@ -479,7 +242,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
     try {
       const result = await invoke<{ access_token?: string }>("start_google_oauth", {
         scopes: ["email"],
-        readOnly: true,
+        readOnly: false,
       });
       if (result.access_token) {
         await invoke("store_secret_cmd", { key: "GMAIL_ACCESS_TOKEN", value: result.access_token });
@@ -498,7 +261,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
     try {
       const result = await invoke<{ access_token?: string }>("start_google_oauth", {
         scopes: ["calendar"],
-        readOnly: true,
+        readOnly: false,
       });
       if (result.access_token) {
         await invoke("store_secret_cmd", { key: "GCAL_ACCESS_TOKEN", value: result.access_token });
@@ -526,51 +289,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
     }
   };
 
-  // ── Telegram connect
-  const connectTelegram = async () => {
-    if (!telegramToken.trim()) return;
-    setTelegramLoading(true);
-    try {
-      await invoke("configure_telegram", { botToken: telegramToken.trim() });
-      setTelegramStatus({ connected: true });
-      setShowTelegramInput(false);
-      setTelegramToken("");
-    } catch (e) {
-      console.error("Telegram connect failed:", e);
-    } finally {
-      setTelegramLoading(false);
-    }
-  };
 
-  // ── Discord connect
-  const connectDiscord = async () => {
-    if (!discordToken.trim()) return;
-    setDiscordLoading(true);
-    try {
-      await invoke("configure_discord", { botToken: discordToken.trim() });
-      setDiscordStatus({ connected: true });
-      setShowDiscordInput(false);
-      setDiscordToken("");
-    } catch (e) {
-      console.error("Discord connect failed:", e);
-    } finally {
-      setDiscordLoading(false);
-    }
-  };
-
-  // ── Disconnect helpers
-  const disconnectSlack = async () => {
-    setSlackLoading(true);
-    try {
-      await invoke("stop_slack_listener").catch(console.warn);
-      await invoke("delete_secret_cmd", { key: "slack-bot-token" }).catch(console.warn);
-      await invoke("delete_secret_cmd", { key: "slack-app-token" }).catch(console.warn);
-      setSlackStatus({ connected: false });
-      setShowSlackSetup(false);
-      checkStatuses();
-    } catch (e) { console.error(e); }
-    finally { setSlackLoading(false); }
-  };
 
   const disconnectGmail = async () => {
     try {
@@ -627,7 +346,6 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               subtitle="Global API keys used by all agents. Individual agents can override with their own keys in their Overview tab."
             />
             <ProvidersVault />
-            <WebVault />
           </>
         )}
 
@@ -638,35 +356,17 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               title="Connected Services"
               subtitle="Set up each service once. Your agents share these connections — control which agents can use each service in their Connections tab."
             />
+            
+            <WebVault />
 
             {/* Slack */}
             <ServiceCard
               icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>}
               name="Slack"
-              description="Real-time messaging via Socket Mode. All shared agents use one workspace connection."
-              status={slackStatus}
-              agentCount={agentCount("slack")}
-              onConnect={() => setShowSlackSetup(true)}
-              onDisconnect={slackStatus.connected ? disconnectSlack : undefined}
-              isLoading={slackLoading}
-            >
-              {/* Slack Config Panel (includes Pairing) */}
-              <SlackConfigPanel />
-            </ServiceCard>
-
-            {/* Slack setup panel (shown below the card when not yet connected) */}
-            {showSlackSetup && !slackStatus.connected && (
-              <div style={{
-                background: "var(--surface-card)", border: "1px solid #3c666330",
-                borderRadius: 12, padding: "20px 22px",
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Connect Slack</span>
-                  <button onClick={() => setShowSlackSetup(false)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-sub)", fontSize: 18 }}>×</button>
-                </div>
-                <SlackSetupPanel onConnected={() => { checkStatuses(); setShowSlackSetup(false); }} />
-              </div>
-            )}
+              description="Real-time messaging via Socket Mode. Configured per-agent."
+              status={{ connected: connectedAgents("slack").length > 0 }}
+              connectedAgents={connectedAgents("slack")}
+            />
 
             {/* Gmail */}
             <ServiceCard
@@ -674,7 +374,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Gmail"
               description="Read emails and send replies on behalf of your agents (using your Google account)."
               status={gmailStatus}
-              agentCount={agentCount("email")}
+              connectedAgents={connectedAgents("email")}
               onConnect={connectGmail}
               onDisconnect={gmailStatus.connected ? disconnectGmail : undefined}
               isLoading={gmailLoading}
@@ -686,7 +386,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Google Calendar"
               description="Read events and create calendar items for scheduling agents."
               status={calendarStatus}
-              agentCount={agentCount("calendar")}
+              connectedAgents={connectedAgents("calendar")}
               onConnect={connectCalendar}
               onDisconnect={calendarStatus.connected ? disconnectCalendar : undefined}
               isLoading={calLoading}
@@ -698,7 +398,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="iMessage"
               description="Read and reply to iMessage threads. Requires macOS Full Disk Access."
               status={iMessageStatus}
-              agentCount={agentCount("imessage")}
+              connectedAgents={connectedAgents("imessage")}
               onConnect={connectIMessage}
             />
 
@@ -708,31 +408,9 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Telegram"
               description="Connect a Telegram bot. One bot per gateway — shared across all agents."
               status={telegramStatus}
-              agentCount={agentCount("telegram")}
-              onConnect={() => setShowTelegramInput(true)}
+              connectedAgents={connectedAgents("telegram")}
+              onConnect={() => launchCompanion("telegram", "Telegram")}
             />
-            {showTelegramInput && !telegramStatus.connected && (
-              <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 12, padding: "16px 20px" }}>
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 10, lineHeight: 1.5 }}>
-                  Create a bot via <strong>@BotFather</strong> in Telegram and paste the token below.
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <PasswordInput
-                    value={telegramToken}
-                    onChange={e => setTelegramToken(e.target.value)}
-                    placeholder="123456789:ABCdef..."
-                    style={{ flex: 1, padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)" }}
-                  />
-                  <button onClick={connectTelegram} disabled={telegramLoading || !telegramToken.trim()} style={{
-                    padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
-                    borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                  }}>
-                    {telegramLoading ? "Saving…" : "Connect"}
-                  </button>
-                  <button onClick={() => setShowTelegramInput(false)} style={{ padding: "7px 12px", border: "1px solid var(--border-subtle)", borderRadius: 7, background: "none", cursor: "pointer", color: "var(--text-sub)", fontFamily: "inherit" }}>Cancel</button>
-                </div>
-              </div>
-            )}
 
             {/* Discord */}
             <ServiceCard
@@ -740,34 +418,22 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Discord"
               description="Connect a Discord bot to respond in channels and DMs."
               status={discordStatus}
-              agentCount={agentCount("discord")}
-              onConnect={() => setShowDiscordInput(true)}
+              connectedAgents={connectedAgents("discord")}
+              onConnect={() => launchCompanion("discord", "Discord")}
             />
-            {showDiscordInput && !discordStatus.connected && (
-              <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 12, padding: "16px 20px" }}>
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 10, lineHeight: 1.5 }}>
-                  Create a bot at <strong>discord.com/developers</strong> and paste the bot token below.
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <PasswordInput
-                    value={discordToken}
-                    onChange={e => setDiscordToken(e.target.value)}
-                    placeholder="Bot token..."
-                    style={{ flex: 1, padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)" }}
-                  />
-                  <button onClick={connectDiscord} disabled={discordLoading || !discordToken.trim()} style={{
-                    padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
-                    borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-                  }}>
-                    {discordLoading ? "Saving…" : "Connect"}
-                  </button>
-                  <button onClick={() => setShowDiscordInput(false)} style={{ padding: "7px 12px", border: "1px solid var(--border-subtle)", borderRadius: 7, background: "none", cursor: "pointer", color: "var(--text-sub)", fontFamily: "inherit" }}>Cancel</button>
-                </div>
-              </div>
-            )}
+
+            {/* Github */}
+            <ServiceCard
+              icon={<Github size={20} color="#3c6663" />}
+              name="GitHub"
+              description="Allow agent to read repositories, create PRs, and review code"
+              status={githubStatus}
+              connectedAgents={connectedAgents("github")}
+              onConnect={() => launchCompanion("github", "GitHub")}
+            />
 
             {/* Dynamic Global Connectors from Admin */}
-            {connectors.filter(c => c.isVisible && c.isGlobal && !['slack', 'gmail', 'imessage', 'filesystem', 'telegram', 'discord'].includes(c.id)).map(c => {
+            {connectors.filter(c => c.isVisible && c.isGlobal && !['slack', 'gmail', 'imessage', 'filesystem', 'telegram', 'discord', 'github'].includes(c.id)).map(c => {
               let IconComponent: any = Link;
               if (c.icon === 'calendar') IconComponent = Calendar;
               if (c.icon === 'hard-drive') IconComponent = HardDrive;
@@ -782,8 +448,8 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
                   icon={<IconComponent size={20} color="#3c6663" />}
                   name={c.name}
                   description={c.subtitle}
-                  status={{ connected: false }} // In a real scenario, this would check global settings
-                  agentCount={agentCount(c.id)}
+                  status={{ connected: connectedAgents(c.id).length > 0 }} 
+                  connectedAgents={connectedAgents(c.id)}
                   onConnect={() => {
                      alert(`Global setup for ${c.name} is coming soon!`);
                   }}

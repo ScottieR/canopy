@@ -162,3 +162,21 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
     
     Ok(discovered)
 }
+
+#[tauri::command]
+pub fn get_web_credentials_cmd() -> Result<Vec<serde_json::Value>, String> {
+    let vault = get_vault();
+    let mut creds = Vec::new();
+    for (key, _val) in vault {
+        if key.starts_with("web_") {
+            let parts: Vec<&str> = key.splitn(3, '_').collect();
+            if parts.len() == 3 {
+                creds.push(serde_json::json!({
+                    "domain": parts[1],
+                    "username": parts[2]
+                }));
+            }
+        }
+    }
+    Ok(creds)
+}
