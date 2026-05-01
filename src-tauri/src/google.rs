@@ -67,6 +67,12 @@ pub async fn start_google_oauth(
                 requested_scopes.push("https://www.googleapis.com/auth/calendar.events".to_string());
             }
         }
+        if scope == "drive" {
+            requested_scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
+            if !read_only {
+                requested_scopes.push("https://www.googleapis.com/auth/drive.file".to_string());
+            }
+        }
     }
 
     let scope_string = requested_scopes.join(" ");
@@ -161,7 +167,13 @@ pub async fn start_google_oauth(
 
     // ── Persist tokens to keychain so re-auth isn't needed after app restart ──
     // Determine a stable prefix per service so email and calendar tokens don't clobber each other
-    let service_prefix = if scopes.iter().any(|s| s == "email") { "google-email" } else { "google-calendar" };
+    let service_prefix = if scopes.iter().any(|s| s == "email") { 
+        "google-email" 
+    } else if scopes.iter().any(|s| s == "drive") {
+        "google-drive"
+    } else { 
+        "google-calendar" 
+    };
 
     if let Some(access_token) = &token_data.access_token {
         let _ = crate::keychain::store_secret(
@@ -169,7 +181,13 @@ pub async fn start_google_oauth(
             access_token,
         );
         // ── Forward token to OpenClaw so the agent can actually use the integration ──
-        let channel_key = if scopes.iter().any(|s| s == "email") { "gmail" } else { "googleCalendar" };
+        let channel_key = if scopes.iter().any(|s| s == "email") { 
+            "gmail" 
+        } else if scopes.iter().any(|s| s == "drive") {
+            "googleDrive"
+        } else { 
+            "googleCalendar" 
+        };
         let config_pairs: &[(&str, &str)] = &[
             ("enabled", "true"),
             ("accessToken", access_token.as_str()),

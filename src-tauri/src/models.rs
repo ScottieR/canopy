@@ -142,6 +142,8 @@ pub struct AgentPersonality {
     pub guardrails: Vec<String>,
     pub custom_instructions: String,
     pub active_model: Option<String>,
+    pub soul_template: Option<String>,
+    pub identity_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -56,7 +56,7 @@ export function GithubCompanion() {
     }}>
       <div style={{ position: "sticky", top: 0, zIndex: 9999, display: "flex", width: "100%", height: 32 }}>
          <div data-tauri-drag-region 
-              style={{ flex: 1, cursor: "grab", WebkitAppRegion: "drag", height: "100%" }} 
+              style={{ flex: 1, cursor: "grab", WebkitAppRegion: "drag", height: "100%" } as any} 
               onPointerDown={async () => {
                  try {
                      const { getCurrentWindow } = await import('@tauri-apps/api/window');

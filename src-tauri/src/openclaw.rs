@@ -127,6 +127,10 @@ pub async fn create_agent(
         .output()
         .await
         .map_err(|e| format!("Failed to register agent with gateway: {}", e))?;
+        
+    let cmd_str = format!("openclaw agents add {} --workspace {}", agent_id, workspace_path);
+    let out_str = String::from_utf8_lossy(&output.stdout);
+    log_terminal_command_internal(&agent_id, &cmd_str, &out_str);
 
     if !output.status.success() {
         let combined = format!("{}{}",
@@ -162,6 +166,28 @@ pub async fn create_agent(
 
     // Step 5: Write API keys so the agent can respond
     write_auth_profiles(&agent_id, &get_creds_for_agent(&agent_id)).await;
+
+    // Step 6: Asynchronously ensure Playwright is installed
+    // This provides a fallback to ensure the browser tool dependencies are installed 
+    // when an agent is created, just in case the container missed the startup hook.
+    tauri::async_runtime::spawn(async move {
+        tracing::info!("create_agent: Initiating background Chromium/Playwright installation (best-effort)...");
+        let _ = get_docker_command()
+            .args(["exec", "-u", "root", "canopy-gateway", "apt-get", "update"])
+            .output().await;
+
+        let _ = get_docker_command()
+            .args(["exec", "-u", "root", "canopy-gateway", "apt-get", "install", "-y", "chromium"])
+            .output().await;
+
+        let _ = get_docker_command()
+            .args(["exec", "-u", "root", "canopy-gateway", "npx", "playwright", "install-deps"])
+            .output().await;
+        
+        let _ = get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "npx", "playwright", "install", "chromium", "webkit"])
+            .output().await;
+    });
 
     // TODO: If isolated, spin up a dedicated container via docker::generate_isolated_compose()
 
@@ -210,6 +236,21 @@ pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+pub async fn get_openclaw_status_json() -> Result<String, String> {
+    let output = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "status", "--json"])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to get openclaw status: {}", e))?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).to_string())
+    }
+}
+
+#[tauri::command]
 pub async fn read_workspace_file(agent_id: String, filename: String) -> Result<String, String> {
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err("Invalid filename".into());
@@ -245,6 +286,66 @@ pub async fn write_workspace_file(agent_id: String, filename: String, content: S
     std::fs::write(&file_path, content).map_err(|e| e.to_string())
 }
 
+pub fn log_terminal_command_internal(agent_id: &str, command: &str, output: &str) {
+    let workspace = match dirs::data_dir() {
+        Some(dir) => dir.join("Canopy").join("openclaw-state").join("workspace").join(agent_id),
+        None => return,
+    };
+    
+    let file_path = workspace.join(".terminal_history.json");
+    let mut history = vec![];
+    
+    if file_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&file_path) {
+            if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
+                history = parsed;
+            }
+        }
+    }
+    
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let entry = serde_json::json!({
+        "command": command,
+        "output": output,
+        "timestamp": timestamp
+    });
+    
+    history.push(entry);
+    
+    if let Ok(json) = serde_json::to_string_pretty(&history) {
+        let _ = std::fs::create_dir_all(&workspace);
+        let _ = std::fs::write(&file_path, json);
+    }
+}
+
+#[tauri::command]
+pub async fn run_agent_command(
+    agent_id: String,
+    command: String,
+) -> Result<String, String> {
+    let workspace_path = format!("/home/node/.openclaw/workspace/{}", agent_id);
+    let output = get_docker_command()
+        .args([
+            "exec", "-u", "node", "-w", &workspace_path,
+            "canopy-gateway", "bash", "-c", &command
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to execute command: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    let combined = format!("{}{}", stdout, stderr);
+    log_terminal_command_internal(&agent_id, &command, &combined);
+
+    if output.status.success() {
+        Ok(combined)
+    } else {
+        Err(format!("Error: {}", combined))
+    }
+}
+
 #[tauri::command]
 pub async fn get_agent(
     db: tauri::State<'_, crate::db::Database>,
@@ -261,15 +362,18 @@ pub async fn update_agent_personality(
     agent_id: String,
     personality: AgentPersonality,
 ) -> Result<(), String> {
-    let soul_md = generate_soul_md(&personality);
     let soul_path = agent_soul_path(&agent_id);
+    let custom_instructions = personality.custom_instructions.trim();
+    let escaped_prefs = custom_instructions.replace('\'', "'\\''");
 
     let output = get_docker_command()
         .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
-            &format!("mkdir -p $(dirname {}) && cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_path, soul_md)])
+            &format!("mkdir -p $(dirname {}) && printf '%s' '{}' > $(dirname {})/PREFERENCES.md", soul_path, escaped_prefs, soul_path)])
         .output()
         .await
-        .map_err(|e| format!("Failed to update SOUL.md: {}", e))?;
+        .map_err(|e| format!("Failed to update PREFERENCES.md: {}", e))?;
+        
+    log_terminal_command_internal(&agent_id, "printf '%s' '...' > ~/.openclaw/agents/[id]/agent/PREFERENCES.md", "PREFERENCES.md successfully updated with latest personality.");
 
     if !output.status.success() {
         return Err("Failed to update personality in container".to_string());
@@ -285,6 +389,82 @@ pub async fn update_agent_personality(
     Ok(())
 }
 
+// Helper to sync an agent's combined capabilities and integrations to OpenClaw
+async fn sync_agent_skills(agent: &crate::models::Agent) {
+    let output = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "get", "agents.list"])
+        .output()
+        .await
+        .unwrap_or_else(|_| std::process::Output { status: Default::default(), stdout: vec![], stderr: vec![] });
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Ok(agents) = serde_json::from_str::<serde_json::Value>(&stdout) {
+            if let Some(agents_array) = agents.as_array() {
+                if let Some(index) = agents_array.iter().position(|a| a.get("id").and_then(|v| v.as_str()) == Some(&agent.id)) {
+                    let mut skills = Vec::new();
+                    let caps = &agent.capabilities;
+                    if caps.browser { 
+                        skills.push("browser".to_string()); 
+                        
+                        // Refresh dependencies just in case they were pruned or missing
+                        tauri::async_runtime::spawn(async move {
+                            tracing::info!("sync_agent_skills: Ensuring browser dependencies are installed...");
+                            let _ = get_docker_command()
+                                .args(["exec", "-u", "root", "canopy-gateway", "apt-get", "update"])
+                                .output().await;
+                            let _ = get_docker_command()
+                                .args(["exec", "-u", "root", "canopy-gateway", "apt-get", "install", "-y", "chromium"])
+                                .output().await;
+                            let _ = get_docker_command()
+                                .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", "cd /home/node/.openclaw && npm install @playwright/test && npx playwright install chromium webkit"])
+                                .output().await;
+                        });
+                    }
+                    if caps.proxy { skills.push("proxy".to_string()); }
+                    if caps.vision { skills.push("vision".to_string()); }
+                    if caps.canvas { skills.push("canvas".to_string()); }
+                    if caps.coding { skills.push("coding".to_string()); }
+                    if caps.gog { skills.push("gog".to_string()); }
+                    if caps.summarize { skills.push("summarize".to_string()); }
+
+                    // Append integrations that act as skills (e.g. gmail, calendar)
+                    // We map internal Canopy IDs to OpenClaw plugin/channel names
+                    for i in &agent.integrations {
+                        if !i.starts_with("web_") {
+                            let mut skill_name = i.clone();
+                            if skill_name == "calendar" || skill_name == "cal" {
+                                skill_name = "googleCalendar".to_string();
+                            } else if skill_name == "email" {
+                                skill_name = "gmail".to_string();
+                            } else if skill_name == "drive" {
+                                skill_name = "googleDrive".to_string();
+                            }
+                            
+                            if !skills.contains(&skill_name) {
+                                skills.push(skill_name);
+                            }
+                        }
+                    }
+
+                    let skills_json = serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string());
+
+                    let path = format!("agents.list[{}].skills", index);
+                    let cmd_str = format!("openclaw config set {} '{}' --strict-json", path, skills_json);
+                    let output2 = get_docker_command()
+                        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", &path, &skills_json, "--strict-json"])
+                        .output()
+                        .await;
+                        
+                    if let Ok(out) = output2 {
+                        log_terminal_command_internal(&agent.id, &cmd_str, &String::from_utf8_lossy(&out.stdout));
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn update_agent_integrations(
     db: tauri::State<'_, crate::db::Database>,
@@ -295,6 +475,8 @@ pub async fn update_agent_integrations(
         agent.integrations = integrations;
         let _ = db.update_agent(&agent);
         let _ = db.log_audit(&agent_id, "update_integrations", None, "Agent integrations updated", None);
+        
+        sync_agent_skills(&agent).await;
     }
     Ok(())
 }
@@ -324,44 +506,11 @@ pub async fn update_agent_capabilities(
         agent.capabilities = capabilities.clone();
         let _ = db.update_agent(&agent);
         let _ = db.log_audit(&agent_id, "update_capabilities", Some("security"), "Agent capabilities and network permissions updated", None);
+        
+        // 2. Push to OpenClaw Container
+        sync_agent_skills(&agent).await;
     } else {
         return Err("Agent not found".to_string());
-    }
-    
-    // 2. Push to OpenClaw Container
-    // Get the current agents.list to find the index of this agent
-    let output = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "get", "agents.list"])
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Ok(agents) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            if let Some(agents_array) = agents.as_array() {
-                if let Some(index) = agents_array.iter().position(|a| a.get("id").and_then(|v| v.as_str()) == Some(&agent_id)) {
-                    // Construct the skills array based on capabilities
-                    let mut skills = Vec::new();
-                    if capabilities.browser { skills.push("browser"); }
-                    if capabilities.proxy { skills.push("proxy"); }
-                    if capabilities.vision { skills.push("vision"); }
-                    if capabilities.canvas { skills.push("canvas"); }
-                    if capabilities.coding { skills.push("coding"); }
-                    if capabilities.gog { skills.push("gog"); }
-                    if capabilities.summarize { skills.push("summarize"); }
-
-                    let skills_json = serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string());
-
-                    // Set it in OpenClaw config
-                    let path = format!("agents.list[{}].skills", index);
-                    let _ = get_docker_command()
-                        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", &path, &skills_json, "--strict-json"])
-                        .output()
-                        .await;
-                }
-            }
-        }
     }
 
     Ok(())
@@ -822,6 +971,8 @@ pub async fn import_agent(
             guardrails: vec![],
             custom_instructions: String::new(),
             active_model: Some(imported_model),
+            soul_template: None,
+            identity_template: None,
         },
         integrations: vec![],
         memories: vec![],
@@ -1136,38 +1287,47 @@ pub async fn sync_credentials(
 /// Generate a SOUL.md file from a structured personality.
 /// This is the bridge between our GUI and OpenClaw's native personality system.
 fn generate_soul_md(personality: &AgentPersonality) -> String {
-    let mut soul = String::new();
+    let mut soul = personality.soul_template.clone().unwrap_or_default();
+    
+    if soul.is_empty() {
+        // Fallback to legacy hardcoded format if no template was provided
+        soul.push_str(&format!("# {}\n\n", personality.name));
+        soul.push_str("## Communication Style\n\n");
+        soul.push_str(&format!("{}\n\n", personality.communication_style));
 
-    soul.push_str(&format!("# {}\n\n", personality.name));
-    soul.push_str("## Communication Style\n\n");
-    soul.push_str(&format!("{}\n\n", personality.communication_style));
-
-    if !personality.expertise.is_empty() {
-        soul.push_str("## Expertise\n\n");
-        for area in &personality.expertise {
-            soul.push_str(&format!("- {}\n", area));
+        if !personality.expertise.is_empty() {
+            soul.push_str("## Expertise\n\n");
+            for area in &personality.expertise {
+                soul.push_str(&format!("- {}\n", area));
+            }
+            soul.push('\n');
         }
-        soul.push('\n');
-    }
 
-    if !personality.guardrails.is_empty() {
-        soul.push_str("## Guardrails\n\n");
-        for guardrail in &personality.guardrails {
-            soul.push_str(&format!("- {}\n", guardrail));
+        if !personality.guardrails.is_empty() {
+            soul.push_str("## Guardrails\n\n");
+            for guardrail in &personality.guardrails {
+                soul.push_str(&format!("- {}\n", guardrail));
+            }
+            soul.push('\n');
         }
-        soul.push('\n');
-    }
 
-    if !personality.custom_instructions.is_empty() {
-        soul.push_str("## Additional Instructions\n\n");
-        soul.push_str(&personality.custom_instructions);
-        soul.push('\n');
+        if !personality.custom_instructions.is_empty() {
+            soul.push_str("## Additional Instructions\n\n");
+            soul.push_str(&personality.custom_instructions);
+            soul.push('\n');
+        }
+    } else {
+        // Replace template variables
+        soul = soul.replace("{{name}}", &personality.name);
+        soul = soul.replace("{{description}}", &personality.communication_style);
     }
 
     const CANOPY_PROTOCOLS: &str = include_str!("../CANOPY_PROTOCOLS.md");
-    soul.push_str("\n");
-    soul.push_str(CANOPY_PROTOCOLS);
-    soul.push_str("\n\n");
+    if !soul.contains("CANOPY_PROTOCOLS") {
+        soul.push_str("\n\n");
+        soul.push_str(CANOPY_PROTOCOLS);
+        soul.push_str("\n\n");
+    }
 
     soul
 }
@@ -1309,6 +1469,8 @@ pub async fn import_discovered_agent(
             guardrails: vec![],
             custom_instructions: soul_content,
             active_model: Some(default_model),
+            soul_template: None,
+            identity_template: None,
         },
         integrations: vec![],
         memories: vec![],
@@ -2167,25 +2329,8 @@ pub async fn boot_sync_agents(
 
         if already_registered.contains(id.as_str()) && host_agent_dir_exists {
             tracing::info!("boot_sync_agents: agent {} already registered and dir exists — fast path (skip agents add)", id);
-            // Still update SOUL.md (a lightweight file write, no process spawn).
-            let soul_content = generate_soul_md(&agent.personality);
-            let soul_path = agent_soul_path(id);
-            let escaped_soul = soul_content.replace('\'', "'\\''");
-            let write_cmd = format!(
-                "mkdir -p \"$(dirname '{soul_path}')\" && \
-                 printf '%s' '{soul}' > '{soul_path}' && \
-                 touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/IDENTITY.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md \"$(dirname '{soul_path}')\"/PREFERENCES.md",
-                soul_path = soul_path,
-                soul = escaped_soul,
-            );
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                get_docker_command()
-                    .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
-                    .output(),
-            )
-            .await;
-            tracing::info!("boot_sync_agents: refreshed SOUL.md for agent {}", id);
+            
+            // Only seed the USER.md if it's empty or doesn't exist, to prevent overwriting agent memories
             seed_user_md(&db, id);
 
             // Re-sync credentials for already-registered agents whose dir exists.
@@ -2427,14 +2572,22 @@ pub async fn boot_sync_agents(
 
         // Step 2: Re-write SOUL.md from persisted personality data
         let soul_content = generate_soul_md(&agent.personality);
+        let identity_content = agent.personality.identity_template.clone().unwrap_or_default();
         let soul_path = agent_soul_path(id);
         let escaped_soul = soul_content.replace('\'', "'\\''");
+        let escaped_identity = identity_content.replace('\'', "'\\''");
+        let custom_instructions = agent.personality.custom_instructions.trim();
+        let escaped_prefs = custom_instructions.replace('\'', "'\\''");
         let write_cmd = format!(
             "mkdir -p \"$(dirname '{soul_path}')\" && \
              printf '%s' '{soul}' > '{soul_path}' && \
-             touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/IDENTITY.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md \"$(dirname '{soul_path}')\"/PREFERENCES.md",
+             printf '%s' '{identity}' > \"$(dirname '{soul_path}')\"/IDENTITY.md && \
+             printf '%s' '{prefs}' > \"$(dirname '{soul_path}')\"/PREFERENCES.md && \
+             touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
             soul_path = soul_path,
             soul = escaped_soul,
+            identity = escaped_identity,
+            prefs = escaped_prefs,
         );
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(10),
