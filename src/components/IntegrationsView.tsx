@@ -143,6 +143,7 @@ function ServiceCard({ icon, name, description, status, connectedAgents, onConne
 
 export function IntegrationsView({ agents }: { agents: Array<{ id: string; name: string; integrations: string[] }> }) {
   const [section, setSection] = useState<Section>("services");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [gmailStatus, setGmailStatus] = useState<ServiceStatus>({ connected: false });
   const [calendarStatus, setCalendarStatus] = useState<ServiceStatus>({ connected: false });
@@ -353,7 +354,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
         {section === "services" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <SectionHeader
-              title="Connected Services"
+              title="Suggested Services"
               subtitle="Set up each service once. Your agents share these connections — control which agents can use each service in their Connections tab."
             />
             
@@ -433,7 +434,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
             />
 
             {/* Dynamic Global Connectors from Admin */}
-            {connectors.filter(c => c.isVisible && c.isGlobal && !['slack', 'gmail', 'imessage', 'filesystem', 'telegram', 'discord', 'github'].includes(c.id)).map(c => {
+            {connectors.filter(c => c.isVisible && c.isGlobal && !c.isPlugin && !['slack', 'gmail', 'imessage', 'filesystem', 'telegram', 'discord', 'github'].includes(c.id)).map(c => {
               let IconComponent: any = Link;
               if (c.icon === 'calendar') IconComponent = Calendar;
               if (c.icon === 'hard-drive') IconComponent = HardDrive;
@@ -456,6 +457,44 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
                 />
               );
             })}
+
+            {/* ── Plugin Directory ── */}
+            <div style={{ marginTop: 40 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+                <SectionHeader
+                  title="OpenClaw Plugin Directory"
+                  subtitle="Explore and connect over 40+ native OpenClaw plugins."
+                />
+                <div style={{ position: "relative" }}>
+                   <input 
+                      type="text" 
+                      placeholder="Search plugins..." 
+                      value={searchQuery}
+                      onChange={e => setSearchQuery(e.target.value)}
+                      style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", color: "var(--text-main)", fontSize: 13, width: 220 }}
+                   />
+                </div>
+              </div>
+              
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                {connectors
+                   .filter(c => c.isPlugin)
+                   .filter(c => !searchQuery || c.name.toLowerCase().includes(searchQuery.toLowerCase()) || c.subtitle.toLowerCase().includes(searchQuery.toLowerCase()))
+                   .map(c => (
+                     <ServiceCard
+                       key={c.id}
+                       icon={<span style={{ fontSize: 22 }}>{c.emoji || "🔌"}</span>}
+                       name={c.name}
+                       description={c.subtitle}
+                       status={{ connected: connectedAgents(c.id).length > 0 }}
+                       connectedAgents={connectedAgents(c.id)}
+                       onConnect={() => {
+                          alert(`To install ${c.name}, follow the instructions in the OpenClaw documentation or run \`openclaw skills install ${c.name}\` in the terminal.`);
+                       }}
+                     />
+                   ))}
+              </div>
+            </div>
 
           </div>
         )}
