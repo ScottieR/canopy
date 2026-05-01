@@ -113,7 +113,6 @@ export function Terrarium({
       new THREE.MeshToonMaterial({
         color: "#95A86A",
         gradientMap: buildToonGradient("#95A86A"),
-        flatShading: true,
       }),
     []
   );
@@ -123,7 +122,6 @@ export function Terrarium({
       new THREE.MeshToonMaterial({
         vertexColors: true,
         gradientMap: buildToonGradient("#A07458"),
-        flatShading: true,
       }),
     []
   );

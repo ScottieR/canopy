@@ -32,7 +32,7 @@ describe('Dashboard', () => {
       },
     ];
 
-    global.mockTauriInvoke = vi.fn().mockResolvedValue(mockAgents);
+    (globalThis as any).mockTauriInvoke = vi.fn().mockResolvedValue(mockAgents);
   });
 
   describe('rendering', () => {
@@ -67,7 +67,7 @@ describe('Dashboard', () => {
 
   describe('empty state', () => {
     it('should show empty state when no agents exist', async () => {
-      global.mockTauriInvoke = vi.fn().mockResolvedValue([]);
+      (globalThis as any).mockTauriInvoke = vi.fn().mockResolvedValue([]);
       render(<Dashboard />);
 
       await waitFor(() => {

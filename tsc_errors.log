@@ -1,58 +1,70 @@
-src/App.tsx(503,45): error TS2322: Type 'Color' is not assignable to type 'string'.
-src/App.tsx(591,108): error TS2322: Type '{ position: [number, number, number]; size: [number, number, number]; lit: string; shadow: string; top: string; transparent: true; opacity: number; }' is not assignable to type 'IntrinsicAttributes & { position: [number, number, number]; size?: [number, number, number] | undefined; lit?: string | undefined; shadow?: string | undefined; top?: string | undefined; }'.
+src/App.tsx(248,45): error TS2322: Type 'Color' is not assignable to type 'string'.
+src/App.tsx(336,108): error TS2322: Type '{ position: [number, number, number]; size: [number, number, number]; lit: string; shadow: string; top: string; transparent: true; opacity: number; }' is not assignable to type 'IntrinsicAttributes & { position: [number, number, number]; size?: [number, number, number] | undefined; lit?: string | undefined; shadow?: string | undefined; top?: string | undefined; }'.
   Property 'transparent' does not exist on type 'IntrinsicAttributes & { position: [number, number, number]; size?: [number, number, number] | undefined; lit?: string | undefined; shadow?: string | undefined; top?: string | undefined; }'.
-src/App.tsx(836,53): error TS2345: Argument of type '"xAI Grok"' is not assignable to parameter of type 'SetStateAction<"" | "OpenAI" | "Anthropic" | "Google Gemini">'.
-src/App.tsx(1064,7): error TS2322: Type 'number' is not assignable to type 'string'.
-src/App.tsx(1066,7): error TS2322: Type '"deploying"' is not assignable to type '"thinking" | "active" | "error" | "sleeping" | "stopped"'.
-src/App.tsx(1072,30): error TS2339: Property 'dynamicColors' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; }'.
-src/App.tsx(1073,34): error TS2339: Property 'dynamicColors' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; }'.
-src/App.tsx(1074,36): error TS2339: Property 'dynamicColors' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; }'.
-src/App.tsx(1144,30): error TS2339: Property 'visual_identity' does not exist on type 'Agent'.
-src/App.tsx(1216,43): error TS2367: This comparison appears to be unintentional because the types 'string' and 'number' have no overlap.
-src/App.tsx(1241,41): error TS2367: This comparison appears to be unintentional because the types 'string' and 'number' have no overlap.
-src/App.tsx(1624,99): error TS2353: Object literal may only specify known properties, and 'dynamicColors' does not exist in type '{ baseModelUrl: string | null; accessories: string[]; } | ((prevState: { baseModelUrl: string | null; accessories: string[]; } | null) => { baseModelUrl: string | null; accessories: string[]; } | null)'.
-src/App.tsx(1755,59): error TS2339: Property 'suggestedBooks' does not exist on type '{ description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string | undefined; suggest_in_onboarding?: boolean | undefined; library?: { ...; }[] | undefined; readwise_enabled?: boolean | undefined; }'.
-src/App.tsx(1757,62): error TS2339: Property 'suggestedBooks' does not exist on type '{ description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string | undefined; suggest_in_onboarding?: boolean | undefined; library?: { ...; }[] | undefined; readwise_enabled?: boolean | undefined; }'.
-src/App.tsx(3324,23): error TS2339: Property '__TAURI_INTERNALS__' does not exist on type 'Window & typeof globalThis'.
-src/App.tsx(3325,29): error TS2339: Property '__TAURI_INTERNALS__' does not exist on type 'Window & typeof globalThis'.
-src/App.tsx(3326,83): error TS7006: Parameter 't' implicitly has an 'any' type.
-src/App.tsx(3327,83): error TS7006: Parameter 't' implicitly has an 'any' type.
-src/App.tsx(3768,41): error TS2339: Property '__TAURI_INTERNALS__' does not exist on type 'Window & typeof globalThis'.
-src/App.tsx(3815,42): error TS2339: Property '__TAURI_INTERNALS__' does not exist on type 'Window & typeof globalThis'.
-src/App.tsx(4012,37): error TS2339: Property '__TAURI_INTERNALS__' does not exist on type 'Window & typeof globalThis'.
-src/App.tsx(4164,61): error TS2322: Type '(v: any) => void' is not assignable to type '() => void'.
+src/App.tsx(1124,16): error TS7006: Parameter 'e' implicitly has an 'any' type.
+src/App.tsx(1164,83): error TS7006: Parameter 't' implicitly has an 'any' type.
+src/App.tsx(1165,83): error TS7006: Parameter 't' implicitly has an 'any' type.
+src/App.tsx(1323,27): error TS2347: Untyped function calls may not accept type arguments.
+src/App.tsx(2211,61): error TS2322: Type '(v: any) => void' is not assignable to type '() => void'.
   Target signature provides too few arguments. Expected 1 or more, but got 0.
-src/App.tsx(4164,71): error TS7006: Parameter 'v' implicitly has an 'any' type.
-src/App.tsx(4170,74): error TS2322: Type '(v: any) => void' is not assignable to type '() => void'.
+src/App.tsx(2211,71): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/App.tsx(2217,74): error TS2322: Type '(v: any) => void' is not assignable to type '() => void'.
   Target signature provides too few arguments. Expected 1 or more, but got 0.
-src/App.tsx(4170,84): error TS7006: Parameter 'v' implicitly has an 'any' type.
-src/App.tsx(4174,71): error TS2322: Type '(v: any) => void' is not assignable to type '() => void'.
+src/App.tsx(2217,84): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/App.tsx(2221,71): error TS2322: Type '(v: any) => void' is not assignable to type '() => void'.
   Target signature provides too few arguments. Expected 1 or more, but got 0.
-src/App.tsx(4174,81): error TS7006: Parameter 'v' implicitly has an 'any' type.
-src/App.tsx(4463,230): error TS2561: Object literal may only specify known properties, but 'marginX' does not exist in type 'Properties<string | number, string & {}>'. Did you mean to write 'margin'?
-src/App.tsx(4498,53): error TS2339: Property 'total_tokens_in' does not exist on type '{ tasks_today: number; messages_handled: number; uptime_seconds: number; total_cost_usd: number; custom_metrics?: { label: string; value: string | number; }[] | undefined; }'.
-src/App.tsx(4498,91): error TS2339: Property 'total_tokens_out' does not exist on type '{ tasks_today: number; messages_handled: number; uptime_seconds: number; total_cost_usd: number; custom_metrics?: { label: string; value: string | number; }[] | undefined; }'.
-src/App.tsx(4548,20): error TS2339: Property 'history' does not exist on type 'AgentData'.
-src/App.tsx(4548,37): error TS2339: Property 'history' does not exist on type 'AgentData'.
-src/App.tsx(4549,22): error TS2339: Property 'history' does not exist on type 'AgentData'.
-src/App.tsx(4603,15): error TS2345: Argument of type '{ color: string; robeColor: string; accentColor: string; visual_identity: { baseModelUrl?: string | null | undefined; accessories?: string[] | undefined; habitatId?: number | undefined; color?: string | undefined; habitatOffset?: { ...; } | undefined; }; ... 31 more ...; stats: { ...; }; }[]' is not assignable to parameter of type 'AgentData[]'.
+src/App.tsx(2221,81): error TS7006: Parameter 'v' implicitly has an 'any' type.
+src/App.tsx(2517,21): error TS2322: Type '{ key: number; path: string; position: [number, number, number]; }' is not assignable to type 'IntrinsicAttributes & IntrinsicClassAttributes<SafeBillboard> & Readonly<{ url: string; position: [number, number, number]; }>'.
+  Property 'path' does not exist on type 'IntrinsicAttributes & IntrinsicClassAttributes<SafeBillboard> & Readonly<{ url: string; position: [number, number, number]; }>'.
+src/App.tsx(2776,15): error TS2345: Argument of type '{ color: string; robeColor: string; accentColor: string; visual_identity: { baseModelUrl?: string | null | undefined; accessories?: string[] | undefined; habitatId?: number | undefined; color?: string | undefined; habitatOffset?: { ...; } | undefined; }; ... 31 more ...; stats: { ...; }; }[]' is not assignable to parameter of type 'AgentData[]'.
   Type '{ color: string; robeColor: string; accentColor: string; visual_identity: { baseModelUrl?: string | null | undefined; accessories?: string[] | undefined; habitatId?: number | undefined; color?: string | undefined; habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; } | undefined; }; ... 31 more ...;...' is not assignable to type 'AgentData'.
     The types of 'visual_identity.baseModelUrl' are incompatible between these types.
       Type 'string | null | undefined' is not assignable to type 'string | null'.
         Type 'undefined' is not assignable to type 'string | null'.
-src/App.tsx(5242,54): error TS2339: Property 'id' does not exist on type '{ type: string; text: string; when: string; confidence: number; }'.
-src/App.tsx(5866,47): error TS2345: Argument of type '"diagnostics"' is not assignable to parameter of type '"loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile"'.
-src/App.tsx(5919,114): error TS2339: Property 'habitatTransform' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; habitatId?: number | undefined; color?: string | undefined; habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; } | undefined; }'.
-src/App.tsx(6929,30): error TS2339: Property 'visual_identity' does not exist on type 'Agent'.
-src/App.tsx(7091,8): error TS2367: This comparison appears to be unintentional because the types '"loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile"' and '"diagnostics"' have no overlap.
+src/App.tsx(3483,54): error TS2339: Property 'id' does not exist on type '{ type: string; text: string; when: string; confidence: number; }'.
+src/App.tsx(4262,114): error TS2339: Property 'habitatTransform' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; habitatId?: number | undefined; color?: string | undefined; habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; } | undefined; }'.
+src/App.tsx(5150,17): error TS2322: Type '{ paused: boolean; visual_identity: {}; title: string; description: string; robeColor: any; accentColor: any; color: any; position: [number, number, number]; targetPosition: [number, number, number]; ... 25 more ...; stats: { ...; }; }[]' is not assignable to type 'AgentData[]'.
+  Type '{ paused: boolean; visual_identity: {}; title: string; description: string; robeColor: any; accentColor: any; color: any; position: [number, number, number]; targetPosition: [number, number, number]; ... 25 more ...; stats: { tasks_today: number; messages_handled: number; uptime_seconds: number; total_cost_usd: numb...' is not assignable to type 'AgentData'.
+    Types of property 'visual_identity' are incompatible.
+      Type '{}' is missing the following properties from type '{ baseModelUrl: string | null; accessories: string[]; habitatId?: number | undefined; color?: string | undefined; habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; } | undefined; }': baseModelUrl, accessories
+src/App.tsx(5161,29): error TS2339: Property 'robeColor' does not exist on type '{}'.
+src/App.tsx(5161,45): error TS2339: Property 'color' does not exist on type '{}'.
+src/App.tsx(5162,31): error TS2339: Property 'accentColor' does not exist on type '{}'.
+src/App.tsx(5162,49): error TS2339: Property 'color' does not exist on type '{}'.
+src/App.tsx(5163,25): error TS2339: Property 'color' does not exist on type '{}'.
+src/components/Companion/DiscordCompanion.tsx(57,49): error TS2353: Object literal may only specify known properties, and 'WebkitAppRegion' does not exist in type 'Properties<string | number, string & {}>'.
+src/components/Companion/GithubCompanion.tsx(59,49): error TS2353: Object literal may only specify known properties, and 'WebkitAppRegion' does not exist in type 'Properties<string | number, string & {}>'.
+src/components/Companion/PasswordsCompanion.tsx(129,49): error TS2353: Object literal may only specify known properties, and 'WebkitAppRegion' does not exist in type 'Properties<string | number, string & {}>'.
 src/components/Companion/SlackCompanion.tsx(73,49): error TS2353: Object literal may only specify known properties, and 'WebkitAppRegion' does not exist in type 'Properties<string | number, string & {}>'.
-src/components/shared/UpdateManager.tsx(51,28): error TS2339: Property 'contentLength' does not exist on type '{ chunkLength: number; }'.
-src/components/shared/UpdateManager.tsx(52,68): error TS2339: Property 'contentLength' does not exist on type '{ chunkLength: number; }'.
+src/components/Companion/TelegramCompanion.tsx(57,49): error TS2353: Object literal may only specify known properties, and 'WebkitAppRegion' does not exist in type 'Properties<string | number, string & {}>'.
+src/components/shared/UpdateManager.tsx(57,28): error TS2339: Property 'contentLength' does not exist on type '{ chunkLength: number; }'.
+src/components/shared/UpdateManager.tsx(58,68): error TS2339: Property 'contentLength' does not exist on type '{ chunkLength: number; }'.
 src/components/World/GLBAgent.tsx(43,37): error TS7006: Parameter 'mat' implicitly has an 'any' type.
 src/components/World/procedural/Terrarium.tsx(116,9): error TS2353: Object literal may only specify known properties, and 'flatShading' does not exist in type 'MeshToonMaterialParameters'.
 src/components/World/procedural/Terrarium.tsx(126,9): error TS2353: Object literal may only specify known properties, and 'flatShading' does not exist in type 'MeshToonMaterialParameters'.
 src/components/World/WorldScene.tsx(104,50): error TS7006: Parameter 'mat' implicitly has an 'any' type.
 src/pages/Dashboard.test.tsx(35,5): error TS2304: Cannot find name 'global'.
 src/pages/Dashboard.test.tsx(70,7): error TS2304: Cannot find name 'global'.
+src/pages/OnboardingWizard.tsx(120,53): error TS2345: Argument of type '"xAI Grok"' is not assignable to parameter of type 'SetStateAction<"" | "OpenAI" | "Anthropic" | "Google Gemini">'.
+src/pages/OnboardingWizard.tsx(353,7): error TS2322: Type 'number' is not assignable to type 'string'.
+src/pages/OnboardingWizard.tsx(361,30): error TS2339: Property 'dynamicColors' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; }'.
+src/pages/OnboardingWizard.tsx(362,34): error TS2339: Property 'dynamicColors' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; }'.
+src/pages/OnboardingWizard.tsx(363,36): error TS2339: Property 'dynamicColors' does not exist on type '{ baseModelUrl: string | null; accessories: string[]; }'.
+src/pages/OnboardingWizard.tsx(504,34): error TS2345: Argument of type '(state: WorldState) => { agents: (AgentData | { id: string; status: "active"; currentAction: string; name: string; role: string; emoji: string; color: string; isolated: boolean; ... 27 more ...; avatarPrompt: string; })[]; }' is not assignable to parameter of type 'WorldState | Partial<WorldState> | ((state: WorldState) => WorldState | Partial<WorldState>)'.
+  Type '(state: WorldState) => { agents: (AgentData | { id: string; status: "active"; currentAction: string; name: string; role: string; emoji: string; color: string; isolated: boolean; ... 27 more ...; avatarPrompt: string; })[]; }' is not assignable to type '(state: WorldState) => WorldState | Partial<WorldState>'.
+    Type '{ agents: (AgentData | { id: string; status: "active"; currentAction: string; name: string; role: string; emoji: string; color: string; isolated: boolean; paused: boolean; container_id: string | null; ... 25 more ...; avatarPrompt: string; })[]; }' is not assignable to type 'WorldState | Partial<WorldState>'.
+      Type '{ agents: (AgentData | { id: string; status: "active"; currentAction: string; name: string; role: string; emoji: string; color: string; isolated: boolean; paused: boolean; container_id: string | null; ... 25 more ...; avatarPrompt: string; })[]; }' is not assignable to type 'Partial<WorldState>'.
+        Types of property 'agents' are incompatible.
+          Type '(AgentData | { id: string; status: "active"; currentAction: string; name: string; role: string; emoji: string; color: string; isolated: boolean; paused: boolean; container_id: string | null; ... 25 more ...; avatarPrompt: string; })[]' is not assignable to type 'AgentData[]'.
+            Type 'AgentData | { id: string; status: "active"; currentAction: string; name: string; role: string; emoji: string; color: string; isolated: boolean; paused: boolean; container_id: string | null; ... 25 more ...; avatarPrompt: string; }' is not assignable to type 'AgentData'.
+              Type '{ id: string; status: "active"; currentAction: string; name: string; role: string; emoji: string; color: string; isolated: boolean; paused: boolean; container_id: string | null; visual_identity: { ...; }; ... 24 more ...; avatarPrompt: string; }' is not assignable to type 'AgentData'.
+                The types of 'visual_identity.baseModelUrl' are incompatible between these types.
+                  Type 'string | null | undefined' is not assignable to type 'string | null'.
+                    Type 'undefined' is not assignable to type 'string | null'.
+src/pages/OnboardingWizard.tsx(505,43): error TS2367: This comparison appears to be unintentional because the types 'string' and 'number' have no overlap.
+src/pages/OnboardingWizard.tsx(530,41): error TS2367: This comparison appears to be unintentional because the types 'string' and 'number' have no overlap.
+src/pages/OnboardingWizard.tsx(913,99): error TS2353: Object literal may only specify known properties, and 'dynamicColors' does not exist in type '{ baseModelUrl: string | null; accessories: string[]; } | ((prevState: { baseModelUrl: string | null; accessories: string[]; } | null) => { baseModelUrl: string | null; accessories: string[]; } | null)'.
+src/pages/OnboardingWizard.tsx(1044,59): error TS2339: Property 'suggestedBooks' does not exist on type '{ description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string | undefined; suggest_in_onboarding?: boolean | undefined; library?: { ...; }[] | undefined; readwise_enabled?: boolean | undefined; }'.
+src/pages/OnboardingWizard.tsx(1046,62): error TS2339: Property 'suggestedBooks' does not exist on type '{ description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string | undefined; suggest_in_onboarding?: boolean | undefined; library?: { ...; }[] | undefined; readwise_enabled?: boolean | undefined; }'.
 src/tests/setup.ts(5,1): error TS2304: Cannot find name 'global'.
 src/tests/setup.ts(11,31): error TS2304: Cannot find name 'global'.

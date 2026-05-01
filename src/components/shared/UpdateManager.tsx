@@ -1,5 +1,11 @@
 import { useState, useEffect } from 'react';
-import { check, Update } from '@tauri-apps/plugin-updater';
+import { check as tauriCheck, Update } from '@tauri-apps/plugin-updater';
+const check = async (): Promise<Update | null> => {
+  if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+    return tauriCheck();
+  }
+  return null;
+};
 
 export function UpdateManager() {
   const [update, setUpdate] = useState<Update | null>(null);
@@ -48,8 +54,8 @@ export function UpdateManager() {
             break;
           case 'Progress':
             downloadedBytes += event.data.chunkLength;
-            if (event.data.contentLength) {
-              setProgress(Math.round((downloadedBytes / event.data.contentLength) * 100));
+            if ((event.data as any).contentLength) {
+              setProgress(Math.round((downloadedBytes / (event.data as any).contentLength) * 100));
             }
             break;
           case 'Finished':

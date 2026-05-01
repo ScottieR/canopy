@@ -885,6 +885,27 @@ pub async fn start_gateway() -> Result<String, String> {
         let _ = std::fs::write(&applied_marker, &desired_config);
         if container_was_restarted {
             tracing::info!("start_gateway: applied-config marker written (container was recreated)");
+            // Ensure Playwright dependencies, browsers, and system chromium are installed in the container
+            // We run this asynchronously so we don't block the UI for 2-3 minutes during startup.
+            tauri::async_runtime::spawn(async move {
+                tracing::info!("start_gateway: Container recreated. Initiating background Playwright and Chromium installation...");
+                let _ = crate::openclaw::get_docker_command()
+                    .args(["exec", "-u", "root", "canopy-gateway", "apt-get", "update"])
+                    .output().await;
+                    
+                let _ = crate::openclaw::get_docker_command()
+                    .args(["exec", "-u", "root", "canopy-gateway", "apt-get", "install", "-y", "chromium"])
+                    .output().await;
+
+                let _ = crate::openclaw::get_docker_command()
+                    .args(["exec", "-u", "root", "canopy-gateway", "npx", "playwright", "install-deps"])
+                    .output().await;
+                
+                let _ = crate::openclaw::get_docker_command()
+                    .args(["exec", "-u", "node", "canopy-gateway", "npx", "playwright", "install", "chromium", "webkit"])
+                    .output().await;
+                tracing::info!("start_gateway: Background Chromium/Playwright installation complete.");
+            });
         } else {
             tracing::info!("start_gateway: applied-config marker written (container already running with correct config)");
         }

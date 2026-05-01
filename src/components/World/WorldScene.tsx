@@ -101,7 +101,7 @@ export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }
         } else {
           // Fallback if texture map is missing
           if (Array.isArray(child.material)) {
-             child.material = child.material.map(mat => {
+             child.material = child.material.map((mat: any) => {
                  const m = (mat as THREE.Material).clone();
                  if ('color' in m) (m as any).color.set("#A3C4BC");
                  if ('roughness' in m) (m as any).roughness = 0.9;

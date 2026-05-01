@@ -40,7 +40,7 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
         clonedScene.traverse((node: any) => {
           if (node.isMesh && node.material && !node.name.toLowerCase().includes("eye")) {
             if (Array.isArray(node.material)) {
-              node.material.forEach(mat => {
+              node.material.forEach((mat: any) => {
                 if (mat) {
                   mat.map = null;
                   mat.color.copy(linearColor);
