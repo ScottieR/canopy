@@ -1107,6 +1107,7 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
   // Web Credentials
   const [webCredentials, setWebCredentials] = useState<Array<{ domain: string; username: string }>>([]);
   const [webCredSearch, setWebCredSearch] = useState("");
+  const [pluginSearch, setPluginSearch] = useState("");
 
   // Dynamic Connectors
   const [connectors, setConnectors] = useState<any[]>([]);
@@ -1900,8 +1901,13 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
         </div>
       </ServiceRow>
 
+      {/* ── Suggested Services ── */}
+      <div style={{ marginTop: 24, marginBottom: 12 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>Suggested Services</div>
+      </div>
+      
       {/* Dynamic Connectors from Admin */}
-      {connectors.filter(c => c.isVisible && !['slack', 'gmail', 'imessage', 'filesystem'].includes(c.id)).map(c => {
+      {connectors.filter(c => c.isVisible && c.isSuggested && !['slack', 'gmail', 'imessage', 'filesystem'].includes(c.id)).map(c => {
         let IconComponent: any = Link;
         if (c.icon === 'calendar') IconComponent = Calendar;
         if (c.icon === 'hard-drive') IconComponent = HardDrive;
@@ -1999,6 +2005,46 @@ function ConnectionsTab({ agent }: { agent: AgentData }) {
           </ServiceRow>
         );
       })}
+
+      {/* ── Plugin Directory ── */}
+      <div style={{ marginTop: 32, marginBottom: 16, paddingTop: 32, borderTop: "1px solid var(--border-subtle)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>OpenClaw Plugin Directory</div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>Enable raw native plugins for this agent.</div>
+          </div>
+          <input 
+            type="text" 
+            placeholder="Search plugins..." 
+            value={pluginSearch}
+            onChange={e => setPluginSearch(e.target.value)}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", color: "var(--text-main)", fontSize: 13, width: 220 }}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
+        {connectors
+          .filter(c => c.isPlugin)
+          .filter(c => !pluginSearch || c.name.toLowerCase().includes(pluginSearch.toLowerCase()) || c.subtitle.toLowerCase().includes(pluginSearch.toLowerCase()))
+          .map(c => (
+            <ServiceRow
+              key={c.id}
+              icon={<span style={{ fontSize: 18 }}>{c.emoji || "🔌"}</span>}
+              name={c.name}
+              subtitle={c.subtitle}
+              connected={dynamicStatuses[c.id] || false}
+              enabled={dynamicEnabled[c.id]}
+              onToggle={(enabled) => {
+                setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));
+                toggleIntegration(c.id, enabled);
+              }}
+              onSetup={() => {
+                alert(`To configure ${c.name}, follow the instructions in the OpenClaw documentation or run \`openclaw skills config ${c.name}\` in the terminal.`);
+              }}
+            />
+          ))}
+      </div>
 
       {/* Web Credentials */}
       {webCredentials.length > 0 && (

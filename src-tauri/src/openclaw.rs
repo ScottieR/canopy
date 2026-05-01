@@ -230,8 +230,56 @@ pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| format!("Failed to read connectors.json at {:?}: {}", path, e))?;
-    let parsed: serde_json::Value = serde_json::from_str(&content)
+    let mut parsed: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    // Dynamically fetch OpenClaw skills
+    let output = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "skills", "list", "--json"])
+        .output()
+        .await;
+
+    if let Ok(out) = output {
+        if out.status.success() {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if let Ok(skills_data) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                if let Some(skills) = skills_data.get("skills").and_then(|s| s.as_array()) {
+                    if let Some(parsed_array) = parsed.as_array_mut() {
+                        let existing_ids: std::collections::HashSet<String> = parsed_array
+                            .iter()
+                            .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                            .collect();
+
+                        for skill in skills {
+                            if let Some(name) = skill.get("name").and_then(|v| v.as_str()) {
+                                if !existing_ids.contains(name) {
+                                    let desc = skill.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                                    let mut new_plugin = serde_json::json!({
+                                        "id": name,
+                                        "name": name,
+                                        "subtitle": desc,
+                                        "icon": "plug",
+                                        "isGlobal": false,
+                                        "isVisible": true,
+                                        "isSuggested": false,
+                                        "needsCompanion": false,
+                                        "isPlugin": true
+                                    });
+                                    if let Some(emoji) = skill.get("emoji").and_then(|v| v.as_str()) {
+                                        if let Some(obj) = new_plugin.as_object_mut() {
+                                            obj.insert("emoji".to_string(), serde_json::json!(emoji));
+                                        }
+                                    }
+                                    parsed_array.push(new_plugin);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(parsed)
 }
 

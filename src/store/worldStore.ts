@@ -169,7 +169,7 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "summarize", label: "Summarization", description: "Condense large documents or web pages", enabled: true, category: "skills" },
 ];
 
-export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean }>;
+export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;
 
 export function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record<string, any> = AGENT_TYPE_INFO) {
   const info = agentTypeInfo[role] || {};
