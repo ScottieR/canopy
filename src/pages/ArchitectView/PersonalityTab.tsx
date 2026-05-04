@@ -1,0 +1,356 @@
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { 
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+  ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
+} from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
+import { GenerativeResult } from "../../components/GenerativeStudio";
+import { MemoryTab } from "./MemoryTab";
+import { Toggle, ServiceRow, glass } from "../../App";
+
+export function PersonalityTab({ agent }: { agent: AgentData }) {
+  const initialFullPrompt = agent.personalityPrompt || "";
+  const booksMatch = initialFullPrompt.match(/\n\nRecently Read Books: You have recently read the following books and found them very interesting: (.*?)(?=\n\n|$)/);
+  const booksStr = booksMatch ? booksMatch[1] : "";
+  const initialBooks = booksStr ? booksStr.replace(/\.$/, "").split(", ").filter(Boolean) : [];
+  const base = initialFullPrompt.replace(/\n\nRecently Read Books: You have recently read the following books and found them very interesting: .*?(?=\n\n|$)/, "");
+
+  const [prompt, setPrompt] = useState(base);
+  const [recentlyRead, setRecentlyRead] = useState<string[]>(initialBooks);
+  const [bookSearchQuery, setBookSearchQuery] = useState("");
+  const [bookSearchResults, setBookSearchResults] = useState<any[]>([]);
+  const [isSearchingBooks, setIsSearchingBooks] = useState(false);
+  const [showBookDropdown, setShowBookDropdown] = useState(false);
+  const searchTimeoutRef = useRef<any>(null);
+
+  const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+
+  const handleBookSearch = (query: string) => {
+    setBookSearchQuery(query);
+    setShowBookDropdown(true);
+    if (!query.trim()) {
+      setBookSearchResults([]);
+      return;
+    }
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(async () => {
+      setIsSearchingBooks(true);
+      try {
+        const res = await fetch(`https://openlibrary.org/search.json?q=${encodeURIComponent(query)}&limit=5`);
+        const data = await res.json();
+        if (data && data.docs) {
+          setBookSearchResults(data.docs);
+        }
+      } catch (e) { console.error(e); }
+      setIsSearchingBooks(false);
+    }, 400);
+  };
+
+  const [selectedFile, setSelectedFile] = useState("Library");
+  const [fileContent, setFileContent] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [fileSaveStatus, setFileSaveStatus] = useState("");
+
+  useEffect(() => {
+    if (selectedFile === "Library") return;
+    setFileSaveStatus("");
+    invoke<string>("read_workspace_file", { agentId: agent.id, filename: selectedFile })
+      .then(content => setFileContent(content))
+      .catch(err => {
+        console.warn("Failed to read file", err);
+        setFileContent("");
+      });
+  }, [agent.id, selectedFile]);
+
+  const handleSaveFile = async () => {
+    setIsSaving(true);
+    setFileSaveStatus("Saving...");
+    try {
+      await invoke("write_workspace_file", { agentId: agent.id, filename: selectedFile, content: fileContent });
+      setFileSaveStatus("Saved successfully!");
+      setTimeout(() => setFileSaveStatus(""), 3000);
+    } catch (e) {
+      setFileSaveStatus("Error saving file: " + e);
+    }
+    setIsSaving(false);
+  };
+
+  const savePersonalityChanges = async (newRecentlyRead: string[]) => {
+    try {
+      if (typeof invoke === 'function') {
+        let finalPrompt = prompt;
+        if (newRecentlyRead.length > 0) {
+          finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${newRecentlyRead.join(', ')}.`;
+        }
+        await invoke("update_agent_personality", {
+          agentId: agent.id,
+          personality: { ...agent.personality, custom_instructions: finalPrompt }
+        });
+        
+        useWorldStore.getState().setAgents(useWorldStore.getState().agents.map(a =>
+          a.id === agent.id ? { 
+            ...a, 
+            personality: { ...a.personality, custom_instructions: finalPrompt },
+            personalityPrompt: finalPrompt 
+          } as AgentData : a
+        ));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // ── Model list for the Brain tab — sourced from Rust, not localhost:3001 ─────
+  const [brainModels, setBrainModels] = useState<any[]>([]);
+  useEffect(() => {
+    invoke<any[]>("get_available_models")
+      .then(models => setBrainModels(models))
+      .catch(() => { /* gateway not yet up, will retry on next render */ });
+  }, []);
+
+  const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
+  const getDynamicRecommendedModel = () => {
+    const isHeavy = HEAVY_ROLES_BRAIN.includes(agent.role);
+    // Prefer the provider for which a key is already set in this agent's Brain config
+    const availableProviders = Object.entries(keys)
+      .filter(([_, v]) => v && v.trim().length > 0)
+      .map(([k]) => k === "Gemini" ? "Google Gemini" : k);
+
+    let match = null;
+    if (availableProviders.length > 0) {
+      const prov = availableProviders[0];
+      const strategy = isHeavy ? "heavy" : "light";
+      match = brainModels.find((m: any) => m.provider === prov && m.strategy === strategy)
+           || brainModels.find((m: any) => m.provider === prov);
+    }
+    if (!match) {
+      match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
+           || brainModels[0];
+    }
+    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.1 Flash Lite"} — ${match?.description || "Fastest Gemini 3 model (Preview)"}`, id: match?.id || "google/gemini-3.1-flash-lite-preview" };
+  };
+
+  const [keys, setKeys] = useState<{ [provider: string]: string }>({
+    "OpenAI": "", "Anthropic": "", "Gemini": "", "Grok": ""
+  });
+  const [saveStatus, setSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+
+  const defaultModelInfo = getDynamicRecommendedModel();
+
+  useEffect(() => {
+    if (typeof invoke === 'function') {
+      const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
+      providers.forEach(prov => {
+        invoke("get_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` })
+          .then(k => setKeys(prev => ({ ...prev, [prov]: k as string })))
+          .catch(() => { });
+      });
+    }
+  }, [agent.id]);
+
+  const saveOverrides = async () => {
+    setSaveStatus("loading");
+    try {
+      if (typeof invoke === 'function') {
+        const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
+        for (const prov of providers) {
+          const val = keys[prov];
+          try {
+            if (val && val.trim()) {
+              await invoke("store_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key`, value: val.trim() });
+            } else {
+              await invoke("delete_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` });
+            }
+          } catch (err) {
+            // macOS keychain might throw if the key doesn't exist to delete. Ignore gracefully.
+          }
+        }
+
+        // Model IDs from get_available_models() are already in "provider/model-name" format
+        // (e.g. "google/gemini-3.1-flash-lite-preview"). No prefix construction needed.
+        // Fallback to the Rust-side default if nothing is selected.
+        const finalModel = selectedModel || defaultModelInfo?.id || "google/gemini-3.1-flash-lite-preview";
+
+        // Synchronize updated keys directly to OpenClaw's auth-profiles.json layer
+        let mappedKeys: Record<string, string> = {};
+        if (keys["OpenAI"]) mappedKeys["OPENAI_API_KEY"] = keys["OpenAI"];
+        if (keys["Anthropic"]) mappedKeys["ANTHROPIC_API_KEY"] = keys["Anthropic"];
+        if (keys["Gemini"]) mappedKeys["GEMINI_API_KEY"] = keys["Gemini"];
+        if (keys["Grok"]) mappedKeys["XAI_API_KEY"] = keys["Grok"];
+
+        await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys });
+
+        // Push personality state to SQLite. Use the full provider/model-name string.
+        await invoke("update_agent_personality", {
+          agentId: agent.id,
+          personality: { ...agent.personality, active_model: finalModel }
+        });
+        // Update agent model in OpenClaw — model ID is already correctly formatted.
+        await invoke("update_agent_model", { agentId: agent.id, model: finalModel });
+      }
+      setSaveStatus("success");
+      setTimeout(() => setSaveStatus("idle"), 2000);
+    } catch (e) {
+      console.error(e);
+      setSaveStatus("error");
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", paddingRight: 16, overflowY: "auto" }}>
+
+
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Brain</h1>
+      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28, flexShrink: 0 }}>Shape how {agent.name} thinks, acts, and appears.</p>
+
+
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 20, flex: 1 }}>
+        <div style={{ display: "flex", gap: 12 }}>
+          {["Library", "Memory", "USER.md", "IDENTITY.md", "TOOLS.md", "SOUL.md"].map(f => (
+            <button
+              key={f}
+              onClick={() => setSelectedFile(f)}
+              style={{
+                padding: "8px 16px", borderRadius: 8, border: "none",
+                background: selectedFile === f ? "#218380" : "rgba(0,0,0,0.05)",
+                color: selectedFile === f ? "#FFF" : "var(--text-main)",
+                fontWeight: 600, cursor: "pointer", fontSize: 13
+              }}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+
+        {selectedFile === "Library" ? (
+          <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column", flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>Training Books</div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>These books are injected into the agent's context to subtly shift their default decision making.</div>
+
+            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column" }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+                {recentlyRead.length === 0 && <span style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic" }}>No books assigned.</span>}
+                {recentlyRead.map(book => (
+                  <div key={book} style={{ padding: "6px 12px", background: "#3c6663", color: "var(--surface-card)", borderRadius: 16, fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                    {book}
+                    <span style={{ cursor: "pointer", opacity: 0.8 }} onClick={() => {
+                        const nextRead = recentlyRead.filter(b => b !== book);
+                        setRecentlyRead(nextRead);
+                        savePersonalityChanges(nextRead);
+                    }}>×</span>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: "auto", position: "relative" }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input
+                    value={bookSearchQuery}
+                    onChange={e => handleBookSearch(e.target.value)}
+                    onFocus={() => setShowBookDropdown(true)}
+                    onBlur={() => setTimeout(() => setShowBookDropdown(false), 200)}
+                    placeholder="Search for a book by title, author, or subject..."
+                    style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 12, outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" && bookSearchQuery.trim()) {
+                        const nextRead = [...recentlyRead, bookSearchQuery.trim()];
+                        setRecentlyRead(nextRead);
+                        setBookSearchQuery("");
+                        setShowBookDropdown(false);
+                        savePersonalityChanges(nextRead);
+                      }
+                    }}
+                  />
+                  {showBookDropdown && (bookSearchResults.length > 0 || isSearchingBooks) && (
+                    <div style={{
+                      position: "absolute", bottom: "100%", left: 0, right: 0, marginBottom: 8,
+                      background: "var(--surface-card)", border: "1px solid rgba(0,0,0,0.1)",
+                      borderRadius: 8, boxShadow: "0 -4px 12px rgba(0,0,0,0.1)", zIndex: 10,
+                      maxHeight: 220, overflowY: "auto"
+                    }}>
+                      {isSearchingBooks ? (
+                        <div style={{ padding: 12, fontSize: 12, color: "var(--text-sub)", textAlign: "center" }}>Searching...</div>
+                      ) : (
+                        bookSearchResults.map((doc: any, i: number) => (
+                          <div key={i} style={{
+                            padding: "8px 12px", display: "flex", alignItems: "center", gap: 12,
+                            cursor: "pointer", borderBottom: i < bookSearchResults.length - 1 ? "1px solid rgba(0,0,0,0.05)" : "none",
+                          }} onClick={() => {
+                            const titleStr = `${doc.title}${doc.author_name ? ` by ${doc.author_name[0]}` : ''}`;
+                            const nextRead = [...recentlyRead, titleStr];
+                            setRecentlyRead(nextRead);
+                            setBookSearchQuery("");
+                            setShowBookDropdown(false);
+                            savePersonalityChanges(nextRead);
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = "var(--surface-base)"}
+                          onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            {doc.cover_i ? (
+                              <img src={`https://covers.openlibrary.org/b/id/${doc.cover_i}-S.jpg`} style={{ width: 24, height: 36, objectFit: "cover", borderRadius: 2 }} />
+                            ) : (
+                              <div style={{ width: 24, height: 36, background: "var(--border-subtle)", borderRadius: 2, display: "flex", alignItems: "center", justifyContent: "center" }}><span style={{ fontSize: 10, color: "var(--text-muted)" }}>?</span></div>
+                            )}
+                            <div style={{ display: "flex", flexDirection: "column" }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{doc.title}</div>
+                              {doc.author_name && <div style={{ fontSize: 11, color: "var(--text-sub)" }}>{doc.author_name.join(", ")}</div>}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+                <button onClick={() => {
+                  if (bookSearchQuery.trim()) {
+                    const nextRead = [...recentlyRead, bookSearchQuery.trim()];
+                    setRecentlyRead(nextRead);
+                    setBookSearchQuery("");
+                    setShowBookDropdown(false);
+                    savePersonalityChanges(nextRead);
+                  }
+                }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
+              </div>
+            </div>
+          </div>
+        ) : selectedFile === "Memory" ? (
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            <MemoryTab agent={agent} isEmbedded={true} />
+          </div>
+        ) : (
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative" }}>
+            <textarea
+              value={fileContent}
+              onChange={e => setFileContent(e.target.value)}
+              style={{
+                flex: 1, width: "100%", padding: 20, borderRadius: 12,
+                border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-bg)",
+                color: "var(--text-main)", fontSize: 14, fontFamily: "'Fira Code', monospace",
+                resize: "none", outline: "none", minHeight: 300
+              }}
+            />
+            <div style={{ position: "absolute", bottom: 20, right: 20, display: "flex", alignItems: "center", gap: 12 }}>
+              {fileSaveStatus && <span style={{ fontSize: 13, color: fileSaveStatus.includes("Error") ? "#E57373" : "#218380", fontWeight: 600 }}>{fileSaveStatus}</span>}
+              <button
+                onClick={handleSaveFile}
+                disabled={isSaving}
+                style={{
+                  padding: "10px 24px", borderRadius: 8, border: "none",
+                  background: "#3c6663", color: "#FFF", fontWeight: 700,
+                  cursor: isSaving ? "not-allowed" : "pointer", fontSize: 14,
+                  boxShadow: "0 4px 12px rgba(33,131,128,0.2)"
+                }}
+              >
+                {isSaving ? "Saving..." : "Save File"}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+    </div>
+  );
+}

@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-shell";
+
 import { emit, listen } from "@tauri-apps/api/event";
 import { LobsterIcon } from "../../App";
 import { PasswordInput } from "../shared/PasswordInput";
@@ -18,6 +20,31 @@ export function SlackCompanion() {
   const [isVisible, setIsVisible] = useState(false);
   useEffect(() => {
     setTimeout(() => setIsVisible(true), 300);
+    setTimeout(() => {
+      
+      const manifest = {
+        display_information: { name: agentName || "Agent", description: "Canopy Agent", background_color: "#3c6663" },
+        features: {
+          app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+          bot_user: { display_name: agentName || "Agent", always_online: true }
+        },
+        oauth_config: {
+          scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands", "files:read"] },
+          pkce_enabled: false
+        },
+        settings: {
+          event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] },
+          interactivity: { is_enabled: true },
+          org_deploy_enabled: false,
+          socket_mode_enabled: true,
+          token_rotation_enabled: false,
+          is_mcp_enabled: false
+        }
+      };
+      const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
+      open(url).catch(console.error);
+
+    }, 500);
   }, []);
 
   const handleConnect = async () => {
@@ -28,9 +55,12 @@ export function SlackCompanion() {
     try {
       if (typeof invoke === "function") {
         await invoke("store_batch_secrets_cmd", { 
-          secrets: {
+          secrets: agentId ? {
             [`agent_${agentId}_slack_app_token`]: slackAppToken,
             [`agent_${agentId}_slack_bot_token`]: slackBotToken
+          } : {
+            "slack-app-token": slackAppToken,
+            "slack-bot-token": slackBotToken
           }
         });
         // We bypass full check_slack_connection here since the gateway handles it per-agent now

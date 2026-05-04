@@ -15,6 +15,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
 import { WorldScene } from "../components/World/WorldScene";
 import { LoadingScreen } from "../components/LoadingScreen";
 import { useWorldStore, DEFAULT_PERMISSIONS, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent } from "../store/worldStore";
+import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle, LobsterIcon } from "../App";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
@@ -26,26 +27,36 @@ const safeStartGateway = async () => {
 };
 
 export function OnboardingWizard() {
+
+  // --- Draft Persistence ---
+  const loadDraft = () => {
+    try {
+      const d = localStorage.getItem('canopy_onboarding_draft');
+      return d ? JSON.parse(d) : null;
+    } catch { return null; }
+  };
+  const draft = loadDraft();
+
   const { agents } = useWorldStore();
   const initialStepTarget = agents.length > 0 ? 1 : 0;
-  const [step, setStep] = useState(-1);
+  const [step, setStep] = useState(draft?.step !== undefined ? draft.step : -1);
   const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "starting" | "ready">("checking");
   const [engineError, setEngineError] = useState("");
 
   const [userName, setUserName] = useState("");
 
 
-  const [selectedRole, setSelectedRole] = useState<string | null>(null);
-  const [agentName, setAgentName] = useState("");
+  const [selectedRole, setSelectedRole] = useState<string | null>(draft?.selectedRole || null);
+  const [agentName, setAgentName] = useState(draft?.agentName || "");
   const [apiKey, setApiKey] = useState("");
   const [personalityPrompt, setPersonalityPrompt] = useState("");
   const [recentlyRead, setRecentlyRead] = useState<string[]>([]);
   const [customBookInput, setCustomBookInput] = useState("");
   const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "xAI Grok" | "">("");
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
-  const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any } | null>(null);
+  const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any } | null>(draft?.customIdentity || null);
 
-  const [plugins, setPlugins] = useState<Record<string, boolean>>({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+  const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
   const [folderAccessType, setFolderAccessType] = useState<"specific" | "all">("specific");
   const [selectedFolderPath, setSelectedFolderPath] = useState("");
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
@@ -73,9 +84,16 @@ export function OnboardingWizard() {
 
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
-  // Check workspace-level service connections on mount
+
   useEffect(() => {
-    (async () => {
+    if (step >= 0) {
+      localStorage.setItem('canopy_onboarding_draft', JSON.stringify({
+        step, agentName, selectedRole, plugins, customIdentity
+      }));
+    }
+  }, [step, agentName, selectedRole, plugins, customIdentity]);
+
+  const checkConnections = async () => {
       try {
         const s = await invoke<{ connected: boolean }>("check_slack_connection");
         setWsSlackConnected(s?.connected ?? false);
@@ -88,16 +106,62 @@ export function OnboardingWizard() {
         const tok = await invoke<string>("get_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
         setWsCalConnected(!!tok && tok.length > 10);
       } catch {}
-
       try {
         const profile = await invoke<any>("get_user_profile");
-        if (profile) {
-            setUserName(profile.name || "");
-
-        }
+        if (profile) setUserName(profile.name || "");
       } catch {}
-    })();
+  };
+
+  useEffect(() => {
+    checkConnections();
+    const handleUpdate = () => checkConnections();
+    window.addEventListener("slack-updated", handleUpdate);
+    window.addEventListener("refresh_integrations", handleUpdate);
+    return () => {
+      window.removeEventListener("slack-updated", handleUpdate);
+      window.removeEventListener("refresh_integrations", handleUpdate);
+    };
   }, []);
+
+  const handleSetupIntegration = async (key: string) => {
+    if (key === 'slack' || key === 'discord' || key === 'telegram' || key === 'github') {
+        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+        const nameMap: any = { slack: 'Slack', discord: 'Discord', telegram: 'Telegram', github: 'GitHub' };
+        new WebviewWindow('companion_' + key + '_' + Date.now(), {
+          url: `/index.html?companion=${key}&agentName=${encodeURIComponent(agentName || 'Agent')}`,
+          title: `Setup ${nameMap[key]}`,
+          width: 420,
+          height: 760,
+          x: window.screen.availWidth - 440,
+          y: 50,
+          alwaysOnTop: true,
+          decorations: true,
+        });
+    } else if (key === 'email' || key === 'calendar') {
+        try {
+          const result = await invoke<{ access_token?: string }>("start_google_oauth", {
+            scopes: [key === 'email' ? 'email' : 'calendar'],
+            readOnly: false,
+          });
+          if (result.access_token) {
+            await invoke("store_secret_cmd", { key: key === 'email' ? "GMAIL_ACCESS_TOKEN" : "GCAL_ACCESS_TOKEN", value: result.access_token });
+            checkConnections();
+            setPlugins(prev => ({ ...prev, [key]: true }));
+          }
+        } catch (e) { console.error("OAuth failed:", e); }
+    } else if (key === 'imessage') {
+        try {
+          await invoke("start_imessage_watcher", { appHandle: null }).catch(() => {});
+          const granted = await invoke<boolean>("check_full_disk_access");
+          if (!granted) {
+            const { open } = await import('@tauri-apps/plugin-shell');
+            await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+          }
+          checkConnections();
+        } catch (e) {}
+    }
+  };
+
 
   useEffect(() => {
     const setupListener = async () => {
@@ -107,11 +171,8 @@ export function OnboardingWizard() {
         const unlisten1 = await listen('companion-finished', async (e: any) => {
           const { type, key } = e.payload || {};
           if (type === "slack") {
-            // Slack completion from the companion guide means the bot token is saved.
-            // We do NOT try to collect the pairing code here — pairing requires the agent
-            // to already be registered in OpenClaw and the listener to be running, which
-            // can't happen until after create_agent completes. The user will finish pairing
-            // from the Connections tab after the agent is created.
+            setWsSlackConnected(true);
+            setPlugins(prev => ({ ...prev, slack: true }));
           } else if (key) {
             setApiKey(key);
             if (type === "gemini") setLlmProvider("Google Gemini");
@@ -413,9 +474,10 @@ export function OnboardingWizard() {
               communication_style: roleInfo.description,
               expertise: [],
               guardrails: [],
-              custom_instructions: finalPrompt,
+              custom_instructions: "",
+              active_model: llmProvider === "Anthropic" ? "anthropic/claude-3-7-sonnet-20250219" : llmProvider === "OpenAI" ? "openai/gpt-4o" : llmProvider === "Google Gemini" ? "google/gemini-2.5-pro" : llmProvider === "xAI Grok" ? "xai/grok-2-latest" : "anthropic/claude-3-7-sonnet-20250219",
               soul_template: roleInfo.soul_template,
-              identity_template: roleInfo.identity_template
+              identity_template: finalPrompt,
             },
             isolated: false,
           }) as Agent;
@@ -1279,7 +1341,7 @@ export function OnboardingWizard() {
                     {connected ? (
                       <Toggle enabled={plugins[key]} onChange={() => setPlugins(prev => ({ ...prev, [key]: !prev[key] }))} />
                     ) : (
-                      <button onClick={() => setActiveView("integrations")} style={{
+                      <button onClick={() => handleSetupIntegration(key)} style={{
                         padding: "6px 14px", borderRadius: 8, border: "1px solid rgba(60,102,99,0.25)",
                         background: "rgba(60,102,99,0.06)", color: "#3c6663",
                         fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
@@ -1929,7 +1991,7 @@ export function OnboardingWizard() {
               <span style={{ fontSize: 20 }}>💡</span>
               <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
                 <strong style={{ color: "var(--text-main)" }}>Connect your tools</strong> — Slack, Gmail, and Calendar let {agentName || "your agent"} reach you wherever you work.{" "}
-                <span style={{ color: "#3c6663", cursor: "pointer", fontWeight: 600 }} onClick={() => setActiveView("integrations")}>
+                <span style={{ color: "#3c6663", cursor: "pointer", fontWeight: 600 }} onClick={() => useWorldStore.getState().setActiveView("integrations")}>
                   Set up in Integrations →
                 </span>
               </div>

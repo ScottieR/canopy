@@ -15,6 +15,9 @@ export function TelegramCompanion() {
   const [isVisible, setIsVisible] = useState(false);
   useEffect(() => {
     setTimeout(() => setIsVisible(true), 300);
+    setTimeout(() => {
+      open("https://t.me/botfather").catch(console.error);
+    }, 500);
   }, []);
 
   const handleConnect = async () => {

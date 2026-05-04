@@ -12,6 +12,9 @@ export function GithubCompanion() {
   const [isVisible, setIsVisible] = useState(false);
   useEffect(() => {
     setTimeout(() => setIsVisible(true), 300);
+    setTimeout(() => {
+      open("https://github.com/settings/tokens/new").catch(console.error);
+    }, 500);
   }, []);
 
   const handleConnect = async () => {
