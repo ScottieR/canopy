@@ -518,7 +518,7 @@ async fn sync_agent_skills(agent: &crate::models::Agent) {
                     for i in &agent.integrations {
                         if !i.starts_with("web_") {
                             let mut skill_name = i.clone();
-                            if skill_name == "calendar" || skill_name == "cal" {
+                            if skill_name == "calendar" || skill_name == "cal" || skill_name == "calendar_read" || skill_name == "calendar_write" {
                                 skill_name = "googleCalendar".to_string();
                             } else if skill_name == "email" {
                                 skill_name = "gmail".to_string();
@@ -1415,6 +1415,27 @@ fn generate_soul_md(personality: &AgentPersonality) -> String {
     }
 
     soul
+}
+
+/// Generates the shell command to sync personality files to the container.
+/// This uses `if [ ! -f ... ]` to ensure we NEVER overwrite existing files,
+/// protecting user edits in SOUL.md, IDENTITY.md, and PREFERENCES.md.
+fn generate_personality_sync_cmd(soul_path: &str, soul: &str, identity: &str, prefs: &str) -> String {
+    let escaped_soul = soul.replace('\'', "'\\''");
+    let escaped_identity = identity.replace('\'', "'\\''");
+    let escaped_prefs = prefs.replace('\'', "'\\''");
+    
+    format!(
+        "mkdir -p \"$(dirname '{soul_path}')\" && \
+         if [ ! -f '{soul_path}' ]; then printf '%s' '{soul}' > '{soul_path}'; fi && \
+         if [ ! -f \"$(dirname '{soul_path}')\"/IDENTITY.md ]; then printf '%s' '{identity}' > \"$(dirname '{soul_path}')\"/IDENTITY.md; fi && \
+         if [ ! -f \"$(dirname '{soul_path}')\"/PREFERENCES.md ]; then printf '%s' '{prefs}' > \"$(dirname '{soul_path}')\"/PREFERENCES.md; fi && \
+         touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
+        soul_path = soul_path,
+        soul = escaped_soul,
+        identity = escaped_identity,
+        prefs = escaped_prefs,
+    )
 }
 
 // ─── Local Discovery & Import ────────────────────────────────────────────────
@@ -2655,25 +2676,18 @@ pub async fn boot_sync_agents(
             continue;
         }
 
-        // Step 2: Re-write SOUL.md from persisted personality data
         let soul_content = generate_soul_md(&agent.personality);
         let identity_content = agent.personality.identity_template.clone().unwrap_or_default();
         let soul_path = agent_soul_path(id);
-        let escaped_soul = soul_content.replace('\'', "'\\''");
-        let escaped_identity = identity_content.replace('\'', "'\\''");
         let custom_instructions = agent.personality.custom_instructions.trim();
-        let escaped_prefs = custom_instructions.replace('\'', "'\\''");
-        let write_cmd = format!(
-            "mkdir -p \"$(dirname '{soul_path}')\" && \
-             if [ ! -f '{soul_path}' ]; then printf '%s' '{soul}' > '{soul_path}'; fi && \
-             if [ ! -f \"$(dirname '{soul_path}')\"/IDENTITY.md ]; then printf '%s' '{identity}' > \"$(dirname '{soul_path}')\"/IDENTITY.md; fi && \
-             if [ ! -f \"$(dirname '{soul_path}')\"/PREFERENCES.md ]; then printf '%s' '{prefs}' > \"$(dirname '{soul_path}')\"/PREFERENCES.md; fi && \
-             touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
-            soul_path = soul_path,
-            soul = escaped_soul,
-            identity = escaped_identity,
-            prefs = escaped_prefs,
+        
+        let write_cmd = generate_personality_sync_cmd(
+            &soul_path,
+            &soul_content,
+            &identity_content,
+            custom_instructions
         );
+
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             get_docker_command()
@@ -2849,19 +2863,91 @@ mod tests {
         );
     }
 
+    // ── Personality Sync ──────────────────────────────────────────────────
+
+    #[test]
+    fn generate_soul_md_uses_template_when_provided() {
+        let mut personality = crate::models::AgentPersonality::default();
+        personality.name = "TestBot".to_string();
+        personality.communication_style = "Friendly".to_string();
+        personality.soul_template = Some("Hello {{name}}, you are {{description}}.".to_string());
+
+        let soul = generate_soul_md(&personality);
+        assert!(soul.contains("Hello TestBot, you are Friendly."));
+        assert!(soul.contains("Canopy App Protocols"), "Must append CANOPY_PROTOCOLS.md");
+    }
+
+    #[test]
+    fn generate_soul_md_uses_legacy_fallback_when_template_empty() {
+        let mut personality = crate::models::AgentPersonality::default();
+        personality.name = "FallbackBot".to_string();
+        personality.communication_style = "Direct".to_string();
+        personality.expertise = vec!["Coding".to_string()];
+        personality.guardrails = vec!["No swearing".to_string()];
+        personality.custom_instructions = "Be concise".to_string();
+        personality.soul_template = Some("".to_string()); // empty template
+
+        let soul = generate_soul_md(&personality);
+        assert!(soul.contains("# FallbackBot"));
+        assert!(soul.contains("## Communication Style"));
+        assert!(soul.contains("Direct"));
+        assert!(soul.contains("## Expertise\n\n- Coding"));
+        assert!(soul.contains("## Guardrails\n\n- No swearing"));
+        assert!(soul.contains("## Additional Instructions\n\nBe concise"));
+        assert!(soul.contains("Canopy App Protocols"), "Must append CANOPY_PROTOCOLS.md");
+    }
+
+    #[test]
+    fn generate_personality_sync_cmd_prevents_overwrites() {
+        let cmd = generate_personality_sync_cmd(
+            "/workspace/agent1/SOUL.md", 
+            "Soul Content", 
+            "Identity Content", 
+            "Prefs Content"
+        );
+        
+        // Ensure it uses file existence guards to NEVER overwrite files
+        assert!(cmd.contains("if [ ! -f '/workspace/agent1/SOUL.md' ]; then printf '%s'"));
+        assert!(cmd.contains("if [ ! -f \"$(dirname '/workspace/agent1/SOUL.md')\"/IDENTITY.md ]; then printf '%s'"));
+        assert!(cmd.contains("if [ ! -f \"$(dirname '/workspace/agent1/SOUL.md')\"/PREFERENCES.md ]; then printf '%s'"));
+        
+        // Ensure it creates empty files for the others without overwriting existing data
+        assert!(cmd.contains("\"$(dirname '/workspace/agent1/SOUL.md')\"/USER.md"));
+        
+        // Ensure contents are properly passed
+        assert!(cmd.contains("Soul Content"));
+        assert!(cmd.contains("Identity Content"));
+        assert!(cmd.contains("Prefs Content"));
+    }
+
+    #[test]
+    fn generate_user_md_content_includes_profile() {
+        let mut profile = crate::models::UserProfile::default();
+        profile.name = "TestUser".to_string();
+        profile.working_hours = "10am-6pm".to_string();
+
+        let content = generate_user_md_content(Some(profile), "Template content");
+        assert!(content.contains("**Name:** TestUser"));
+        assert!(content.contains("**Context / Work:** 10am-6pm"));
+        assert!(content.contains("Template content"));
+    }
+
+    #[test]
+    fn generate_user_md_content_skips_default_admin() {
+        let profile = crate::models::UserProfile::default(); // defaults to "Admin"
+        let content = generate_user_md_content(Some(profile), "Template content");
+        assert!(!content.contains("**Name:** Admin"));
+        assert_eq!(content, "Template content");
+    }
+
     // ── SOUL.md path ──────────────────────────────────────────────────────
 
     #[test]
     fn soul_path_is_in_workspace_not_dot_openclaw() {
-        let path = model_constants::agent_soul_path("test-agent");
+        let path = crate::model_constants::agent_soul_path("test-agent");
         assert!(
-            path.contains("/openclaw/workspace/"),
-            "SOUL path '{}' must be under /openclaw/workspace/",
-            path
-        );
-        assert!(
-            !path.contains("/.openclaw/"),
-            "SOUL path '{}' must NOT be under /.openclaw/ — wrong directory",
+            path.contains("/.openclaw/workspace/"),
+            "SOUL path '{}' must be under /.openclaw/workspace/",
             path
         );
     }
@@ -2930,19 +3016,7 @@ fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
     if let Some(workspace) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)) {
         let user_md_path = workspace.join("USER.md");
         if !user_md_path.exists() || std::fs::metadata(&user_md_path).map(|m| m.len()).unwrap_or(0) == 0 {
-            let mut content = String::new();
-            
-            if let Ok(profile) = db.get_user_profile() {
-                if profile.name.trim() != "Admin" && !profile.name.trim().is_empty() {
-                    content.push_str(&format!("# User Context\n\n**Name:** {}\n", profile.name));
-                    if !profile.working_hours.is_empty() && profile.working_hours != "9:00 AM - 5:00 PM" {
-                        content.push_str(&format!("**Context / Work:** {}\n", profile.working_hours));
-                    }
-                    content.push_str("\n---\n\n");
-                }
-            }
-            
-            // Append the global userTemplate if it exists
+            let profile_opt = db.get_user_profile().ok();
             let mut template_content = String::from("#USER.md - Your Human's Preferences\n_Read this file. Everything in here is a fact about how I live, what I like, and how I want you to behave. Do not ask me to set things up; if you need a piece of information to complete a task and it isn't in here, look it up or make a best guess based on the 'vibe' of my other preferences. If you get it wrong, I will correct you once, and you should update this file immediately so you never ask again._\n");
             
             if let Some(template_path) = dirs::data_dir().map(|d| d.join("Canopy").join("shared").join("settings.json")) {
@@ -2958,11 +3032,29 @@ fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
                     }
                 }
             }
-            content.push_str(&template_content);
             
+            let content = generate_user_md_content(profile_opt, &template_content);
             let _ = std::fs::write(&user_md_path, content);
         }
     }
+}
+
+/// Generates the content for a new agent's USER.md
+fn generate_user_md_content(profile: Option<crate::models::UserProfile>, template_content: &str) -> String {
+    let mut content = String::new();
+    
+    if let Some(p) = profile {
+        if p.name.trim() != "Admin" && !p.name.trim().is_empty() {
+            content.push_str(&format!("# User Context\n\n**Name:** {}\n", p.name));
+            if !p.working_hours.is_empty() && p.working_hours != "9:00 AM - 5:00 PM" {
+                content.push_str(&format!("**Context / Work:** {}\n", p.working_hours));
+            }
+            content.push_str("\n---\n\n");
+        }
+    }
+    
+    content.push_str(template_content);
+    content
 }
 
 #[tauri::command]

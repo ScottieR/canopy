@@ -109,6 +109,13 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
     : agent.integrations.includes("email_dedicated") ? "dedicated"
     : "none"
   );
+  
+  const [calendarMode, setCalendarMode] = useState<"none" | "read" | "write">(
+    agent.integrations.includes("calendar_write") ? "write"
+    : agent.integrations.includes("calendar_read") ? "read"
+    : agent.integrations.includes("calendar") ? "write" // Legacy fallback
+    : "none"
+  );
   const [dedicatedEmail, setDedicatedEmail] = useState("");
   const [dedicatedPassword, setDedicatedPassword] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
@@ -752,6 +759,45 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
 
 
 
+
+      {/* Google Calendar */}
+      <ServiceRow
+        icon={<Calendar size={18} color="#4285F4" />}
+        name="Google Calendar"
+        subtitle="Allow agent to view and schedule events on your Google Calendar"
+        connected={calConnected}
+        enabled={calendarMode !== "none"}
+        onToggle={async (v) => {
+          setCalendarMode(v ? "read" : "none");
+          await toggleIntegration("calendar_read", v, ["calendar_write", "calendar"]);
+        }}
+        onSetup={async () => {
+          try {
+            const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+            const res: any = await invoke('start_google_oauth', { scopes: ['calendar'], readOnly: calendarMode === "read" });
+            if (res && res.access_token) {
+              await invoke('store_secret_cmd', { key: 'GCAL_ACCESS_TOKEN', value: res.access_token });
+              checkDynamicStatuses();
+            }
+          } catch (e) { console.error(e); }
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
+          {(["read", "write"] as const).map(m => (
+            <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
+              <input type="radio" name={`cal-mode-${agent.id}`} checked={calendarMode === m} onChange={async () => {
+                setCalendarMode(m);
+                await toggleIntegration(`calendar_${m}`, true, ["calendar_read", "calendar_write", "calendar"].filter(x => x !== `calendar_${m}`));
+              }} style={{ accentColor: "#3c6663" }} />
+              <span style={{ color: "var(--text-main)", fontWeight: calendarMode === m ? 600 : 400 }}>
+                {m === "read" ? "Read-only — monitor schedule and conflicts" : "Read + Write — can create and modify events"}
+              </span>
+            </label>
+          ))}
+        </div>
+      </ServiceRow>
+
       {/* iMessage */}
       <ServiceRow
         icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.02 2 11c0 2.64 1.15 5.02 3 6.71V22l4.29-2.13C10.12 20.28 11.04 20.5 12 20.5c5.52 0 10-3.58 10-8s-4.48-8-10-8z" fill="#34C759"/></svg>}
@@ -857,7 +903,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
       </div>
       
       {/* Dynamic Connectors from Admin */}
-      {connectors.filter(c => c.isVisible && c.isSuggested && !['slack', 'gmail', 'imessage', 'filesystem'].includes(c.id)).map(c => {
+      {connectors.filter(c => c.isVisible && c.isSuggested && !['slack', 'gmail', 'imessage', 'filesystem', 'calendar'].includes(c.id)).map(c => {
         let IconComponent: any = Link;
         if (c.icon === 'calendar') IconComponent = Calendar;
         if (c.icon === 'hard-drive') IconComponent = HardDrive;
