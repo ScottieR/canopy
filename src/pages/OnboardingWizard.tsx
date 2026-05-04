@@ -32,7 +32,13 @@ export function OnboardingWizard() {
   const loadDraft = () => {
     try {
       const d = localStorage.getItem('canopy_onboarding_draft');
-      return d ? JSON.parse(d) : null;
+      const parsed = d ? JSON.parse(d) : null;
+      // Safety hatch: If they somehow got stuck on the last step of the draft, wipe it out
+      if (parsed && parsed.step >= 6) {
+        localStorage.removeItem('canopy_onboarding_draft');
+        return null;
+      }
+      return parsed;
     } catch { return null; }
   };
   const draft = loadDraft();
@@ -446,6 +452,19 @@ export function OnboardingWizard() {
       avatarPrompt: `Isometric 3D-rendered agent character in Monument Valley art style. Rounded bell-shaped body with ${roleInfo?.robeColor || "#888"} shell, smooth round head, two swept-back antennae with bulbous ${roleInfo?.accentColor || "#ccc"} tips, small expressive claws at sides. Flat-shaded low-poly faces, soft directional lighting from upper-left. Warm muted pastel palette. No outlines. Ref: agent-style-grid.png`,
       visual_identity: customIdentity || { baseModelUrl: null, accessories: [] }
     } as unknown as AgentData;
+
+    // Clear state before unmounting so it doesn't get re-saved
+    setStep(-1);
+    setAgentName("");
+    setSelectedRole(null);
+    setApiKey("");
+    setPersonalityPrompt("");
+    setRecentlyRead([]);
+    setCustomBookInput("");
+    setLlmProvider("");
+    setCustomIdentity(null);
+    setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+    localStorage.removeItem('canopy_onboarding_draft');
 
     addAgent(optimisticAgent);
     setActiveView("canopy");
