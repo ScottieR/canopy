@@ -43,7 +43,7 @@ interface ServiceCardProps {
   name: string;
   description: string;
   status: ServiceStatus;
-  connectedAgents?: Array<{ id: string; name: string }>;
+  connectedAgents?: Array<{ id: string; name: string; mode?: string }>;
   onConnect?: () => void;
   onDisconnect?: () => void;
   isLoading?: boolean;
@@ -123,6 +123,11 @@ function ServiceCard({ icon, name, description, status, connectedAgents, onConne
                <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 16 }}>
                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4A9E96" }} />
                  <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</span>
+                 {a.mode && (
+                   <span style={{ fontSize: 10, background: "rgba(0,0,0,0.04)", color: "var(--text-sub)", padding: "2px 6px", borderRadius: 6, fontWeight: 600 }}>
+                     {a.mode}
+                   </span>
+                 )}
                </div>
             ))}
           </div>
@@ -234,8 +239,19 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
   };
 
   // Agents connected to each service
-  const connectedAgents = (integration: string) =>
-    agents.filter(a => a.integrations?.some(i => i.includes(integration))).map(a => ({ id: a.id, name: a.name }));
+  const getConnectedAgentsWithMode = (integration: string) =>
+    agents.filter(a => a.integrations?.some(i => i.includes(integration))).map(a => {
+      let mode = undefined;
+      if (integration === "email") {
+        if (a.integrations.includes("email_write")) mode = "Read/Write";
+        else if (a.integrations.includes("email_read")) mode = "Read-Only";
+        else if (a.integrations.includes("email_dedicated")) mode = "Dedicated";
+      } else if (integration === "calendar") {
+        if (a.integrations.includes("calendar_write") || a.integrations.includes("calendar")) mode = "Read/Write";
+        else if (a.integrations.includes("calendar_read")) mode = "Read-Only";
+      }
+      return { id: a.id, name: a.name, mode };
+    });
 
   // ── Gmail connect
   const connectGmail = async () => {
@@ -365,8 +381,8 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>}
               name="Slack"
               description="Real-time messaging via Socket Mode. Configured per-agent."
-              status={{ connected: connectedAgents("slack").length > 0 }}
-              connectedAgents={connectedAgents("slack")}
+              status={{ connected: getConnectedAgentsWithMode("slack").length > 0 }}
+              connectedAgents={getConnectedAgentsWithMode("slack")}
             />
 
             {/* Gmail */}
@@ -375,7 +391,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Gmail"
               description="Read emails and send replies on behalf of your agents (using your Google account)."
               status={gmailStatus}
-              connectedAgents={connectedAgents("email")}
+              connectedAgents={getConnectedAgentsWithMode("email")}
               onConnect={connectGmail}
               onDisconnect={gmailStatus.connected ? disconnectGmail : undefined}
               isLoading={gmailLoading}
@@ -387,10 +403,27 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Google Calendar"
               description="Read events and create calendar items for scheduling agents."
               status={calendarStatus}
-              connectedAgents={connectedAgents("calendar")}
+              connectedAgents={getConnectedAgentsWithMode("calendar")}
               onConnect={connectCalendar}
               onDisconnect={calendarStatus.connected ? disconnectCalendar : undefined}
               isLoading={calLoading}
+            />
+
+            {/* File System */}
+            <ServiceCard
+              icon={<HardDrive size={20} color="#3c6663" />}
+              name="Local File System"
+              description="Allow agents to read and write files on your local Mac."
+              status={{ connected: agents.some(a => (a as any).permissions?.some((p: any) => (p.id === "file_read" || p.id === "file_write") && p.enabled)) }}
+              connectedAgents={agents.filter(a => (a as any).permissions?.some((p: any) => (p.id === "file_read" || p.id === "file_write") && p.enabled)).map(a => {
+                const read = (a as any).permissions?.find((p: any) => p.id === "file_read")?.enabled;
+                const write = (a as any).permissions?.find((p: any) => p.id === "file_write")?.enabled;
+                let mode = undefined;
+                if (read && write) mode = "Read/Write";
+                else if (read) mode = "Read-Only";
+                else if (write) mode = "Write-Only";
+                return { id: a.id, name: a.name, mode };
+              })}
             />
 
             {/* iMessage */}
@@ -399,7 +432,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="iMessage"
               description="Read and reply to iMessage threads. Requires macOS Full Disk Access."
               status={iMessageStatus}
-              connectedAgents={connectedAgents("imessage")}
+              connectedAgents={getConnectedAgentsWithMode("imessage")}
               onConnect={connectIMessage}
             />
 
@@ -409,7 +442,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Telegram"
               description="Connect a Telegram bot. One bot per gateway — shared across all agents."
               status={telegramStatus}
-              connectedAgents={connectedAgents("telegram")}
+              connectedAgents={getConnectedAgentsWithMode("telegram")}
               onConnect={() => launchCompanion("telegram", "Telegram")}
             />
 
@@ -419,7 +452,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="Discord"
               description="Connect a Discord bot to respond in channels and DMs."
               status={discordStatus}
-              connectedAgents={connectedAgents("discord")}
+              connectedAgents={getConnectedAgentsWithMode("discord")}
               onConnect={() => launchCompanion("discord", "Discord")}
             />
 
@@ -429,7 +462,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               name="GitHub"
               description="Allow agent to read repositories, create PRs, and review code"
               status={githubStatus}
-              connectedAgents={connectedAgents("github")}
+              connectedAgents={getConnectedAgentsWithMode("github")}
               onConnect={() => launchCompanion("github", "GitHub")}
             />
 
@@ -449,8 +482,8 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
                   icon={<IconComponent size={20} color="#3c6663" />}
                   name={c.name}
                   description={c.subtitle}
-                  status={{ connected: connectedAgents(c.id).length > 0 }} 
-                  connectedAgents={connectedAgents(c.id)}
+                  status={{ connected: getConnectedAgentsWithMode(c.id).length > 0 }} 
+                  connectedAgents={getConnectedAgentsWithMode(c.id)}
                   onConnect={() => {
                      alert(`Global setup for ${c.name} is coming soon!`);
                   }}
@@ -486,8 +519,8 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
                        icon={<span style={{ fontSize: 22 }}>{c.emoji || "🔌"}</span>}
                        name={c.name}
                        description={c.subtitle}
-                       status={{ connected: connectedAgents(c.id).length > 0 }}
-                       connectedAgents={connectedAgents(c.id)}
+                       status={{ connected: getConnectedAgentsWithMode(c.id).length > 0 }}
+                       connectedAgents={getConnectedAgentsWithMode(c.id)}
                        onConnect={() => {
                           alert(`To install ${c.name}, follow the instructions in the OpenClaw documentation or run \`openclaw skills install ${c.name}\` in the terminal.`);
                        }}

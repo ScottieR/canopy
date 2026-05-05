@@ -11,6 +11,13 @@ export interface UserProfile {
   global_directives: string;
 }
 
+export interface BrowserStatus {
+  agent_id: string;
+  port: number;
+  profile_path: string;
+  is_running: boolean;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -21,7 +28,7 @@ export interface Agent {
   isolated: boolean;
   paused: boolean;
   container_id: string | null;
-  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; habitatId?: number; color?: string; habitatOffset?: any; };
+  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; decor?: string[]; habitatId?: number; color?: string; habitatOffset?: any; };
   personality: {
     name: string;
     communication_style: string;
@@ -98,6 +105,7 @@ export interface AgentData extends Agent {
   recentSpend: Array<{ date: string; amount: number; merchant: string; category: string; status: "approved" | "pending" | "flagged" }>;
   chatLog: ChatMessage[];
   memories: Array<{ type: string; text: string; when: string; confidence: number }>;
+  browser_status?: BrowserStatus | null;
   personalityPrompt: string;
   avatarPrompt: string;
   visual_identity: {
@@ -138,6 +146,7 @@ export interface WorldState {
   addAgent: (agent: AgentData) => void;
   toggleIsolation: (agentId: string) => void;
   updateAgentVisuals: (id: string, visuals: any) => void;
+  updateAgentBrowserStatus: (id: string, status: BrowserStatus | null) => void;
 }
 
 export const ZONES = {
@@ -284,8 +293,11 @@ export const useWorldStore = create<WorldState>((set) => ({
   toggleIsolation: (agentId) => set((state) => ({
     agents: state.agents.map((a) => a.id === agentId ? { ...a, isolated: !a.isolated } : a)
   })),
-  updateAgentVisuals: (id, visuals) => set((state) => ({
+  updateAgentVisuals: (id: string, visuals) => set((state) => ({
     agents: state.agents.map((a) => a.id === id ? { ...a, visual_identity: visuals } : a)
+  })),
+  updateAgentBrowserStatus: (id, status) => set((state) => ({
+    agents: state.agents.map((a) => a.id === id ? { ...a, browser_status: status } : a)
   })),
 }));
 

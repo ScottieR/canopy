@@ -4,7 +4,7 @@ import { Github } from "lucide-react";
 import { PasswordInput } from "../shared/PasswordInput";
 import { open } from "@tauri-apps/plugin-shell";
 
-export function GithubCompanion() {
+export function GithubCompanion({ agentId }: { agentId: string }) {
   const [githubToken, setGithubToken] = useState("");
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -24,7 +24,7 @@ export function GithubCompanion() {
     
     try {
       if (typeof invoke === "function") {
-        await invoke("store_secret_cmd", { key: "GITHUB_TOKEN", value: githubToken.trim() });
+        await invoke("configure_github", { agentId: agentId, personalAccessToken: githubToken.trim() });
         setTestStatus("success");
         try {
           const { emit } = await import('@tauri-apps/api/event');

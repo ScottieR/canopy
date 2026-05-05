@@ -11,6 +11,15 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { MemoryTab } from "./MemoryTab";
 import { Toggle, ServiceRow, glass } from "../../App";
 
+const ROLE_VOICE_MAP: Record<string, string> = {
+  "Researcher": "nova",
+  "Assistant": "alloy",
+  "Coder": "echo",
+  "Financial": "shimmer",
+  "Strategist": "onyx",
+  "Analyst": "fable",
+};
+
 export function PersonalityTab({ agent }: { agent: AgentData }) {
   const initialFullPrompt = agent.personalityPrompt || "";
   const booksMatch = initialFullPrompt.match(/\n\nRecently Read Books: You have recently read the following books and found them very interesting: (.*?)(?=\n\n|$)/);
@@ -27,6 +36,39 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
   const searchTimeoutRef = useRef<any>(null);
 
   const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+  const [voiceConfig, setVoiceConfig] = useState<any>(null);
+  const [isVoiceLoading, setIsVoiceLoading] = useState(true);
+
+  useEffect(() => {
+    if (typeof invoke === "function") {
+      setIsVoiceLoading(true);
+      invoke("get_voice_config", { agentId: agent.id })
+        .then((config: any) => {
+          if (config && config.tts_voice === "default") {
+            const defaultVoice = ROLE_VOICE_MAP[agent.role] || "default";
+            config.tts_voice = defaultVoice;
+            invoke("update_voice_config", { agentId: agent.id, config });
+          }
+          setVoiceConfig(config);
+          setIsVoiceLoading(false);
+        })
+        .catch(err => {
+          console.warn("Failed to load voice config", err);
+          setIsVoiceLoading(false);
+        });
+    }
+  }, [agent.id, agent.role]);
+
+  const updateVoice = async (newVoice: string) => {
+    if (!voiceConfig) return;
+    const newConfig = { ...voiceConfig, tts_voice: newVoice };
+    setVoiceConfig(newConfig);
+    try {
+      await invoke("update_voice_config", { agentId: agent.id, config: newConfig });
+    } catch (e) {
+      console.error("Failed to update voice config", e);
+    }
+  };
 
   const handleBookSearch = (query: string) => {
     setBookSearchQuery(query);
@@ -206,7 +248,46 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Brain</h1>
       <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28, flexShrink: 0 }}>Shape how {agent.name} thinks, acts, and appears.</p>
 
+      {/* Voice & Speech Section */}
+      <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, marginBottom: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ padding: 10, borderRadius: 12, background: "rgba(33, 131, 128, 0.15)", color: "#218380" }}>
+            <Activity size={20} />
+          </div>
+          <div>
+            <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", margin: "0 0 4px 0" }}>Voice & Speech</h2>
+            <p style={{ fontSize: 13, color: "var(--text-sub)", margin: 0 }}>Select the AI voice personality for audio responses.</p>
+          </div>
+        </div>
 
+        <div style={{ background: "rgba(0,0,0,0.1)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Speaking Voice</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Sets the TTS provider voice profile.</div>
+          </div>
+          <select 
+            value={voiceConfig?.tts_voice || "default"}
+            onChange={(e) => updateVoice(e.target.value)}
+            disabled={isVoiceLoading}
+            style={{ 
+              background: "var(--surface-card)", border: "1px solid rgba(0,0,0,0.2)", 
+              color: "var(--text-main)", borderRadius: 8, padding: "8px 12px", 
+              outline: "none", cursor: isVoiceLoading ? "not-allowed" : "pointer",
+              fontSize: 13, minWidth: 150 
+            }}
+          >
+            <option value="default">System Default</option>
+            <option value="alloy">Alloy (Neutral, versatile)</option>
+            <option value="echo">Echo (Warm, balanced)</option>
+            <option value="fable">Fable (British, expressive)</option>
+            <option value="onyx">Onyx (Deep, authoritative)</option>
+            <option value="nova">Nova (Energetic, professional)</option>
+            <option value="shimmer">Shimmer (Clear, bright)</option>
+            <option value="en-US-Neural2-F">Google Neural (Female)</option>
+            <option value="en-US-Neural2-J">Google Neural (Male)</option>
+          </select>
+        </div>
+      </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20, flex: 1 }}>
         <div style={{ display: "flex", gap: 12 }}>

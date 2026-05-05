@@ -27,7 +27,7 @@ export function DiscordCompanion() {
     
     try {
       if (typeof invoke === "function") {
-        await invoke("store_secret_cmd", { key: "DISCORD_BOT_TOKEN", value: discordToken.trim() });
+        await invoke("configure_discord", { botToken: discordToken.trim() });
         setTestStatus("success");
         window.dispatchEvent(new Event("refresh_integrations"));
         

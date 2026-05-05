@@ -163,7 +163,9 @@ fn generate_compose_file(data_dir: &PathBuf, provider_keys: &HashMap<String, Str
       - {data}/openclaw-state/workspace:/home/node/.openclaw/workspace
     environment:
       - NODE_ENV=production
-{extra_env}    # init: true runs a minimal init process (PID 1) inside the container that:
+{extra_env}    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # init: true runs a minimal init process (PID 1) inside the container that:
     #   1. Forwards signals (SIGTERM/SIGKILL) to the Node.js process — critical for clean shutdown
     #   2. Reaps zombie processes — without this, a PID spiral leaves unkillable zombie PIDs
     #      that accumulate until the kernel's PID table is exhausted

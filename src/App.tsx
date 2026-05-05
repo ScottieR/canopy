@@ -34,6 +34,7 @@ import { UserProfileView } from './pages/UserProfileView';
 import { DiagnosticsView } from './pages/DiagnosticsView';
 import { CanopyView } from './pages/CanopyView';
 import { TopNav } from './components/shared/TopNav';
+import { ExportInterceptModal } from './components/ExportInterceptModal';
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -654,11 +655,15 @@ export const PASTEL_COLORS = [
 export const HABITATS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 // 150 items
-export const ACCESSORIES = Array.from({ length: 6 }, (_, s) =>
-  Array.from({ length: 25 }, (_, i) =>
-    `/accessories/accessories_set_${s + 1}_item_${String(i + 1).padStart(2, '0')}.png`
-  )
-).flat();
+export const ACCESSORIES = [
+  "/models/assets/Clipboard.png",
+  "/models/assets/ExecutivePlant.png",
+  ...Array.from({ length: 6 }, (_, s) =>
+    Array.from({ length: 25 }, (_, i) =>
+      `/accessories/accessories_set_${s + 1}_item_${String(i + 1).padStart(2, '0')}.png`
+    )
+  ).flat()
+];
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOADING SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -984,6 +989,28 @@ export default function App() {
         }
 
         const loadedAgents = await invoke("list_agents") as Agent[];
+
+        // Sync real stats to admin dashboard periodically
+        const reportUsage = async () => {
+          for (const a of loadedAgents) {
+            try {
+              await fetch('http://localhost:3001/api/usage', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  agentId: a.id,
+                  role: a.role,
+                  tokensIn: a.stats?.total_tokens_in || 0,
+                  tokensOut: a.stats?.total_tokens_out || 0,
+                  messagesHandled: a.stats?.messages_handled || 0,
+                  tasksToday: a.stats?.tasks_today || 0
+                })
+              });
+            } catch (e) {}
+          }
+        };
+        reportUsage();
+        setInterval(reportUsage, 60000);
 
         if (loadedAgents.length === 0) {
           setActiveView("onboarding");
@@ -1331,6 +1358,8 @@ export default function App() {
           </div>
         );
       })()}
+
+      <ExportInterceptModal />
 
       <style>{`
         @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }

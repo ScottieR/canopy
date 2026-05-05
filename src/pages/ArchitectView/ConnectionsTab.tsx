@@ -1309,7 +1309,15 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                         setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
                         try {
                           const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                          await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
+                          if (c.id === 'github') {
+                            await invoke("configure_github", { agentId: agent.id, personalAccessToken: val });
+                          } else if (c.id === 'telegram') {
+                            await invoke("configure_telegram", { botToken: val });
+                          } else if (c.id === 'discord') {
+                            await invoke("configure_discord", { botToken: val });
+                          } else {
+                            await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
+                          }
                           setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
                           setDynamicSetupValue(prev => ({ ...prev, [c.id]: "" }));
                         } catch (e) {

@@ -290,7 +290,8 @@ pub async fn send_voice_message(
         .to_string();
 
     // Log as voice-originated message to conversation history
-    let _ = db_state.log_voice_message(&agent_id, &transcription, &response_text);
+    // TODO: log to database if desired.
+    tracing::info!("Voice message for {}: '{}' → '{}'", agent_id, transcription, response_text);
 
     Ok(VoiceMessageResponse {
         success: true,
@@ -426,66 +427,6 @@ async fn agent_exists(db_state: &Database, agent_id: &str) -> Result<bool, Strin
         Ok(Some(_)) => Ok(true),
         Ok(None) => Ok(false),
         Err(e) => Err(format!("Failed to check agent: {}", e)),
-    }
-}
-
-// ─── Voice Data Persistence (extends Database) ──────────────────────────────
-
-/// Extension trait for voice-related database operations
-pub trait VoiceDatabase {
-    /// Insert or update voice configuration
-    fn upsert_voice_config(&self, config: &VoiceConfig) -> Result<(), String>;
-
-    /// Get voice configuration for an agent
-    fn get_voice_config(&self, agent_id: &str) -> Result<Option<VoiceConfig>, String>;
-
-    /// Log a voice-originated message to conversation history
-    fn log_voice_message(
-        &self,
-        agent_id: &str,
-        transcription: &str,
-        response: &str,
-    ) -> Result<(), String>;
-}
-
-/// Implement voice database operations for Database
-impl VoiceDatabase for Database {
-    fn upsert_voice_config(&self, config: &VoiceConfig) -> Result<(), String> {
-        let config_json = config.to_json().map_err(|e| e.to_string())?;
-
-        // TODO: Full implementation requires voice_configs table in migrations
-        // For now, this is a stub that logs the operation
-        tracing::debug!(
-            "Would upsert voice config for agent {}: {}",
-            config.agent_id,
-            config_json
-        );
-
-        Ok(())
-    }
-
-    fn get_voice_config(&self, agent_id: &str) -> Result<Option<VoiceConfig>, String> {
-        // TODO: Full implementation requires voice_configs table
-        // For now, return None (no config found)
-        tracing::debug!("Would query voice config for agent: {}", agent_id);
-        Ok(None)
-    }
-
-    fn log_voice_message(
-        &self,
-        agent_id: &str,
-        transcription: &str,
-        response: &str,
-    ) -> Result<(), String> {
-        // TODO: Full implementation would create a message in the agent's conversation
-        // For now, just log it
-        tracing::info!(
-            "Voice message for {}: '{}' → '{}'",
-            agent_id,
-            transcription,
-            response
-        );
-        Ok(())
     }
 }
 

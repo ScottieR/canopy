@@ -11,12 +11,13 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { TerrariumBase } from "../../components/World/WorldScene";
-import { GLBAgent } from "../../components/World/GLBAgent";
+import { GLBAgent, SingleGLB } from "../../components/World/GLBAgent";
 import { Toggle, ServiceRow, glass, ACCESSORIES, PASTEL_COLORS, SafeBillboard , HABITATS } from "../../App";
 
 export function IdentityTab({ agent }: { agent: AgentData }) {
   const { setAgents } = useWorldStore();
   const [accessorySearch, setAccessorySearch] = useState("");
+  const [decorSearch, setDecorSearch] = useState("");
   const [stagedVisuals, setStagedVisuals] = useState<Partial<AgentData["visual_identity"]>>(agent.visual_identity || {});
 
   useEffect(() => {
@@ -94,7 +95,16 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
     const combined = [...suggestions, ...copy];
     if (!accessorySearch) return combined;
     return combined.filter(a => a.toLowerCase().includes(accessorySearch.toLowerCase()));
-  }, [agent.role, accessorySearch]);
+  }, [agent.role, accessorySearch, visibleAccessories]);
+
+  const sortedDecor = useMemo(() => {
+    const copy = [...visibleAccessories];
+    const seed = agent.role.charCodeAt(1) % 6; // slightly different suggestions
+    const suggestions = copy.splice(seed * 25, 5);
+    const combined = [...suggestions, ...copy];
+    if (!decorSearch) return combined;
+    return combined.filter(a => a.toLowerCase().includes(decorSearch.toLowerCase()));
+  }, [agent.role, decorSearch, visibleAccessories]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32, height: "100%", paddingRight: 8 }}>
@@ -118,6 +128,28 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                     habitatId={selectedHabitat?.id || stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1} 
                     modelUrl={selectedHabitat?.path} 
                   />
+                  {(stagedVisuals?.decor || []).map((path, i) => {
+                    const angle = (i / (stagedVisuals?.decor?.length || 1)) * Math.PI * 2;
+                    const radius = 1.2;
+                    const is3D = path.includes("/models/assets/");
+                    
+                    if (is3D) {
+                      const glbPath = `http://localhost:3001${path.replace('.png', '.glb')}`;
+                      return (
+                        <group key={path} position={[Math.cos(angle) * radius, 0, Math.sin(angle) * radius]}>
+                          <SingleGLB url={glbPath} scale={0.5} />
+                        </group>
+                      );
+                    }
+
+                    return (
+                      <SafeBillboard
+                        key={path}
+                        url={`http://localhost:3001${path}`}
+                        position={[Math.cos(angle) * radius, 0.5, Math.sin(angle) * radius]}
+                      />
+                    );
+                  })}
                 </group>
               </React.Suspense>
               <GLBAgent
@@ -130,13 +162,16 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
               />
               {/* Fallback Accessory Stickers for Preview */}
               <React.Suspense fallback={null}>
-                {(stagedVisuals?.accessories || []).map((path, i) => (
-                  <SafeBillboard
-                    key={path}
-                    url={`http://localhost:3001${path}`}
-                    position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]}
-                  />
-                ))}
+                {(stagedVisuals?.accessories || []).map((path, i) => {
+                  if (path.includes("/models/assets/")) return null; // Handled by GLBAgent 3D renderer
+                  return (
+                    <SafeBillboard
+                      key={path}
+                      url={`http://localhost:3001${path}`}
+                      position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]}
+                    />
+                  );
+                })}
               </React.Suspense>
             </group>
           </Canvas>
@@ -165,23 +200,38 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
         {/* Lower row: Interactive Selectors */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, height: 260 }}>
 
-          {/* Selector 1: Pastels */}
+          {/* Selector 1: Decor Grid */}
           <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>PIGMENTS</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, overflowY: "auto", alignContent: "flex-start", flex: 1, paddingBottom: 16 }}>
-              {PASTEL_COLORS.map((c: any) => (
-                <div key={c}
-                  onClick={() => handleUpdateStaged({ color: c })}
-                  style={{ width: 32, height: 32, borderRadius: "50%", background: c, cursor: "pointer", border: (stagedVisuals?.color || agent.color) === c ? '2px solid var(--text-main)' : '2px solid transparent', transition: "all 0.2s ease" }}
-                />
-              ))}
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>DECOR</span>
+              <input
+                type="text"
+                placeholder="Search..."
+                value={decorSearch}
+                onChange={e => setDecorSearch(e.target.value)}
+                style={{ background: "rgba(0,0,0,0.05)", border: "none", borderRadius: 12, padding: "4px 8px", fontSize: 9, width: 60, outline: "none", color: "var(--text-main)" }}
+              />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, overflowY: "auto", flex: 1, paddingRight: 4, paddingBottom: 16 }}>
+              {sortedDecor.map(acc => {
+                let isActive = stagedVisuals?.decor?.includes(acc);
+                return (
+                  <img key={acc} src={acc}
+                    onClick={() => {
+                      const current = stagedVisuals?.decor || [];
+                      handleUpdateStaged({ decor: isActive ? current.filter(x => x !== acc) : [...current, acc] });
+                    }}
+                    style={{ width: "100%", aspectRatio: "1/1", objectFit: "contain", background: "rgba(0,0,0,0.03)", borderRadius: 8, cursor: "pointer", border: isActive ? '2px solid var(--text-main)' : '2px solid transparent', transition: "all 0.1s ease" }}
+                  />
+                )
+              })}
             </div>
           </div>
 
-          {/* Selector 2: Assets Grid */}
+          {/* Selector 2: Accessories Grid */}
           <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>ASSETS</span>
+              <span>ACCESSORIES</span>
               <input
                 type="text"
                 placeholder="Search..."

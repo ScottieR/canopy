@@ -391,15 +391,22 @@ export function OnboardingWizard() {
 
   // Sync static import changes during Vite HMR
   useEffect(() => {
-    setAgentTypeInfo(AGENT_TYPE_INFO);
-  }, [AGENT_TYPE_INFO]);
+    // Robust sync with admin server — bypass cache to ensure real-time updates
+    fetch('http://localhost:3001/api/agents', { cache: 'no-store' })
+      .then(res => {
+        if (!res.ok) throw new Error("Server not reachable");
+        return res.json();
+      })
+      .then(data => {
+        console.log("Successfully synced agent configuration from Admin.");
+        setAgentTypeInfo(data);
+      })
+      .catch(err => {
+        console.warn("Using local fallback for agent configuration:", err.message);
+      });
+  }, []);
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/agents')
-      .then(res => res.json())
-      .then(data => setAgentTypeInfo(data))
-      .catch(err => console.warn("Local API server not running, using static JSON import.", err));
-      
     fetch('http://localhost:3001/api/library')
       .then(res => res.json())
       .then(data => setGlobalLibrary(data))
@@ -938,14 +945,6 @@ export function OnboardingWizard() {
                         <img src={role.image} alt={role.key} style={{ width: "100%", height: "auto", display: "block", objectFit: "cover" }} />
                       ) : (
                         <>
-                          {/* Habitat label badge */}
-                          <div style={{
-                            position: "absolute", top: 8, left: 8,
-                            fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
-                            color: role.robeColor, textTransform: "uppercase",
-                            background: "var(--glass-light)", borderRadius: 4,
-                            padding: "2px 6px",
-                          }}>{role.habitatLabel}</div>
                           {/* Isometric ground shadow beneath lobster */}
                           <div style={{
                             position: "absolute", bottom: 10, width: 48, height: 12,
@@ -2058,12 +2057,6 @@ export function OnboardingWizard() {
                     padding: "28px 40px 20px", position: "relative",
                     display: "flex", justifyContent: "center", alignItems: "flex-end",
                   }}>
-                    <div style={{
-                      position: "absolute", top: 10, left: 12,
-                      fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
-                      color: shellColor, textTransform: "uppercase",
-                      background: "var(--glass-light)", borderRadius: 4, padding: "2px 7px",
-                    }}>{habitatLabel}</div>
                     <div style={{
                       position: "absolute", bottom: 10, width: 56, height: 14,
                       borderRadius: "50%",
