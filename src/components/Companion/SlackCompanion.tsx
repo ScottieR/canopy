@@ -70,7 +70,9 @@ export function SlackCompanion() {
         setTimeout(async () => {
            try {
               await emit("companion-finished", { type: "slack", key: null });
-              const { getCurrentWindow } = await import('@tauri-apps/api/window');
+              const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
+              const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
+              if (mainWindow) await mainWindow.setFocus();
               await getCurrentWindow().close();
            } catch(e) {}
         }, 3000);
@@ -111,7 +113,9 @@ export function SlackCompanion() {
          <div style={{ padding: "0 16px", cursor: "pointer", opacity: 0.8, fontSize: 18, fontWeight: 'bold', display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000 }} onClick={async () => {
              try {
                 // Definitively close THIS exact window directly from the inside rather than relying on a global event listener sweep.
-                const { getCurrentWindow } = await import('@tauri-apps/api/window');
+                const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
+                const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
+                if (mainWindow) await mainWindow.setFocus();
                 await getCurrentWindow().close();
              } catch (e) {
                 console.error("Direct close failed", e);

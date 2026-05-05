@@ -602,6 +602,7 @@ pub async fn start_slack_listener() -> Result<String, String> {
         ("channels.slack.enabled",   "true"),
         ("channels.slack.mode",      "socket"),
         ("channels.slack.groupPolicy", "open"),
+        ("plugins.entries.slack.enabled", "true"),
     ];
 
     for (key, val) in config_steps {

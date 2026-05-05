@@ -201,6 +201,29 @@ pub async fn configure_github(
         openclaw_config_set("channels.github.username", user.trim()).await?;
     }
 
+    // Install gh CLI if not installed
+    let _ = get_docker_command()
+        .args(["exec", "-u", "root", "canopy-gateway", "sh", "-c", 
+               "if ! command -v gh >/dev/null 2>&1; then \
+                apt-get update && apt-get install -y curl gnupg && \
+                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+                chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+                echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+                apt-get update && apt-get install gh -y; fi"])
+        .output().await;
+
+    // Inject token into .bashrc so `coding` tool agents can use it
+    let inject_script = format!(
+        "sed -i '/GITHUB_TOKEN/d' /home/node/.bashrc; \
+         sed -i '/GH_TOKEN/d' /home/node/.bashrc; \
+         echo 'export GITHUB_TOKEN={}' >> /home/node/.bashrc; \
+         echo 'export GH_TOKEN={}' >> /home/node/.bashrc",
+        token, token
+    );
+    let _ = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &inject_script])
+        .output().await;
+
     restart_gateway_soft().await;
 
     Ok("GitHub connected. Your agent can now read issues, PRs, and notifications.".to_string())

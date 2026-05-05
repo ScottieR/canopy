@@ -149,12 +149,12 @@ export const ZONES = {
 };
 
 export const DEFAULT_PERMISSIONS: Permission[] = [
-  { id: "ext_network", label: "External Network", description: "Allow outbound API calls and web access", enabled: false, category: "network" },
-  { id: "int_network", label: "Internal Network", description: "Communicate with other agents via data handoffs", enabled: false, category: "network" },
-  { id: "autonomous", label: "Autonomous Execution", description: "Run tasks without manual approval", enabled: false, category: "execution" },
+  { id: "ext_network", label: "External Network", description: "Allow outbound API calls and web access", enabled: true, category: "network" },
+  { id: "int_network", label: "Internal Network", description: "Communicate with other agents via data handoffs", enabled: true, category: "network" },
+  { id: "autonomous", label: "Autonomous Execution", description: "Run tasks without manual approval (Agent can autonomously execute loops without asking for your confirmation at each step)", enabled: false, category: "execution" },
   { id: "scheduled", label: "Scheduled Tasks", description: "Execute on cron schedules", enabled: true, category: "execution" },
   { id: "memory_write", label: "Memory Write", description: "Store long-term data and learnings", enabled: true, category: "data" },
-  { id: "file_read", label: "File System Read", description: "Read files in scoped directories", enabled: false, category: "data" },
+  { id: "file_read", label: "File System Read", description: "Read files in scoped directories", enabled: true, category: "data" },
   { id: "file_write", label: "File System Write", description: "Create and modify files", enabled: false, category: "data" },
   { id: "payments", label: "Payment Authorization", description: "Request virtual cards for purchases", enabled: false, category: "financial" },
   { id: "spend_auto", label: "Auto-Approve Under Limit", description: "Auto-approve purchases under threshold", enabled: false, category: "financial" },
@@ -169,7 +169,32 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "summarize", label: "Summarization", description: "Condense large documents or web pages", enabled: true, category: "skills" },
 ];
 
-export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;
+export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; recommended_isolated?: boolean; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;
+
+export function getPermissionsForRole(roleId: string, isolated: boolean): Permission[] {
+  return DEFAULT_PERMISSIONS.map(p => {
+    let enabled = p.enabled;
+    if (isolated) {
+      // For isolated agents, default network and global read to OFF for zero-trust
+      if (
+        p.id === "ext_network" || 
+        p.id === "int_network" || 
+        p.id === "file_read" || 
+        p.id === "browser" || 
+        p.id === "coding" ||
+        p.id === "gog" ||
+        p.id === "scheduled" ||
+        p.id === "file_write" ||
+        p.id === "autonomous" ||
+        p.id === "payments" ||
+        p.id === "spend_auto"
+      ) {
+        enabled = false;
+      }
+    }
+    return { ...p, enabled };
+  });
+}
 
 export function getDefaultPersonality(role: string, name: string, agentTypeInfo: Record<string, any> = AGENT_TYPE_INFO) {
   const info = agentTypeInfo[role] || {};

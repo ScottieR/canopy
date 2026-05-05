@@ -1,0 +1,9 @@
+[package]
+name = "scratch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.44"
+dirs = "6.0.0"
+serde_json = "1.0.149"

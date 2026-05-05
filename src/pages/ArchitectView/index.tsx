@@ -39,6 +39,9 @@ function ArchitectView({ agent }: { agent: AgentData }) {
   const [isHealing, setIsHealing] = useState(false);
   const [showUpdateTip, setShowUpdateTip] = useState(false);
 
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const scrollPositions = useRef<Record<string, number>>({});
+
   useEffect(() => {
     // Reset Diagnostic UI states when selecting a different agent
     setDiagErrors([]);
@@ -46,7 +49,21 @@ function ArchitectView({ agent }: { agent: AgentData }) {
     setOpenclawStatusOutput("");
     setShowDiagnosticsPane(false);
     setShowUpdateTip(false);
+    
+    // Clear scroll memory when switching agents
+    scrollPositions.current = {};
+    if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
   }, [agent.id]);
+
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = scrollPositions.current[architectTab] || 0;
+    }
+  }, [architectTab]);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    scrollPositions.current[architectTab] = e.currentTarget.scrollTop;
+  };
 
   const runDiagnostics = async () => {
     const btn = document.getElementById('diag-btn-text');
@@ -465,7 +482,11 @@ function ArchitectView({ agent }: { agent: AgentData }) {
           )}
         </div>
       ) : (
-        <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}>
+        <div 
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}
+        >
           {architectTab === "overview" && <OverviewTab key={agent.id} agent={agent} onUpdate={() => setShowUpdateTip(true)} onNavigate={setArchitectTab} />}
           {architectTab === "identity" && <IdentityTab key={agent.id} agent={agent} />}
           {architectTab === "personality" && <PersonalityTab key={agent.id} agent={agent} />}

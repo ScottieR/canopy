@@ -5,10 +5,12 @@ import {
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass } from "../../App";
+import MDEditor from "@uiw/react-md-editor";
+import { invoke } from "@tauri-apps/api/core";
+import { PasswordInput } from "../../components/shared/PasswordInput";
 
 export // ─── Chat / Communion Component ──────────────────────────────────────────────
 
@@ -21,6 +23,29 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   const [needsRepair, setNeedsRepair] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  
+  // Inline Auth Modal State
+  const [authDomain, setAuthDomain] = useState<string | null>(null);
+  const [authUsername, setAuthUsername] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [isAuthorizing, setIsAuthorizing] = useState(false);
+  const [existingCreds, setExistingCreds] = useState<{domain: string; username: string}[]>([]);
+  const [selectedCreds, setSelectedCreds] = useState<string[]>([]);
+  const [forceNewCred, setForceNewCred] = useState(false);
+
+  useEffect(() => {
+    if (authDomain) {
+      invoke<{domain: string; username: string}[]>("get_web_credentials_cmd")
+        .then(creds => {
+           const matches = creds.filter(c => c.domain.toLowerCase() === authDomain.toLowerCase());
+           setExistingCreds(matches);
+           setSelectedCreds(matches.map(c => `${c.domain}_${c.username}`));
+        })
+        .catch(() => { setExistingCreds([]); setSelectedCreds([]); });
+      setForceNewCred(false);
+    }
+  }, [authDomain]);
 
   useEffect(() => {
     // Scroll to bottom whenever chatLog changes
@@ -46,36 +71,14 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             }));
           }
 
-          // Fetch external Slack messages
-          let slackMessages: any[] = [];
-          try {
-            const allowedChannels: string[] = await invoke("get_allowed_slack_channels", { agentId: agent.id });
-            for (const channelId of allowedChannels) {
-               const msgs: any = await invoke("read_slack_messages", { agentId: agent.id, channelId, limit: 30 });
-               if (Array.isArray(msgs)) {
-                 const mapped = msgs.map(m => ({
-                   id: `slack-${m.ts}`,
-                   // Simple heuristic: if there's no user or it's empty, or if we had a way to check bot_id we would. For now assume user unless it has specific indicators, but really we just map everything as user for now or agent if we detect it's an assistant response.
-                   sender: m.user ? "user" : "agent", 
-                   text: `💬 *[Slack]* ${m.text}`,
-                   time: new Date(parseFloat(m.ts) * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                   ts: parseFloat(m.ts) * 1000
-                 }));
-                 slackMessages.push(...mapped);
-               }
-            }
-          } catch (e) {
-            console.error("Slack fetch error:", e);
-          }
-
-          // Merge, sort chronologically, and deduplicate simple overlap
-          const allMessages = [...localMessages, ...slackMessages].sort((a, b) => a.ts - b.ts);
+          // Sort chronologically (oldest to newest for chat layout)
+          const allMessages = [...localMessages].sort((a, b) => a.ts - b.ts);
           
           // Retain any locally generated UI messages (like system errors) that aren't in the canonical backend
           const localOnly = agent.chatLog.filter(msg => !allMessages.some((m: any) => m.id === msg.id) && msg.text.includes("⚠️ **System"));
           
           if (allMessages.length > 0 || localOnly.length > 0) {
-            setChatLog([...allMessages, ...localOnly]);
+            setChatLog([...allMessages, ...localOnly].sort((a, b) => a.ts - b.ts));
           }
 
         } catch (err) {
@@ -86,6 +89,115 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       fetchHistory();
     }
   }, [agent.id]);
+
+  const handleAuthorize = async () => {
+    if (!authDomain || !authUsername.trim() || !authPassword.trim()) {
+      setAuthError("Please fill in all fields.");
+      return;
+    }
+    
+    setIsAuthorizing(true);
+    setAuthError("");
+    
+    try {
+      const key = `web_${authDomain}_${authUsername.trim()}`;
+      await invoke("store_secret_cmd", { key, value: authPassword });
+      
+      let newIntegrations = [...agent.integrations];
+      if (!newIntegrations.includes(key)) {
+        newIntegrations.push(key);
+        await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+        useWorldStore.getState().setAgents(
+          useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+        );
+      }
+
+      // Map keys for sync_credentials
+      const mappedKeys: any = {};
+      newIntegrations.forEach(i => {
+         if (i.startsWith("web_")) {
+            mappedKeys[i] = "true";
+         }
+      });
+      await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys }).catch(e => console.warn("Failed to sync creds to agent gateway", e));
+      
+      window.dispatchEvent(new Event("refresh_web_vault"));
+      
+      // Auto-reply to agent
+      const sysMsg: ChatMessage = {
+        id: Date.now().toString(),
+        sender: "user",
+        text: `I have securely added the credentials for ${authDomain} to your WebVault. Please try your task again.`,
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      setChatLog(prev => [...prev, sysMsg]);
+      
+      invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
+      
+      setAuthDomain(null);
+      setAuthUsername("");
+      setAuthPassword("");
+    } catch (e: any) {
+      setAuthError(e?.toString() || "Failed to save credential.");
+    } finally {
+      setIsAuthorizing(false);
+    }
+  };
+
+  const handleGrantAccess = async () => {
+    if (selectedCreds.length === 0) {
+      setAuthError("Please select at least one credential.");
+      return;
+    }
+    setIsAuthorizing(true);
+    setAuthError("");
+    try {
+      let newIntegrations = [...agent.integrations];
+      let updated = false;
+      
+      selectedCreds.forEach(credStr => {
+        const key = `web_${credStr}`;
+        if (!newIntegrations.includes(key)) {
+          newIntegrations.push(key);
+          updated = true;
+        }
+      });
+      
+      if (updated) {
+        await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+        useWorldStore.getState().setAgents(
+          useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+        );
+      }
+      
+      const mappedKeys: any = {};
+      newIntegrations.forEach(i => {
+         if (i.startsWith("web_")) {
+            mappedKeys[i] = "true";
+         }
+      });
+      await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys }).catch(e => console.warn("Failed to sync creds to agent gateway", e));
+      
+      const sysMsg: ChatMessage = {
+        id: Date.now().toString(),
+        sender: "user",
+        text: `I have granted you access to the existing credentials for ${authDomain}. Please try your task again.`,
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      setChatLog(prev => [...prev, sysMsg]);
+      invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
+      
+      setAuthDomain(null);
+      setAuthUsername("");
+      setAuthPassword("");
+      setForceNewCred(false);
+      setSelectedCreds([]);
+    } catch (e: any) {
+      setAuthError(e?.toString() || "Failed to grant access.");
+    } finally {
+      setIsAuthorizing(false);
+    }
+  };
 
   const handleSendMessage = async () => {
     if (!message.trim()) return;
@@ -208,37 +320,79 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 borderBottomLeftRadius: msg.sender === "agent" ? 4 : 14,
               }}>
                 {(() => {
-                  const credentialRegex = /\[REQUEST_CREDENTIAL:\s*(.+?)\]/g;
-                  if (!msg.text.includes("[REQUEST_CREDENTIAL:")) return msg.text;
+                  let text = msg.text;
+                  const elements: React.ReactNode[] = [];
 
-                  const parts = msg.text.split(credentialRegex);
-                  return (
-                    <>
-                      {parts.map((part, i) => {
-                        // Every odd index is the captured group (domain)
-                        if (i % 2 === 1) {
-                          const domain = part.trim();
-                          return (
-                            <div key={i} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "var(--background)", border: "1px solid var(--border-subtle)", borderRadius: 8, color: "var(--text-main)" }}>
-                              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                                <Lock size={14} /> Login Required
-                              </div>
-                              <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
-                                {agent.name} is requesting credentials to access <strong>{domain}</strong>.
-                              </div>
-                              <button 
-                                onClick={() => setArchitectTab("integrations")} 
-                                style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", width: "100%" }}
-                              >
-                                Authorize in WebVault
-                              </button>
-                            </div>
-                          );
+                  // Extract thoughts
+                  const thoughtRegex = /\[THOUGHT_PROCESS\]([\s\S]*?)\[\/THOUGHT_PROCESS\]/g;
+                  let lastIndex = 0;
+                  let match;
+
+                  while ((match = thoughtRegex.exec(text)) !== null) {
+                    if (match.index > lastIndex) {
+                       const before = text.substring(lastIndex, match.index);
+                       if (before.trim()) elements.push(
+                         <div key={`text-${lastIndex}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                           <MDEditor.Markdown source={before} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                         </div>
+                       );
+                    }
+                    
+                    const thoughtText = match[1].trim();
+                    elements.push(
+                      <details key={`thought-${match.index}`} style={{ margin: "8px 0", padding: "8px 12px", background: "rgba(0,0,0,0.05)", borderRadius: 8, fontSize: 12, color: "var(--text-sub)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                        <summary style={{ cursor: "pointer", fontWeight: 600, outline: "none", opacity: 0.8 }}>Thought Process</summary>
+                        <div style={{ marginTop: 8, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{thoughtText}</div>
+                      </details>
+                    );
+                    
+                    lastIndex = thoughtRegex.lastIndex;
+                  }
+
+                  if (lastIndex < text.length) {
+                     const remaining = text.substring(lastIndex);
+                     if (remaining.trim()) {
+                        const credentialRegex = /\[REQUEST_CREDENTIAL:\s*(.+?)\]/g;
+                        if (!remaining.includes("[REQUEST_CREDENTIAL:")) {
+                           elements.push(
+                             <div key={`text-${lastIndex}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                               <MDEditor.Markdown source={remaining} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                             </div>
+                           );
+                        } else {
+                           const parts = remaining.split(credentialRegex);
+                           parts.forEach((part, i) => {
+                             if (i % 2 === 1) {
+                               const domain = part.trim();
+                               elements.push(
+                                  <div key={`cred-${i}`} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "var(--background)", border: "1px solid var(--border-subtle)", borderRadius: 8, color: "var(--text-main)" }}>
+                                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                                      <Lock size={14} /> Login Required
+                                    </div>
+                                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+                                      {agent.name} is requesting credentials to access <strong>{domain}</strong>.
+                                    </div>
+                                    <button 
+                                      onClick={() => setAuthDomain(domain)} 
+                                      style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", width: "100%" }}
+                                    >
+                                      Authorize in WebVault
+                                    </button>
+                                  </div>
+                               );
+                             } else if (part.trim()) {
+                               elements.push(
+                                 <div key={`rem-${i}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                                   <MDEditor.Markdown source={part} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                                 </div>
+                               );
+                             }
+                           });
                         }
-                        return <span key={i} style={{ whiteSpace: "pre-wrap" }}>{part}</span>;
-                      })}
-                    </>
-                  );
+                     }
+                  }
+                  
+                  return <>{elements}</>;
                 })()}
               </div>
               <div style={{
@@ -295,20 +449,147 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         </div>
       )}
 
+      {authDomain && (() => {
+        const showExisting = existingCreds.length > 0 && !forceNewCred;
+
+        return (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 100, background: "rgba(0,0,0,0.4)",
+            backdropFilter: "blur(4px)", display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <div style={{
+              background: "var(--surface-card)", padding: 24, borderRadius: 16, width: "100%", maxWidth: 360,
+              boxShadow: "0 12px 32px rgba(0,0,0,0.15)", border: "1px solid var(--border-subtle)"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                <Lock size={18} color="var(--text-main)" />
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Authorize {authDomain}</h3>
+              </div>
+              
+              {showExisting ? (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 12, lineHeight: 1.5 }}>
+                    Existing credentials for <strong>{authDomain}</strong> were found in your vault.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16, maxHeight: 150, overflowY: "auto", paddingRight: 4 }}>
+                    {existingCreds.map(c => {
+                      const id = `${c.domain}_${c.username}`;
+                      const isSelected = selectedCreds.includes(id);
+                      return (
+                        <div key={id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-base)", padding: "10px 14px", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {c.username}
+                          </div>
+                          <div style={{ flexShrink: 0 }}>
+                            <Toggle enabled={isSelected} onChange={() => {
+                              setSelectedCreds(prev => isSelected ? prev.filter(x => x !== id) : [...prev, id]);
+                            }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <button 
+                      onClick={() => setForceNewCred(true)}
+                      style={{ background: "none", border: "none", color: "#3c6663", fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0 }}
+                    >
+                      + Add a different account
+                    </button>
+                  </div>
+                  {authError && <div style={{ color: "#e53e3e", fontSize: 12, marginTop: 8 }}>{authError}</div>}
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 20 }}>
+                  {existingCreds.length > 0 && (
+                    <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: -4 }}>
+                      <button 
+                        onClick={() => setForceNewCred(false)}
+                        style={{ background: "none", border: "none", color: "#3c6663", fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0 }}
+                      >
+                        Back to existing accounts
+                      </button>
+                    </div>
+                  )}
+                  <input 
+                    value={authUsername} onChange={e => setAuthUsername(e.target.value)}
+                    placeholder="Username / Email"
+                    style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", fontSize: 13, color: "var(--text-main)", outline: "none" }}
+                  />
+                  <PasswordInput
+                    value={authPassword} onChange={e => setAuthPassword(e.target.value)}
+                    placeholder="Password"
+                    style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", fontSize: 13, color: "var(--text-main)", outline: "none" }}
+                  />
+                  {authError && <div style={{ color: "#e53e3e", fontSize: 12 }}>{authError}</div>}
+                </div>
+              )}
+              
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <button 
+                  onClick={() => { setAuthDomain(null); setAuthError(""); setForceNewCred(false); setSelectedCreds([]); }}
+                  style={{ padding: "8px 14px", background: "transparent", color: "var(--text-sub)", border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                >
+                  Cancel
+                </button>
+                <button 
+                  onClick={() => {
+                    const sysMsg: ChatMessage = {
+                      id: Date.now().toString(),
+                      sender: "user",
+                      text: `I am denying the request for credentials to ${authDomain}. Please try to find a different approach or skip this step.`,
+                      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                    };
+                    setChatLog(prev => [...prev, sysMsg]);
+                    invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
+                    setAuthDomain(null); setAuthError(""); setForceNewCred(false); setSelectedCreds([]);
+                  }}
+                  style={{ padding: "8px 14px", background: "transparent", color: "#c0392b", border: "1px solid rgba(192,57,43,0.3)", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                >
+                  Deny Request
+                </button>
+                {showExisting ? (
+                  <button 
+                    onClick={handleGrantAccess} disabled={isAuthorizing || selectedCreds.length === 0}
+                    style={{ padding: "8px 14px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: (isAuthorizing || selectedCreds.length === 0) ? "not-allowed" : "pointer", opacity: (isAuthorizing || selectedCreds.length === 0) ? 0.7 : 1 }}
+                  >
+                    {isAuthorizing ? "Saving..." : "Grant Access"}
+                  </button>
+                ) : (
+                  <button 
+                    onClick={handleAuthorize} disabled={isAuthorizing}
+                    style={{ padding: "8px 14px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: isAuthorizing ? "not-allowed" : "pointer", opacity: isAuthorizing ? 0.7 : 1 }}
+                  >
+                    {isAuthorizing ? "Saving..." : "Save & Authorize"}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Input */}
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <input
+        <textarea
           value={message}
           onChange={e => setMessage(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter" && message.trim() && !loading && gatewayReady && !agent.paused) handleSendMessage(); }}
-          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : `Talk to ${agent.name}...`}
+          onKeyDown={e => { 
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              if (message.trim() && !loading && gatewayReady && !agent.paused) handleSendMessage(); 
+            }
+          }}
+          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : `Talk to ${agent.name}... (Shift+Enter for new line)`}
           disabled={loading || !gatewayReady || agent.paused}
+          rows={1}
           style={{
             flex: 1, padding: "14px 18px", borderRadius: 14,
             border: "1px solid rgba(0,0,0,0.08)",
             background: "var(--glass-light)",
             fontSize: 13, fontFamily: "inherit", color: "var(--text-main)",
             outline: "none", opacity: (loading || !gatewayReady || agent.paused) ? 0.6 : 1,
+            resize: "vertical", minHeight: "46px", maxHeight: "200px", boxSizing: "border-box"
           }}
         />
         <button

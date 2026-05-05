@@ -18,6 +18,7 @@
     "habitatLabel": "Engineering",
     "image": "/agents/Coder.png",
     "suggest_in_onboarding": true,
+    "recommended_isolated": true,
     "manual_order": 2
   },
   "Kids Coordinator": {
@@ -40,6 +41,7 @@
     "habitatLabel": "Finance",
     "image": "/agents/Accountant.png",
     "suggest_in_onboarding": true,
+    "recommended_isolated": true,
     "manual_order": 4
   },
   "Researcher": {
@@ -182,7 +184,8 @@
     "habitatColor": "#EDAA87",
     "habitatLabel": "Strategy",
     "image": "/agents/BusinessStrategist.png",
-    "suggest_in_onboarding": false
+    "suggest_in_onboarding": false,
+    "recommended_isolated": true
   },
   "Educator": {
     "description": "Builds curriculums and learning paths.",
@@ -232,7 +235,8 @@
     "habitatColor": "#7F7AB9",
     "habitatLabel": "Capital",
     "image": "/agents/InvestmentManager.png",
-    "suggest_in_onboarding": false
+    "suggest_in_onboarding": false,
+    "recommended_isolated": true
   },
   "Trainer": {
     "description": "Pushes your fitness & health goals.",

@@ -15,6 +15,7 @@ mod voice;
 mod slack;
 mod google;
 mod channels;
+mod jit_server;
 
 use tauri::Manager;
 
@@ -62,6 +63,12 @@ pub fn run() {
                         tracing::warn!("Docker not available: {}. Will prompt for OrbStack install.", e);
                     }
                 }
+            });
+            
+            // Start JIT Server for Agent Authorization
+            let jit_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                jit_server::start_jit_server(jit_handle).await;
             });
             
             // Sync pricing asynchronously from Admin Oracle
@@ -236,6 +243,8 @@ pub fn run() {
             audit_openclaw::audit_openclaw_config,
             audit_openclaw::repair_openclaw_config,
             audit_openclaw::get_openclaw_status,
+            // MCP Interceptor
+            jit_server::approve_jit_request,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Canopy")

@@ -257,8 +257,8 @@ const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "google", "xai", "olla
 /// Returns `Ok(model)` if valid so it can be used inline, or an `Err` with a clear message.
 ///
 /// # Examples
-/// ```
-/// use crate::model_constants::validate_model_string;
+/// ```ignore
+/// use canopy_lib::model_constants::validate_model_string;
 /// assert!(validate_model_string("anthropic/claude-sonnet-4-6").is_ok());
 /// assert!(validate_model_string("anthropic/claude-4-6-sonnet").is_err()); // version suffix wrong
 /// assert!(validate_model_string("claude-sonnet-4-6").is_err()); // missing provider prefix

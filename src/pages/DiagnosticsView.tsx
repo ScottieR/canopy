@@ -6,6 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass } from "../App";
@@ -20,9 +21,27 @@ function DiagnosticsView() {
   const [loading, setLoading] = useState(true);
   const [repairing, setRepairing] = useState(false);
   const [repairMsg, setRepairMsg] = useState("");
+  const [logs, setLogs] = useState<string[]>([]);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (logsEndRef.current) {
+      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logs]);
+
+  useEffect(() => {
+    const unlisten = listen<string>("diagnostics-log", (event) => {
+      setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${event.payload}`]);
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, []);
 
   const runAudit = async () => {
     setLoading(true);
+    setLogs([]);
     setRepairMsg("");
     try {
       const res = await invoke("audit_openclaw_config");
@@ -57,7 +76,15 @@ function DiagnosticsView() {
       <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 32 }}>Audit openclaw configuration and repair alignment mismatches.</div>
 
       {loading ? (
-        <div style={{ padding: 24, textAlign: "center" }}>Scanning OpenClaw Container...</div>
+        <div style={{ padding: 24, background: "var(--glass-light)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontWeight: 600 }}>
+            <RefreshCw className="spin" size={16} /> Scanning OpenClaw Container...
+          </div>
+          <div style={{ background: "rgba(0,0,0,0.8)", color: "#00ff00", padding: 16, borderRadius: 8, fontFamily: "monospace", fontSize: 12, height: 150, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+            {logs.map((log, i) => <div key={i}>{log}</div>)}
+            <div ref={logsEndRef} />
+          </div>
+        </div>
       ) : report?.error ? (
         <div style={{ padding: 24, border: "1px dashed #dca5a5", background: "#fcf2f2", color: "#aa371c" }}>
           <b>Audit Failed:</b> {report.error}
@@ -80,6 +107,9 @@ function DiagnosticsView() {
                 <div style={{ color: "#aa371c" }}><b>Missing API Keys for Default:</b> {report.missing_keys.join(", ")}</div>
               )}
               <div><b>Ports Synchronized:</b> {report.port_mismatch ? "No" : "Yes"}</div>
+              <hr style={{ margin: "8px 0", borderTop: "1px solid rgba(0,0,0,0.05)" }} />
+              <div><b>Slack DM Policy (Open):</b> {report.slack_group_policy_open ? <span style={{ color: "#4A9E96", fontWeight: 600 }}>Verified</span> : <span style={{ color: "#E57373", fontWeight: 600 }}>Restricted (Agents cannot reply)</span>}</div>
+              <div><b>GitHub Authentication (Injected):</b> {report.github_token_injected ? <span style={{ color: "#4A9E96", fontWeight: 600 }}>Active</span> : "Not configured or missing"}</div>
             </div>
 
             {!report.is_aligned && (
