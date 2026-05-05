@@ -18,13 +18,19 @@ pub struct OpenClawAuditReport {
     pub port_mismatch: bool,
     pub container_running: bool,
     pub raw_config_json: Option<String>,
+    pub slack_group_policy_open: bool,
+    pub github_token_injected: bool,
 }
 
 #[tauri::command]
 pub async fn audit_openclaw_config(
     app_handle: tauri::AppHandle,
 ) -> Result<OpenClawAuditReport, String> {
+    use tauri::Emitter;
+    let _ = app_handle.emit("diagnostics-log", "Starting OpenClaw gateway diagnostics...");
+
     // 1. Check if container is running
+    let _ = app_handle.emit("diagnostics-log", "Checking if canopy-gateway container is running...");
     let container_future = crate::openclaw::get_docker_command()
         .args(["inspect", "-f", "{{.State.Running}}", "canopy-gateway"])
         .output();
@@ -47,10 +53,13 @@ pub async fn audit_openclaw_config(
              port_mismatch: false,
              container_running: false,
              raw_config_json: None,
+             slack_group_policy_open: false,
+             github_token_injected: false,
         });
     }
 
     // 2. Fetch the config directly from the container
+    let _ = app_handle.emit("diagnostics-log", "Container is running. Fetching openclaw.json configuration...");
     let cat_future = crate::openclaw::get_docker_command()
         .args(["exec", "canopy-gateway", "cat", "/home/node/.openclaw/openclaw.json"])
         .output();
@@ -76,6 +85,7 @@ pub async fn audit_openclaw_config(
     let config: Value = serde_json::from_str(&config_str)
         .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
 
+    let _ = app_handle.emit("diagnostics-log", "Configuration loaded. Evaluating API keys and models...");
     // 3. Evaluate active settings.
     // OpenClaw stores model in two possible formats (both must be handled):
     //   Nested (correct): "model": { "primary": "google/gemini-2.5-flash" }
@@ -147,6 +157,28 @@ pub async fn audit_openclaw_config(
     // missing_keys is populated only when the *currently configured* model's provider lacks a key.
     let is_aligned = model_is_valid && missing_keys.is_empty();
 
+    let _ = app_handle.emit("diagnostics-log", "Verifying Slack integration policies...");
+    let slack_group_policy_open = config.pointer("/channels/slack/groupPolicy")
+        .and_then(|v| v.as_str())
+        .map_or(false, |s| s == "open");
+
+    let _ = app_handle.emit("diagnostics-log", "Checking GitHub workspace integration...");
+    let github_enabled = config.pointer("/channels/github/enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    
+    let mut github_token_injected = false;
+    if github_enabled {
+        let bashrc_check = crate::openclaw::get_docker_command()
+            .args(["exec", "canopy-gateway", "grep", "GITHUB_TOKEN", "/home/node/.bashrc"])
+            .output().await;
+        if let Ok(out) = bashrc_check {
+            github_token_injected = out.status.success();
+        }
+    }
+
+    let _ = app_handle.emit("diagnostics-log", "Diagnostics complete.");
+
     Ok(OpenClawAuditReport {
         is_aligned,
         active_default_model: default_model,
@@ -155,6 +187,8 @@ pub async fn audit_openclaw_config(
         port_mismatch,
         container_running,
         raw_config_json: Some(config_str),
+        slack_group_policy_open,
+        github_token_injected,
     })
 }
 
@@ -259,9 +293,9 @@ pub async fn repair_openclaw_config(
         // Fix allowedOrigins so the port-alignment audit check passes.
         // This is CORS for the control UI — it doesn't affect agent API communication.
         ("gateway.controlUi.allowedOrigins", allowed_origins.as_str()),
-        // Note: channels.slack.groupPolicy is intentionally NOT set here.
-        // Slack is configured via openclaw config set channels.slack.* — not via repair.
-        // Setting it here caused Slack to be configured in a broken state on every repair run.
+        // Enforce Slack groupPolicy to "open" so agents can respond to DMs
+        // If this reverts to "allowlist" during a crash, agents will silently ignore all Slack messages
+        ("channels.slack.groupPolicy", "open"),
     ];
 
     for (key, val) in fixes.iter() {

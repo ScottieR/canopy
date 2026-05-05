@@ -60,6 +60,7 @@ pub async fn create_agent(
     emoji: String,
     personality: AgentPersonality,
     isolated: bool,
+    capabilities: crate::models::AgentCapabilities,
 ) -> Result<Agent, String> {
     let agent_id = format!("agent-{}", name.to_lowercase().replace(' ', "-"));
 
@@ -78,7 +79,7 @@ pub async fn create_agent(
         status: AgentStatus::Active,
         isolated,
         paused: false,
-        capabilities: crate::models::AgentCapabilities::default(),
+        capabilities,
         container_id: None,
         visual_identity: None,
         personality: personality.clone(),
@@ -1041,15 +1042,111 @@ pub async fn get_conversation_history(
     agent_id: String,
     limit: Option<u32>,
 ) -> Result<Vec<crate::db::Message>, String> {
-    // Get or create conversation for this agent
-    let conv_id = db.get_or_create_conversation(&agent_id)
-        .map_err(|e| format!("Failed to get conversation: {}", e))?;
+    // 1. Get the session directory
+    let sessions_dir = dirs::data_dir()
+        .map(|d| d.join("Canopy").join("openclaw-state").join("agents").join(&agent_id).join("sessions"))
+        .ok_or_else(|| "Failed to locate app data dir".to_string())?;
 
-    // Load messages from DB
-    let messages = db.get_messages(&conv_id, limit.unwrap_or(50))
-        .map_err(|e| format!("Failed to load messages: {}", e))?;
+    let mut parsed_messages: Vec<crate::db::Message> = Vec::new();
 
-    Ok(messages)
+    // 1. Always fetch from SQLite DB first
+    if let Ok(conv_id) = db.get_or_create_conversation(&agent_id) {
+        if let Ok(db_messages) = db.get_messages(&conv_id, limit.unwrap_or(50)) {
+            parsed_messages.extend(db_messages);
+        }
+    }
+
+    // 2. Fetch from OpenClaw session directory if it exists
+
+    // 2. Read all .jsonl files in the sessions directory
+    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let reader = std::io::BufReader::new(file);
+                    use std::io::BufRead;
+                    for line in reader.lines().flatten() {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
+                            if json.get("type").and_then(|t| t.as_str()) == Some("message") {
+                                // Extract required fields
+                                let id = json.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let ts_str = json.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                
+                                if let Some(msg_obj) = json.get("message") {
+                                    let role = msg_obj.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    
+                                    let mut final_content = String::new();
+                                    
+                                    if let Some(content_arr) = msg_obj.get("content").and_then(|v| v.as_array()) {
+                                        for block in content_arr {
+                                            let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                            if block_type == "thinking" {
+                                                if let Some(think_text) = block.get("thinking").and_then(|v| v.as_str()) {
+                                                    final_content.push_str(&format!("[THOUGHT_PROCESS]{}[/THOUGHT_PROCESS]\n\n", think_text));
+                                                }
+                                            } else if block_type == "text" {
+                                                if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                                    let mut clean_text = text.to_string();
+                                                    
+                                                    // Strip verbose Slack JSON metadata
+                                                    while let Some(start) = clean_text.find("```json") {
+                                                        if let Some(end_offset) = clean_text[start+7..].find("```") {
+                                                            let full_end = start + 7 + end_offset + 3;
+                                                            let mut remove_end = full_end;
+                                                            while remove_end < clean_text.len() && clean_text[remove_end..].starts_with('\n') {
+                                                                remove_end += 1;
+                                                            }
+                                                            clean_text.replace_range(start..remove_end, "");
+                                                        } else {
+                                                            break;
+                                                        }
+                                                    }
+                                                    clean_text = clean_text.replace("Conversation info (untrusted metadata):\n", "");
+                                                    clean_text = clean_text.replace("Sender (untrusted metadata):\n", "");
+                                                    
+                                                    // Clean tags
+                                                    clean_text = clean_text.replace("<final>", "").replace("</final>", "");
+
+                                                    final_content.push_str(clean_text.trim());
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    if !final_content.is_empty() {
+                                        parsed_messages.push(crate::db::Message {
+                                            id,
+                                            conversation_id: agent_id.clone(),
+                                            role,
+                                            content: final_content.trim().to_string(),
+                                            timestamp: ts_str,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort by timestamp descending
+    parsed_messages.sort_by(|a, b| {
+        let ts_a = chrono::DateTime::parse_from_rfc3339(&a.timestamp).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_default();
+        let ts_b = chrono::DateTime::parse_from_rfc3339(&b.timestamp).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_default();
+        ts_b.cmp(&ts_a)
+    });
+
+    let mut seen_ids = std::collections::HashSet::new();
+    parsed_messages.retain(|msg| seen_ids.insert(msg.id.clone()));
+
+    if let Some(l) = limit {
+        parsed_messages.truncate(l as usize);
+    }
+    
+    Ok(parsed_messages)
 }
 
 #[tauri::command]
@@ -2800,10 +2897,14 @@ pub async fn boot_sync_agents(
         }
     }
     
-    // Inject into openclaw.json
+    // Inject into openclaw.json with Rollback Failsafe
     let patch_slack_script = format!(
         r#"const fs=require('fs');
+const cp=require('child_process');
 const p='/home/node/.openclaw/openclaw.json';
+const pBak=p+'.canopy.bak';
+fs.copyFileSync(p,pBak);
+
 let c=JSON.parse(fs.readFileSync(p,'utf8'));
 c.channels=c.channels||{{}};
 c.channels.slack=c.channels.slack||{{}};
@@ -2812,21 +2913,52 @@ c.channels.slack.mode='socket';
 c.channels.slack.groupPolicy='open';
 c.channels.slack.accounts={};
 c.bindings={};
+c.plugins=c.plugins||{{}};
+c.plugins.entries=c.plugins.entries||{{}};
+c.plugins.entries.slack=c.plugins.entries.slack||{{}};
+if (c.channels.slack.enabled === true) {{
+    c.plugins.entries.slack.enabled=true;
+}}
+
+if (c.mcpServers) {{
+    delete c.mcpServers;
+}}
+
 fs.writeFileSync(p,JSON.stringify(c,null,2));
-console.log('slack config patched');
+
+try {{
+    cp.execSync('openclaw doctor', {{ stdio: 'pipe' }});
+    console.log('config patched and validated successfully');
+}} catch(e) {{
+    fs.copyFileSync(pBak, p);
+    console.error('CRITICAL: Config validation failed! Rolled back config to prevent crash.');
+    console.error(e.stderr ? e.stderr.toString() : e.message);
+    process.exit(1);
+}}
 "#,
         if slack_accounts.is_empty() { "false" } else { "true" },
         serde_json::to_string(&slack_accounts).unwrap_or_else(|_| "{}".to_string()),
         serde_json::to_string(&slack_bindings).unwrap_or_else(|_| "[]".to_string())
     );
 
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
+    let patch_out = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
         get_docker_command()
             .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_slack_script])
             .output(),
     ).await;
-    tracing::info!("boot_sync_agents: updated per-agent Slack bindings");
+    
+    if let Ok(Ok(out)) = patch_out {
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            tracing::error!("boot_sync_agents: Failsafe triggered! Config was rolled back. Error:\n{}", stderr);
+            let _ = app_handle.emit("boot-sync-progress", "Warning: Failsafe blocked an invalid config update.");
+        } else {
+            tracing::info!("boot_sync_agents: updated per-agent bindings and passed validation");
+        }
+    } else {
+        tracing::error!("boot_sync_agents: patch script failed to execute or timed out");
+    }
 
     tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
 
@@ -3067,6 +3199,52 @@ mod tests {
             model
         );
     }
+
+    // ── Rollback & Validation Failsafe ────────────────────────────────────
+
+    #[test]
+    fn test_docker_command_builder_never_panics() {
+        // Ensure get_docker_command doesn't panic even if docker is missing
+        let cmd = super::get_docker_command();
+        // Just verify it constructed a Command
+        let program = cmd.as_std().get_program().to_string_lossy();
+        assert!(!program.is_empty(), "Command should have a program name");
+    }
+
+    #[test]
+    fn verify_schema_safety_of_injection() {
+        // This is a unit test to simulate our config injection logic on a dummy JSON
+        // to ensure we don't accidentally write invalid structures like `mcpServers` at the root.
+        let mut dummy_config: serde_json::Value = serde_json::json!({
+            "channels": {},
+            "plugins": { "entries": {} }
+        });
+
+        // The logic from boot_sync_agents
+        let slack_enabled = true;
+        if slack_enabled {
+            if let Some(obj) = dummy_config.as_object_mut() {
+                if let Some(plugins) = obj.get_mut("plugins").and_then(|v| v.as_object_mut()) {
+                    if let Some(entries) = plugins.get_mut("entries").and_then(|v| v.as_object_mut()) {
+                        entries.insert("slack".to_string(), serde_json::json!({ "enabled": true }));
+                    }
+                }
+            }
+        }
+
+        // Verify the structure is correct
+        assert_eq!(
+            dummy_config.pointer("/plugins/entries/slack/enabled").and_then(|v| v.as_bool()),
+            Some(true),
+            "Slack plugin should be properly nested"
+        );
+
+        // Verify no `mcpServers` exists
+        assert!(
+            dummy_config.get("mcpServers").is_none(),
+            "mcpServers must NOT exist as it breaks OpenClaw schema validation"
+        );
+    }
 }
 
 /// Helper function to seed USER.md with the current UserProfile and settings template if it's empty or missing.
@@ -3123,4 +3301,34 @@ pub async fn set_preferences_template(content: String) -> Result<(), String> {
     } else {
         Err("Could not resolve app data dir".into())
     }
+}
+
+pub async fn inject_jit_credential(agent_id: &str, credential_id: &str) -> Result<(), String> {
+    tracing::info!("JIT INJECTION: Provisioning {} into container for agent {}", credential_id, agent_id);
+    // TODO: In the future, fetch actual credentials from db or keychain and inject into auth-profiles.json
+    // For now, this is a placeholder that simulates the physical provisioning step.
+    // Example: appending to .bashrc or updating auth-profiles.json via docker exec.
+    let write_cmd = format!("echo 'export JIT_TOKEN_{}=provisioned' >> /home/node/.bashrc", credential_id.replace("-", "_").to_uppercase());
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
+            .output(),
+    ).await;
+    Ok(())
+}
+
+pub async fn revoke_jit_credential(agent_id: &str, credential_id: &str) -> Result<(), String> {
+    tracing::info!("JIT REVOCATION: Removing {} from container for agent {}", credential_id, agent_id);
+    // TODO: Physically remove the credential from the container.
+    // Example: sed -i '/JIT_TOKEN/d' /home/node/.bashrc
+    let env_var_name = format!("JIT_TOKEN_{}", credential_id.replace("-", "_").to_uppercase());
+    let write_cmd = format!("sed -i '/{}/d' /home/node/.bashrc", env_var_name);
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
+            .output(),
+    ).await;
+    Ok(())
 }

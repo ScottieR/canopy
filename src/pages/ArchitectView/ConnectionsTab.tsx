@@ -36,6 +36,20 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [dynamicSetupValue, setDynamicSetupValue] = useState<Record<string, string>>({});
   const [dynamicSetupLoading, setDynamicSetupLoading] = useState<Record<string, boolean>>({});
 
+  const [showHighRiskModal, setShowHighRiskModal] = useState(false);
+  const [pendingHighRiskAction, setPendingHighRiskAction] = useState<(() => void) | null>(null);
+  const [pendingHighRiskLabel, setPendingHighRiskLabel] = useState("");
+
+  const executeOrConfirmHighRisk = (isHighRisk: boolean, label: string, action: () => void) => {
+    if (isHighRisk) {
+      setPendingHighRiskLabel(label);
+      setPendingHighRiskAction(() => action);
+      setShowHighRiskModal(true);
+    } else {
+      action();
+    }
+  };
+
   useEffect(() => {
     if (typeof (window as any).__TAURI_INTERNALS__?.invoke === 'function') {
       const invoke = (window as any).__TAURI_INTERNALS__.invoke;
@@ -517,6 +531,32 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         . Configure here which services are active for <strong>{agent.name}</strong> and which channels/contacts it can access.
       </div>
 
+      {/* High-Risk Modal */}
+      {showHighRiskModal && pendingHighRiskAction && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", zIndex: 100000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "var(--surface-base)", padding: 32, borderRadius: 16, width: 400, boxShadow: "0 20px 40px rgba(0,0,0,0.2)" }}>
+            <div style={{ fontSize: 24, marginBottom: 16 }}>⚠️ Security Warning</div>
+            <div style={{ fontSize: 14, color: "var(--text-main)", marginBottom: 16, lineHeight: 1.5 }}>
+              You are about to enable a high-risk capability (<strong>{pendingHighRiskLabel}</strong>) {agent.isolated ? "for an isolated agent" : ""}.
+            </div>
+            <div style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24, lineHeight: 1.5, background: "rgba(212,160,74,0.1)", padding: 12, borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
+              This could allow the agent to autonomously perform sensitive actions that may result in data loss, financial charges, or security vulnerabilities if the agent is compromised.
+            </div>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <button onClick={() => {
+                setShowHighRiskModal(false);
+                setPendingHighRiskAction(null);
+              }} style={{ padding: "10px 16px", borderRadius: 8, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-main)", cursor: "pointer", fontWeight: 600 }}>Cancel</button>
+              <button onClick={() => {
+                pendingHighRiskAction();
+                setShowHighRiskModal(false);
+                setPendingHighRiskAction(null);
+              }} style={{ padding: "10px 16px", borderRadius: 8, background: "#D4A04A", color: "#FFF", border: "none", cursor: "pointer", fontWeight: 600 }}>Yes, I understand the risks</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Agent's own email */}
       <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)", marginBottom: 24 }}>
         <div style={{ padding: "14px 16px" }}>
@@ -842,7 +882,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         statusBadge={
           agent.permissions.some(p => ["file_read", "file_write"].includes(p.id) && p.enabled)
             ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
-            : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
+            : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "#94a3b8", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
         }
         onToggle={async (enabled: boolean) => {
            const { invoke } = await import('@tauri-apps/api/core');
@@ -877,16 +917,31 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                    const { invoke } = await import('@tauri-apps/api/core');
                    const toggle = useWorldStore.getState().togglePermission;
                    
-                   if (m === "write" && !hasWrite) toggle(agent.id, "file_write");
-                   else if (m === "read" && hasWrite) toggle(agent.id, "file_write");
-                   
-                   setTimeout(async () => {
-                     const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
-                     if (!currentAgent) return;
-                     const capabilitiesObj: any = {};
-                     currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                     try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
-                   }, 100);
+                   if (m === "write" && !hasWrite) {
+                     const action = async () => {
+                       const { invoke } = await import('@tauri-apps/api/core');
+                       const toggle = useWorldStore.getState().togglePermission;
+                       toggle(agent.id, "file_write");
+                       setTimeout(async () => {
+                         const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                         if (!currentAgent) return;
+                         const capabilitiesObj: any = {};
+                         currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                         try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                       }, 100);
+                     };
+                     executeOrConfirmHighRisk(true, "File System Write", action);
+                   }
+                   else if (m === "read" && hasWrite) {
+                     toggle(agent.id, "file_write");
+                     setTimeout(async () => {
+                       const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                       if (!currentAgent) return;
+                       const capabilitiesObj: any = {};
+                       currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                       try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                     }, 100);
+                   }
                 }} style={{ accentColor: "#3c6663" }} />
                 <span style={{ color: "var(--text-main)", fontWeight: isChecked ? 600 : 400 }}>
                   {m === "read" ? "Read-only — can view logs, read documents, search workspace" : "Read & Write — can create, modify, and delete files"}
@@ -902,147 +957,6 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>Suggested Services</div>
       </div>
       
-      {/* Dynamic Connectors from Admin */}
-      {connectors.filter(c => c.isVisible && c.isSuggested && !['slack', 'gmail', 'imessage', 'filesystem', 'calendar'].includes(c.id)).map(c => {
-        let IconComponent: any = Link;
-        if (c.icon === 'calendar') IconComponent = Calendar;
-        if (c.icon === 'hard-drive') IconComponent = HardDrive;
-        if (c.icon === 'github') IconComponent = Github;
-        if (c.icon === 'send' || c.icon === 'message-circle') IconComponent = MessageCircle;
-        if (c.icon === 'cloud') IconComponent = Cloud;
-        if (c.icon === 'database') IconComponent = Database;
-        if (c.icon === 'slack') IconComponent = ({size, color}: any) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>;
-
-        return (
-          <ServiceRow
-            key={c.id}
-            icon={<IconComponent size={18} color="#3c6663" />}
-            name={c.name}
-            subtitle={c.subtitle}
-            connected={dynamicStatuses[c.id] || false}
-            enabled={dynamicEnabled[c.id]}
-            onToggle={(enabled) => {
-              setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));
-              toggleIntegration(c.id, enabled);
-            }}
-            onSetup={async () => {
-              if (c.needsCompanion) {
-                 const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                 new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
-                   url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
-                   title: `Setup ${c.name}`,
-                   width: 420,
-                   height: 760,
-                   x: window.screen.availWidth - 440,
-                   y: 50,
-                   alwaysOnTop: true,
-                   decorations: true,
-                 });
-              } else {
-                 if (c.isGlobal) {
-                   if (c.id === 'calendar' || c.id === 'drive') {
-                      try {
-                         const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                         const res: any = await invoke('start_google_oauth', { scopes: [c.id], readOnly: false });
-                         if (res && res.access_token) {
-                            await invoke('store_secret_cmd', { key: c.id === 'calendar' ? 'GCAL_ACCESS_TOKEN' : 'GDRIVE_ACCESS_TOKEN', value: res.access_token });
-                            checkDynamicStatuses();
-                         }
-                      } catch (e) {
-                         console.error(e);
-                      }
-                   } else if (c.id === 'github') {
-                      setDynamicSetupState(prev => ({ ...prev, [c.id]: !prev[c.id] }));
-                   } else {
-                      setActiveView("integrations");
-                   }
-                 } else {
-                   alert(`Setup for ${c.name} is coming soon!`);
-                 }
-              }
-            }}
-          >
-            {dynamicSetupState[c.id] && (
-              <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
-                  Enter {c.name} Personal Access Token
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <PasswordInput
-                    value={dynamicSetupValue[c.id] || ""}
-                    onChange={e => setDynamicSetupValue(prev => ({ ...prev, [c.id]: e.target.value }))}
-                    placeholder="ghp_..."
-                    style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
-                  />
-                  <button 
-                    onClick={async () => {
-                      const val = dynamicSetupValue[c.id];
-                      if (val) {
-                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
-                        try {
-                          const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                          await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
-                          setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
-                          setDynamicSetupValue(prev => ({ ...prev, [c.id]: "" }));
-                        } catch (e) {
-                          alert('Failed to save token');
-                        }
-                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: false }));
-                      }
-                    }}
-                    disabled={dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id]}
-                    style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id] ? 0.5 : 1 }}
-                  >
-                    {dynamicSetupLoading[c.id] ? "Saving..." : "Save"}
-                  </button>
-                  <button onClick={() => setDynamicSetupState(prev => ({ ...prev, [c.id]: false }))} style={{ padding: "6px 12px", background: "none", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-sub)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
-                </div>
-              </div>
-            )}
-          </ServiceRow>
-        );
-      })}
-
-      {/* ── Plugin Directory ── */}
-      <div style={{ marginTop: 32, marginBottom: 16, paddingTop: 32, borderTop: "1px solid var(--border-subtle)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>OpenClaw Plugin Directory</div>
-            <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>Enable raw native plugins for this agent.</div>
-          </div>
-          <input 
-            type="text" 
-            placeholder="Search plugins..." 
-            value={pluginSearch}
-            onChange={e => setPluginSearch(e.target.value)}
-            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", color: "var(--text-main)", fontSize: 13, width: 220 }}
-          />
-        </div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
-        {connectors
-          .filter(c => c.isPlugin)
-          .filter(c => !pluginSearch || c.name.toLowerCase().includes(pluginSearch.toLowerCase()) || c.subtitle.toLowerCase().includes(pluginSearch.toLowerCase()))
-          .map(c => (
-            <ServiceRow
-              key={c.id}
-              icon={<span style={{ fontSize: 18 }}>{c.emoji || "🔌"}</span>}
-              name={c.name}
-              subtitle={c.subtitle}
-              connected={dynamicStatuses[c.id] || false}
-              enabled={dynamicEnabled[c.id]}
-              onToggle={(enabled) => {
-                setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));
-                toggleIntegration(c.id, enabled);
-              }}
-              onSetup={() => {
-                alert(`To configure ${c.name}, follow the instructions in the OpenClaw documentation or run \`openclaw skills config ${c.name}\` in the terminal.`);
-              }}
-            />
-          ))}
-      </div>
-
       {/* Web Credentials */}
       {webCredentials.length > 0 && (
         <ServiceRow
@@ -1150,21 +1064,24 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
         }
         onToggle={async (enabled: boolean) => {
-           const { invoke } = await import('@tauri-apps/api/core');
-           const toggle = useWorldStore.getState().togglePermission;
-           
-           ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].forEach(pid => {
-              const p = agent.permissions.find(x => x.id === pid);
-              if (p && p.enabled !== enabled) toggle(agent.id, pid);
-           });
+           const action = async () => {
+             const { invoke } = await import('@tauri-apps/api/core');
+             const toggle = useWorldStore.getState().togglePermission;
+             
+             ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].forEach(pid => {
+                const p = agent.permissions.find(x => x.id === pid);
+                if (p && p.enabled !== enabled) toggle(agent.id, pid);
+             });
 
-           setTimeout(async () => {
-             const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
-             if (!currentAgent) return;
-             const capabilitiesObj: any = {};
-             currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-             try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
-           }, 100);
+             setTimeout(async () => {
+               const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+               if (!currentAgent) return;
+               const capabilitiesObj: any = {};
+               currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+               try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+             }, 100);
+           };
+           executeOrConfirmHighRisk(enabled, "Capabilities & Skills", action);
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1175,15 +1092,18 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                 <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
               </div>
               <Toggle enabled={p.enabled} onChange={async () => {
-                const { invoke } = await import('@tauri-apps/api/core');
-                useWorldStore.getState().togglePermission(agent.id, p.id);
-                setTimeout(async () => {
-                  const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
-                  if (!currentAgent) return;
-                  const capabilitiesObj: any = {};
-                  currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                  try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
-                }, 100);
+                const action = async () => {
+                  const { invoke } = await import('@tauri-apps/api/core');
+                  useWorldStore.getState().togglePermission(agent.id, p.id);
+                  setTimeout(async () => {
+                    const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                    if (!currentAgent) return;
+                    const capabilitiesObj: any = {};
+                    currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                    try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                  }, 100);
+                };
+                executeOrConfirmHighRisk(!p.enabled && ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id), p.label, action);
               }} />
             </div>
           ))}
@@ -1203,27 +1123,30 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
         }
         onToggle={async (enabled: boolean) => {
-           const { invoke } = await import('@tauri-apps/api/core');
-           const toggle = useWorldStore.getState().togglePermission;
-           
-           ["payments", "spend_auto"].forEach(pid => {
-              const p = agent.permissions.find(x => x.id === pid);
-              if (p && p.enabled !== enabled) toggle(agent.id, pid);
-           });
-           
-           if (budget) {
-             const newBudget = { ...budget, payments_enabled: enabled };
-             setBudget(newBudget);
-             try { await invoke('update_agent_budget', { budget: newBudget }); } catch (e) { console.error(e); }
-           }
+           const action = async () => {
+             const { invoke } = await import('@tauri-apps/api/core');
+             const toggle = useWorldStore.getState().togglePermission;
+             
+             ["payments", "spend_auto"].forEach(pid => {
+                const p = agent.permissions.find(x => x.id === pid);
+                if (p && p.enabled !== enabled) toggle(agent.id, pid);
+             });
+             
+             if (budget) {
+               const newBudget = { ...budget, payments_enabled: enabled };
+               setBudget(newBudget);
+               try { await invoke('update_agent_budget', { budget: newBudget }); } catch (e) { console.error(e); }
+             }
 
-           setTimeout(async () => {
-             const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
-             if (!currentAgent) return;
-             const capabilitiesObj: any = {};
-             currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-             try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
-           }, 100);
+             setTimeout(async () => {
+               const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+               if (!currentAgent) return;
+               const capabilitiesObj: any = {};
+               currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+               try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+             }, 100);
+           };
+           executeOrConfirmHighRisk(enabled, "Payments & Spending", action);
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -1236,15 +1159,18 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                   <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
                 </div>
                 <Toggle enabled={p.enabled} onChange={async () => {
-                  const { invoke } = await import('@tauri-apps/api/core');
-                  useWorldStore.getState().togglePermission(agent.id, p.id);
-                  setTimeout(async () => {
-                    const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
-                    if (!currentAgent) return;
-                    const capabilitiesObj: any = {};
-                    currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                    try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
-                  }, 100);
+                  const action = async () => {
+                    const { invoke } = await import('@tauri-apps/api/core');
+                    useWorldStore.getState().togglePermission(agent.id, p.id);
+                    setTimeout(async () => {
+                      const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                      if (!currentAgent) return;
+                      const capabilitiesObj: any = {};
+                      currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                      try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                    }, 100);
+                  };
+                  executeOrConfirmHighRisk(!p.enabled, p.label, action);
                 }} />
               </div>
             ))}
@@ -1304,6 +1230,156 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
           )}
         </div>
       </ServiceRow>
+      {/* Dynamic Connectors from Admin */}
+      {connectors.filter(c => c.isVisible && c.isSuggested && !['slack', 'gmail', 'imessage', 'filesystem', 'calendar'].includes(c.id)).map(c => {
+        let IconComponent: any = Link;
+        if (c.icon === 'calendar') IconComponent = Calendar;
+        if (c.icon === 'hard-drive') IconComponent = HardDrive;
+        if (c.icon === 'github') IconComponent = Github;
+        if (c.icon === 'send' || c.icon === 'message-circle') IconComponent = MessageCircle;
+        if (c.icon === 'cloud') IconComponent = Cloud;
+        if (c.icon === 'database') IconComponent = Database;
+        if (c.icon === 'slack') IconComponent = ({size, color}: any) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>;
+
+        return (
+          <ServiceRow
+            key={c.id}
+            icon={<IconComponent size={18} color="#3c6663" />}
+            name={c.name}
+            subtitle={c.subtitle}
+            connected={dynamicStatuses[c.id] || false}
+            enabled={dynamicEnabled[c.id]}
+            onToggle={(enabled) => {
+              setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));
+              toggleIntegration(c.id, enabled);
+            }}
+            onSetup={async () => {
+              if (c.needsCompanion) {
+                 const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                 new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
+                   url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
+                   title: `Setup ${c.name}`,
+                   width: 420,
+                   height: 760,
+                   x: window.screen.availWidth - 440,
+                   y: 50,
+                   alwaysOnTop: true,
+                   decorations: true,
+                 });
+              } else {
+                 if (c.isGlobal) {
+                   if (c.id === 'calendar' || c.id === 'drive') {
+                      try {
+                         const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                         const res: any = await invoke('start_google_oauth', { scopes: [c.id], readOnly: false });
+                         if (res && res.access_token) {
+                            await invoke('store_secret_cmd', { key: c.id === 'calendar' ? 'GCAL_ACCESS_TOKEN' : 'GDRIVE_ACCESS_TOKEN', value: res.access_token });
+                            checkDynamicStatuses();
+                         }
+                      } catch (e) {
+                         console.error(e);
+                      }
+                   } else if (c.id === 'github') {
+                      setDynamicSetupState(prev => ({ ...prev, [c.id]: !prev[c.id] }));
+                   } else {
+                      setActiveView("integrations");
+                   }
+                 } else {
+                   alert(`Setup for ${c.name} is coming soon!`);
+                 }
+              }
+            }}
+          >
+            {dynamicSetupState[c.id] && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
+                  Enter {c.name} Personal Access Token
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <PasswordInput
+                    value={dynamicSetupValue[c.id] || ""}
+                    onChange={e => setDynamicSetupValue(prev => ({ ...prev, [c.id]: e.target.value }))}
+                    placeholder="ghp_..."
+                    style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
+                  />
+                  <button 
+                    onClick={async () => {
+                      const val = dynamicSetupValue[c.id];
+                      if (val) {
+                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
+                        try {
+                          const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                          await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
+                          setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
+                          setDynamicSetupValue(prev => ({ ...prev, [c.id]: "" }));
+                        } catch (e) {
+                          alert('Failed to save token');
+                        }
+                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: false }));
+                      }
+                    }}
+                    disabled={dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id]}
+                    style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id] ? 0.5 : 1 }}
+                  >
+                    {dynamicSetupLoading[c.id] ? "Saving..." : "Save"}
+                  </button>
+                  <button onClick={() => setDynamicSetupState(prev => ({ ...prev, [c.id]: false }))} style={{ padding: "6px 12px", background: "none", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-sub)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                </div>
+              </div>
+            )}
+          </ServiceRow>
+        );
+      })}
+
+      {/* ── Plugin Directory ── */}
+      <div style={{ marginTop: 32, marginBottom: 16, paddingTop: 32, borderTop: "1px solid var(--border-subtle)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <Shield style={{ width: 18, height: 18, color: "var(--brand-teal)" }} />
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", display: "flex", alignItems: "center", gap: 8 }}>
+              Communication Channels
+              {agent.isolated && (
+                <span style={{ fontSize: 10, background: "rgba(212,160,74,0.15)", color: "#A87212", padding: "2px 6px", borderRadius: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                  <ShieldCheck style={{ width: 10, height: 10 }} /> Isolated Sandbox
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>OpenClaw Plugin Directory</div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>Enable raw native plugins for this agent.</div>
+          </div>
+          <input 
+            type="text" 
+            placeholder="Search plugins..." 
+            value={pluginSearch}
+            onChange={e => setPluginSearch(e.target.value)}
+            style={{ padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", color: "var(--text-main)", fontSize: 13, width: 220 }}
+          />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
+        {connectors
+          .filter(c => c.isPlugin)
+          .filter(c => !pluginSearch || c.name.toLowerCase().includes(pluginSearch.toLowerCase()) || c.subtitle.toLowerCase().includes(pluginSearch.toLowerCase()))
+          .map(c => (
+            <ServiceRow
+              key={c.id}
+              icon={<span style={{ fontSize: 18 }}>{c.emoji || "🔌"}</span>}
+              name={c.name}
+              subtitle={c.subtitle}
+              connected={dynamicStatuses[c.id] || false}
+              enabled={dynamicEnabled[c.id]}
+              onToggle={(enabled) => {
+                setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));
+                toggleIntegration(c.id, enabled);
+              }}
+              onSetup={() => {
+                alert(`To configure ${c.name}, follow the instructions in the OpenClaw documentation or run \`openclaw skills config ${c.name}\` in the terminal.`);
+              }}
+            />
+          ))}
+      </div>
+
 
     </div>
   );

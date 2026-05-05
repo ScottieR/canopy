@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { X } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
@@ -14,7 +15,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
 };
 import { WorldScene } from "../components/World/WorldScene";
 import { LoadingScreen } from "../components/LoadingScreen";
-import { useWorldStore, DEFAULT_PERMISSIONS, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent } from "../store/worldStore";
+import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle, LobsterIcon } from "../App";
 import { GenerativeStudio } from "../components/GenerativeStudio";
@@ -63,6 +64,18 @@ export function OnboardingWizard() {
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any } | null>(draft?.customIdentity || null);
 
   const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+  const [isolated, setIsolated] = useState(draft?.isolated || false);
+  const [agentPermissions, setAgentPermissions] = useState<Permission[]>(() => {
+    if (draft?.selectedRole && draft?.isolated !== undefined) {
+      return getPermissionsForRole(draft.selectedRole, draft.isolated);
+    }
+    return DEFAULT_PERMISSIONS.map(p => ({ ...p }));
+  });
+  const [pendingHighRiskToggle, setPendingHighRiskToggle] = useState<{ id: string, enabled: boolean } | null>(null);
+  const [showHighRiskModal, setShowHighRiskModal] = useState(false);
+
+  const isHighRisk = (id: string) => ["payments", "spend_auto", "file_write", "autonomous", "ext_network", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(id);
+
   const [folderAccessType, setFolderAccessType] = useState<"specific" | "all">("specific");
   const [selectedFolderPath, setSelectedFolderPath] = useState("");
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
@@ -90,14 +103,18 @@ export function OnboardingWizard() {
 
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
+  const [deployedAgentId, setDeployedAgentId] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState("");
+  const [isPairing, setIsPairing] = useState(false);
+  const [pairingError, setPairingError] = useState("");
 
   useEffect(() => {
     if (step >= 0) {
       localStorage.setItem('canopy_onboarding_draft', JSON.stringify({
-        step, agentName, selectedRole, plugins, customIdentity
+        step, agentName, selectedRole, plugins, customIdentity, isolated
       }));
     }
-  }, [step, agentName, selectedRole, plugins, customIdentity]);
+  }, [step, agentName, selectedRole, plugins, customIdentity, isolated]);
 
   const checkConnections = async () => {
       try {
@@ -406,6 +423,9 @@ export function OnboardingWizard() {
     setApiKey("");
     setRecentlyRead([]);
     setPersonalityPrompt(getDefaultPersonality(roleKey, agentName, agentTypeInfo));
+    const shouldIsolate = agentTypeInfo[roleKey]?.recommended_isolated || false;
+    setIsolated(shouldIsolate);
+    setAgentPermissions(getPermissionsForRole(roleKey, shouldIsolate));
   };
 
   const handleCreateAgent = async () => {
@@ -444,7 +464,7 @@ export function OnboardingWizard() {
       weeklyCompute: "0.000",
       monthlySpend: 0,
       spendLimit: 200,
-      permissions: DEFAULT_PERMISSIONS.map(p => ({ ...p })),
+      permissions: agentPermissions.map(p => ({ ...p })),
       recentSpend: [],
       chatLog: [],
       memories: [],
@@ -453,25 +473,7 @@ export function OnboardingWizard() {
       visual_identity: customIdentity || { baseModelUrl: null, accessories: [] }
     } as unknown as AgentData;
 
-    // Clear state before unmounting so it doesn't get re-saved
-    setStep(-1);
-    setAgentName("");
-    setSelectedRole(null);
-    setApiKey("");
-    setPersonalityPrompt("");
-    setRecentlyRead([]);
-    setCustomBookInput("");
-    setLlmProvider("");
-    setCustomIdentity(null);
-    setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
-    localStorage.removeItem('canopy_onboarding_draft');
-
-    addAgent(optimisticAgent);
-    setActiveView("canopy");
-    setIsCreatingAgent(false);
-
-    // Fire off slow OpenClaw logic in the background
-    setTimeout(async () => {
+    const deployAgentCore = async (optimisticId: string) => {
       try {
         if (typeof invoke === 'function') {
           const profile: any = await invoke("get_user_profile");
@@ -482,146 +484,166 @@ export function OnboardingWizard() {
       }
 
       let newAgentData: Agent;
-      try {
-        if (typeof invoke === 'function') {
-          newAgentData = await invoke("create_agent", {
+      if (typeof invoke === 'function') {
+        newAgentData = await invoke("create_agent", {
+          name: agentName,
+          role: selectedRole,
+          emoji: "agent",
+          personality: {
             name: agentName,
-            role: selectedRole,
-            emoji: "agent",
-            personality: {
-              name: agentName,
-              communication_style: roleInfo.description,
-              expertise: [],
-              guardrails: [],
-              custom_instructions: "",
-              active_model: llmProvider === "Anthropic" ? "anthropic/claude-3-7-sonnet-20250219" : llmProvider === "OpenAI" ? "openai/gpt-4o" : llmProvider === "Google Gemini" ? "google/gemini-2.5-pro" : llmProvider === "xAI Grok" ? "xai/grok-2-latest" : "anthropic/claude-3-7-sonnet-20250219",
-              soul_template: roleInfo.soul_template,
-              identity_template: finalPrompt,
-            },
-            isolated: false,
-          }) as Agent;
+            communication_style: roleInfo.description,
+            expertise: [],
+            guardrails: [],
+            custom_instructions: "",
+            active_model: llmProvider === "Anthropic" ? "anthropic/claude-3-7-sonnet-20250219" : llmProvider === "OpenAI" ? "openai/gpt-4o" : llmProvider === "Google Gemini" ? "google/gemini-2.5-pro" : llmProvider === "xAI Grok" ? "xai/grok-2-latest" : "anthropic/claude-3-7-sonnet-20250219",
+            soul_template: roleInfo.soul_template,
+            identity_template: finalPrompt,
+          },
+          isolated: isolated,
+          capabilities: agentPermissions.reduce((acc, p) => ({ ...acc, [p.id]: p.enabled }), {}),
+        }) as Agent;
 
-          let defaultAccessories: string[] = [];
-          try {
-            const accRes = await fetch('http://localhost:3001/api/accessories');
-            if (accRes.ok) {
-              const catalog = await accRes.json();
-              defaultAccessories = catalog.defaults?.[selectedRole as string] || [];
-            }
-          } catch (e) {
-            console.warn("Could not fetch accessory defaults", e);
+        let defaultAccessories: string[] = [];
+        try {
+          const accRes = await fetch('http://localhost:3001/api/accessories');
+          if (accRes.ok) {
+            const catalog = await accRes.json();
+            defaultAccessories = catalog.defaults?.[selectedRole as string] || [];
           }
-
-          if (defaultAccessories.length > 0) {
-            try {
-              if (typeof invoke === 'function') {
-                await invoke("update_agent_visuals", {
-                  agentId: newAgentData.id,
-                  visuals: JSON.stringify({ accessories: defaultAccessories })
-                });
-                newAgentData.visual_identity = { accessories: defaultAccessories };
-              }
-            } catch (e) {
-              console.error("Failed to seed default visual identity", e);
-            }
-          }
-
-          // Store the API key under the provider-specific keychain name so boot-time
-          // sync_credentials can find it with the per-agent key → global fallback logic.
-          if (apiKey.trim()) {
-            const providerKeyName: Record<string, string> = {
-              "Google Gemini": `agent_${newAgentData.id}_gemini_key`,
-              "Anthropic":     `agent_${newAgentData.id}_anthropic_key`,
-              "OpenAI":        `agent_${newAgentData.id}_openai_key`,
-              "xAI Grok":      `agent_${newAgentData.id}_grok_key`,
-            };
-            const keyName = providerKeyName[llmProvider] || `agent_${newAgentData.id}_gemini_key`;
-            await invoke("store_secret_cmd", { key: keyName, value: apiKey.trim() });
-          }
-
-          // Push credentials to OpenClaw immediately — per-agent key wins, global key is fallback.
-          // This is the same logic used at boot time, applied right after creation.
-          {
-            const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
-            const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
-            const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
-            const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
-                                        || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
-
-            const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
-            const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
-            const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
-            const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
-
-            await invoke("sync_credentials", { agentId: newAgentData.id, keys: {
-              "ANTHROPIC_API_KEY": agAnthropic,
-              "OPENAI_API_KEY":    agOpenAI,
-              "GEMINI_API_KEY":    agGemini,
-              "XAI_API_KEY":       agGrok,
-            }}).catch(console.warn);
-          }
-
-          if (plugins.imessage && selectedIMessageThreads.length > 0) {
-            await invoke("update_allowed_imessage_threads", {
-              agentId: newAgentData.id,
-              chatIdentifiers: selectedIMessageThreads
-            });
-          }
-
-          if (plugins.folders && selectedFolderPath) {
-            const bridgeConfig = {
-              scope: { allowed_paths: [selectedFolderPath] },
-              expires_at: null,
-              push_enabled: false
-            };
-            await invoke("update_bridge_config", {
-              bridgeId: `${newAgentData.id}-files`,
-              config: bridgeConfig
-            });
-          }
-
-          if (googleTokens) {
-            if (googleTokens.refresh_token) {
-              await invoke("store_secret_cmd", { key: `google_refresh_${newAgentData.id}`, value: googleTokens.refresh_token });
-            }
-            if (googleTokens.access_token) {
-              await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
-            }
-          }
-
-          // Successfully setup container. Swap the temp stub out for the permanent database entity
-          useWorldStore.setState(state => ({
-            agents: state.agents.map(a => a.id === tempId
-              ? { ...a, ...newAgentData, id: newAgentData.id, status: "active", currentAction: "idle" } as AgentData
-              : a)
-          }));
-
-          // If Slack was enabled, the bot token was saved by the companion guide to the
-          // "slack-bot-token" keychain entry. Now that the agent is registered in OpenClaw,
-          // sync that token into the gateway config and start the listener so the bot comes
-          // online. The user will DM the bot to get a pairing code, then finish pairing in
-          // the Connections tab — that step requires the bot to be live first.
-          if (plugins.slack) {
-            const slackBotTok = String(await invoke("get_secret_cmd", { key: "slack-bot-token" }).catch(() => "") || "");
-            if (slackBotTok) {
-              await invoke("store_secret_cmd", { key: `agent_${newAgentData.id}_slack_bot_token`, value: slackBotTok }).catch(() => {});
-            }
-            await invoke("start_slack_listener").catch(() => {});
-          }
-
-        } else {
-          throw new Error("Tauri invoke not found");
+        } catch (e) {
+          console.warn("Could not fetch accessory defaults", e);
         }
+
+        if (defaultAccessories.length > 0) {
+          try {
+            await invoke("update_agent_visuals", {
+              agentId: newAgentData.id,
+              visuals: JSON.stringify({ accessories: defaultAccessories })
+            });
+            newAgentData.visual_identity = { accessories: defaultAccessories };
+          } catch (e) {
+            console.error("Failed to seed default visual identity", e);
+          }
+        }
+
+        if (apiKey.trim()) {
+          const providerKeyName: Record<string, string> = {
+            "Google Gemini": `agent_${newAgentData.id}_gemini_key`,
+            "Anthropic":     `agent_${newAgentData.id}_anthropic_key`,
+            "OpenAI":        `agent_${newAgentData.id}_openai_key`,
+            "xAI Grok":      `agent_${newAgentData.id}_grok_key`,
+          };
+          const keyName = providerKeyName[llmProvider] || `agent_${newAgentData.id}_gemini_key`;
+          await invoke("store_secret_cmd", { key: keyName, value: apiKey.trim() });
+        }
+
+        {
+          const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
+          const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
+          const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
+          const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
+                                      || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
+
+          const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
+          const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
+          const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
+          const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
+
+          await invoke("sync_credentials", { agentId: newAgentData.id, keys: {
+            "ANTHROPIC_API_KEY": agAnthropic,
+            "OPENAI_API_KEY":    agOpenAI,
+            "GEMINI_API_KEY":    agGemini,
+            "XAI_API_KEY":       agGrok,
+          }}).catch(console.warn);
+        }
+
+        if (plugins.imessage && selectedIMessageThreads.length > 0) {
+          await invoke("update_allowed_imessage_threads", {
+            agentId: newAgentData.id,
+            chatIdentifiers: selectedIMessageThreads
+          });
+        }
+
+        if (plugins.folders && selectedFolderPath) {
+          const bridgeConfig = {
+            scope: { allowed_paths: [selectedFolderPath] },
+            expires_at: null,
+            push_enabled: false
+          };
+          await invoke("update_bridge_config", {
+            bridgeId: `${newAgentData.id}-files`,
+            config: bridgeConfig
+          });
+        }
+
+        if (googleTokens) {
+          if (googleTokens.refresh_token) {
+            await invoke("store_secret_cmd", { key: `google_refresh_${newAgentData.id}`, value: googleTokens.refresh_token });
+          }
+          if (googleTokens.access_token) {
+            await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
+          }
+        }
+
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => a.id === optimisticId
+            ? { ...a, ...newAgentData, id: newAgentData.id, status: "active", currentAction: "idle" } as AgentData
+            : a)
+        }));
+
+        if (plugins.slack) {
+          const slackBotTok = String(await invoke("get_secret_cmd", { key: "slack-bot-token" }).catch(() => "") || "");
+          const slackAppTok = String(await invoke("get_secret_cmd", { key: "slack-app-token" }).catch(() => "") || "");
+          if (slackBotTok) {
+            await invoke("store_secret_cmd", { key: `agent_${newAgentData.id}_slack_bot_token`, value: slackBotTok }).catch(() => {});
+          }
+          if (slackAppTok) {
+            await invoke("store_secret_cmd", { key: `agent_${newAgentData.id}_slack_app_token`, value: slackAppTok }).catch(() => {});
+          }
+          await invoke("boot_sync_agents").catch(() => {});
+          await invoke("start_slack_listener").catch(() => {});
+        }
+        
+        return newAgentData;
+      } else {
+        throw new Error("Tauri invoke not found");
+      }
+    };
+
+    addAgent(optimisticAgent);
+
+    if (plugins.slack) {
+      try {
+        const newAgent = await deployAgentCore(tempId);
+        setDeployedAgentId(newAgent.id);
+        setStep(7);
       } catch (err) {
         console.error("Background Agent Deployment Failed:", err);
-        // Paint the placeholder red with an error
+        setCreateAgentError(String(err));
         useWorldStore.setState(state => ({
           agents: state.agents.map(a => a.id === tempId
             ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" }
             : a)
         }));
+      } finally {
+        setIsCreatingAgent(false);
       }
-    }, 100);
+    } else {
+      setActiveView("canopy");
+      setIsCreatingAgent(false);
+      setTimeout(async () => {
+        try {
+          await deployAgentCore(tempId);
+        } catch (err) {
+          console.error("Background Agent Deployment Failed:", err);
+          useWorldStore.setState(state => ({
+            agents: state.agents.map(a => a.id === tempId
+              ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" }
+              : a)
+          }));
+        }
+      }, 100);
+    }
   };
 
 
@@ -633,7 +655,28 @@ export function OnboardingWizard() {
       display: "flex", alignItems: "center", justifyContent: "center",
       fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
       overflow: "hidden",
+      position: "relative",
     }}>
+      {agents.length > 0 && step >= 0 && step < 6 && (
+        <button
+          onClick={() => {
+            // Wipe draft so they don't get stuck if they exit mid-way
+            localStorage.removeItem('canopy_onboarding_draft');
+            useWorldStore.getState().setActiveView("canopy");
+          }}
+          style={{
+            position: "absolute", top: 24, right: 24,
+            width: 40, height: 40, borderRadius: "50%",
+            border: "1px solid var(--border-subtle)", background: "var(--surface-card)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", color: "var(--text-sub)",
+            zIndex: 100, boxShadow: "0 2px 8px rgba(0,0,0,0.05)"
+          }}
+          title="Exit Wizard"
+        >
+          <X size={20} />
+        </button>
+      )}
       {/* Step -1: Engine Boot */}
       {/* Step -1: Engine Boot */}
       {step === -1 && (
@@ -1325,6 +1368,31 @@ export function OnboardingWizard() {
               Choose what {agentName || "your agent"} can access. Workspace tools like Slack and Gmail are shared across all your agents — connect them once in Integrations.
             </p>
 
+            {/* ── Security Posture ── */}
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                Security Posture
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: "14px 18px", borderRadius: 12, border: isolated ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)", display: "flex", alignItems: "center", gap: 8 }}>
+                    Isolated Sandbox
+                    {AGENT_TYPE_INFO[selectedRole || ""]?.recommended_isolated && (
+                      <span style={{ fontSize: 10, background: "rgba(212,160,74,0.15)", color: "#A87212", padding: "2px 6px", borderRadius: 4 }}>Recommended</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4, lineHeight: 1.4, maxWidth: "90%" }}>
+                    Run this agent in a strictly isolated container. It will not share memory or contexts with other agents, and network/file access is restricted by default.
+                  </div>
+                </div>
+                <Toggle enabled={isolated} onChange={() => {
+                  const newIsolated = !isolated;
+                  setIsolated(newIsolated);
+                  if (selectedRole) setAgentPermissions(getPermissionsForRole(selectedRole, newIsolated));
+                }} />
+              </div>
+            </div>
+
             {/* ── Workspace Tools (shared, gateway-level) ── */}
             <div style={{ marginBottom: 28 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
@@ -1435,6 +1503,31 @@ export function OnboardingWizard() {
                         )}
                       </div>
                     )}
+                  </div>
+                ))}
+              </div>
+              </div>
+
+            {/* ── OpenClaw Capabilities (Agent Sandbox) ── */}
+            <div style={{ marginBottom: 32 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                OpenClaw Capabilities
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {agentPermissions.filter(p => p.id !== "imessage" && p.id !== "photos").map(p => (
+                  <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: "14px 18px", borderRadius: 12, border: p.enabled ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{p.label}</div>
+                      <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>{p.description}</div>
+                    </div>
+                    <Toggle enabled={p.enabled} onChange={() => {
+                      if (!p.enabled && isHighRisk(p.id)) {
+                        setPendingHighRiskToggle({ id: p.id, enabled: true });
+                        setShowHighRiskModal(true);
+                      } else {
+                        setAgentPermissions(prev => prev.map(old => old.id === p.id ? { ...old, enabled: !old.enabled } : old));
+                      }
+                    }} />
                   </div>
                 ))}
               </div>
@@ -2032,8 +2125,99 @@ export function OnboardingWizard() {
             transition: "all 0.3s ease",
             opacity: isCreatingAgent ? 0.7 : 1
           }}>
-            {isCreatingAgent ? "Deploying..." : (createAgentError ? "Retry Deployment" : "Go to Dashboard")}
+            {isCreatingAgent ? "Deploying Agent..." : (createAgentError ? "Retry Deployment" : (plugins.slack ? "Deploy & Pair Slack" : "Deploy & Go to Dashboard"))}
           </button>
+        </div>
+      )}
+
+      {/* Step 7: Slack Pairing */}
+      {step === 7 && (
+        <div style={{ textAlign: "center", maxWidth: 500 }}>
+          <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
+            Final Step: Pair Slack
+          </h1>
+          <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32 }}>
+            Your agent is online! Send a direct message to your new bot in Slack. It will reply with a pairing code. Enter it below to establish a secure link.
+          </p>
+
+          <div style={{ marginBottom: 24, textAlign: "left" }}>
+            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Pairing Code</label>
+            <input 
+              value={pairingCode}
+              onChange={e => setPairingCode(e.target.value)}
+              placeholder="e.g. 123456"
+              style={{
+                width: "100%", padding: "14px 18px", borderRadius: 12,
+                fontSize: 16, textAlign: "center", letterSpacing: "2px",
+                fontFamily: "monospace", color: "var(--text-main)",
+                border: "2px solid rgba(60,102,99,0.3)", outline: "none",
+                background: "var(--surface-card)"
+              }}
+            />
+          </div>
+
+          {pairingError && (
+            <div style={{ marginBottom: 24, padding: "12px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 14 }}>
+              {pairingError}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+            <button 
+              onClick={() => {
+                setStep(-1);
+                setAgentName("");
+                setSelectedRole(null);
+                setApiKey("");
+                setPersonalityPrompt("");
+                setRecentlyRead([]);
+                setCustomBookInput("");
+                setLlmProvider("");
+                setCustomIdentity(null);
+                setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+                localStorage.removeItem('canopy_onboarding_draft');
+                setActiveView("canopy");
+              }}
+              style={{ padding: "16px 24px", borderRadius: 16, background: "transparent", color: "var(--text-sub)", border: "none", fontSize: 16, fontWeight: 600, cursor: "pointer" }}
+            >
+              Skip for now
+            </button>
+            <button 
+              disabled={isPairing || !pairingCode.trim()}
+              onClick={async () => {
+                setIsPairing(true);
+                setPairingError("");
+                try {
+                  await invoke("approve_slack_pairing", { code: pairingCode.trim() });
+                  setStep(-1);
+                  setAgentName("");
+                  setSelectedRole(null);
+                  setApiKey("");
+                  setPersonalityPrompt("");
+                  setRecentlyRead([]);
+                  setCustomBookInput("");
+                  setLlmProvider("");
+                  setCustomIdentity(null);
+                  setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+                  localStorage.removeItem('canopy_onboarding_draft');
+                  setActiveView("canopy");
+                } catch (e) {
+                  setPairingError(String(e));
+                } finally {
+                  setIsPairing(false);
+                }
+              }}
+              style={{
+                padding: "16px 40px", borderRadius: 16, border: "none",
+                background: "linear-gradient(135deg, #3c6663, #609995)",
+                color: "var(--surface-card)", fontSize: 16, fontWeight: 600, cursor: isPairing || !pairingCode.trim() ? "default" : "pointer",
+                boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
+                opacity: isPairing || !pairingCode.trim() ? 0.6 : 1
+              }}
+            >
+              {isPairing ? "Pairing..." : "Finish & Go to Dashboard"}
+            </button>
+          </div>
         </div>
       )}
 
@@ -2044,6 +2228,31 @@ export function OnboardingWizard() {
         /* temp pulse override just to be safe */ /* @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
         @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
       `}</style>
+      {/* High-Risk Capability Modal */}
+      {showHighRiskModal && pendingHighRiskToggle && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", zIndex: 100000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "var(--surface-base)", padding: 32, borderRadius: 16, width: 400, boxShadow: "0 20px 40px rgba(0,0,0,0.2)" }}>
+            <div style={{ fontSize: 24, marginBottom: 16 }}>⚠️ Security Warning</div>
+            <div style={{ fontSize: 14, color: "var(--text-main)", marginBottom: 16, lineHeight: 1.5 }}>
+              You are about to enable a high-risk capability (<strong>{agentPermissions.find(p => p.id === pendingHighRiskToggle.id)?.label}</strong>) {isolated ? "for an isolated agent" : ""}.
+            </div>
+            <div style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24, lineHeight: 1.5, background: "rgba(212,160,74,0.1)", padding: 12, borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
+              This could allow the agent to autonomously perform sensitive actions that may result in data loss, financial charges, or security vulnerabilities if the agent is compromised.
+            </div>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <button onClick={() => {
+                setShowHighRiskModal(false);
+                setPendingHighRiskToggle(null);
+              }} style={{ padding: "10px 16px", borderRadius: 8, background: "transparent", border: "1px solid var(--border-subtle)", color: "var(--text-main)", cursor: "pointer", fontWeight: 600 }}>Cancel</button>
+              <button onClick={() => {
+                setAgentPermissions(prev => prev.map(p => p.id === pendingHighRiskToggle.id ? { ...p, enabled: pendingHighRiskToggle.enabled } : p));
+                setShowHighRiskModal(false);
+                setPendingHighRiskToggle(null);
+              }} style={{ padding: "10px 16px", borderRadius: 8, background: "#D4A04A", color: "#FFF", border: "none", cursor: "pointer", fontWeight: 600 }}>Yes, I understand the risks</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

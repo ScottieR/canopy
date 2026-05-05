@@ -17,7 +17,9 @@ export function FigmaCompanion() {
        setStatus("success");
        setTimeout(async () => {
           await emit("companion-finished", { type: "figma" });
-          const { getCurrentWindow } = await import('@tauri-apps/api/window');
+          const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
+          const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
+          if (mainWindow) await mainWindow.setFocus();
           await getCurrentWindow().close();
        }, 2000);
      } catch (e) {

@@ -347,7 +347,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
       </div>
 
       {/* Access Level + Recent History */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, marginBottom: 32 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, marginBottom: 32, alignItems: "flex-start" }}>
         {/* Access Level */}
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", position: "relative" }}>
           {(() => {
@@ -434,7 +434,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
                                     </div>
                                  </div>
                                  {webLoginsExpanded && (
-                                    <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 4 }}>
+                                    <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 4, maxHeight: 150, overflowY: "auto" }}>
                                        {webIntegrations.map(intg => (
                                           <div key={intg} style={{ fontSize: 11, color: "var(--text-sub)", padding: "4px 8px", background: "rgba(0,0,0,0.03)", borderRadius: 4 }}>
                                              {intg.replace('web_', '')}
@@ -457,26 +457,57 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
           <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Activity Patterns</div>
           {(() => {
-             const hours = new Array(24).fill(0);
+             const hours = new Array(24).fill(null).map(() => ({ interactions: 0, tools: 0, system: 0, total: 0 }));
+             
              if (recentLogs && recentLogs.length > 0) {
                recentLogs.forEach((log: any) => {
                  const h = new Date(log.timestamp).getHours();
-                 hours[h] += 1;
+                 let type: "interactions" | "tools" | "system" = "system";
+                 if (log.action === "chatted") type = "interactions";
+                 else if (log.action === "tool_call" || log.bridge_type) type = "tools";
+                 
+                 hours[h][type] += 1;
+                 hours[h].total += 1;
                });
              } else {
-               for(let i=0; i<24; i++) hours[i] = Math.floor(Math.random() * 3);
-               hours[9] += 3; hours[14] += 4; hours[20] += 2;
+               for(let i=0; i<24; i++) {
+                 hours[i].system = Math.floor(Math.random() * 2);
+                 hours[i].total = hours[i].system;
+               }
+               hours[9] = { interactions: 1, tools: 2, system: 0, total: 3 };
+               hours[14] = { interactions: 2, tools: 1, system: 1, total: 4 };
+               hours[20] = { interactions: 0, tools: 0, system: 2, total: 2 };
              }
-             const max = Math.max(...hours, 4);
+             const max = Math.max(...hours.map(h => h.total), 4);
              
              return (
-               <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+               <div style={{ flex: 1, display: "flex", flexDirection: "column", width: "100%" }}>
+                 <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#4A9E96" }}/>Chats</div>
+                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#D4A04A" }}/>Tools</div>
+                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "var(--text-muted)" }}/>System</div>
+                 </div>
                  <div style={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 4, minHeight: 120, paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)" }}>
                    {hours.map((val, i) => {
-                     const heightPct = Math.max((val / max) * 100, 4);
+                     const pctInteractions = val.total > 0 ? (val.interactions / val.total) * 100 : 0;
+                     const pctTools = val.total > 0 ? (val.tools / val.total) * 100 : 0;
+                     const pctSystem = val.total > 0 ? (val.system / val.total) * 100 : 0;
+                     
+                     const heightPct = Math.max((val.total / max) * 100, 4);
+                     
                      return (
-                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }}>
-                         <div style={{ width: "100%", height: `${heightPct}%`, background: val > 0 ? "var(--accent)" : "var(--glass-light)", opacity: val > 0 ? 0.8 : 0.3, borderRadius: "3px 3px 0 0", transition: "height 0.5s ease-out" }} title={`${val} actions at ${i}:00`} />
+                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }} title={`${val.interactions} Chats, ${val.tools} Tool Execs, ${val.system} System at ${i}:00`}>
+                         <div style={{ width: "100%", height: `${heightPct}%`, display: "flex", flexDirection: "column-reverse", borderRadius: "3px 3px 0 0", overflow: "hidden", transition: "height 0.5s ease-out" }}>
+                           {val.total > 0 ? (
+                             <>
+                               {val.system > 0 && <div style={{ width: "100%", height: `${pctSystem}%`, background: "var(--text-muted)", opacity: 0.6 }} />}
+                               {val.tools > 0 && <div style={{ width: "100%", height: `${pctTools}%`, background: "#D4A04A", opacity: 0.8 }} />}
+                               {val.interactions > 0 && <div style={{ width: "100%", height: `${pctInteractions}%`, background: "#4A9E96", opacity: 0.9 }} />}
+                             </>
+                           ) : (
+                             <div style={{ width: "100%", height: "100%", background: "var(--glass-light)", opacity: 0.3 }} />
+                           )}
+                         </div>
                        </div>
                      );
                    })}

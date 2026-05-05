@@ -929,6 +929,22 @@ export default function App() {
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
   const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");
+  const [pendingJitAuth, setPendingJitAuth] = useState<any>(null);
+  const [jitDuration, setJitDuration] = useState("session");
+
+  useEffect(() => {
+    let unlisten: any;
+    const setup = async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen<any>('jit_auth_requested', (event) => {
+        setPendingJitAuth(event.payload);
+      });
+    };
+    setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   // Sync hash to activeView on load and hashchange
   useEffect(() => {
@@ -1232,6 +1248,89 @@ export default function App() {
           <DiagnosticsView />
         </div>
       )}
+
+      {/* JIT Credential Auth Modal */}
+      {pendingJitAuth && (() => {
+        const isHighRisk = pendingJitAuth.credential_id.includes("_write") || ["aws", "stripe", "banking"].some(k => pendingJitAuth.credential_id.toLowerCase().includes(k));
+        const accentColor = isHighRisk ? "#e63946" : "#3c6663";
+        const accentBg = isHighRisk ? "rgba(230, 57, 70, 0.1)" : "rgba(60, 102, 99, 0.1)";
+        
+        return (
+          <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.6)", zIndex: 999999, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+            <div style={{ background: "var(--surface)", borderRadius: 16, padding: 24, maxWidth: 450, width: "100%", boxShadow: "0 12px 32px rgba(0,0,0,0.3)", border: `1px solid ${isHighRisk ? '#e6394644' : 'var(--border)'}` }}>
+              {isHighRisk && (
+                <div style={{ background: "#e63946", color: "#fff", padding: "6px 12px", borderRadius: 6, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <AlertTriangle size={14} /> High Risk Access
+                </div>
+              )}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 20, background: accentBg, color: accentColor, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Shield size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: 18, color: "var(--text-main)" }}>Credential Access Required</h3>
+                  <div style={{ fontSize: 13, color: "var(--text-sub)" }}>Agent: <strong>{pendingJitAuth.agent_id}</strong></div>
+                </div>
+              </div>
+              
+              <p style={{ fontSize: 14, color: "var(--text-main)", lineHeight: 1.5, marginBottom: 16 }}>
+                This agent is requesting access to the <strong style={{ color: accentColor }}>{pendingJitAuth.credential_id}</strong> credential. Execution is paused until you grant access.
+              </p>
+              
+              <div style={{ background: "rgba(0,0,0,0.03)", padding: 12, borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)", marginBottom: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-sub)", marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.5 }}>Agent's Justification</div>
+                <div style={{ fontSize: 13, fontStyle: "italic", color: "var(--text-main)", whiteSpace: "pre-wrap" }}>"{pendingJitAuth.justification}"</div>
+              </div>
+              
+              <div style={{ marginBottom: 24 }}>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Access Duration</label>
+                <select 
+                  value={jitDuration} 
+                  onChange={(e) => setJitDuration(e.target.value)}
+                  style={{ width: "100%", padding: "10px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", color: "var(--text-main)", fontSize: 14, outline: "none", appearance: "none" }}
+                >
+                  <option value="one_time">Just This Once (Auto-revokes after 5 mins)</option>
+                  <option value="session">This Session (Until Restart)</option>
+                  <option value="permanent">Always (Save permanently to profile)</option>
+                </select>
+              </div>
+              
+              <div style={{ display: "flex", gap: 12 }}>
+                <button 
+                  style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface)", color: "var(--text-main)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                  onClick={async () => {
+                    await invoke("approve_jit_request", { 
+                      requestId: pendingJitAuth.request_id, 
+                      approved: false, 
+                      agentId: pendingJitAuth.agent_id, 
+                      credentialId: pendingJitAuth.credential_id,
+                      duration: jitDuration
+                    });
+                    setPendingJitAuth(null);
+                  }}
+                >
+                  Deny
+                </button>
+                <button 
+                  style={{ flex: 1, padding: "10px 0", borderRadius: 8, border: "none", background: accentColor, color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                  onClick={async () => {
+                    await invoke("approve_jit_request", { 
+                      requestId: pendingJitAuth.request_id, 
+                      approved: true, 
+                      agentId: pendingJitAuth.agent_id, 
+                      credentialId: pendingJitAuth.credential_id,
+                      duration: jitDuration
+                    });
+                    setPendingJitAuth(null);
+                  }}
+                >
+                  <CheckCircle2 size={16} /> Approve Access
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <style>{`
         @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
