@@ -3,7 +3,8 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
+  ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, AlertTriangle
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
@@ -75,6 +76,20 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
             cursor: "pointer", fontFamily: "inherit", transition: "all 0.2s"
           }}>{agent.isolated ? "Un-Isolate" : "Isolate"}</button>
       </div>
+
+      {agent.permissions.find(p => p.id === "file_write")?.enabled && agent.permissions.find(p => p.id === "browser")?.enabled && (
+        <div style={{ marginBottom: 24, padding: 16, background: "rgba(212, 160, 74, 0.1)", border: "1px solid rgba(212, 160, 74, 0.3)", borderRadius: 12, display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <AlertTriangle size={20} color="#D4A04A" style={{ flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#D4A04A", marginBottom: 4 }}>Security Edge-Case Warning</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+              This agent has both <strong>Web Browser</strong> and <strong>File System Write</strong> enabled. 
+              It could theoretically download malicious files to its workspace and use its write permissions to copy them to mounted local directories. 
+              Use this combination only if explicitly required.
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ marginBottom: 32 }}>
         <div style={{

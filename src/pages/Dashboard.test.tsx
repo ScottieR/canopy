@@ -44,16 +44,17 @@ describe('Dashboard', () => {
     it('should display all agents after load', async () => {
       render(<Dashboard />);
       await waitFor(() => {
-        expect(screen.getByText('The Assistant')).toBeDefined();
-        expect(screen.getByText('The Accountant')).toBeDefined();
+        expect(screen.getByText('assistant')).toBeDefined();
+        expect(screen.getByText('accountant')).toBeDefined();
       });
     });
 
     it('should show agent stat summaries', async () => {
       render(<Dashboard />);
       await waitFor(() => {
-        expect(screen.getByText('5 tasks today · 12 messages')).toBeDefined();
-        expect(screen.getByText('2 tasks today · 0 messages')).toBeDefined();
+        const textNodes = screen.getAllByText(/tasks/);
+        expect(textNodes.some(n => n.textContent?.includes('5 tasks · 12 msgs'))).toBeTruthy();
+        expect(textNodes.some(n => n.textContent?.includes('2 tasks · 0 msgs'))).toBeTruthy();
       });
     });
 

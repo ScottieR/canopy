@@ -135,38 +135,21 @@ pub fn get_purchase_history(
     state.get_purchase_history(&agent_id, 50).map_err(|e| e.to_string())
 }
 
-// ─── Virtual Card Integration (Stripe Issuing) ────────
+// ─── Virtual Card Integration (Privacy.com) ────────
 
 #[derive(Serialize)]
-struct StripeIssuingCardRequest {
-    cardholder: String,
-    currency: String,
+struct PrivacyCreateCardRequest {
     #[serde(rename = "type")]
     card_type: String,
-    status: String,
-    spending_controls: StripeSpendingControls,
-}
-
-#[derive(Serialize)]
-struct StripeSpendingControls {
-    spending_limits: Vec<StripeSpendingLimit>,
-    allowed_categories: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct StripeSpendingLimit {
-    amount: u64,
-    interval: String,
+    amount: u32,
+    memo: String,
 }
 
 #[derive(Deserialize, Debug)]
-pub struct VirtualCardResponse {
-    pub id: String,
-    pub last4: String,
-    pub exp_month: u8,
-    pub exp_year: u16,
-    // The raw PAN and CVV are only available via an additional ephemeral key fetch in Stripe,
-    // but for prototyping we return the object reference.
+pub struct PrivacyCardResponse {
+    pub token: Option<String>,
+    pub last_four: Option<String>,
+    pub pan: Option<String>,
 }
 
 #[tauri::command]
@@ -175,61 +158,50 @@ pub async fn issue_virtual_card(
     amount_cents: u64,
     category: String,
 ) -> Result<String, String> {
-    // In production, fetch STRIPE_SECRET_KEY securely from Keychain/Enclave
-    let stripe_key = crate::keychain::get_secret("STRIPE_SECRET_KEY")
-        .or_else(|_| std::env::var("STRIPE_SECRET_KEY"))
+    // In production, fetch PRIVACY_API_KEY securely from Keychain/Enclave
+    let privacy_key = crate::keychain::get_secret("PRIVACY_API_KEY")
+        .or_else(|_| std::env::var("PRIVACY_API_KEY"))
         .unwrap_or_default();
 
-    if stripe_key.is_empty() {
-        return Err("STRIPE_SECRET_KEY is not configured in the vault. Virtual card issuance aborted.".into());
+    if privacy_key.is_empty() {
+        return Err("PRIVACY_API_KEY is not configured in the vault. Virtual card issuance aborted.".into());
     }
 
     let client = Client::new();
     
-    // Construct Stripe Issuing payload
+    // Construct Privacy.com payload
     // We lock the card strictly to the requested limit + 10% buffer for taxes/auth holds
     let buffer_amount = amount_cents + (amount_cents / 10);
     
-    let payload = StripeIssuingCardRequest {
-        cardholder: "ich_123456789".to_string(), // In prod: resolving to the Agent's associated cardholder ID
-        currency: "usd".to_string(),
-        card_type: "virtual".to_string(),
-        status: "active".to_string(),
-        spending_controls: StripeSpendingControls {
-            spending_limits: vec![StripeSpendingLimit {
-                amount: buffer_amount,
-                interval: "all_time".to_string(),
-            }],
-            allowed_categories: vec![category],
-        },
+    let payload = PrivacyCreateCardRequest {
+        card_type: "SINGLE_USE".to_string(),
+        amount: buffer_amount as u32,
+        memo: format!("Agent {} purchase - {}", agent_id, category),
     };
 
     let response = client
-        .post("https://api.stripe.com/v1/issuing/cards")
-        .bearer_auth(stripe_key)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        // Stripe expects form url-encoded data, but for our mock/simulated 
-        // endpoint we just use normal JSON, or if we use true Stripe we'd encode to form.
-        // For simplicity we serialize as json to show the struct architecture:
+        .post("https://api.privacy.com/v1/card")
+        .bearer_auth(privacy_key)
+        .header("Content-Type", "application/json")
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("Stripe API connection failed: {}", e))?;
+        .map_err(|e| format!("Privacy.com API connection failed: {}", e))?;
 
     if !response.status().is_success() {
         let err_text = response.text().await.unwrap_or_default();
-        return Err(format!("Stripe Issuing rejected request: {}", err_text));
+        return Err(format!("Privacy.com rejected request: {}", err_text));
     }
 
-    let card_data: VirtualCardResponse = response
+    let card_data: PrivacyCardResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse Stripe response: {}", e))?;
+        .map_err(|e| format!("Failed to parse Privacy.com response: {}", e))?;
+
+    let last4 = card_data.last_four.or(card_data.pan).unwrap_or_else(|| "****".to_string());
 
     // We successfully minted a burner card
-    // Note: To extract the full PAN you actually require PCI compliance or Stripe.js, but 
-    // for Agent AI the agent typically retrieves the PAN via another /virtual_cards/:id API call.
-    Ok(format!("Successfully provisioned virtual card ending in {}. It is locked to ${:.2}.", card_data.last4, buffer_amount as f64 / 100.0))
+    Ok(format!("Successfully provisioned virtual card ending in {}. It is locked to ${:.2}.", last4, buffer_amount as f64 / 100.0))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

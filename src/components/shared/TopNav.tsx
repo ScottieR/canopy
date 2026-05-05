@@ -3,12 +3,13 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Bell
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO } from "../../store/worldStore";
 import { Toggle, ServiceRow, glass } from "../../App";
 import { GenerativeResult } from "../GenerativeStudio";
+import { GlobalAlertsFeed } from "../GlobalAlertsFeed";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // TOP NAVIGATION BAR
@@ -17,6 +18,22 @@ export // ═══════════════════════�
 function TopNav() {
   const { activeView, setActiveView, theme, toggleTheme, agents, setSelectedAgent } = useWorldStore();
   const [searchQuery, setSearchQuery] = useState("");
+  const [showAlertsFeed, setShowAlertsFeed] = useState(false);
+  const [hasUnreadAlerts, setHasUnreadAlerts] = useState(false);
+
+  useEffect(() => {
+      const checkAlerts = async () => {
+          try {
+              const data = await invoke<any[]>("get_network_security_alerts");
+              setHasUnreadAlerts(data.length > 0);
+          } catch (e) {
+              console.error(e);
+          }
+      };
+      checkAlerts();
+      const interval = setInterval(checkAlerts, 5000);
+      return () => clearInterval(interval);
+  }, []);
 
   const navItems = [
     { id: "canopy" as const, label: "Canopy" },
@@ -120,6 +137,14 @@ function TopNav() {
             }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
             </button>
+            <div onClick={() => setShowAlertsFeed(true)} style={{
+              width: 32, height: 32, borderRadius: "50%", background: "var(--border-subtle)", position: "relative",
+              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+              color: hasUnreadAlerts ? "#DC2626" : "var(--text-sub)",
+            }}>
+              <Bell size={16} />
+              {hasUnreadAlerts && <div style={{ position: "absolute", top: 6, right: 6, width: 6, height: 6, borderRadius: "50%", background: "#DC2626", border: "2px solid var(--surface-base)" }} />}
+            </div>
             <div onClick={() => setActiveView("profile")} style={{
               width: 32, height: 32, borderRadius: "50%", background: "var(--border-subtle)",
               display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
@@ -137,6 +162,7 @@ function TopNav() {
           </>
         )}
       </div>
+      {showAlertsFeed && <GlobalAlertsFeed onClose={() => setShowAlertsFeed(false)} />}
     </div>
   );
 }

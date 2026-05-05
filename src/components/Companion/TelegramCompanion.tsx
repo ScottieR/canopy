@@ -27,7 +27,7 @@ export function TelegramCompanion() {
     
     try {
       if (typeof invoke === "function") {
-        await invoke("store_secret_cmd", { key: "TELEGRAM_BOT_TOKEN", value: telegramToken.trim() });
+        await invoke("configure_telegram", { botToken: telegramToken.trim() });
         setTestStatus("success");
         window.dispatchEvent(new Event("refresh_integrations"));
         

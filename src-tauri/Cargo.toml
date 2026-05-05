@@ -40,6 +40,7 @@ url = "2"                     # URL parsing (Slack OAuth)
 urlencoding = "2"             # URL-encode OAuth params
 open = "5"                    # Open browser for OAuth
 lazy_static = "1"             # Global state (Slack listener)
+base64 = "0.22.1"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -16,6 +16,9 @@ mod slack;
 mod google;
 mod channels;
 mod jit_server;
+mod browser_manager;
+mod security_scanner;
+mod activity_sniffer;
 
 use tauri::Manager;
 
@@ -51,6 +54,9 @@ pub fn run() {
             // Initialize voice session manager
             handle.manage(voice::VoiceSessionManager::new());
 
+            // Initialize Machine Browser manager
+            handle.manage(browser_manager::BrowserManager::new());
+
             // Initialize OrbStack/Docker connection on startup
             let handle_clone = handle.clone();
             tauri::async_runtime::spawn(async move {
@@ -70,6 +76,9 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 jit_server::start_jit_server(jit_handle).await;
             });
+            
+            // Start Activity Sniffer Daemon
+            activity_sniffer::start_sniffer_daemon(handle.clone());
             
             // Sync pricing asynchronously from Admin Oracle
             tauri::async_runtime::spawn(async move {
@@ -177,6 +186,10 @@ pub fn run() {
             openclaw::read_workspace_file,
             openclaw::write_workspace_file,
             openclaw::set_preferences_template,
+            // Machine Browser
+            browser_manager::start_machine_browser,
+            browser_manager::stop_machine_browser,
+            browser_manager::get_browser_status,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,
@@ -245,6 +258,10 @@ pub fn run() {
             audit_openclaw::get_openclaw_status,
             // MCP Interceptor
             jit_server::approve_jit_request,
+            jit_server::resolve_export_request,
+            // Activity Sniffer
+            activity_sniffer::get_network_security_alerts,
+            activity_sniffer::resolve_network_security_alert,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Canopy")

@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { PasswordInput } from "./shared/PasswordInput";
-import { Globe, Plus, Trash2, Upload } from "lucide-react";
+import { Globe, Plus, Trash2, Upload, ChevronDown, ChevronUp } from "lucide-react";
 
 export function WebVault() {
   const [credentials, setCredentials] = useState<{ domain: string, username: string }[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [isAdding, setIsAdding] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
   const [domain, setDomain] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -79,13 +80,16 @@ export function WebVault() {
   return (
     <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 12, padding: "18px 20px" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setIsExpanded(!isExpanded)}>
           <div style={{ width: 36, height: 36, borderRadius: 10, background: "var(--border-subtle)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-main)" }}>
             <Globe size={18} />
           </div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Web Credentials</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>Securely store website logins for your agents</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", display: "flex", alignItems: "center", gap: 6 }}>
+              Web Credentials
+              {isExpanded ? <ChevronUp size={14} color="var(--text-sub)" /> : <ChevronDown size={14} color="var(--text-sub)" />}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>Securely store website logins for your agents ({credentials.length} saved)</div>
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
@@ -116,7 +120,9 @@ export function WebVault() {
         </div>
       </div>
 
-      {/* Search Bar */}
+      {isExpanded && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Search Bar */}
       {credentials.length > 0 && !isAdding && (
         <div style={{ marginBottom: 16 }}>
           <input 
@@ -175,7 +181,7 @@ export function WebVault() {
         }
 
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "300px", overflowY: "auto", paddingRight: 4 }}>
             {filtered.map((cred, i) => (
             <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: "var(--background)", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -193,6 +199,8 @@ export function WebVault() {
           </div>
         );
       })()}
+        </div>
+      )}
     </div>
   );
 }

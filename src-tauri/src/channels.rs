@@ -11,7 +11,7 @@ use crate::openclaw::get_docker_command;
 
 async fn openclaw_config_set(key: &str, value: &str) -> Result<(), String> {
     let out = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
+        std::time::Duration::from_secs(30),
         get_docker_command()
             .args(["exec", "canopy-gateway", "openclaw", "config", "set", key, value])
             .output(),
@@ -176,6 +176,7 @@ pub async fn configure_discord(
 
 #[tauri::command]
 pub async fn configure_github(
+    agent_id: String,
     personal_access_token: String,
     username: Option<String>,
 ) -> Result<String, String> {
@@ -189,36 +190,43 @@ pub async fn configure_github(
         );
     }
 
-    crate::keychain::store_secret("github-access-token", &token)
+    crate::keychain::store_secret(&format!("github-access-token-{}", agent_id), &token)
         .map_err(|e| format!("Keychain error: {}", e))?;
 
-    openclaw_config_set("channels.github.accessToken", &token).await?;
-    openclaw_config_set("channels.github.enabled", "true").await?;
-
     if let Some(user) = username.as_deref().filter(|s| !s.trim().is_empty()) {
-        crate::keychain::store_secret("github-username", user.trim())
+        crate::keychain::store_secret(&format!("github-username-{}", agent_id), user.trim())
             .map_err(|e| format!("Keychain error: {}", e))?;
-        openclaw_config_set("channels.github.username", user.trim()).await?;
     }
 
     // Install gh CLI if not installed
-    let _ = get_docker_command()
-        .args(["exec", "-u", "root", "canopy-gateway", "sh", "-c", 
-               "if ! command -v gh >/dev/null 2>&1; then \
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        get_docker_command()
+            .args(["exec", "-u", "root", "-e", "DEBIAN_FRONTEND=noninteractive", "canopy-gateway", "sh", "-c", 
+                "if ! command -v gh >/dev/null 2>&1; then \
                 apt-get update && apt-get install -y curl gnupg && \
                 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
                 chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
                 echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
                 apt-get update && apt-get install gh -y; fi"])
-        .output().await;
+            .output()
+    ).await;
 
-    // Inject token into .bashrc so `coding` tool agents can use it
+    // Inject token via a custom bin wrapper inside the agent's isolated workspace
+    let agent_bin_dir = format!("/home/node/.openclaw/workspace/{}/bin", agent_id);
+    let agent_gh_script = format!("{}/gh", agent_bin_dir);
     let inject_script = format!(
-        "sed -i '/GITHUB_TOKEN/d' /home/node/.bashrc; \
-         sed -i '/GH_TOKEN/d' /home/node/.bashrc; \
-         echo 'export GITHUB_TOKEN={}' >> /home/node/.bashrc; \
-         echo 'export GH_TOKEN={}' >> /home/node/.bashrc",
-        token, token
+        "mkdir -p {bin_dir}; \
+         echo '#!/bin/bash' > {gh_script}; \
+         echo 'export GITHUB_TOKEN={token}' >> {gh_script}; \
+         echo 'export GH_TOKEN={token}' >> {gh_script}; \
+         echo '/usr/bin/gh \"$@\"' >> {gh_script}; \
+         chmod +x {gh_script}; \
+         echo 'GITHUB_TOKEN={token}' > /home/node/.openclaw/workspace/{agent_id}/.github_env",
+        bin_dir = agent_bin_dir,
+        gh_script = agent_gh_script,
+        token = token,
+        agent_id = agent_id
     );
     let _ = get_docker_command()
         .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &inject_script])
@@ -227,4 +235,39 @@ pub async fn configure_github(
     restart_gateway_soft().await;
 
     Ok("GitHub connected. Your agent can now read issues, PRs, and notifications.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_e2e_github_container_provisioning() {
+        // Skip if canopy-gateway is not running to avoid breaking CI
+        let out = get_docker_command().args(["exec", "canopy-gateway", "echo", "ping"]).output().await.unwrap();
+        if !out.status.success() {
+            println!("Skipping E2E test, canopy-gateway container is not running");
+            return;
+        }
+
+        // Run the configure_github command with a dummy token
+        let token = "ghp_teste2e_token_1234567890".to_string();
+        let res = configure_github("agent-test".to_string(), token.clone(), Some("testuser".to_string())).await;
+        res.expect("configure_github failed");
+
+        // Verify the environment variable was injected into the agent's bin wrapper
+        let check_gh_script = get_docker_command()
+            .args(["exec", "canopy-gateway", "cat", "/home/node/.openclaw/workspace/agent-test/bin/gh"])
+            .output().await.unwrap();
+        
+        let gh_script_content = String::from_utf8_lossy(&check_gh_script.stdout);
+        assert!(gh_script_content.contains(&format!("export GITHUB_TOKEN={}", token)), "Token not found in agent gh wrapper");
+
+        // Verify the gh CLI is installed and accessible
+        let check_gh = get_docker_command()
+            .args(["exec", "canopy-gateway", "sh", "-c", "command -v gh"])
+            .output().await.unwrap();
+        
+        assert!(check_gh.status.success(), "gh CLI is not installed in the container");
+    }
 }

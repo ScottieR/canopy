@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use base64::Engine;
 use tokio::sync::{oneshot, Mutex};
 use tracing::{error, info};
 
@@ -17,6 +18,13 @@ struct JitRequest {
     credential_id: String,
     justification: String,
     agent_id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ExportRequest {
+    agent_id: String,
+    filename: String,
+    content: String,
 }
 
 pub async fn start_jit_server(app_handle: tauri::AppHandle) {
@@ -45,8 +53,12 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                     headers_parsed = true;
                                     let header_str = String::from_utf8_lossy(&req_data[..pos]);
                                     
+                                    let mut path = "/";
                                     if header_str.starts_with("POST ") {
                                         is_post = true;
+                                        if let Some(p) = header_str.split_whitespace().nth(1) {
+                                            path = p;
+                                        }
                                     }
 
                                     for line in header_str.lines() {
@@ -79,22 +91,37 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                     let body = &req_data[pos + 4..];
                     
                     if is_post {
-                        if let Ok(req) = serde_json::from_slice::<JitRequest>(body) {
-                            let (response, status_code) = handle_jit_request(app, req).await;
-
-                            let resp_str = serde_json::to_string(&response).unwrap_or_default();
-                            let http_resp = format!(
-                                "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                status_code,
-                                resp_str.len(),
-                                resp_str
-                            );
-                            let _ = socket.write_all(http_resp.as_bytes()).await;
+                        let path = if let Some(p) = String::from_utf8_lossy(&req_data).split_whitespace().nth(1) { p.to_string() } else { "/".to_string() };
+                        
+                        if path == "/export_file" {
+                            if let Ok(req) = serde_json::from_slice::<ExportRequest>(body) {
+                                let (response, status_code) = handle_export_request(app.clone(), req).await;
+                                let resp_str = serde_json::to_string(&response).unwrap_or_default();
+                                let http_resp = format!("HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status_code, resp_str.len(), resp_str);
+                                let _ = socket.write_all(http_resp.as_bytes()).await;
+                            } else {
+                                let resp_str = r#"{"error":"Invalid export request body"}"#;
+                                let http_resp = format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
+                                let _ = socket.write_all(http_resp.as_bytes()).await;
+                            }
                         } else {
-                            // Bad Request
-                            let resp_str = r#"{"error":"Invalid request body"}"#;
-                            let http_resp = format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
-                            let _ = socket.write_all(http_resp.as_bytes()).await;
+                            // Default to JIT request
+                            if let Ok(req) = serde_json::from_slice::<JitRequest>(body) {
+                                let (response, status_code) = handle_jit_request(app.clone(), req).await;
+
+                                let resp_str = serde_json::to_string(&response).unwrap_or_default();
+                                let http_resp = format!(
+                                    "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                    status_code,
+                                    resp_str.len(),
+                                    resp_str
+                                );
+                                let _ = socket.write_all(http_resp.as_bytes()).await;
+                            } else {
+                                let resp_str = r#"{"error":"Invalid request body"}"#;
+                                let http_resp = format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
+                                let _ = socket.write_all(http_resp.as_bytes()).await;
+                            }
                         }
                     } else {
                         // Return simple options OK for CORS
@@ -105,6 +132,61 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
             });
         }
     }
+}
+
+lazy_static::lazy_static! {
+    pub static ref PENDING_EXPORTS: Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>> = Arc::new(Mutex::new(HashMap::new()));
+}
+
+async fn handle_export_request(app: tauri::AppHandle, req: ExportRequest) -> (Value, u16) {
+    let req_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel::<bool>();
+
+    {
+        let mut pending = PENDING_EXPORTS.lock().await;
+        pending.insert(req_id.clone(), tx);
+    }
+
+    // Decode content (assuming base64 if it's sent from the agent, otherwise raw string)
+    // We'll try base64 first, fallback to raw bytes
+    let content_bytes = match base64::engine::general_purpose::STANDARD.decode(&req.content) {
+        Ok(b) => b,
+        Err(_) => req.content.as_bytes().to_vec(),
+    };
+
+    let report = crate::security_scanner::analyze_file(&content_bytes, &req.filename).await;
+
+    use tauri::Emitter;
+    let _ = app.emit(
+        "file_export_requested",
+        json!({
+            "request_id": req_id,
+            "filename": req.filename,
+            "agent_id": req.agent_id,
+            "threat_report": report,
+            "content": req.content, // Pass content so frontend can save it natively
+        }),
+    );
+
+    let approved = rx.await.unwrap_or(false);
+
+    if approved {
+        (json!({"status": "saved", "message": "The user approved and saved the file."}), 200)
+    } else {
+        (json!({"status": "blocked", "message": "The user blocked the file export."}), 403)
+    }
+}
+
+#[tauri::command]
+pub async fn resolve_export_request(
+    request_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    let mut pending = PENDING_EXPORTS.lock().await;
+    if let Some(tx) = pending.remove(&request_id) {
+        let _ = tx.send(approved);
+    }
+    Ok(())
 }
 
 async fn handle_jit_request(app: tauri::AppHandle, req: JitRequest) -> (Value, u16) {

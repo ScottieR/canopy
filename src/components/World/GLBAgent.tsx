@@ -185,6 +185,18 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
 
       {/* Dynamic Accessories System */}
       <React.Suspense fallback={null}>
+        {(accessories || []).map((path, i) => {
+           const is3D = path.includes("/models/assets/");
+           if (is3D) {
+             const glbPath = `http://localhost:3001${path.replace('.png', '.glb')}`;
+             return (
+               <group key={path} position={[1.0, 1.0, (i - ((accessories.length || 1) - 1) / 2) * 1.2]}>
+                 <SingleGLB url={glbPath} scale={0.5} />
+               </group>
+             );
+           }
+           return null;
+        })}
         {role && <DynamicAccessory role={role} />}
       </React.Suspense>
 
