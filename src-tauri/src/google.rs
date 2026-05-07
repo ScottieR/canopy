@@ -27,11 +27,15 @@ pub async fn start_google_oauth(
     scopes: Vec<String>,
     read_only: Option<bool>,
 ) -> Result<GoogleTokenResponse, String> {
-    // Prefer runtime env var (works during `tauri dev`); fall back to embedded constants
-    // so the flow works in production builds where .env is not loaded at runtime.
-    let client_id = std::env::var("GOOGLE_CLIENT_ID")
+    // SECURITY: Prefer keychain for client secret (most secure)
+    // Then environment variable for dev/testing
+    // Finally fall back to embedded constants for production builds
+    let client_id = crate::keychain::get_secret("GOOGLE_CLIENT_ID")
+        .or_else(|_| std::env::var("GOOGLE_CLIENT_ID"))
         .unwrap_or_else(|_| GOOGLE_OAUTH_CLIENT_ID.to_string());
-    let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
+
+    let client_secret = crate::keychain::get_secret("GOOGLE_CLIENT_SECRET")
+        .or_else(|_| std::env::var("GOOGLE_CLIENT_SECRET"))
         .unwrap_or_else(|_| GOOGLE_OAUTH_CLIENT_SECRET.to_string());
     let read_only = read_only.unwrap_or(false);
 

@@ -158,9 +158,18 @@ pub async fn issue_virtual_card(
     amount_cents: u64,
     category: String,
 ) -> Result<String, String> {
-    // In production, fetch PRIVACY_API_KEY securely from Keychain/Enclave
+    // SECURITY: Fetch PRIVACY_API_KEY from Keychain (secure storage)
+    // Environment variable is only a fallback for development/testing
     let privacy_key = crate::keychain::get_secret("PRIVACY_API_KEY")
-        .or_else(|_| std::env::var("PRIVACY_API_KEY"))
+        .or_else(|_| {
+            // Fallback to environment variable for backward compatibility
+            // WARNING: Environment variables are less secure; use keychain instead
+            let env_result = std::env::var("PRIVACY_API_KEY");
+            if env_result.is_ok() {
+                tracing::warn!("PRIVACY_API_KEY read from environment variable - consider migrating to keychain for better security");
+            }
+            env_result
+        })
         .unwrap_or_default();
 
     if privacy_key.is_empty() {

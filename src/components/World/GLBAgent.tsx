@@ -9,10 +9,16 @@ import { AttachedAccessory } from "./AttachedAccessory";
 // Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous
 let globalAnimationStagger = 0;
 
-export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scale = 1, isWorking = false, agentStatus, baseColor, robeColor, accentColor, role, navPoints, forceAnimation }: { fileUrl?: string, accessories?: string[], position?: [number, number, number] | number[], scale?: number, isWorking?: boolean, agentStatus?: string, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[], forceAnimation?: string }) {
+export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], rotationY = 0, scale = 1, isWorking = false, agentStatus, baseColor, robeColor, accentColor, role, navPoints, forceAnimation }: { fileUrl?: string, accessories?: string[], position?: [number, number, number] | number[], rotationY?: number, scale?: number, isWorking?: boolean, agentStatus?: string, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[], forceAnimation?: string }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
   const targetPos = useRef<THREE.Vector3>(new THREE.Vector3().fromArray(position as number[]));
+
+  useEffect(() => {
+    if (!navPoints) {
+      targetPos.current.fromArray(position as number[]);
+    }
+  }, [position, navPoints]);
 
   // Tracks whether the lobster is currently lerping toward a navPoint.
   // Drives auto-switching between the idle (breathe) and Walking clips when no
@@ -124,13 +130,14 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
   }, [isWorking, actions, names, forceAnimation, isMoving]);
 
   useEffect(() => {
-    // 1. Initial Spawn: Break the centering! Instantly snap them to a random valid location.
-    if (navPoints && navPoints.length > 0 && groupRef.current) {
-      const initialPoint = navPoints[Math.floor(Math.random() * navPoints.length)];
-      groupRef.current.position.copy(initialPoint);
-      targetPos.current.copy(initialPoint);
+    // 1. Initial Spawn: Instantly snap them to the habitat's saved spawn point, or to spawnpoint.
+    if (groupRef.current) {
+      const startPos = new THREE.Vector3().fromArray(position as number[]);
+      groupRef.current.position.copy(startPos);
+      targetPos.current.copy(startPos);
+      groupRef.current.rotation.set(0, rotationY, 0);
     }
-  }, [navPoints]);
+  }, [navPoints, position, rotationY]);
 
   useEffect(() => {
     // 2. Roaming Logic: Periodically pick a new safe topological node to wander towards

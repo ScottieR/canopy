@@ -158,6 +158,8 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                           isSelected={selectedDecor === path}
                           onSelect={() => setSelectedDecor(path)}
                           transform={stagedVisuals?.decorTransforms?.[path]}
+                          decorPoints={selectedHabitat?.decorPoints || []}
+                          index={i}
                           onTransformChange={(updates) => {
                              const current = stagedVisuals?.decorTransforms || {};
                              handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
@@ -327,7 +329,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
   );
 }
 
-function DecorObject({ path, glbPath, isSelected, onSelect, transform, onTransformChange }: any) {
+function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoints, index, onTransformChange }: any) {
   const [target, setTarget] = useState<THREE.Group | null>(null);
 
   useEffect(() => {
@@ -337,9 +339,19 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, onTransfo
       const s = transform.scale || 0.5;
       target.scale.set(s, s, s);
     } else if (target && !transform) {
+      // Snap to a valid decor point if available
+      if (decorPoints && decorPoints.length > 0) {
+        const pt = decorPoints[(path.length + index) % decorPoints.length];
+        target.position.set(pt.x, pt.y, pt.z);
+        target.rotation.set(0, Math.sin(path.length) * Math.PI, 0);
+      } else {
+        const seed = path.length + index;
+        target.position.set((Math.sin(seed * 1.1) * 3), 0, (Math.cos(seed * 1.3) * 3));
+        target.rotation.set(0, Math.sin(seed) * Math.PI, 0);
+      }
       target.scale.set(0.5, 0.5, 0.5);
     }
-  }, [target, transform]);
+  }, [target, transform, decorPoints, index, path]);
 
   return (
     <>

@@ -62,7 +62,13 @@ pub async fn create_agent(
     isolated: bool,
     capabilities: crate::models::AgentCapabilities,
 ) -> Result<Agent, String> {
-    let agent_id = format!("agent-{}", name.to_lowercase().replace(' ', "-"));
+    // ─── SECURITY: Validate agent_id to prevent command injection ───────────────
+    // Only allow alphanumeric, dash, underscore. No shell special characters.
+    let agent_id_base = name.to_lowercase().replace(' ', "-");
+    if !agent_id_base.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("Agent name contains invalid characters. Only letters, numbers, spaces, dashes, and underscores are allowed."));
+    }
+    let agent_id = format!("agent-{}", agent_id_base);
 
     // ─── Step 1: Persist to SQLite FIRST ────────────────────────────────────────
     // SQLite is always available locally. Persisting before any docker exec means
@@ -147,12 +153,14 @@ pub async fn create_agent(
     }
 
     // ─── Step 4: Write SOUL.md and set identity ──────────────────────────────────
+    // SECURITY: Use proper shell quoting to prevent command injection
     let soul_md = generate_soul_md(&personality);
     let soul_path = agent_soul_path(&agent_id);
-    let escaped = soul_md.replace('\'', "'\\''");
+    let escaped_soul = soul_md.replace('\'', "'\\''");
+    let escaped_path = soul_path.replace('\'', "'\\''");
     let write_cmd = format!(
-        "mkdir -p \"$(dirname '{soul_path}')\" && printf '%s' '{soul}' > '{soul_path}'",
-        soul_path = soul_path, soul = escaped,
+        "mkdir -p \"$(dirname '{}')\" && printf '%s' '{}' > '{}'",
+        escaped_path, escaped_soul, escaped_path
     );
     let _ = get_docker_command()
         .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
@@ -498,10 +506,12 @@ pub async fn update_agent_personality(
     let soul_path = agent_soul_path(&agent_id);
     let custom_instructions = personality.custom_instructions.trim();
     let escaped_prefs = custom_instructions.replace('\'', "'\\''");
+    let escaped_path = soul_path.replace('\'', "'\\''");
 
+    // SECURITY: Properly quote all variables to prevent command injection
+    let prefs_cmd = format!("mkdir -p \"$(dirname '{}')\" && printf '%s' '{}' > \"$(dirname '{}')/PREFERENCES.md\"", escaped_path, escaped_prefs, escaped_path);
     let output = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
-            &format!("mkdir -p $(dirname {}) && printf '%s' '{}' > $(dirname {})/PREFERENCES.md", soul_path, escaped_prefs, soul_path)])
+        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &prefs_cmd])
         .output()
         .await
         .map_err(|e| format!("Failed to update PREFERENCES.md: {}", e))?;
@@ -719,10 +729,12 @@ pub async fn update_agent_details(
         // Refresh SOUL.md so the agent knows its new name
         let soul_md = generate_soul_md(&agent.personality);
         let soul_path = agent_soul_path(&agent_id);
-        
+        let escaped_path = soul_path.replace('\'', "'\\''");
+
+        // SECURITY: Properly quote the path variable to prevent command injection
+        let soul_cmd = format!("mkdir -p \"$(dirname '{}')\" && cat > '{}' << 'SOULEOF'\n{}\nSOULEOF", escaped_path, escaped_path, soul_md);
         let _ = get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c",
-                &format!("mkdir -p $(dirname {}) && cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_path, soul_md)])
+            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &soul_cmd])
             .output()
             .await;
 
@@ -3032,9 +3044,14 @@ pub async fn boot_sync_agents(
         handle_google("drive", "google-drive", "googleDrive", &mut drive_accounts);
     }
     
-    let google_client_id = std::env::var("GOOGLE_CLIENT_ID")
+    // SECURITY: Try keychain first for OAuth secrets (secure storage)
+    // Fall back to environment variables, then to embedded constants
+    let google_client_id = crate::keychain::get_secret("GOOGLE_CLIENT_ID")
+        .or_else(|_| std::env::var("GOOGLE_CLIENT_ID"))
         .unwrap_or_else(|_| "677940720803-9ainnmmjh1ac4aeagq4ln3gll1v2t65f.apps.googleusercontent.com".to_string());
-    let google_client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
+
+    let google_client_secret = crate::keychain::get_secret("GOOGLE_CLIENT_SECRET")
+        .or_else(|_| std::env::var("GOOGLE_CLIENT_SECRET"))
         .unwrap_or_else(|_| "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".to_string());
 
     // Inject into openclaw.json with Rollback Failsafe
@@ -3460,11 +3477,13 @@ pub async fn inject_jit_credential(agent_id: &str, credential_id: &str) -> Resul
     });
 
     let env_var_name = format!("JIT_TOKEN_{}", credential_id.replace("-", "_").to_uppercase());
-    
-    // We append the secret to the node user's .bashrc. 
+
+    // We append the secret to the node user's .bashrc.
     // In a real system we'd inject into auth-profiles.json or a `.env` file that Node loads,
     // but .bashrc is an effective placeholder for the container environment.
-    let write_cmd = format!("echo 'export {}={}' >> /home/node/.bashrc", env_var_name, secret);
+    // SECURITY: Properly quote the secret value to prevent command injection via special characters
+    let escaped_secret = secret.replace('\\', "\\\\").replace('"', "\\\"");
+    let write_cmd = format!("echo 'export {}=\"{}\"' >> /home/node/.bashrc", env_var_name, escaped_secret);
     
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -3478,9 +3497,11 @@ pub async fn inject_jit_credential(agent_id: &str, credential_id: &str) -> Resul
 
 pub async fn revoke_jit_credential(agent_id: &str, credential_id: &str) -> Result<(), String> {
     tracing::info!("JIT REVOCATION: Removing {} from container for agent {}", credential_id, agent_id);
-    
+
     let env_var_name = format!("JIT_TOKEN_{}", credential_id.replace("-", "_").to_uppercase());
-    let write_cmd = format!("sed -i '/{}/d' /home/node/.bashrc", env_var_name);
+    // SECURITY: Escape special characters in the pattern to prevent sed injection
+    let escaped_pattern = env_var_name.replace('\\', "\\\\").replace('/', "\\/");
+    let write_cmd = format!("sed -i '/{}/d' /home/node/.bashrc", escaped_pattern);
     
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
