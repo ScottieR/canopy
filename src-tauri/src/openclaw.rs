@@ -3056,22 +3056,7 @@ c.channels.slack.accounts={};
 c.plugins.entries.slack=c.plugins.entries.slack||{{}};
 if (c.channels.slack.enabled === true) c.plugins.entries.slack.enabled=true;
 
-// Google helper
-function setupGoogle(chKey, enabled, accounts) {{
-    c.channels[chKey] = c.channels[chKey] || {{}};
-    c.channels[chKey].enabled = enabled;
-    if (enabled) {{
-        c.channels[chKey].clientId = '{}';
-        c.channels[chKey].clientSecret = '{}';
-        c.channels[chKey].accounts = accounts;
-    }} else {{
-        delete c.channels[chKey].accounts;
-    }}
-}}
-
-setupGoogle('gmail', {}, {});
-setupGoogle('googleCalendar', {}, {});
-setupGoogle('googleDrive', {}, {});
+// Google integrations temporarily disabled due to schema validation errors
 
 c.bindings={};
 
@@ -3083,14 +3068,6 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 "#,
         if slack_accounts.is_empty() { "false" } else { "true" },
         serde_json::to_string(&slack_accounts).unwrap_or_else(|_| "{}".to_string()),
-        google_client_id,
-        google_client_secret,
-        if gmail_accounts.is_empty() { "false" } else { "true" },
-        serde_json::to_string(&gmail_accounts).unwrap_or_else(|_| "{}".to_string()),
-        if calendar_accounts.is_empty() { "false" } else { "true" },
-        serde_json::to_string(&calendar_accounts).unwrap_or_else(|_| "{}".to_string()),
-        if drive_accounts.is_empty() { "false" } else { "true" },
-        serde_json::to_string(&drive_accounts).unwrap_or_else(|_| "{}".to_string()),
         serde_json::to_string(&bindings).unwrap_or_else(|_| "[]".to_string())
     );
 

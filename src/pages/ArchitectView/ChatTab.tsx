@@ -22,7 +22,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   const [loading, setLoading] = useState(false);
   const [needsRepair, setNeedsRepair] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
   
   // Inline Auth Modal State
   const [authDomain, setAuthDomain] = useState<string | null>(null);
@@ -49,7 +49,12 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
   useEffect(() => {
     // Scroll to bottom whenever chatLog changes
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTo({
+        top: chatContainerRef.current.scrollHeight,
+        behavior: "smooth"
+      });
+    }
     // Keep global state in sync so errors remain when switching tabs
     setAgents(agents.map(a => a.id === agent.id ? { ...a, chatLog } : a));
   }, [chatLog]);
@@ -295,7 +300,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       )}
 
       {/* Chat log */}
-      <div style={{
+      <div ref={chatContainerRef} style={{
         flex: 1, ...glass(0.35), borderRadius: 16, padding: 20, overflow: "auto",
         display: "flex", flexDirection: "column", gap: 12,
       }}>
@@ -486,7 +491,6 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             <span style={{ fontSize: 13, color: "var(--text-sub)", fontStyle: "italic" }}>{agent.name} is thinking...</span>
           </div>
         )}
-        <div ref={chatEndRef} />
       </div>
 
       {/* Repair banner — shown when agent returns "access not configured" */}

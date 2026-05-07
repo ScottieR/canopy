@@ -20,6 +20,7 @@ export function AttachedAccessory({
   
   const clonedAcc = useMemo(() => {
     const clone = SkeletonUtils.clone(scene);
+    clone.traverse(node => { node.userData = { ...node.userData, isAccessory: true }; });
     const box = new THREE.Box3().setFromObject(clone);
     const size = new THREE.Vector3();
     box.getSize(size);

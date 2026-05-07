@@ -1,6 +1,7 @@
 import { GLBAgent, GLBModel } from "./GLBAgent";
-import { useMemo } from "react";
+import React, { useMemo } from "react";
 import accessoriesData from "../../../../shared/accessories.json";
+import habitatsData from "../../../../shared/habitats.json";
 import * as THREE from "three";
 
 export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
@@ -21,6 +22,33 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
     return x - Math.floor(x);
   };
 
+  const habitatData = (habitatsData as any[]).find(h => h.id === agent?.visual_identity?.habitatId);
+  const validDecorPoints = habitatData?.decorPoints || navPoints || [];
+
+  // Pre-compute decor positions to avoid lobster overlapping them
+  const placedDecorPositions = useMemo(() => {
+    return decorItems.map((path: string, i: number) => {
+      const transforms = agent?.visual_identity?.decorTransforms?.[path];
+      if (transforms) {
+        return new THREE.Vector3(transforms.x || 0, transforms.y || 0, transforms.z || 0);
+      } else if (validDecorPoints && validDecorPoints.length > 0) {
+        const seed = (agent?.id?.length || 0) + i;
+        const pointIndex = Math.floor(seededRandom(seed) * validDecorPoints.length);
+        const p = validDecorPoints[pointIndex];
+        return new THREE.Vector3(p.x, p.y, p.z);
+      }
+      return new THREE.Vector3(0, 0, 0);
+    });
+  }, [decorItems, agent, validDecorPoints]);
+
+  const filteredNavPoints = useMemo(() => {
+    if (!navPoints) return undefined;
+    return navPoints.filter(p => {
+      // Don't let the lobster walk within 0.35 units of the center of a decor item
+      return !placedDecorPositions.some(dp => p.distanceTo(dp) < 0.35);
+    });
+  }, [navPoints, placedDecorPositions]);
+
   return (
     <group 
       position={position}
@@ -35,7 +63,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
           role={agent.role}
           accessories={agent.visual_identity?.accessories || []}
           position={index === 0 ? [0.65, -0.23, 0.2] : [0, 0, 0]} 
-          navPoints={navPoints}
+          navPoints={filteredNavPoints}
           scale={0.25} 
           isWorking={isWorking} 
           agentStatus={agent?.status}
@@ -53,16 +81,13 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
         let decorRot = [0, 0, 0];
         let decorScale = 0.5;
 
-        // Apply saved transforms or calculate random fallback
         if (transforms) {
           decorPos = [transforms.x || 0, transforms.y || 0, transforms.z || 0];
           decorRot = [transforms.rotationX || 0, transforms.rotationY || 0, transforms.rotationZ || 0];
           decorScale = transforms.scale || 0.5;
-        } else if (navPoints && navPoints.length > 0) {
-          // Use a deterministic "random" point based on the agent's ID string length + item index
+        } else {
+          const p = placedDecorPositions[i];
           const seed = (agent?.id?.length || 0) + i;
-          const pointIndex = Math.floor(seededRandom(seed) * navPoints.length);
-          const p = navPoints[pointIndex];
           decorPos = [p.x, p.y, p.z];
           decorRot = [0, seededRandom(seed + 1) * Math.PI * 2, 0]; // Random Y rotation
         }
