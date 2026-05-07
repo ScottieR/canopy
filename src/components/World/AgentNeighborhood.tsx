@@ -62,7 +62,12 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
           fileUrl={agent.visual_identity?.baseModelUrl || agent.fileUrl}
           role={agent.role}
           accessories={agent.visual_identity?.accessories || []}
-          position={index === 0 ? [0.65, -0.23, 0.2] : [0, 0, 0]} 
+          position={
+            index === 0 && habitatData?.placement 
+              ? [habitatData.placement.x, habitatData.placement.y, habitatData.placement.z] 
+              : [0, 0, 0]
+          } 
+          rotationY={index === 0 && habitatData?.placement ? habitatData.placement.rotationY : 0} 
           navPoints={filteredNavPoints}
           scale={0.25} 
           isWorking={isWorking} 

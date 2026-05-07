@@ -95,15 +95,33 @@ pub fn delete_secret_cmd(key: String) -> Result<(), String> {
     delete_secret_internal(&key)
 }
 
+/// Check if auto-discovery has already been performed (first-run check)
+pub fn has_auto_discovered() -> bool {
+    get_secret("_auto_discovery_completed").is_ok()
+}
+
+/// Mark auto-discovery as completed to prevent repeated scanning
+pub fn mark_auto_discovery_complete() -> Result<(), String> {
+    store_secret("_auto_discovery_completed", "true")
+}
+
 /// Auto-discovery of API keys by scanning common shell config files on macOS.
+///
+/// SECURITY: This function reads plaintext secrets from shell config files
+/// and migrates them to the secure macOS Keychain. It should only be called
+/// once during initial setup, and users should be explicitly informed that
+/// plaintext keys will be read from their config files.
 #[tauri::command]
 pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, String>, String> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    
+
+    // SECURITY: Log warning about plaintext key scanning
+    tracing::warn!("AUTO-DISCOVERY: Scanning shell config files for plaintext API keys. This is a one-time setup operation.");
+
     let mut discovered = std::collections::HashMap::new();
     let home = dirs::home_dir().ok_or("Could not find home directory")?;
-    
+
     let paths_to_check = vec![
         home.join(".zshrc"),
         home.join(".bash_profile"),
@@ -117,6 +135,11 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
         "GEMINI_API_KEY",
         "XAI_API_KEY",   // current xAI env var name
         "GROK_API_KEY",  // legacy xAI env var name (some users still have this)
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "SLACK_CLIENT_ID",
+        "SLACK_CLIENT_SECRET",
+        "PRIVACY_API_KEY",
     ];
 
     for path in paths_to_check {
@@ -126,31 +149,28 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
                 for line in reader.lines().flatten() {
                     let trimmed = line.trim();
                     if trimmed.starts_with('#') { continue; }
-                    
+
                     for key in &target_keys {
                         // match `export KEY=value` or `KEY=value`
-                        if trimmed.contains(key) {
+                        if trimmed.contains(key) && trimmed.contains('=') {
                             let parts: Vec<&str> = trimmed.split('=').collect();
                             if parts.len() >= 2 {
                                 let mut val = parts[1..].join("=");
                                 // strip quotes if any
                                 val = val.trim_matches('"').trim_matches('\'').to_string();
-                                
-                                // Map env var name → short provider id used by ProvidersVault.
-                                // Both XAI_API_KEY and GROK_API_KEY map to "grok" so ProvidersVault
-                                // stores them as XAI_API_KEY via getKeyName("grok").
-                                let provider = match *key {
-                                    "OPENAI_API_KEY"    => "openai",
-                                    "ANTHROPIC_API_KEY" => "anthropic",
-                                    "GEMINI_API_KEY"    => "gemini",
-                                    "XAI_API_KEY"       => "grok",
-                                    "GROK_API_KEY"      => "grok",
-                                    _ => continue,
-                                };
 
-                                // Don't overwrite a key already discovered (XAI wins over GROK)
-                                if !discovered.contains_key(provider) {
-                                    discovered.insert(provider.to_string(), val);
+                                // Skip empty values
+                                if val.is_empty() {
+                                    continue;
+                                }
+
+                                // Map env var name → vault key name
+                                let vault_key = *key;
+
+                                // Don't overwrite a key already in vault
+                                if get_secret(vault_key).is_err() {
+                                    discovered.insert(vault_key.to_string(), val);
+                                    tracing::info!("AUTO-DISCOVERY: Found {} in config files", vault_key);
                                 }
                             }
                         }
@@ -159,8 +179,82 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
             }
         }
     }
-    
+
+    if !discovered.is_empty() {
+        tracing::warn!("AUTO-DISCOVERY: Found {} plaintext secrets. Recommend deleting them from config files after migration.", discovered.len());
+    }
+
     Ok(discovered)
+}
+
+/// Remove plaintext API keys from shell config files after migration to keychain.
+///
+/// This function safely removes API key definitions from .bashrc, .bash_profile,
+/// .zshrc, and .env files. It performs a simple pattern match to find and remove
+/// lines containing the key definition.
+pub fn cleanup_plaintext_keys(keys_to_remove: Vec<String>) -> Result<Vec<String>, String> {
+    use std::fs::{File, OpenOptions};
+    use std::io::{BufRead, BufReader, Write};
+
+    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let mut removed_files = Vec::new();
+
+    let paths_to_check = vec![
+        home.join(".zshrc"),
+        home.join(".bash_profile"),
+        home.join(".bashrc"),
+        home.join(".env"),
+    ];
+
+    for path in paths_to_check {
+        if !path.exists() {
+            continue;
+        }
+
+        // Read the file
+        let file = File::open(&path).map_err(|e| e.to_string())?;
+        let reader = BufReader::new(file);
+        let mut lines: Vec<String> = reader.lines().collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+        let original_len = lines.len();
+
+        // Filter out lines containing the keys to remove
+        lines.retain(|line| {
+            let trimmed = line.trim();
+            // Skip comment lines
+            if trimmed.starts_with('#') {
+                return true;
+            }
+            // Remove lines that match any of the keys to remove
+            for key in &keys_to_remove {
+                if trimmed.contains(key) && trimmed.contains('=') {
+                    tracing::info!("Removing plaintext {} from {}", key, path.display());
+                    return false;
+                }
+            }
+            true
+        });
+
+        // Write back only if something was removed
+        if lines.len() < original_len {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .map_err(|e| e.to_string())?;
+
+            for line in lines {
+                writeln!(file, "{}", line).map_err(|e| e.to_string())?;
+            }
+
+            removed_files.push(path.to_string_lossy().to_string());
+            tracing::info!("Cleaned up plaintext keys from {}", path.display());
+        }
+    }
+
+    // Mark auto-discovery as completed to prevent repeated scanning
+    let _ = mark_auto_discovery_complete();
+
+    Ok(removed_files)
 }
 
 #[tauri::command]

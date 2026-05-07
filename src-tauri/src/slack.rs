@@ -122,10 +122,15 @@ struct ConnectionsOpenResponse {
 pub async fn start_slack_oauth(
     _app: tauri::AppHandle,
 ) -> Result<String, String> {
-    let client_id = std::env::var("SLACK_CLIENT_ID")
-        .map_err(|_| "SLACK_CLIENT_ID not set. Set it in your environment before connecting Slack.".to_string())?;
-    let client_secret = std::env::var("SLACK_CLIENT_SECRET")
-        .map_err(|_| "SLACK_CLIENT_SECRET not set".to_string())?;
+    // SECURITY: Try keychain first for secrets (secure storage)
+    // Fall back to environment variables for development/backward compatibility
+    let client_id = crate::keychain::get_secret("SLACK_CLIENT_ID")
+        .or_else(|_| std::env::var("SLACK_CLIENT_ID"))
+        .map_err(|_| "SLACK_CLIENT_ID not found in keychain or environment. Store it securely using the keychain for production use.".to_string())?;
+
+    let client_secret = crate::keychain::get_secret("SLACK_CLIENT_SECRET")
+        .or_else(|_| std::env::var("SLACK_CLIENT_SECRET"))
+        .map_err(|_| "SLACK_CLIENT_SECRET not found in keychain or environment. Store it securely using the keychain for production use.".to_string())?;
 
     // Find available port for redirect listener
     let listener = TcpListener::bind("127.0.0.1:0")
