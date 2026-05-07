@@ -19,6 +19,7 @@ export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }
   const modelNum = habitatId || ((index % 9) + 1);
   const finalModelUrl = modelUrl || `/models/habitats/Habitat_${modelNum}.glb`;
   const { scene } = useGLTF(finalModelUrl);
+  const navPointsRef = React.useRef<THREE.Vector3[]>([]);
 
   // Clone the scene so we can instance it multiple times across the grid
   const clonedScene = useMemo(() => {
@@ -84,10 +85,7 @@ export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }
       }
     }
 
-    if (onNavMeshReady && navPoints.length > 0) {
-      // Defer React state update to avoid rendering cycle collisions
-      setTimeout(() => onNavMeshReady(navPoints), 0);
-    }
+    navPointsRef.current = navPoints;
 
     clone.traverse((child: any) => {
       if (child.isMesh && child.material) {
@@ -117,6 +115,12 @@ export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }
     });
     return clone;
   }, [scene]);
+
+  React.useEffect(() => {
+    if (onNavMeshReady && navPointsRef.current.length > 0) {
+      onNavMeshReady(navPointsRef.current);
+    }
+  }, [clonedScene, onNavMeshReady]);
 
   return <primitive object={clonedScene} />;
 }

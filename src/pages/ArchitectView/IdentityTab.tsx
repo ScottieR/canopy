@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, TransformControls } from "@react-three/drei";
 import { TerrariumBase } from "../../components/World/WorldScene";
 import { GLBAgent, SingleGLB } from "../../components/World/GLBAgent";
 import { Toggle, ServiceRow, glass, ACCESSORIES, PASTEL_COLORS, SafeBillboard , HABITATS } from "../../App";
@@ -18,6 +18,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
   const { setAgents } = useWorldStore();
   const [accessorySearch, setAccessorySearch] = useState("");
   const [decorSearch, setDecorSearch] = useState("");
+  const [selectedDecor, setSelectedDecor] = useState<string | null>(null);
   const [stagedVisuals, setStagedVisuals] = useState<Partial<AgentData["visual_identity"]>>(agent.visual_identity || {});
 
   useEffect(() => {
@@ -88,23 +89,39 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
     });
   }, [catalog]);
 
+  // Search across the catalog's human-readable name/description/labels in
+  // addition to the raw path. Accessory paths look like
+  // /accessories/accessories_set_3_item_25.png — searching the path alone
+  // would never match queries like "chef" or "clipboard".
+  const matchesQuery = useCallback((path: string, q: string) => {
+    if (!q) return true;
+    const ql = q.toLowerCase();
+    if (path.toLowerCase().includes(ql)) return true;
+    const meta = catalog?.items?.[path];
+    if (!meta) return false;
+    if (meta.name && meta.name.toLowerCase().includes(ql)) return true;
+    if (meta.description && meta.description.toLowerCase().includes(ql)) return true;
+    if (Array.isArray(meta.labels) && meta.labels.some((l: string) => l.toLowerCase().includes(ql))) return true;
+    return false;
+  }, [catalog]);
+
   const sortedAccessories = useMemo(() => {
-    const copy = [...visibleAccessories];
+    const copy = visibleAccessories.filter(p => !catalog?.items?.[p]?.type || catalog.items[p].type === 'accessory' || catalog.items[p].type === 'both');
     const seed = agent.role.charCodeAt(0) % 6;
     const suggestions = copy.splice(seed * 25, 5);
     const combined = [...suggestions, ...copy];
     if (!accessorySearch) return combined;
-    return combined.filter(a => a.toLowerCase().includes(accessorySearch.toLowerCase()));
-  }, [agent.role, accessorySearch, visibleAccessories]);
+    return combined.filter(a => matchesQuery(a, accessorySearch));
+  }, [agent.role, accessorySearch, visibleAccessories, catalog, matchesQuery]);
 
   const sortedDecor = useMemo(() => {
-    const copy = [...visibleAccessories];
+    const copy = visibleAccessories.filter(p => catalog?.items?.[p]?.type === 'decor' || catalog?.items?.[p]?.type === 'both');
     const seed = agent.role.charCodeAt(1) % 6; // slightly different suggestions
     const suggestions = copy.splice(seed * 25, 5);
     const combined = [...suggestions, ...copy];
     if (!decorSearch) return combined;
-    return combined.filter(a => a.toLowerCase().includes(decorSearch.toLowerCase()));
-  }, [agent.role, decorSearch, visibleAccessories]);
+    return combined.filter(a => matchesQuery(a, decorSearch));
+  }, [agent.role, decorSearch, visibleAccessories, catalog, matchesQuery]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32, height: "100%", paddingRight: 8 }}>
@@ -129,16 +146,23 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                     modelUrl={selectedHabitat?.path} 
                   />
                   {(stagedVisuals?.decor || []).map((path, i) => {
-                    const angle = (i / (stagedVisuals?.decor?.length || 1)) * Math.PI * 2;
-                    const radius = 1.2;
                     const is3D = path.includes("/models/assets/");
                     
                     if (is3D) {
                       const glbPath = `http://localhost:3001${path.replace('.png', '.glb')}`;
                       return (
-                        <group key={path} position={[Math.cos(angle) * radius, 0, Math.sin(angle) * radius]}>
-                          <SingleGLB url={glbPath} scale={0.5} />
-                        </group>
+                        <DecorObject 
+                          key={path}
+                          path={path}
+                          glbPath={glbPath}
+                          isSelected={selectedDecor === path}
+                          onSelect={() => setSelectedDecor(path)}
+                          transform={stagedVisuals?.decorTransforms?.[path]}
+                          onTransformChange={(updates) => {
+                             const current = stagedVisuals?.decorTransforms || {};
+                             handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
+                          }}
+                        />
                       );
                     }
 
@@ -158,12 +182,16 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                 agentStatus={agent.status}
                 scale={1.0}
                 robeColor={stagedVisuals?.color || agent.color}
-                forceAnimation="none"
+                forceAnimation="Long_Breathe_and_Look_Around"
               />
-              {/* Fallback Accessory Stickers for Preview */}
+              {/* Fallback Accessory Stickers for Preview — only for paths that
+                  don't have a 3D model bound to a bone via GLBAgent. Anything
+                  under /accessories/ or /models/assets/ has a baked GLB and is
+                  rendered through AttachedAccessory, so showing a 2D sticker
+                  here would just float a duplicate above the lobster. */}
               <React.Suspense fallback={null}>
                 {(stagedVisuals?.accessories || []).map((path, i) => {
-                  if (path.includes("/models/assets/")) return null; // Handled by GLBAgent 3D renderer
+                  if (path.includes("/models/assets/") || path.includes("/accessories/")) return null;
                   return (
                     <SafeBillboard
                       key={path}
@@ -216,13 +244,29 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
               {sortedDecor.map(acc => {
                 let isActive = stagedVisuals?.decor?.includes(acc);
                 return (
-                  <img key={acc} src={acc}
-                    onClick={() => {
-                      const current = stagedVisuals?.decor || [];
-                      handleUpdateStaged({ decor: isActive ? current.filter(x => x !== acc) : [...current, acc] });
-                    }}
-                    style={{ width: "100%", aspectRatio: "1/1", objectFit: "contain", background: "rgba(0,0,0,0.03)", borderRadius: 8, cursor: "pointer", border: isActive ? '2px solid var(--text-main)' : '2px solid transparent', transition: "all 0.1s ease" }}
-                  />
+                  <div key={acc} style={{ position: "relative" }}>
+                    <img src={acc}
+                      onClick={() => {
+                        const current = stagedVisuals?.decor || [];
+                        if (isActive) {
+                           handleUpdateStaged({ decor: current.filter(x => x !== acc) });
+                           if (selectedDecor === acc) setSelectedDecor(null);
+                        } else {
+                           handleUpdateStaged({ decor: [...current, acc] });
+                           setSelectedDecor(acc);
+                        }
+                      }}
+                      style={{ width: "100%", aspectRatio: "1/1", objectFit: "contain", background: "rgba(0,0,0,0.03)", borderRadius: 8, cursor: "pointer", border: isActive ? '2px solid var(--text-main)' : '2px solid transparent', transition: "all 0.1s ease" }}
+                    />
+                    {isActive && (
+                       <button 
+                         onClick={() => setSelectedDecor(acc)}
+                         style={{ position: "absolute", top: 4, right: 4, background: selectedDecor === acc ? "var(--primary)" : "rgba(0,0,0,0.5)", color: "white", border: "none", borderRadius: "50%", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+                       >
+                         <Settings size={12} />
+                       </button>
+                    )}
+                  </div>
                 )
               })}
             </div>
@@ -280,5 +324,53 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function DecorObject({ path, glbPath, isSelected, onSelect, transform, onTransformChange }: any) {
+  const [target, setTarget] = useState<THREE.Group | null>(null);
+
+  useEffect(() => {
+    if (target && transform) {
+      target.position.set(transform.x || 0, transform.y || 0, transform.z || 0);
+      target.rotation.set(transform.rotationX || 0, transform.rotationY || 0, transform.rotationZ || 0);
+      const s = transform.scale || 0.5;
+      target.scale.set(s, s, s);
+    } else if (target && !transform) {
+      target.scale.set(0.5, 0.5, 0.5);
+    }
+  }, [target, transform]);
+
+  return (
+    <>
+      <group 
+        ref={setTarget} 
+        onClick={(e) => { e.stopPropagation(); onSelect(); }}
+      >
+        <React.Suspense fallback={null}>
+          <SingleGLB url={glbPath} scale={1} />
+        </React.Suspense>
+      </group>
+      {isSelected && target && (
+        <TransformControls 
+          object={target} 
+          mode="translate"
+          space="local"
+          onMouseUp={() => {
+            if (target) {
+              onTransformChange({
+                x: target.position.x,
+                y: target.position.y,
+                z: target.position.z,
+                rotationX: target.rotation.x,
+                rotationY: target.rotation.y,
+                rotationZ: target.rotation.z,
+                scale: target.scale.x
+              });
+            }
+          }}
+        />
+      )}
+    </>
   );
 }

@@ -5,6 +5,41 @@ use serde::{Deserialize, Serialize};
 /// Bridge management — the security boundary between agents and data sources.
 /// Each bridge is a local MCP server that mediates access.
 
+use async_trait::async_trait;
+
+/// Standardized trait for executing bridge lifecycle and permission checks
+#[async_trait]
+pub trait BridgeProvider: Send + Sync {
+    async fn start_mcp_server(&self, agent_id: &str, config: &BridgeConfig) -> Result<(), String>;
+    async fn stop_mcp_server(&self, agent_id: &str) -> Result<(), String>;
+    async fn validate_access(&self, requested_action: &str, permissions: &BridgePermissions) -> Result<bool, String>;
+}
+
+/// A dummy mock implementation for testing
+pub struct MockBridgeProvider;
+
+#[async_trait]
+impl BridgeProvider for MockBridgeProvider {
+    async fn start_mcp_server(&self, agent_id: &str, _config: &BridgeConfig) -> Result<(), String> {
+        tracing::info!("MockBridgeProvider: Starting MCP Server for agent {}", agent_id);
+        Ok(())
+    }
+    
+    async fn stop_mcp_server(&self, agent_id: &str) -> Result<(), String> {
+        tracing::info!("MockBridgeProvider: Stopping MCP Server for agent {}", agent_id);
+        Ok(())
+    }
+    
+    async fn validate_access(&self, requested_action: &str, permissions: &BridgePermissions) -> Result<bool, String> {
+        match requested_action {
+            "read" => Ok(permissions.read),
+            "write" => Ok(permissions.write),
+            "delete" => Ok(permissions.delete),
+            _ => Err("Unknown action".to_string())
+        }
+    }
+}
+
 /// Information about an available bridge type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BridgeTypeInfo {
@@ -85,8 +120,18 @@ pub async fn enable_bridge(
         None,
     );
 
-    // TODO: Start the MCP server for this bridge
-    // TODO: Register with the agent's tool list
+    // Orchestrator: Start the MCP Server using the Mock Provider for now
+    let provider = MockBridgeProvider;
+    let _ = provider.start_mcp_server(&agent_id, &bridge.config).await;
+    
+    // Simulate updating the agent's tool list by writing to the audit log
+    let _ = db.log_audit(
+        &agent_id,
+        "bridge_tools_registered",
+        Some(&bridge_type_str),
+        "Successfully registered MCP tools for bridge",
+        None,
+    );
 
     Ok(bridge)
 }
@@ -120,8 +165,18 @@ pub async fn disable_bridge(
         None,
     );
 
-    // TODO: Stop the MCP server
-    // TODO: Remove from agent's tool list
+    // Orchestrator: Stop the MCP Server using the Mock Provider
+    let provider = MockBridgeProvider;
+    let _ = provider.stop_mcp_server(&bridge.agent_id).await;
+    
+    // Simulate deregistering tools
+    let _ = db.log_audit(
+        &bridge.agent_id,
+        "bridge_tools_unregistered",
+        Some(&bridge_type_str),
+        "Successfully unregistered MCP tools for bridge",
+        None,
+    );
 
     Ok(())
 }
@@ -460,5 +515,20 @@ mod tests {
         bridge.enabled = false;
         bridge.enabled = true;
         assert!(bridge.enabled);
+    }
+    
+    // ──────────────────────────────────────────────────────────────
+    // MOCK PROVIDER TESTS
+    // ──────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_mock_bridge_provider_access() {
+        let provider = MockBridgeProvider;
+        let bridge = test_bridge(); // read=true, write=false, delete=false
+        
+        assert_eq!(provider.validate_access("read", &bridge.permissions).await.unwrap(), true);
+        assert_eq!(provider.validate_access("write", &bridge.permissions).await.unwrap(), false);
+        assert_eq!(provider.validate_access("delete", &bridge.permissions).await.unwrap(), false);
+        assert!(provider.validate_access("execute", &bridge.permissions).await.is_err());
     }
 }

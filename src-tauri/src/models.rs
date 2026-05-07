@@ -295,7 +295,7 @@ pub struct Bridge {
     pub permissions: BridgePermissions,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum BridgeType {
     Imessage,

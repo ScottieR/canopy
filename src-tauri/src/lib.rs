@@ -190,6 +190,8 @@ pub fn run() {
             browser_manager::start_machine_browser,
             browser_manager::stop_machine_browser,
             browser_manager::get_browser_status,
+            browser_manager::show_browser,
+            browser_manager::hide_browser,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,
@@ -236,6 +238,7 @@ pub fn run() {
             channels::configure_whatsapp,
             channels::configure_discord,
             channels::configure_github,
+            channels::configure_twilio,
             // Voice mode
             voice::get_voice_config,
             voice::update_voice_config,

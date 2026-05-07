@@ -481,6 +481,45 @@ pub async fn update_allowed_slack_channels(
         }
     }
 
+    // Sync union of all allowed channels to OpenClaw config
+    if let Ok(bridges) = db.list_all_bridges() {
+        let mut all_allowed_channels = std::collections::HashSet::new();
+        for cid in &channel_ids {
+            all_allowed_channels.insert(cid.clone());
+        }
+        for b in bridges {
+            if b.bridge_type == BridgeType::Slack && b.agent_id != agent_id {
+                if let Some(allowed) = b.config.scope.get("allowed_channels") {
+                    if let Ok(channels) = serde_json::from_value::<Vec<String>>(allowed.clone()) {
+                        for cid in channels {
+                            all_allowed_channels.insert(cid);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut channels_obj = serde_json::Map::new();
+        for cid in all_allowed_channels {
+            let mut props = serde_json::Map::new();
+            props.insert("enabled".to_string(), json!(true));
+            channels_obj.insert(cid, json!(props));
+        }
+        let channels_json = json!(channels_obj).to_string();
+
+        let cmd_future = crate::openclaw::get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "channels.slack.channels", &channels_json])
+            .output();
+
+        if let Ok(Ok(output)) = tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
+            if !output.status.success() {
+                tracing::warn!("Failed to set channels.slack.channels: {}", String::from_utf8_lossy(&output.stderr));
+            } else {
+                tracing::info!("Synced {} Slack channels to OpenClaw config", channels_obj.len());
+            }
+        }
+    }
+
     info!("Updated allowed channels for agent {}: {:?}", agent_id, channel_ids);
     Ok(())
 }
@@ -601,7 +640,7 @@ pub async fn start_slack_listener() -> Result<String, String> {
         ("channels.slack.appToken",  &app_token),
         ("channels.slack.enabled",   "true"),
         ("channels.slack.mode",      "socket"),
-        ("channels.slack.groupPolicy", "open"),
+        ("channels.slack.groupPolicy", "allowlist"),
         ("plugins.entries.slack.enabled", "true"),
     ];
 

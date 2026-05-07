@@ -390,32 +390,17 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     cfg["gateway"]["mode"] = serde_json::json!("local");
     cfg["gateway"]["port"] = serde_json::json!(18789);
 
-    // ── Slack channel — configure from keychain, or disable ──────────────────
-    // Slack's socket-mode sidecar is heavyweight (WebSocket reconnect loops block the
-    // IPC event loop if auth fails). We only enable it if BOTH tokens are in keychain.
-    //
-    // Previously this always force-wrote enabled=false, which meant Slack had to be
-    // re-enabled via `openclaw config set` after every gateway restart — and was then
-    // wiped again on the NEXT restart. The fix: read from keychain here, in preflight,
-    // so the config written to disk before container start already has the correct state.
-    //
-    // Tokens are stored by start_slack_listener() after the user completes setup.
-    // If tokens are absent (or blank), Slack stays disabled — safe default.
+    // ── Slack channel — strictly per-agent isolation ────────────────────────────
+    // NEVER inject a global slack-bot-token or slack-app-token here. Doing so would
+    // create a significant security bug where multiple agents fall back to a single
+    // shared Slack connection if isolated configs fail. 
+    // Slack is enabled dynamically by `boot_sync_agents` via `channels.slack.accounts`.
     {
-        let bot = crate::keychain::get_secret("slack-bot-token").unwrap_or_default();
-        let app = crate::keychain::get_secret("slack-app-token").unwrap_or_default();
-        let bot = bot.trim();
-        let app = app.trim();
-        if !bot.is_empty() && bot.starts_with("xoxb-") && !app.is_empty() && app.starts_with("xapp-") {
-            tracing::info!("preflight: Slack tokens found in keychain — enabling Slack Socket Mode in config");
-            cfg["channels"]["slack"]["enabled"]     = serde_json::json!(true);
-            cfg["channels"]["slack"]["botToken"]    = serde_json::json!(bot);
-            cfg["channels"]["slack"]["appToken"]    = serde_json::json!(app);
-            cfg["channels"]["slack"]["mode"]        = serde_json::json!("socket");
-            cfg["channels"]["slack"]["groupPolicy"] = serde_json::json!("open");
-        } else {
-            tracing::info!("preflight: Slack tokens absent — disabling Slack in config");
-            cfg["channels"]["slack"]["enabled"] = serde_json::json!(false);
+        tracing::info!("preflight: Enforcing per-agent Slack isolation — ensuring no global Slack tokens are set");
+        cfg["channels"]["slack"]["enabled"] = serde_json::json!(false);
+        if let Some(slack) = cfg["channels"]["slack"].as_object_mut() {
+            slack.remove("botToken");
+            slack.remove("appToken");
         }
     }
 
@@ -514,7 +499,7 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     // network. Disable them until those features are explicitly activated by the user.
     cfg["plugins"]["entries"]["device-pair"]["enabled"]   = serde_json::json!(false);
     cfg["plugins"]["entries"]["phone-control"]["enabled"] = serde_json::json!(false);
-    cfg["plugins"]["entries"]["talk-voice"]["enabled"]    = serde_json::json!(false);
+    cfg["plugins"]["entries"]["talk-voice"]["enabled"]    = serde_json::json!(true);
     // Preserve google plugin (required for Gemini API via ACPX)
     cfg["plugins"]["entries"]["google"]["enabled"]        = serde_json::json!(true);
 
@@ -702,14 +687,7 @@ pub async fn start_gateway() -> Result<String, String> {
                 }
             }
         }
-        // Include Slack tokens if configured — OpenClaw reads SLACK_BOT_TOKEN / SLACK_APP_TOKEN
-        for key in &["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"] {
-            if let Ok(v) = crate::keychain::get_secret(key) {
-                if !v.trim().is_empty() {
-                    m.insert(key.to_string(), v.trim().to_string());
-                }
-            }
-        }
+        // DO NOT include global SLACK_BOT_TOKEN to prevent cross-agent context bleed
         m
     };
     tracing::info!("start_gateway: injecting {} provider env var(s) into compose", provider_keys.len());
@@ -1020,4 +998,24 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
     tracing::info!("canopy-gateway container state after reset: {}", container_state);
 
     Ok("Infrastructure rebooted perfectly.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_isolated_compose() {
+        let agent_id = "agent-123";
+        let data_dir = PathBuf::from("/tmp/canopy");
+        let port = 18805;
+
+        let compose = generate_isolated_compose(agent_id, &data_dir, port);
+
+        assert!(compose.contains("canopy-isolated-agent-123"));
+        assert!(compose.contains("18805:18789"));
+        assert!(compose.contains("- \"com.canopy.type=isolated\""));
+        assert!(compose.contains("- \"com.canopy.agent-id=agent-123\""));
+        assert!(compose.contains("isolated-agent-123"));
+    }
 }

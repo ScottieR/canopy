@@ -23,6 +23,7 @@ const GOOGLE_OAUTH_CLIENT_SECRET: &str = "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";
 /// Start Google OAuth flow by opening the browser and listening for a local redirect
 #[tauri::command]
 pub async fn start_google_oauth(
+    agent_id: String,
     scopes: Vec<String>,
     read_only: Option<bool>,
 ) -> Result<GoogleTokenResponse, String> {
@@ -166,57 +167,26 @@ pub async fn start_google_oauth(
     }
 
     // ── Persist tokens to keychain so re-auth isn't needed after app restart ──
-    // Determine a stable prefix per service so email and calendar tokens don't clobber each other
     let service_prefix = if scopes.iter().any(|s| s == "email") { 
-        "google-email" 
+        "google_email" 
     } else if scopes.iter().any(|s| s == "drive") {
-        "google-drive"
+        "google_drive"
     } else { 
-        "google-calendar" 
+        "google_calendar" 
     };
 
     if let Some(access_token) = &token_data.access_token {
         let _ = crate::keychain::store_secret(
-            &format!("{}-access-token", service_prefix),
+            &format!("agent_{}_{}_access_token", agent_id, service_prefix),
             access_token,
         );
-        // ── Forward token to OpenClaw so the agent can actually use the integration ──
-        let channel_key = if scopes.iter().any(|s| s == "email") { 
-            "gmail" 
-        } else if scopes.iter().any(|s| s == "drive") {
-            "googleDrive"
-        } else { 
-            "googleCalendar" 
-        };
-        let config_pairs: &[(&str, &str)] = &[
-            ("enabled", "true"),
-            ("accessToken", access_token.as_str()),
-            ("clientId", &client_id),
-            ("clientSecret", &client_secret),
-        ];
-        for (field, val) in config_pairs {
-            let key = format!("channels.{}.{}", channel_key, field);
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                crate::openclaw::get_docker_command()
-                    .args(["exec", "canopy-gateway", "openclaw", "config", "set", &key, val])
-                    .output(),
-            ).await;
-        }
         if let Some(refresh_token) = &token_data.refresh_token {
             let _ = crate::keychain::store_secret(
-                &format!("{}-refresh-token", service_prefix),
+                &format!("agent_{}_{}_refresh_token", agent_id, service_prefix),
                 refresh_token,
             );
-            let key = format!("channels.{}.refreshToken", channel_key);
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                crate::openclaw::get_docker_command()
-                    .args(["exec", "canopy-gateway", "openclaw", "config", "set", &key, refresh_token.as_str()])
-                    .output(),
-            ).await;
         }
-        info!("Google {} tokens saved to keychain and forwarded to OpenClaw gateway", service_prefix);
+        info!("Google {} tokens saved to keychain for agent {}", service_prefix, agent_id);
     }
 
     Ok(token_data)

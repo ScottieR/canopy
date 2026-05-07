@@ -32,6 +32,31 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [webLoginsExpanded, setWebLoginsExpanded] = useState(false);
 
+  const [slackNeedsPairing, setSlackNeedsPairing] = useState(false);
+
+  useEffect(() => {
+    if (agent.integrations.includes("slack")) {
+      invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_slack_paired` })
+        .then(val => {
+          if (val === "true") {
+            setSlackNeedsPairing(false);
+          } else {
+            // Fallback: if not paired, check if there are allowed channels
+            invoke<string[]>("get_allowed_slack_channels", { agentId: agent.id })
+              .then(channels => setSlackNeedsPairing(!channels || channels.length === 0))
+              .catch(() => setSlackNeedsPairing(true));
+          }
+        })
+        .catch(() => {
+          invoke<string[]>("get_allowed_slack_channels", { agentId: agent.id })
+            .then(channels => setSlackNeedsPairing(!channels || channels.length === 0))
+            .catch(() => setSlackNeedsPairing(true));
+        });
+    } else {
+      setSlackNeedsPairing(false);
+    }
+  }, [agent.integrations, agent.id]);
+
   useEffect(() => {
     setIsEditingDetails(false);
     setTempName(agent.name);
@@ -98,6 +123,35 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
 
   return (
     <div>
+      {slackNeedsPairing && !agent.paused && (
+        <div style={{ background: "rgba(236, 178, 46, 0.1)", border: "1px solid rgba(236, 178, 46, 0.3)", borderRadius: 16, padding: 24, marginBottom: 32 }}>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+            <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#ECB22E", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#fff"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#fff"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#fff"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#fff"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#fff"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#fff"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#fff"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#fff"/></svg>
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#9A6B00", marginBottom: 4 }}>Slack Pairing Required</div>
+              <div style={{ fontSize: 13, color: "var(--text-main)", marginBottom: 16, lineHeight: 1.5, opacity: 0.9 }}>
+                {agent.name} is provisioned, but you haven't authorized any channels for them to read and respond in.
+              </div>
+              <div style={{ background: "rgba(255,255,255,0.6)", padding: 16, borderRadius: 12, border: "1px solid rgba(236, 178, 46, 0.4)" }}>
+                <ol style={{ margin: 0, paddingLeft: 16, fontSize: 13, color: "var(--text-main)", display: "flex", flexDirection: "column", gap: 8, fontWeight: 500 }}>
+                  <li>Go to your Slack workspace and find <strong>{agent.name}</strong> under the "Apps" section in the sidebar.</li>
+                  <li>Send them a direct message with any text (like <code style={{ background: "rgba(0,0,0,0.06)", padding: "2px 6px", borderRadius: 4, color: "#9A6B00" }}>hello</code>).</li>
+                  <li>They will reply with a secure 6-digit code.</li>
+                  <li>Click the button below to enter that code and grant channel access.</li>
+                </ol>
+              </div>
+            </div>
+            <button 
+              onClick={() => onNavigate && onNavigate("connections")} 
+              style={{ padding: "10px 16px", background: "#ECB22E", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", alignSelf: "center", whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(236, 178, 46, 0.3)" }}
+            >
+              Enter Pairing Code →
+            </button>
+          </div>
+        </div>
+      )}
       {agent.paused && (
         <div style={{ background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
@@ -269,20 +323,27 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
                 agentStatus={agent.status}
                 scale={1.0}
                 robeColor={agent.color || agent.robeColor}
-                forceAnimation="none"
+                forceAnimation="Long_Breathe_and_Look_Around"
               />
+              {/* Billboard fallback only for accessories with no 3D model.
+                  /accessories/ and /models/assets/ paths are attached to bones
+                  via GLBAgent → AttachedAccessory; rendering them again as
+                  stickers would duplicate the visual above the lobster. */}
               <React.Suspense fallback={null}>
-                {(agent.visual_identity?.accessories || []).map((path, i) => (
-                  <SafeBillboard
-                    key={i}
-                    url={path}
-                    position={[
-                      0.5 * Math.cos(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
-                      0.2 + 0.3 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
-                      0.5 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1))
-                    ]}
-                  />
-                ))}
+                {(agent.visual_identity?.accessories || []).map((path, i) => {
+                  if (path.includes("/models/assets/") || path.includes("/accessories/")) return null;
+                  return (
+                    <SafeBillboard
+                      key={i}
+                      url={path}
+                      position={[
+                        0.5 * Math.cos(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
+                        0.2 + 0.3 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
+                        0.5 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1))
+                      ]}
+                    />
+                  );
+                })}
               </React.Suspense>
             </group>
           </Canvas>
