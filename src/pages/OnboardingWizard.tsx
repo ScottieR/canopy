@@ -525,7 +525,7 @@ export function OnboardingWizard() {
           try {
             await invoke("update_agent_visuals", {
               agentId: newAgentData.id,
-              visuals: JSON.stringify({ accessories: defaultAccessories })
+              visualIdentity: { accessories: defaultAccessories }
             });
             newAgentData.visual_identity = { accessories: defaultAccessories };
           } catch (e) {
@@ -590,6 +590,19 @@ export function OnboardingWizard() {
           if (googleTokens.access_token) {
             await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
           }
+        }
+
+        let initialIntegrations = [];
+        if (plugins.slack) initialIntegrations.push("slack");
+        if (plugins.email) initialIntegrations.push("email_read");
+        if (plugins.calendar) initialIntegrations.push("calendar_read");
+        if (plugins.imessage) initialIntegrations.push("imessage");
+
+        if (initialIntegrations.length > 0) {
+          try {
+            await invoke("update_agent_integrations", { agentId: newAgentData.id, integrations: initialIntegrations });
+            newAgentData.integrations = initialIntegrations;
+          } catch (e) { console.warn("Failed to set integrations", e); }
         }
 
         useWorldStore.setState(state => ({

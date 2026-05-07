@@ -353,40 +353,112 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                      const remaining = text.substring(lastIndex);
                      if (remaining.trim()) {
                         const credentialRegex = /\[REQUEST_CREDENTIAL:\s*(.+?)\]/g;
-                        if (!remaining.includes("[REQUEST_CREDENTIAL:")) {
+                        const interventionRegex = /\[REQUEST_BROWSER_INTERVENTION:\s*(.+?)\]/g;
+
+                        if (!remaining.includes("[REQUEST_CREDENTIAL:") && !remaining.includes("[REQUEST_BROWSER_INTERVENTION:")) {
                            elements.push(
                              <div key={`text-${lastIndex}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
                                <MDEditor.Markdown source={remaining} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
                              </div>
                            );
                         } else {
-                           const parts = remaining.split(credentialRegex);
-                           parts.forEach((part, i) => {
-                             if (i % 2 === 1) {
-                               const domain = part.trim();
-                               elements.push(
-                                  <div key={`cred-${i}`} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "var(--background)", border: "1px solid var(--border-subtle)", borderRadius: 8, color: "var(--text-main)" }}>
-                                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                                      <Lock size={14} /> Login Required
-                                    </div>
-                                    <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
-                                      {agent.name} is requesting credentials to access <strong>{domain}</strong>.
-                                    </div>
-                                    <button 
-                                      onClick={() => setAuthDomain(domain)} 
-                                      style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", width: "100%" }}
-                                    >
-                                      Authorize in WebVault
-                                    </button>
-                                  </div>
-                               );
-                             } else if (part.trim()) {
-                               elements.push(
-                                 <div key={`rem-${i}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
-                                   <MDEditor.Markdown source={part} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
-                                 </div>
-                               );
-                             }
+                           let fragments = [{ type: 'text', content: remaining }];
+                           
+                           // First pass: Credentials
+                           let temp1: any[] = [];
+                           fragments.forEach(f => {
+                               if (f.type !== 'text') { temp1.push(f); return; }
+                               const parts = f.content.split(credentialRegex);
+                               parts.forEach((p, i) => {
+                                   if (i % 2 === 1) temp1.push({ type: 'cred', content: p.trim() });
+                                   else if (p) temp1.push({ type: 'text', content: p });
+                               });
+                           });
+                           
+                           // Second pass: Interventions
+                           let temp2: any[] = [];
+                           temp1.forEach(f => {
+                               if (f.type !== 'text') { temp2.push(f); return; }
+                               const parts = f.content.split(interventionRegex);
+                               parts.forEach((p, i) => {
+                                   if (i % 2 === 1) temp2.push({ type: 'interv', content: p.trim() });
+                                   else if (p) temp2.push({ type: 'text', content: p });
+                               });
+                           });
+                           
+                           // Render
+                           temp2.forEach((f, i) => {
+                               if (f.type === 'text') {
+                                   elements.push(
+                                       <div key={`frag-${i}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                                           <MDEditor.Markdown source={f.content} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                                       </div>
+                                   );
+                               } else if (f.type === 'cred') {
+                                   const domain = f.content;
+                                   elements.push(
+                                      <div key={`cred-${i}`} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "var(--background)", border: "1px solid var(--border-subtle)", borderRadius: 8, color: "var(--text-main)" }}>
+                                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                                          <Lock size={14} /> Login Required
+                                        </div>
+                                        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
+                                          {agent.name} is requesting credentials to access <strong>{domain}</strong>.
+                                        </div>
+                                        <button 
+                                          onClick={() => setAuthDomain(domain)} 
+                                          style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", width: "100%" }}
+                                        >
+                                          Authorize in WebVault
+                                        </button>
+                                      </div>
+                                   );
+                               } else if (f.type === 'interv') {
+                                   const reason = f.content;
+                                   elements.push(
+                                       <div key={`interv-${i}`} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "rgba(212, 160, 74, 0.1)", border: "1px solid rgba(212, 160, 74, 0.3)", borderRadius: 8, color: "#D4A04A" }}>
+                                           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                                               ⚠️ Agent Needs Help!
+                                           </div>
+                                           <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 10, color: "var(--text-main)" }}>
+                                               {agent.name} is stuck: <strong>{reason}</strong>
+                                           </div>
+                                           <div style={{ display: "flex", gap: 8 }}>
+                                               <button 
+                                                   onClick={async () => {
+                                                       try {
+                                                           await invoke("show_browser", { agentId: agent.id });
+                                                       } catch (e) {
+                                                           console.error(e);
+                                                       }
+                                                   }}
+                                                   style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", flex: 1 }}
+                                               >
+                                                   Bring Browser to Front
+                                               </button>
+                                               <button 
+                                                   onClick={async () => {
+                                                       try {
+                                                           await invoke("hide_browser", { agentId: agent.id });
+                                                           const sysMsg: ChatMessage = {
+                                                               id: Date.now().toString(),
+                                                               sender: "user",
+                                                               text: `I have completed the manual intervention in the browser. You may proceed.`,
+                                                               time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                                                           };
+                                                           setChatLog(prev => [...prev, sysMsg]);
+                                                           invoke("send_message", { agentId: agent.id, message: sysMsg.text });
+                                                       } catch (e) {
+                                                           console.error(e);
+                                                       }
+                                                   }}
+                                                   style={{ padding: "6px 12px", background: "transparent", color: "var(--text-main)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                                               >
+                                                   Hide & Proceed
+                                               </button>
+                                           </div>
+                                       </div>
+                                   );
+                               }
                            });
                         }
                      }

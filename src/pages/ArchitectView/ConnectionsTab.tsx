@@ -29,7 +29,19 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [pluginSearch, setPluginSearch] = useState("");
 
   // Dynamic Connectors
-  const [connectors, setConnectors] = useState<any[]>([]);
+  const [connectors, setConnectors] = useState<any[]>([
+    { id: "slack", name: "Slack", subtitle: "Control which Slack channels route messages to this agent", icon: "slack", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "gmail", name: "Gmail", subtitle: "Read and send emails using your Google account", icon: "mail", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
+    { id: "imessage", name: "iMessage", subtitle: "Choose which contacts and group threads this agent can read and reply to", icon: "message-circle", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
+    { id: "filesystem", name: "Workspace (File System)", subtitle: "Allow agent to read and mutate local files in their designated workspace directory.", icon: "folder", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: false },
+    { id: "calendar", name: "Google Calendar", subtitle: "Allow agent to view and schedule events on your Google Calendar", icon: "calendar", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
+    { id: "drive", name: "Google Drive", subtitle: "Allow agent to read, write, and organize files in your Google Drive", icon: "hard-drive", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
+    { id: "github", name: "GitHub", subtitle: "Allow agent to read repositories, create PRs, and review code", icon: "github", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "telegram", name: "Telegram", subtitle: "Connect a Telegram bot so this agent can chat in channels or DMs", icon: "send", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "discord", name: "Discord", subtitle: "Connect a Discord bot to respond in channels and DMs.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "figma", name: "Figma", subtitle: "A design agent can co-create and modify design files directly in Figma.", icon: "figma", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true, type: "oauth" },
+    { id: "twilio", name: "Twilio Voice & SMS", subtitle: "Connect a Twilio phone number so this agent can make and receive calls or texts.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: false }
+  ]);
   const [dynamicEnabled, setDynamicEnabled] = useState<Record<string, boolean>>({});
   const [dynamicStatuses, setDynamicStatuses] = useState<Record<string, boolean>>({});
   const [dynamicSetupState, setDynamicSetupState] = useState<Record<string, boolean>>({});
@@ -134,8 +146,11 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [dedicatedPassword, setDedicatedPassword] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
 
-  // Saving state
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
+
+  const [allowlistsLoaded, setAllowlistsLoaded] = useState(false);
+  const [hasScrolledToSlack, setHasScrolledToSlack] = useState(false);
+  const [isSlackPaired, setIsSlackPaired] = useState(false);
 
   // ── Budget & Spend ──
   const [budget, setBudget] = useState<any>(null);
@@ -396,6 +411,11 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         setDedicatedPassword(pw || "");
       }
     } catch {}
+    try {
+      const paired = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_slack_paired` });
+      if (paired === "true") setIsSlackPaired(true);
+    } catch {}
+    setAllowlistsLoaded(true);
   };
 
   const saveSlackAllowlist = async (ids: string[]) => {
@@ -426,6 +446,16 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
     } catch (e) { console.error(e); }
     setEmailSaving(false);
   };
+
+  useEffect(() => {
+    if (allowlistsLoaded && agent.integrations.includes("slack") && allowedSlack.length === 0 && !isSlackPaired && !hasScrolledToSlack) {
+      setHasScrolledToSlack(true);
+      setTimeout(() => {
+        const el = document.getElementById("slack-pairing-section");
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 300); // Give accordion time to expand
+    }
+  }, [allowlistsLoaded, agent.integrations, allowedSlack.length, isSlackPaired, hasScrolledToSlack]);
 
   // ── Row component for each service
 
@@ -598,6 +628,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         subtitle="Control which Slack channels route messages to this agent"
         connected={slackConnected}
         enabled={slackEnabled}
+        initialOpen={allowlistsLoaded && agent.integrations.includes("slack") && allowedSlack.length === 0 && !isSlackPaired}
         onToggle={async (enabled: boolean) => {
           setSlackEnabled(enabled);
           await toggleIntegration("slack", enabled);
@@ -672,10 +703,10 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
           sublabelKey="member_count"
         />
 
-        <div style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
+        <div id="slack-pairing-section" style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Pair with OpenClaw</div>
           <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8, lineHeight: 1.5 }}>
-            Now go to Slack and send your bot a direct message with the word <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3 }}>pair</code>, then return and enter the code it replies with here.
+            Now go to Slack and send your bot a direct message with any text (like <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3 }}>hello</code>), then return and enter the code it replies with here.
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input
@@ -684,9 +715,12 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
               placeholder="XXXXXX"
               maxLength={12}
               style={{
-                width: 120, padding: "7px 11px", border: "1px solid var(--border-subtle)",
+                width: 120, padding: "7px 11px", 
+                border: (agent.integrations.includes("slack") && allowedSlack.length === 0 && slackPairingStatus !== "success" && !isSlackPaired) ? "2px solid #ECB22E" : "1px solid var(--border-subtle)",
+                boxShadow: (agent.integrations.includes("slack") && allowedSlack.length === 0 && slackPairingStatus !== "success" && !isSlackPaired) ? "0 0 12px rgba(236, 178, 46, 0.6)" : "none",
                 borderRadius: 7, fontSize: 14, fontFamily: "monospace", letterSpacing: "0.15em",
                 background: "var(--surface-card)", color: "var(--text-main)", textTransform: "uppercase",
+                transition: "all 0.3s ease"
               }}
             />
             <button
@@ -698,6 +732,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                 try {
                   const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
                   await invoke("approve_slack_pairing", { code: trimmed });
+                  await invoke("store_secret_cmd", { key: `agent_${agent.id}_slack_paired`, value: "true" });
                   setSlackPairingStatus("success");
                   setSlackPairingCode("");
                 } catch (e: any) {
@@ -750,7 +785,8 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                         [`agent_${agent.id}_slack_bot_token`]: slackBotToken
                      }
                    });
-                   // Optionally re-boot agent to pick up token
+                   // Restart gateway to drop old Socket mode connections and apply new tokens
+                   await invoke("start_gateway");
                    await invoke("boot_sync_agents");
                 } catch (e) {
                    console.error(e);
@@ -814,7 +850,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         onSetup={async () => {
           try {
             const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-            const res: any = await invoke('start_google_oauth', { scopes: ['calendar'], readOnly: calendarMode === "read" });
+            const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['calendar'], readOnly: calendarMode === "read" });
             if (res && res.access_token) {
               await invoke('store_secret_cmd', { key: 'GCAL_ACCESS_TOKEN', value: res.access_token });
               checkDynamicStatuses();
@@ -1271,7 +1307,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                    if (c.id === 'calendar' || c.id === 'drive') {
                       try {
                          const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                         const res: any = await invoke('start_google_oauth', { scopes: [c.id], readOnly: false });
+                         const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: [c.id], readOnly: false });
                          if (res && res.access_token) {
                             await invoke('store_secret_cmd', { key: c.id === 'calendar' ? 'GCAL_ACCESS_TOKEN' : 'GDRIVE_ACCESS_TOKEN', value: res.access_token });
                             checkDynamicStatuses();
@@ -1285,12 +1321,12 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                       setActiveView("integrations");
                    }
                  } else {
-                   alert(`Setup for ${c.name} is coming soon!`);
+                   setDynamicSetupState(prev => ({ ...prev, [c.id]: !prev[c.id] }));
                  }
               }
             }}
           >
-            {dynamicSetupState[c.id] && (
+            {dynamicSetupState[c.id] && c.id !== 'twilio' && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
                   Enter {c.name} Personal Access Token
@@ -1328,6 +1364,58 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                     }}
                     disabled={dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id]}
                     style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id] ? 0.5 : 1 }}
+                  >
+                    {dynamicSetupLoading[c.id] ? "Saving..." : "Save"}
+                  </button>
+                  <button onClick={() => setDynamicSetupState(prev => ({ ...prev, [c.id]: false }))} style={{ padding: "6px 12px", background: "none", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-sub)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                </div>
+              </div>
+            )}
+            {dynamicSetupState[c.id] && c.id === 'twilio' && (
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>
+                  Configure Twilio Credentials
+                </div>
+                <input
+                  type="text"
+                  id={`twilio-sid-${c.id}`}
+                  placeholder="Account SID (e.g. AC123...)"
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
+                />
+                <PasswordInput
+                  id={`twilio-token-${c.id}`}
+                  placeholder="Auth Token"
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
+                />
+                <input
+                  type="text"
+                  id={`twilio-phone-${c.id}`}
+                  placeholder="Twilio Phone Number (e.g. +15551234567)"
+                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                  <button 
+                    onClick={async () => {
+                      const sid = (document.getElementById(`twilio-sid-${c.id}`) as HTMLInputElement)?.value;
+                      const token = (document.getElementById(`twilio-token-${c.id}`) as HTMLInputElement)?.value;
+                      const phone = (document.getElementById(`twilio-phone-${c.id}`) as HTMLInputElement)?.value;
+                      if (sid && token && phone) {
+                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
+                        try {
+                          const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                          await invoke("configure_twilio", { accountSid: sid, authToken: token, phoneNumber: phone });
+                          setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
+                          checkDynamicStatuses();
+                        } catch (e: any) {
+                          alert(`Failed to save Twilio credentials: ${e}`);
+                        }
+                        setDynamicSetupLoading(prev => ({ ...prev, [c.id]: false }));
+                      } else {
+                        alert("Please fill out all Twilio fields.");
+                      }
+                    }}
+                    disabled={dynamicSetupLoading[c.id]}
+                    style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: dynamicSetupLoading[c.id] ? 0.5 : 1 }}
                   >
                     {dynamicSetupLoading[c.id] ? "Saving..." : "Save"}
                   </button>

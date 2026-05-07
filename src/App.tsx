@@ -496,7 +496,7 @@ export function ProgressBar({ value, max = 1, color = "#3c6663", height = 4 }: {
 // All gateway-level service setup lives in the top-level Integrations tab.
 
 export const ServiceRow = ({
-  icon, name, subtitle, connected, gatewayLabel, enabled, onToggle, children, statusBadge, onSetup
+  icon, name, subtitle, connected, gatewayLabel, enabled, onToggle, children, statusBadge, onSetup, initialOpen = false
 }: {
   icon: React.ReactNode; name: string; subtitle: string;
   connected: boolean; gatewayLabel?: string;
@@ -504,9 +504,14 @@ export const ServiceRow = ({
   children?: React.ReactNode;
   statusBadge?: React.ReactNode;
   onSetup?: () => void;
+  initialOpen?: boolean;
 }) => {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initialOpen);
   const setActiveView = useWorldStore(s => s.setActiveView);
+  
+  React.useEffect(() => {
+    if (initialOpen) setOpen(true);
+  }, [initialOpen]);
   return (
     <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px" }}>

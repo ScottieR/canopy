@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useMemo } from "react";
+import React, { useEffect, useRef, useMemo, useState } from "react";
 import { useFrame } from "@react-three/fiber";
 import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
+import accessoriesData from "../../../../shared/accessories.json";
+import { AttachedAccessory } from "./AttachedAccessory";
 
 // Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous
 let globalAnimationStagger = 0;
@@ -11,6 +13,14 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
   const targetPos = useRef<THREE.Vector3>(new THREE.Vector3().fromArray(position as number[]));
+
+  // Tracks whether the lobster is currently lerping toward a navPoint.
+  // Drives auto-switching between the idle (breathe) and Walking clips when no
+  // forceAnimation is supplied. Gated by a ref so we only call setState on
+  // edge transitions, not every frame.
+  const [isMoving, setIsMoving] = useState(false);
+  const wasMovingRef = useRef(false);
+  const MOVE_THRESHOLD = 0.05;
 
   // Load the universal rigged body
   const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb");
@@ -67,35 +77,34 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
   useEffect(() => {
     if (names.length === 0) return;
 
-    // GLB EXPORT PATCH: Track renaming due to export (names got swapped)
-    const ANIMATION_MAP: Record<string, string> = {
-      "breathe": "Walking", // The 'Walking' animation is actually the breathe animation
-      "idle": "Walking",
-      "walk": "Long_Breathe_and_Look_Around", // The 'Long Breathe' is actually walking
-      "walking": "Long_Breathe_and_Look_Around",
-      "run": "Running",
-      "fast": "run_fast_8_inplace"
-    };
+    // The rig's clip names are taken at face value (admin uses them verbatim
+    // and animates correctly). A previous version had an ANIMATION_MAP that
+    // claimed 'Walking' was actually the breathe clip and vice versa — that
+    // map was stale from an earlier export and made every lobster walk in
+    // place when no forceAnimation was supplied. It's been removed.
+    const IDLE_CLIP = "Long_Breathe_and_Look_Around";
+    const WALK_CLIP = "Walking";
 
-    const idleAnim = names.find(n => n === "Walking") || names[0];
+    // Default behavior when no forceAnimation: idle when stationary, walk
+    // when lerping toward a navPoint. The cleanup at the end of this effect
+    // fades out the prior action, so flipping isMoving produces a crossfade.
+    const autoClip = isMoving ? WALK_CLIP : IDLE_CLIP;
+    let activeActionName: string | null =
+      names.find(n => n === autoClip) || names[0];
 
-    let activeActionName: string | null = idleAnim;
-
-    // Explicit override
     if (forceAnimation === "none") {
       activeActionName = null;
     } else if (forceAnimation) {
-      const normalized = forceAnimation.toLowerCase();
-      if (ANIMATION_MAP[normalized] && names.includes(ANIMATION_MAP[normalized])) {
-        activeActionName = ANIMATION_MAP[normalized];
-      } else if (names.includes(forceAnimation)) {
+      if (names.includes(forceAnimation)) {
         activeActionName = forceAnimation;
       } else {
+        // Last-ditch substring match for callers that pass partial names
+        const normalized = forceAnimation.toLowerCase();
         const fuzzy = names.find(n => n.toLowerCase().includes(normalized));
         if (fuzzy) activeActionName = fuzzy;
       }
     }
-    
+
     let action: THREE.AnimationAction | null = null;
     if (activeActionName) {
       action = actions[activeActionName] || null;
@@ -111,7 +120,7 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     }
 
     return () => { if (action) action.fadeOut(0.5); };
-  }, [isWorking, actions, names]);
+  }, [isWorking, actions, names, forceAnimation, isMoving]);
 
   useEffect(() => {
     // 1. Initial Spawn: Break the centering! Instantly snap them to a random valid location.
@@ -149,9 +158,15 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
     if (groupRef.current) {
       groupRef.current.position.lerp(targetPos.current, delta * 1.5);
 
-      // Orient them gracefully toward their target
+      // Orient them gracefully toward their target, and report movement state
+      // up to the animation effect via React state (gated to edge transitions).
       const dist = groupRef.current.position.distanceTo(targetPos.current);
-      if (dist > 0.05) {
+      const moving = dist > MOVE_THRESHOLD;
+      if (moving !== wasMovingRef.current) {
+        wasMovingRef.current = moving;
+        setIsMoving(moving);
+      }
+      if (moving) {
         const dir = targetPos.current.clone().sub(groupRef.current.position).normalize();
         const targetYRotation = Math.atan2(dir.x, dir.z);
 
@@ -185,18 +200,19 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
 
       {/* Dynamic Accessories System */}
       <React.Suspense fallback={null}>
-        {(accessories || []).map((path, i) => {
-           const is3D = path.includes("/models/assets/");
-           if (is3D) {
-             const glbPath = `http://localhost:3001${path.replace('.png', '.glb')}`;
-             return (
-               <group key={path} position={[1.0, 1.0, (i - ((accessories.length || 1) - 1) / 2) * 1.2]}>
-                 <SingleGLB url={glbPath} scale={0.5} />
-               </group>
-             );
-           }
-           return null;
-        })}
+        {(accessories || [])
+          .filter(path => {
+            const accInfo = (accessoriesData.items as any)[path];
+            return accInfo && (accInfo.type === 'accessory' || accInfo.type === 'both' || !accInfo.type);
+          })
+          .map((path) => (
+             <AttachedAccessory
+               key={path}
+               path={path}
+               accessoryData={accessoriesData}
+               clonedSceneRoot={clonedScene}
+             />
+        ))}
         {role && <DynamicAccessory role={role} />}
       </React.Suspense>
 
@@ -258,7 +274,7 @@ export function SingleGLB({ url, scale = 1 }: { url: string, scale?: number }) {
   );
 }
 
-function GLBModel({ url }: { url: string }) {
+export function GLBModel({ url }: { url: string }) {
   const { scene } = useGLTF(url);
 
   const clonedScene = React.useMemo(() => {
@@ -272,8 +288,9 @@ function GLBModel({ url }: { url: string }) {
     const size = new THREE.Vector3();
     box.getSize(size);
 
-    if (size.y > 0) {
-      const scaleFactor = 1.0 / size.y;
+    const maxDim = Math.max(size.x, size.y, size.z);
+    if (maxDim > 0) {
+      const scaleFactor = 1.0 / maxDim;
       clone.scale.setScalar(scaleFactor);
 
       // Recompute bounds after scale to anchor it properly

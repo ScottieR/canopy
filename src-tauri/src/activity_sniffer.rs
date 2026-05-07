@@ -88,11 +88,14 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
                                     tracing::warn!("Auto-pausing agent {} due to high-risk network egress: {}", agent.id, reason);
                                     let _ = db.set_agent_paused(&agent.id, true);
                                     
-                                    // Stop the container to enforce the pause immediately
                                     let _ = crate::openclaw::get_docker_command()
                                         .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "agents", "remove", &agent.id])
                                         .output()
                                         .await;
+                                        
+                                    // Stop the machine browser if running
+                                    let browser_manager = app_handle.state::<crate::browser_manager::BrowserManager>();
+                                    let _ = browser_manager.stop_browser(&agent.id).await;
                                 }
 
                                 // Emit event to frontend to show the red badge

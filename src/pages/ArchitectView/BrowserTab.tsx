@@ -5,6 +5,7 @@ import {
   Zap, Settings, Info, CheckCircle2, Activity
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { AgentData, useWorldStore, BrowserStatus } from "../../store/worldStore";
 import { glass, Toggle } from "../../App";
 
@@ -12,6 +13,7 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
   const updateAgentBrowserStatus = useWorldStore(s => s.updateAgentBrowserStatus);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [frameData, setFrameData] = useState<string | null>(null);
 
   const browserStatus = agent.browser_status;
   const isRunning = browserStatus?.is_running || false;
@@ -27,27 +29,34 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
 
   useEffect(() => {
     refreshStatus();
+    
+    let unlisten: () => void;
+    listen<any>("browser_stream_frame", (e) => {
+      if (e.payload.agent_id === agent.id) {
+        setFrameData(e.payload.frame);
+      }
+    }).then(f => {
+      unlisten = f;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
   }, [agent.id]);
 
-  const toggleBrowser = async () => {
-    setLoading(true);
-    setError(null);
+  const handleShowBrowser = async () => {
     try {
-      if (isRunning) {
-        await invoke("stop_machine_browser", { agentId: agent.id });
-        updateAgentBrowserStatus(agent.id, null);
-      } else {
-        const port = 9222 + (agent.id.split('').reduce((acc, c) => acc + c.charCodeAt(0), 0) % 100);
-        const status: BrowserStatus = await invoke("start_machine_browser", { 
-          agentId: agent.id, 
-          port 
-        });
-        updateAgentBrowserStatus(agent.id, status);
-      }
+      await invoke("show_browser", { agentId: agent.id });
     } catch (e) {
       setError(String(e));
-    } finally {
-      setLoading(false);
+    }
+  };
+
+  const handleHideBrowser = async () => {
+    try {
+      await invoke("hide_browser", { agentId: agent.id });
+    } catch (e) {
+      setError(String(e));
     }
   };
 
@@ -68,13 +77,26 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
             <div>
               <h2 style={{ fontSize: 18, fontWeight: 700, margin: 0, color: "var(--text-main)" }}>Machine Browser</h2>
               <p style={{ fontSize: 13, color: "var(--text-sub)", margin: "4px 0 0 0" }}>
-                Connect this agent to a real Chrome instance on your host machine.
+                Browser dynamically spawns off-screen only when the agent requests it.
               </p>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             {loading && <RefreshCw size={16} className="animate-spin" style={{ color: "var(--text-sub)" }} />}
-            <Toggle enabled={isRunning} onChange={toggleBrowser} />
+            {isRunning ? (
+              <>
+                <button onClick={handleShowBrowser} style={{ padding: "6px 12px", borderRadius: 8, background: "#3c6663", color: "white", border: "none", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+                  Bring to Front
+                </button>
+                <button onClick={handleHideBrowser} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--surface-base)", color: "var(--text-main)", border: "1px solid var(--border-subtle)", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+                  Hide Off-Screen
+                </button>
+              </>
+            ) : (
+              <span style={{ fontSize: 12, color: "var(--text-sub)", fontWeight: 600, padding: "6px 12px", background: "var(--surface-base)", borderRadius: 8 }}>
+                JIT Proxy Idle
+              </span>
+            )}
           </div>
         </div>
 
@@ -182,23 +204,39 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
         </div>
       </div>
 
-      {/* Placeholder for Live View */}
+      {/* Live View */}
       {isRunning && (
         <div style={{ 
-          background: "#000", borderRadius: 16, height: 240, 
+          background: "#000", borderRadius: 16, overflow: "hidden", 
           display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-          color: "white", gap: 12, border: "1px solid rgba(255,255,255,0.1)",
-          backgroundImage: "linear-gradient(45deg, #000 25%, #111 25%, #111 50%, #000 50%, #000 75%, #111 75%, #111 100%)",
-          backgroundSize: "20px 20px"
+          color: "white", border: "1px solid rgba(255,255,255,0.1)",
+          backgroundImage: frameData ? "none" : "linear-gradient(45deg, #000 25%, #111 25%, #111 50%, #000 50%, #000 75%, #111 75%, #111 100%)",
+          backgroundSize: "20px 20px",
+          position: "relative",
+          minHeight: 300,
         }}>
-          <Monitor size={32} opacity={0.5} />
-          <div style={{ fontSize: 14, fontWeight: 600 }}>Live View Running on Host</div>
-          <button style={{ 
-            padding: "8px 16px", background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
-            borderRadius: 8, color: "white", fontSize: 12, cursor: "pointer"
+          {frameData ? (
+            <img 
+              src={`data:image/jpeg;base64,${frameData}`} 
+              style={{ width: "100%", height: "auto", display: "block" }} 
+              alt="Live Browser View" 
+            />
+          ) : (
+            <>
+              <Monitor size={32} opacity={0.5} style={{ marginBottom: 12 }} />
+              <div style={{ fontSize: 14, fontWeight: 600 }}>Connecting to Host Browser...</div>
+            </>
+          )}
+          
+          <div style={{ 
+            position: "absolute", top: 12, right: 12, 
+            display: "flex", gap: 8, alignItems: "center" 
           }}>
-            Bring to Front
-          </button>
+            <div style={{ width: 8, height: 8, borderRadius: 4, background: frameData ? "#10b981" : "#f59e0b", boxShadow: "0 0 8px currentColor" }}></div>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", background: "rgba(0,0,0,0.6)", padding: "4px 8px", borderRadius: 6, backdropFilter: "blur(4px)" }}>
+              {frameData ? "LIVE" : "WAITING"}
+            </span>
+          </div>
         </div>
       )}
     </div>

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
-import { writeBinaryFile } from '@tauri-apps/plugin-fs';
+import { writeFile } from '@tauri-apps/plugin-fs';
 import { AlertTriangle, CheckCircle, ShieldAlert, X, Shield, FileText } from 'lucide-react';
 
 export function ExportInterceptModal() {
@@ -52,7 +52,7 @@ export function ExportInterceptModal() {
                     byteArray = encoder.encode(request.content);
                 }
 
-                await writeBinaryFile(filePath, byteArray);
+                await writeFile(filePath, byteArray);
                 await invoke('resolve_export_request', { requestId: request.request_id, approved: true });
             } else {
                 await invoke('resolve_export_request', { requestId: request.request_id, approved: false });
