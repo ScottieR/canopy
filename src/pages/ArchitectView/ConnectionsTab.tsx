@@ -212,13 +212,13 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
       .map(([k]) => k === "Gemini" ? "Google Gemini" : k);
 
     let match = null;
-    if (availableProviders.length > 0) {
+    if (availableProviders.length > 0 && brainModels && brainModels.length > 0) {
       const prov = availableProviders[0];
       const strategy = isHeavy ? "heavy" : "light";
       match = brainModels.find((m: any) => m.provider === prov && m.strategy === strategy)
            || brainModels.find((m: any) => m.provider === prov);
     }
-    if (!match) {
+    if (!match && brainModels && brainModels.length > 0) {
       match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
            || brainModels[0];
     }
@@ -267,7 +267,14 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
           agentId: agent.id,
           personality: { ...agent.personality, active_model: finalModel }
         });
-        await invoke("update_agent_model", { agentId: agent.id, model: finalModel });
+
+        // CRITICAL: Model format must be object { primary: "provider/model-id" }
+        // NOT a bare string. Bare string causes silent failure (agent never responds).
+        const modelConfig = typeof finalModel === 'string'
+          ? { primary: finalModel }
+          : finalModel;
+
+        await invoke("update_agent_model", { agentId: agent.id, model: modelConfig });
       }
       setLlmSaveStatus("success");
       setTimeout(() => setLlmSaveStatus("idle"), 2000);
@@ -449,11 +456,14 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
 
   useEffect(() => {
     if (allowlistsLoaded && agent.integrations.includes("slack") && allowedSlack.length === 0 && !isSlackPaired && !hasScrolledToSlack) {
-      setHasScrolledToSlack(true);
-      setTimeout(() => {
-        const el = document.getElementById("slack-pairing-section");
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 300); // Give accordion time to expand
+      if (sessionStorage.getItem("scrollToSlack") === "true") {
+        setHasScrolledToSlack(true);
+        sessionStorage.removeItem("scrollToSlack");
+        setTimeout(() => {
+          const el = document.getElementById("slack-pairing-section");
+          if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 300); // Give accordion time to expand
+      }
     }
   }, [allowlistsLoaded, agent.integrations, allowedSlack.length, isSlackPaired, hasScrolledToSlack]);
 
@@ -484,17 +494,17 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             >
               <option value="">Strategy: {defaultModelInfo.model}</option>
               <optgroup label="Anthropic">
-                {brainModels.filter((m: any) => m.provider === "Anthropic").map((m: any) => (
+                {(brainModels || []).filter((m: any) => m.provider === "Anthropic").map((m: any) => (
                   <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
                 ))}
               </optgroup>
               <optgroup label="OpenAI">
-                {brainModels.filter((m: any) => m.provider === "OpenAI").map((m: any) => (
+                {(brainModels || []).filter((m: any) => m.provider === "OpenAI").map((m: any) => (
                   <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
                 ))}
               </optgroup>
               <optgroup label="Google Gemini">
-                {brainModels.filter((m: any) => m.provider === "Google Gemini").map((m: any) => (
+                {(brainModels || []).filter((m: any) => m.provider === "Google Gemini").map((m: any) => (
                   <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
                 ))}
               </optgroup>
@@ -748,6 +758,19 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             >
               {slackPairingStatus === "loading" ? "Pairing…" : "Approve"}
             </button>
+            <button
+              onClick={async () => {
+                const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                await invoke("store_secret_cmd", { key: `agent_${agent.id}_slack_paired`, value: "true" });
+                setSlackPairingStatus("success");
+              }}
+              style={{
+                padding: "7px 16px", background: "transparent", color: "var(--text-sub)", border: "1px solid var(--border-subtle)",
+                borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >
+              Skip / Already Paired
+            </button>
             {slackPairingStatus === "success" && <span style={{ fontSize: 12, color: "#22c55e", fontWeight: 600 }}>✓ Paired</span>}
           </div>
           {slackPairingStatus === "error" && <div style={{ fontSize: 12, color: "#ef4444", marginTop: 6 }}>{slackPairingError}</div>}
@@ -994,7 +1017,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
       </div>
       
       {/* Web Credentials */}
-      {webCredentials.length > 0 && (
+      {webCredentials && webCredentials.length > 0 && (
         <ServiceRow
           icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>}
           name="Web Credentials"
@@ -1338,7 +1361,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                     placeholder="ghp_..."
                     style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
                   />
-                  <button 
+                  <button
                     onClick={async () => {
                       const val = dynamicSetupValue[c.id];
                       if (val) {
@@ -1347,12 +1370,20 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                           const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
                           if (c.id === 'github') {
                             await invoke("configure_github", { agentId: agent.id, personalAccessToken: val });
+                            // Auto-enable GitHub integration after successful configuration
+                            await toggleIntegration("github", true);
                           } else if (c.id === 'telegram') {
                             await invoke("configure_telegram", { botToken: val });
+                            // Auto-enable Telegram integration after successful configuration
+                            await toggleIntegration("telegram", true);
                           } else if (c.id === 'discord') {
                             await invoke("configure_discord", { botToken: val });
+                            // Auto-enable Discord integration after successful configuration
+                            await toggleIntegration("discord", true);
                           } else {
                             await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
+                            // Auto-enable integration after successful configuration
+                            await toggleIntegration(c.id, true);
                           }
                           setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
                           setDynamicSetupValue(prev => ({ ...prev, [c.id]: "" }));

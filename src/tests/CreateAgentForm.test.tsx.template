@@ -1,0 +1,302 @@
+// Template for CreateAgentForm tests
+// Copy to: src/components/forms/CreateAgentForm.test.tsx
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { CreateAgentForm } from './CreateAgentForm';
+
+describe('CreateAgentForm - Validation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('should show error when agent name is empty', async () => {
+    // PLAN:
+    // 1. Render form
+    // 2. Leave name field blank
+    // 3. Submit form
+    // 4. Expect error message: "Agent name is required"
+
+    render(<CreateAgentForm />);
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Agent name is required')).toBeInTheDocument();
+    });
+  });
+
+  it('should show error when emoji is empty', async () => {
+    // PLAN:
+    // 1. Render form
+    // 2. Fill name field
+    // 3. Leave emoji blank
+    // 4. Submit
+    // 5. Expect error: "Emoji is required"
+
+    render(<CreateAgentForm />);
+    await userEvent.type(screen.getByTestId('name-input'), 'Test Agent');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Emoji is required')).toBeInTheDocument();
+    });
+  });
+
+  it('should reject emoji longer than 2 characters', async () => {
+    // PLAN:
+    // 1. Render form
+    // 2. Fill name with valid input
+    // 3. Enter emoji with 3 characters: "😀😀😀"
+    // 4. Submit
+    // 5. Expect error: "Emoji must be 1-2 characters"
+
+    render(<CreateAgentForm />);
+    await userEvent.type(screen.getByTestId('name-input'), 'Test Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀😀😀');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Emoji must be/i)).toBeInTheDocument();
+    });
+  });
+
+  it('should reject invalid color format', async () => {
+    // PLAN:
+    // 1. Render form
+    // 2. Fill required fields
+    // 3. Enter invalid color: "red" (not hex)
+    // 4. Submit
+    // 5. Expect error: "Color must be #RRGGBB format"
+
+    render(<CreateAgentForm />);
+    await userEvent.type(screen.getByTestId('name-input'), 'Test Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+    await userEvent.type(screen.getByTestId('color-input'), 'red');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Color must be/i)).toBeInTheDocument();
+    });
+  });
+
+  it('should accept valid #RRGGBB color format', async () => {
+    // PLAN:
+    // 1. Render form
+    // 2. Fill all required fields with valid data
+    // 3. Enter color: "#34D399"
+    // 4. Submit
+    // 5. Should NOT show error
+
+    const handleSubmit = vi.fn();
+    render(<CreateAgentForm onSubmit={handleSubmit} />);
+
+    await userEvent.type(screen.getByTestId('name-input'), 'Test Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+    await userEvent.type(screen.getByTestId('color-input'), '#34D399');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(handleSubmit).toHaveBeenCalled();
+    });
+  });
+
+  it('should accept valid #RRGGBBAA color format (with alpha)', async () => {
+    // PLAN:
+    // 1. Similar to above but with 8-char hex: "#34D399FF"
+
+    const handleSubmit = vi.fn();
+    render(<CreateAgentForm onSubmit={handleSubmit} />);
+
+    await userEvent.type(screen.getByTestId('name-input'), 'Test Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+    await userEvent.type(screen.getByTestId('color-input'), '#34D399FF');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(handleSubmit).toHaveBeenCalled();
+    });
+  });
+
+  it('should reject color with invalid hex characters', async () => {
+    // PLAN:
+    // 1. Fill form with valid data
+    // 2. Enter invalid hex: "#GGGGGG" (G is not hex)
+    // 3. Submit
+    // 4. Expect validation error
+
+    render(<CreateAgentForm />);
+    await userEvent.type(screen.getByTestId('name-input'), 'Test Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+    await userEvent.type(screen.getByTestId('color-input'), '#GGGGGG');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/invalid hex/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe('CreateAgentForm - Submission', () => {
+  it('should call onSubmit with correct data', async () => {
+    // PLAN:
+    // 1. Create mock callback
+    // 2. Render form with callback
+    // 3. Fill all fields with valid data
+    // 4. Submit
+    // 5. Verify callback receives correct shape
+
+    const handleSubmit = vi.fn();
+    render(<CreateAgentForm onSubmit={handleSubmit} />);
+
+    await userEvent.type(screen.getByTestId('name-input'), 'My Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '🦞');
+    await userEvent.type(screen.getByTestId('role-select'), 'assistant');
+    await userEvent.type(screen.getByTestId('color-input'), '#34D399');
+
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(handleSubmit).toHaveBeenCalledWith({
+        name: 'My Agent',
+        emoji: '🦞',
+        role: 'assistant',
+        color: '#34D399',
+      });
+    });
+  });
+
+  it('should disable submit button while submitting', async () => {
+    // PLAN:
+    // 1. Mock onSubmit to return a delayed Promise
+    // 2. Fill and submit form
+    // 3. While promise pending, button should be disabled
+    // 4. After promise resolves, button enabled again
+
+    const handleSubmit = vi.fn(() => new Promise(r => setTimeout(r, 500)));
+    render(<CreateAgentForm onSubmit={handleSubmit} />);
+
+    await userEvent.type(screen.getByTestId('name-input'), 'Test');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+
+    const submitButton = screen.getByText('Create Agent');
+    expect(submitButton).not.toBeDisabled();
+
+    fireEvent.click(submitButton);
+
+    // Button should be disabled while submitting
+    expect(submitButton).toBeDisabled();
+
+    await waitFor(() => {
+      expect(submitButton).not.toBeDisabled();
+    });
+  });
+
+  it('should show success message on successful submission', async () => {
+    // PLAN:
+    // 1. Mock successful onSubmit
+    // 2. Fill and submit
+    // 3. Expect success message: "Agent created successfully"
+
+    const handleSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<CreateAgentForm onSubmit={handleSubmit} />);
+
+    await userEvent.type(screen.getByTestId('name-input'), 'Test Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/success/i)).toBeInTheDocument();
+    });
+  });
+
+  it('should show error message on submission failure', async () => {
+    // PLAN:
+    // 1. Mock onSubmit to reject with error
+    // 2. Fill and submit
+    // 3. Expect error message
+
+    const handleSubmit = vi.fn()
+      .mockRejectedValue(new Error('Network error'));
+    render(<CreateAgentForm onSubmit={handleSubmit} />);
+
+    await userEvent.type(screen.getByTestId('name-input'), 'Test');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Network error/i)).toBeInTheDocument();
+    });
+  });
+});
+
+describe('CreateAgentForm - Edge Cases', () => {
+  it('should accept agent name with spaces', async () => {
+    // PLAN:
+    // 1. Agent name: "My Test Agent" (with spaces)
+    // 2. Should be accepted
+    // 3. Submit should work
+
+    const handleSubmit = vi.fn();
+    render(<CreateAgentForm onSubmit={handleSubmit} />);
+
+    await userEvent.type(screen.getByTestId('name-input'), 'My Test Agent');
+    await userEvent.type(screen.getByTestId('emoji-input'), '😀');
+    fireEvent.click(screen.getByText('Create Agent'));
+
+    await waitFor(() => {
+      expect(handleSubmit).toHaveBeenCalled();
+    });
+  });
+
+  it('should reject agent name with maximum length exceeded', async () => {
+    // PLAN:
+    // 1. Agent name: 200+ characters
+    // 2. Should show error: "Name must be 1-200 characters"
+
+    render(<CreateAgentForm />);
+    const longName = 'A'.repeat(201);
+    await userEvent.type(screen.getByTestId('name-input'), longName);
+
+    await waitFor(() => {
+      expect(screen.getByText(/must be 1-200 characters/i)).toBeInTheDocument();
+    });
+  });
+
+  it('should auto-complete color field if selecting from palette', async () => {
+    // PLAN:
+    // 1. Render form
+    // 2. Click on color palette button
+    // 3. Select a predefined color
+    // 4. Verify color field auto-filled
+
+    render(<CreateAgentForm />);
+
+    // Click on a predefined color option (if available)
+    const colorOption = screen.getByTestId('color-option-teal');
+    fireEvent.click(colorOption);
+
+    expect(screen.getByTestId('color-input')).toHaveValue('#34D399');
+  });
+});
+
+// Summary of tests to implement:
+// Validation:
+// ✅ test_agent_name_empty
+// ✅ test_emoji_empty
+// ✅ test_emoji_too_long
+// ✅ test_color_invalid_format
+// ✅ test_color_valid_rrggbb
+// ✅ test_color_valid_rrggbbaa
+// ✅ test_color_invalid_hex_chars
+//
+// Submission:
+// ✅ test_submit_calls_callback_with_data
+// ✅ test_submit_button_disabled_while_submitting
+// ✅ test_success_message_shown
+// ✅ test_error_message_shown
+//
+// Edge Cases:
+// ✅ test_agent_name_with_spaces
+// ✅ test_agent_name_too_long
+// ✅ test_color_palette_auto_complete

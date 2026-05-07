@@ -48,6 +48,7 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
         linearColor.convertSRGBToLinear();
 
         clonedScene.traverse((node: any) => {
+          if (node.userData?.isAccessory) return;
           if (node.isMesh && node.material && !node.name.toLowerCase().includes("eye")) {
             if (Array.isArray(node.material)) {
               node.material.forEach((mat: any) => {
@@ -200,19 +201,17 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], scal
 
       {/* Dynamic Accessories System */}
       <React.Suspense fallback={null}>
-        {(accessories || [])
-          .filter(path => {
-            const accInfo = (accessoriesData.items as any)[path];
-            return accInfo && (accInfo.type === 'accessory' || accInfo.type === 'both' || !accInfo.type);
-          })
-          .map((path) => (
-             <AttachedAccessory
-               key={path}
-               path={path}
-               accessoryData={accessoriesData}
-               clonedSceneRoot={clonedScene}
-             />
-        ))}
+        {(accessories || []).map((acc, i) => {
+          const itemData = (accessoriesData as any)?.items?.[acc];
+          if (itemData?.type === 'decor') return null;
+          
+          return <AttachedAccessory 
+            key={`${acc}-${i}`} 
+            path={acc} 
+            accessoryData={accessoriesData} 
+            clonedSceneRoot={clonedScene} 
+          />;
+        })}
         {role && <DynamicAccessory role={role} />}
       </React.Suspense>
 

@@ -11,6 +11,7 @@ import { glass, Toggle } from "../../App";
 
 export function BrowserTab({ agent }: { agent: AgentData }) {
   const updateAgentBrowserStatus = useWorldStore(s => s.updateAgentBrowserStatus);
+  const togglePermission = useWorldStore(s => s.togglePermission);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [frameData, setFrameData] = useState<string | null>(null);
@@ -22,6 +23,14 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
     try {
       const status: BrowserStatus | null = await invoke("get_browser_status", { agentId: agent.id });
       updateAgentBrowserStatus(agent.id, status);
+
+      // Auto-enable browser permission when browser becomes running
+      if (status?.is_running) {
+        const browserPerm = agent.permissions.find(p => p.id === "browser");
+        if (browserPerm && !browserPerm.enabled) {
+          togglePermission(agent.id, "browser");
+        }
+      }
     } catch (e) {
       console.error("Failed to get browser status:", e);
     }

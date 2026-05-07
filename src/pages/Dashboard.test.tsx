@@ -36,9 +36,11 @@ describe('Dashboard', () => {
   });
 
   describe('rendering', () => {
-    it('should display loading state initially', () => {
+    it('should display loading state initially', async () => {
       render(<Dashboard />);
-      expect(screen.getByText('Loading agents...')).toBeDefined();
+      await waitFor(() => {
+        expect(screen.getByText('Loading agents...')).toBeDefined();
+      });
     });
 
     it('should display all agents after load', async () => {

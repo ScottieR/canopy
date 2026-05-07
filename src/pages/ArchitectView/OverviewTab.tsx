@@ -144,7 +144,10 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
               </div>
             </div>
             <button 
-              onClick={() => onNavigate && onNavigate("connections")} 
+              onClick={() => {
+                sessionStorage.setItem("scrollToSlack", "true");
+                if (onNavigate) onNavigate("connections");
+              }} 
               style={{ padding: "10px 16px", background: "#ECB22E", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", alignSelf: "center", whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(236, 178, 46, 0.3)" }}
             >
               Enter Pairing Code →
