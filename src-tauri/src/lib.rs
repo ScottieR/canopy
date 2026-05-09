@@ -1,5 +1,17 @@
 #![allow(unused)]
 
+// Central error type for consistent error handling across all modules
+pub mod errors;
+
+// Centralized input validation framework
+pub mod validators;
+
+// Application state for user context and authorization
+pub mod app_state;
+
+// Rate limiting for expensive operations
+pub mod rate_limiter;
+
 mod model_constants; // Single source of truth for model strings, ports, and path helpers
 mod docker;
 mod openclaw;
@@ -38,6 +50,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Initialize AppState with user context
+            let app_state = app_state::AppState::new();
+            tracing::info!("AppState initialized for user: {}", app_state.user_id);
+            handle.manage(app_state);
 
             // Initialize SQLite database
             match db::Database::init(&handle) {
