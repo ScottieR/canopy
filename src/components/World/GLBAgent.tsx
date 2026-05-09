@@ -29,7 +29,7 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
   const MOVE_THRESHOLD = 0.05;
 
   // Load the universal rigged body
-  const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb");
+  const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb?v=2");
 
   // Clone incredibly efficiently so each agent gets its own distinct animated skeleton and colored materials
   const clonedScene = useMemo(() => {
@@ -89,7 +89,7 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
     // claimed 'Walking' was actually the breathe clip and vice versa — that
     // map was stale from an earlier export and made every lobster walk in
     // place when no forceAnimation was supplied. It's been removed.
-    const IDLE_CLIP = "Long_Breathe_and_Look_Around";
+    const IDLE_CLIP = "Breathe";
     const WALK_CLIP = "Walking";
 
     // Default behavior when no forceAnimation: idle when stationary, walk
@@ -112,21 +112,28 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
       }
     }
 
-    let action: THREE.AnimationAction | null = null;
-    if (activeActionName) {
-      action = actions[activeActionName] || null;
-    }
+    console.log(`[GLBAgent] Animation Effect triggered. forceAnimation: ${forceAnimation}, activeActionName: ${activeActionName}, available: ${names.join(", ")}`);
+    const action = actions[activeActionName];
+
+    // Explicitly stop all other actions to prevent cross-contamination or stuck weights
+    Object.values(actions).forEach((a) => {
+      if (a && a !== action) {
+        a.stop();
+        a.setEffectiveWeight(0);
+      }
+    });
 
     if (action) {
       // Advance our global phase clock by 100ms for each spawned agent
       globalAnimationStagger += 1.1;
 
-      action.reset().fadeIn(0.5).play();
+      // Don't use fadeIn/fadeOut here as rapid React re-renders can cause weight interpolation bugs
+      action.reset().setEffectiveWeight(1).play();
       // To ensure perfectly dispersed desync, we assign the local playhead time directly rather than hitting the global mixer
       action.time = globalAnimationStagger % action.getClip().duration;
     }
 
-    return () => { if (action) action.fadeOut(0.5); };
+    return () => { if (action) action.stop(); };
   }, [isWorking, actions, names, forceAnimation, isMoving]);
 
   useEffect(() => {
@@ -146,8 +153,8 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
     let timeoutId: ReturnType<typeof setTimeout>;
 
     const scheduleNextMove = () => {
-      // Pick a random interval between 20 seconds and 60 seconds (1 minute)
-      const delay = 20000 + Math.random() * 40000;
+      // Pick a random interval between 3 seconds and 10 seconds
+      const delay = 3000 + Math.random() * 7000;
 
       timeoutId = setTimeout(() => {
         const newPoint = navPoints[Math.floor(Math.random() * navPoints.length)];
@@ -212,12 +219,12 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
           const itemData = (accessoriesData as any)?.items?.[acc];
           const behavior = accessoryBehaviors?.[acc] || itemData?.type || 'accessory';
           if (behavior === 'decor') return null;
-          
-          return <AttachedAccessory 
-            key={`${acc}-${i}`} 
-            path={acc} 
-            accessoryData={accessoriesData} 
-            clonedSceneRoot={clonedScene} 
+
+          return <AttachedAccessory
+            key={`${acc}-${i}`}
+            path={acc}
+            accessoryData={accessoriesData}
+            clonedSceneRoot={clonedScene}
           />;
         })}
         {role && <DynamicAccessory role={role} />}

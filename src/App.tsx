@@ -1,6 +1,6 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, OrthographicCamera, Billboard, Image } from "@react-three/drei";
+import { OrbitControls, OrthographicCamera, Billboard, Image, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
@@ -424,10 +424,9 @@ export function CanopyScene({
   };
 
   return (<>
-    {/* Soft, balanced lighting so we don't blow out or over-expose the pastel colors! */}
-    <ambientLight intensity={0.7} color="#FFFFFF" />
-    <directionalLight position={[8, 12, 4]} intensity={0.4} color="#FFFFFF" />
-    <directionalLight position={[-4, 8, -4]} intensity={0.2} color="#E8F0F8" />
+    <Environment preset="city" />
+    <ambientLight intensity={0.5} />
+    <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
 
     {/* Removed Water and SkyGradient to eliminate any transparent 'overlay' planes or murky backgrounds */}
     <FloatingMotes count={25} />
