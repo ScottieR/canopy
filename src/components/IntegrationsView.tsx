@@ -467,7 +467,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
             />
 
             {/* Dynamic Global Connectors from Admin */}
-            {connectors.filter(c => c.isVisible && c.isGlobal && !c.isPlugin && !['slack', 'gmail', 'imessage', 'filesystem', 'telegram', 'discord', 'github'].includes(c.id)).map(c => {
+            {connectors.filter(c => c.isVisible && c.isGlobal && !c.isPlugin && !['slack', 'gmail', 'calendar', 'imessage', 'filesystem', 'telegram', 'discord', 'github'].includes(c.id)).map(c => {
               let IconComponent: any = Link;
               if (c.icon === 'calendar') IconComponent = Calendar;
               if (c.icon === 'hard-drive') IconComponent = HardDrive;

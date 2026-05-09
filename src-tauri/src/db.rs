@@ -522,6 +522,65 @@ impl Database {
         Ok(())
     }
 
+    // ─── Authorization & Permission Checks ──────────────────────────────────
+
+    /// Check if a user owns an agent
+    /// For now, returns true if agent exists (single-user mode)
+    /// TODO: Implement multi-user support with user_id foreign key in agents table
+    pub fn is_agent_owner(&self, agent_id: &str, _user_id: &str) -> SqlResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let exists: bool = conn.query_row(
+            "SELECT 1 FROM agents WHERE id = ?1 LIMIT 1",
+            params![agent_id],
+            |_| Ok(true),
+        ).optional()?
+            .unwrap_or(false);
+
+        Ok(exists)
+    }
+
+    /// Check if a user owns a budget
+    /// For now, returns true if budget exists for the agent
+    pub fn is_budget_owner(&self, agent_id: &str, _user_id: &str) -> SqlResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let exists: bool = conn.query_row(
+            "SELECT 1 FROM budgets WHERE agent_id = ?1 LIMIT 1",
+            params![agent_id],
+            |_| Ok(true),
+        ).optional()?
+            .unwrap_or(false);
+
+        Ok(exists)
+    }
+
+    /// Check if a user owns a conversation
+    /// For now, returns true if conversation exists for the agent
+    pub fn is_conversation_owner(&self, conversation_id: &str, _user_id: &str) -> SqlResult<bool> {
+        let conn = self.conn.lock().unwrap();
+
+        let exists: bool = conn.query_row(
+            "SELECT 1 FROM conversations WHERE id = ?1 LIMIT 1",
+            params![conversation_id],
+            |_| Ok(true),
+        ).optional()?
+            .unwrap_or(false);
+
+        Ok(exists)
+    }
+
+    /// Check if a user has permission to modify an agent
+    /// Combines existence check with future permission system
+    pub fn can_modify_agent(&self, agent_id: &str, user_id: &str) -> SqlResult<bool> {
+        self.is_agent_owner(agent_id, user_id)
+    }
+
+    /// Check if a user has permission to delete an agent
+    pub fn can_delete_agent(&self, agent_id: &str, user_id: &str) -> SqlResult<bool> {
+        self.is_agent_owner(agent_id, user_id)
+    }
+
     // ─── Conversation & Message Operations ──────────────────────────────────
 
     /// Get or create a conversation for an agent

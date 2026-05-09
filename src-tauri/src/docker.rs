@@ -494,6 +494,7 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     // event (observed: both register at the exact same moment after Bonjour announces).
     // Disabling browser leaves ACPX stuck waiting for that trigger indefinitely.
     cfg["plugins"]["entries"]["browser"]["enabled"]       = serde_json::json!(true);
+    cfg["browser"]["noSandbox"]                           = serde_json::json!(true);
     // The three below spawn per-agent sidecar processes (iMessage relay, Bluetooth
     // device pairing, audio codec workers) that OOM the container in Docker's bridge
     // network. Disable them until those features are explicitly activated by the user.

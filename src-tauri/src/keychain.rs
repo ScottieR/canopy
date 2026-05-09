@@ -1,5 +1,6 @@
 use keyring::Entry;
 use std::collections::HashMap;
+use crate::errors::{CanopyError, Result};
 
 const SERVICE_NAME: &str = "com.canopy.app";
 const VAULT_KEY: &str = "canopy_vault_v2";
@@ -19,15 +20,24 @@ fn get_vault() -> HashMap<String, String> {
     }
 }
 
-fn save_vault(vault: &HashMap<String, String>) -> Result<(), String> {
-    let entry = Entry::new(SERVICE_NAME, VAULT_KEY).map_err(|e| e.to_string())?;
-    let json_str = serde_json::to_string(vault).map_err(|e| e.to_string())?;
-    entry.set_password(&json_str).map_err(|e| e.to_string())?;
+fn save_vault(vault: &HashMap<String, String>) -> Result<()> {
+    let entry = Entry::new(SERVICE_NAME, VAULT_KEY)
+        .map_err(|e| CanopyError::Keychain(e.to_string()))?;
+    let json_str = serde_json::to_string(vault)?;
+    entry.set_password(&json_str)
+        .map_err(|e| CanopyError::Keychain(e.to_string()))?;
     Ok(())
 }
 
 /// Internal helper: store a secret (callable from other Rust modules)
-pub fn store_secret(key: &str, value: &str) -> Result<(), String> {
+pub fn store_secret(key: &str, value: &str) -> Result<()> {
+    if key.is_empty() {
+        return Err(CanopyError::Validation("Secret key cannot be empty".into()));
+    }
+    if value.is_empty() {
+        return Err(CanopyError::Validation("Secret value cannot be empty".into()));
+    }
+
     let mut vault = get_vault();
     vault.insert(key.to_string(), value.to_string());
     save_vault(&vault)?;
@@ -36,13 +46,23 @@ pub fn store_secret(key: &str, value: &str) -> Result<(), String> {
 }
 
 /// Internal helper: get a secret (callable from other Rust modules)
-pub fn get_secret(key: &str) -> Result<String, String> {
+pub fn get_secret(key: &str) -> Result<String> {
+    if key.is_empty() {
+        return Err(CanopyError::Validation("Secret key cannot be empty".into()));
+    }
+
     let vault = get_vault();
-    vault.get(key).cloned().ok_or_else(|| format!("Secret '{}' not found: {}", key, key))
+    vault.get(key)
+        .cloned()
+        .ok_or_else(|| CanopyError::NotFound(format!("Secret '{}' not found", key)))
 }
 
 /// Internal helper: delete a secret (callable from other Rust modules)
-pub fn delete_secret_internal(key: &str) -> Result<(), String> {
+pub fn delete_secret_internal(key: &str) -> Result<()> {
+    if key.is_empty() {
+        return Err(CanopyError::Validation("Secret key cannot be empty".into()));
+    }
+
     let mut vault = get_vault();
     if vault.remove(key).is_some() {
         save_vault(&vault)?;
@@ -52,46 +72,58 @@ pub fn delete_secret_internal(key: &str) -> Result<(), String> {
 }
 
 /// Helper: Get an agent's API key with fallback to the global provider key
-pub fn get_agent_api_key(agent_id: &str, provider_id: &str) -> Result<String, String> {
+pub fn get_agent_api_key(agent_id: &str, provider_id: &str) -> Result<String> {
     // 1. Check agent-specific override
     let agent_key = format!("agent_{}_api_key", agent_id);
     if let Ok(key) = get_secret(&agent_key) {
         return Ok(key);
     }
-    
+
     // 2. Fall back to global provider key
     let global_key = format!("{}_API_KEY", provider_id.to_uppercase());
     if let Ok(key) = get_secret(&global_key) {
         return Ok(key);
     }
-    
-    Err(format!("No API key found for agent {} or provider {}", agent_id, provider_id))
+
+    Err(CanopyError::NotFound(
+        format!("No API key found for agent {} or provider {}", agent_id, provider_id)
+    ))
 }
 
 // ─── Tauri Commands (take owned Strings for IPC deserialization) ────────────
 
 #[tauri::command]
-pub fn store_secret_cmd(key: String, value: String) -> Result<(), String> {
+pub fn store_secret_cmd(key: String, value: String) -> Result<()> {
     store_secret(&key, &value)
 }
 
 #[tauri::command]
-pub fn store_batch_secrets_cmd(secrets: std::collections::HashMap<String, String>) -> Result<(), String> {
+pub fn store_batch_secrets_cmd(secrets: std::collections::HashMap<String, String>) -> Result<()> {
+    if secrets.is_empty() {
+        return Err(CanopyError::Validation("No secrets provided".into()));
+    }
+
     let mut vault = get_vault();
     for (key, value) in secrets {
+        if key.is_empty() || value.is_empty() {
+            return Err(CanopyError::Validation(
+                "Secret key and value cannot be empty".into()
+            ));
+        }
         vault.insert(key, value);
     }
     save_vault(&vault)?;
+    tracing::info!("Stored batch of {} secrets", vault.len());
     Ok(())
 }
 
 #[tauri::command]
-pub fn get_secret_cmd(key: String) -> Result<String, String> {
+pub fn get_secret_cmd(key: String) -> Result<String> {
     get_secret(&key)
 }
 
 #[tauri::command]
-pub fn delete_secret_cmd(key: String) -> Result<(), String> {
+pub fn delete_secret_cmd(key: String) -> Result<()> {
     delete_secret_internal(&key)
 }
 
@@ -101,7 +133,7 @@ pub fn has_auto_discovered() -> bool {
 }
 
 /// Mark auto-discovery as completed to prevent repeated scanning
-pub fn mark_auto_discovery_complete() -> Result<(), String> {
+pub fn mark_auto_discovery_complete() -> Result<()> {
     store_secret("_auto_discovery_completed", "true")
 }
 
@@ -112,7 +144,7 @@ pub fn mark_auto_discovery_complete() -> Result<(), String> {
 /// once during initial setup, and users should be explicitly informed that
 /// plaintext keys will be read from their config files.
 #[tauri::command]
-pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, String>, String> {
+pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, String>> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
 
@@ -120,7 +152,8 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
     tracing::warn!("AUTO-DISCOVERY: Scanning shell config files for plaintext API keys. This is a one-time setup operation.");
 
     let mut discovered = std::collections::HashMap::new();
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let home = dirs::home_dir()
+        .ok_or(CanopyError::Configuration("Could not find home directory".into()))?;
 
     let paths_to_check = vec![
         home.join(".zshrc"),
@@ -192,11 +225,12 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
 /// This function safely removes API key definitions from .bashrc, .bash_profile,
 /// .zshrc, and .env files. It performs a simple pattern match to find and remove
 /// lines containing the key definition.
-pub fn cleanup_plaintext_keys(keys_to_remove: Vec<String>) -> Result<Vec<String>, String> {
+pub fn cleanup_plaintext_keys(keys_to_remove: Vec<String>) -> Result<Vec<String>> {
     use std::fs::{File, OpenOptions};
     use std::io::{BufRead, BufReader, Write};
 
-    let home = dirs::home_dir().ok_or("Could not find home directory")?;
+    let home = dirs::home_dir()
+        .ok_or(CanopyError::Configuration("Could not find home directory".into()))?;
     let mut removed_files = Vec::new();
 
     let paths_to_check = vec![
@@ -212,9 +246,12 @@ pub fn cleanup_plaintext_keys(keys_to_remove: Vec<String>) -> Result<Vec<String>
         }
 
         // Read the file
-        let file = File::open(&path).map_err(|e| e.to_string())?;
+        let file = File::open(&path)
+            .map_err(|e| CanopyError::FileIO(e.to_string()))?;
         let reader = BufReader::new(file);
-        let mut lines: Vec<String> = reader.lines().collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+        let mut lines: Vec<String> = reader.lines()
+            .collect::<std::io::Result<_>>()
+            .map_err(|e| CanopyError::FileIO(e.to_string()))?;
         let original_len = lines.len();
 
         // Filter out lines containing the keys to remove
@@ -240,10 +277,11 @@ pub fn cleanup_plaintext_keys(keys_to_remove: Vec<String>) -> Result<Vec<String>
                 .write(true)
                 .truncate(true)
                 .open(&path)
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| CanopyError::FileIO(e.to_string()))?;
 
             for line in lines {
-                writeln!(file, "{}", line).map_err(|e| e.to_string())?;
+                writeln!(file, "{}", line)
+                    .map_err(|e| CanopyError::FileIO(e.to_string()))?;
             }
 
             removed_files.push(path.to_string_lossy().to_string());
@@ -258,7 +296,7 @@ pub fn cleanup_plaintext_keys(keys_to_remove: Vec<String>) -> Result<Vec<String>
 }
 
 #[tauri::command]
-pub fn get_web_credentials_cmd() -> Result<Vec<serde_json::Value>, String> {
+pub fn get_web_credentials_cmd() -> Result<Vec<serde_json::Value>> {
     let vault = get_vault();
     let mut creds = Vec::new();
     for (key, _val) in vault {

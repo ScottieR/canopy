@@ -6,10 +6,12 @@ use crate::model_constants::{
     agent_soul_path,
 };
 use crate::models::{Agent, AgentPersonality, AgentCapabilities, AgentStats, AgentStatus, DiscoveredAgent};
+use crate::errors::{CanopyError, Result as CanopyResult};
+use crate::app_state::AppState;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Emitter;
+use tauri::{Emitter, State};
 
 /// Returns the current list of available models for the frontend model picker.
 ///
@@ -896,9 +898,25 @@ pub async fn set_agent_paused(
 
 #[tauri::command]
 pub async fn delete_agent(
-    db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
-) -> Result<(), String> {
+    state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
+) -> CanopyResult<()> {
+    // ─── VALIDATION ───────────────────────────────────────────
+    crate::validators::agent::validate_id(&agent_id)?;
+
+    // ─── AUTHORIZATION ───────────────────────────────────────────
+    if !db.is_agent_owner(&agent_id, &state.user_id)? {
+        tracing::warn!(
+            "Unauthorized delete attempt: user {} tried to delete agent {}",
+            state.user_id,
+            agent_id
+        );
+        return Err(CanopyError::Unauthorized(
+            format!("You don't have permission to delete agent '{}'", agent_id)
+        ));
+    }
+
     // Step 1: Remove from OpenClaw container
     let node_script = r#"
         const fs = require('fs');
@@ -939,15 +957,14 @@ pub async fn delete_agent(
         ])
         .output()
         .await
-        .map_err(|e| format!("Failed to delete agent from container: {}", e))?;
+        .map_err(|e| CanopyError::Docker(format!("Failed to delete agent from container: {}", e)))?;
 
     if !output.status.success() {
-        return Err("Failed to delete agent from OpenClaw".to_string());
+        return Err(CanopyError::Docker("Failed to delete agent from OpenClaw".to_string()));
     }
 
     // Step 2: Remove from persistent store
-    db.delete_agent(&agent_id)
-        .map_err(|e| format!("Failed to delete agent from DB: {}", e))?;
+    db.delete_agent(&agent_id)?;
 
     // Step 3: Log audit event
     let _ = db.log_audit(&agent_id, "delete", Some("openclaw"), "Agent deleted", None);
@@ -972,6 +989,13 @@ pub async fn delete_agent(
     }
 
     // TODO: If isolated, tear down container
+
+    // ─── AUDIT LOGGING ───────────────────────────────────────────
+    tracing::info!(
+        "User {} successfully deleted agent {}",
+        state.user_id,
+        agent_id
+    );
 
     Ok(())
 }
@@ -1107,11 +1131,54 @@ pub async fn send_message_internal(
 
 #[tauri::command]
 pub async fn send_message(
-    db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     message: String,
-) -> Result<Value, String> {
-    send_message_internal(&*db, &agent_id, &message).await
+    state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
+) -> CanopyResult<Value> {
+    // ─── VALIDATION ───────────────────────────────────────────
+    crate::validators::agent::validate_id(&agent_id)?;
+    if message.is_empty() {
+        return Err(CanopyError::Validation("Message cannot be empty".into()));
+    }
+    if message.len() > 4096 {
+        return Err(CanopyError::Validation("Message exceeds 4096 character limit".into()));
+    }
+
+    // ─── AUTHORIZATION ───────────────────────────────────────────
+    if !db.is_agent_owner(&agent_id, &state.user_id)? {
+        tracing::warn!(
+            "Unauthorized send_message attempt: user {} tried to message agent {}",
+            state.user_id,
+            agent_id
+        );
+        return Err(CanopyError::Unauthorized(
+            "You don't have permission to message this agent".into()
+        ));
+    }
+
+    // ─── RATE LIMITING ───────────────────────────────────────────
+    // Limit to 10 messages/second per agent to prevent spam/DoS
+    crate::rate_limiter::limiters::AGENT_COMMAND_LIMITER.check(&agent_id)?;
+    let remaining = crate::rate_limiter::limiters::AGENT_COMMAND_LIMITER.remaining(&agent_id);
+    tracing::debug!(
+        "send_message: {} remaining for agent {}",
+        remaining,
+        agent_id
+    );
+
+    // ─── SEND MESSAGE ───────────────────────────────────────────
+    let result = send_message_internal(&*db, &agent_id, &message).await?;
+
+    // ─── AUDIT LOGGING ───────────────────────────────────────────
+    tracing::info!(
+        "User {} sent message to agent {} ({}  chars)",
+        state.user_id,
+        agent_id,
+        message.len()
+    );
+
+    Ok(result)
 }
 
 #[tauri::command]

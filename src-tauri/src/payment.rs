@@ -1,4 +1,5 @@
 use crate::models::{AgentBudget, PurchaseDecision, PurchaseRecord, PurchaseRequest};
+use crate::errors::{CanopyError, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
@@ -18,7 +19,7 @@ use reqwest::Client;
 pub fn evaluate_purchase(
     request: PurchaseRequest,
     budget: AgentBudget,
-) -> Result<PurchaseDecision, String> {
+) -> Result<PurchaseDecision> {
     // ── Gate 0: Are payments even enabled for this agent? ──
     if !budget.payments_enabled {
         return Ok(PurchaseDecision::Denied {
@@ -98,9 +99,11 @@ pub fn evaluate_purchase(
 pub fn get_agent_budget(
     agent_id: String,
     state: tauri::State<'_, crate::db::Database>,
-) -> Result<AgentBudget, String> {
-    let mut config = state.get_budget(&agent_id)
-        .map_err(|e| e.to_string())?
+) -> Result<AgentBudget> {
+    // Validate agent ID
+    crate::validators::agent::validate_id(&agent_id)?;
+
+    let mut config = state.get_budget(&agent_id)?
         .unwrap_or_else(|| AgentBudget {
             agent_id: agent_id.clone(),
             payments_enabled: false,
@@ -122,8 +125,20 @@ pub fn get_agent_budget(
 pub fn update_agent_budget(
     budget: AgentBudget,
     state: tauri::State<'_, crate::db::Database>,
-) -> Result<AgentBudget, String> {
-    state.upsert_budget(&budget).map_err(|e| e.to_string())?;
+) -> Result<AgentBudget> {
+    // Validate agent ID and budget amounts
+    crate::validators::agent::validate_id(&budget.agent_id)?;
+    crate::validators::budget::validate_amount(budget.auto_approve_threshold_cents as i64)?;
+    crate::validators::budget::validate_daily_limit(
+        budget.daily_limit_cents as i64,
+        Some(budget.monthly_limit_cents as i64),
+    )?;
+    crate::validators::budget::validate_monthly_limit(
+        budget.monthly_limit_cents as i64,
+        Some(budget.daily_limit_cents as i64),
+    )?;
+
+    state.upsert_budget(&budget)?;
     Ok(budget)
 }
 
@@ -131,8 +146,13 @@ pub fn update_agent_budget(
 pub fn get_purchase_history(
     agent_id: String,
     state: tauri::State<'_, crate::db::Database>,
-) -> Result<Vec<PurchaseRecord>, String> {
-    state.get_purchase_history(&agent_id, 50).map_err(|e| e.to_string())
+) -> Result<Vec<PurchaseRecord>> {
+    // Validate agent ID
+    crate::validators::agent::validate_id(&agent_id)?;
+
+    // Get purchase history - database errors convert automatically via ? operator
+    let history = state.get_purchase_history(&agent_id, 50)?;
+    Ok(history)
 }
 
 // ─── Virtual Card Integration (Privacy.com) ────────
@@ -157,7 +177,12 @@ pub async fn issue_virtual_card(
     agent_id: String,
     amount_cents: u64,
     category: String,
-) -> Result<String, String> {
+) -> Result<String> {
+    // Validate inputs
+    crate::validators::agent::validate_id(&agent_id)?;
+    crate::validators::budget::validate_amount(amount_cents as i64)?;
+    crate::validators::budget::validate_category(&category)?;
+
     // SECURITY: Fetch PRIVACY_API_KEY from Keychain (secure storage)
     // Environment variable is only a fallback for development/testing
     let privacy_key = crate::keychain::get_secret("PRIVACY_API_KEY")
@@ -168,20 +193,19 @@ pub async fn issue_virtual_card(
             if env_result.is_ok() {
                 tracing::warn!("PRIVACY_API_KEY read from environment variable - consider migrating to keychain for better security");
             }
-            env_result
-        })
-        .unwrap_or_default();
+            env_result.map_err(|_| CanopyError::Configuration("PRIVACY_API_KEY not found in keychain or environment".into()))
+        })?;
 
     if privacy_key.is_empty() {
-        return Err("PRIVACY_API_KEY is not configured in the vault. Virtual card issuance aborted.".into());
+        return Err(CanopyError::Configuration("PRIVACY_API_KEY is empty".into()));
     }
 
     let client = Client::new();
-    
+
     // Construct Privacy.com payload
     // We lock the card strictly to the requested limit + 10% buffer for taxes/auth holds
     let buffer_amount = amount_cents + (amount_cents / 10);
-    
+
     let payload = PrivacyCreateCardRequest {
         card_type: "SINGLE_USE".to_string(),
         amount: buffer_amount as u32,
@@ -195,21 +219,22 @@ pub async fn issue_virtual_card(
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("Privacy.com API connection failed: {}", e))?;
+        .map_err(|e| CanopyError::Request(format!("Privacy.com API connection failed: {}", e)))?;
 
     if !response.status().is_success() {
         let err_text = response.text().await.unwrap_or_default();
-        return Err(format!("Privacy.com rejected request: {}", err_text));
+        return Err(CanopyError::Request(format!("Privacy.com rejected request: {}", err_text)));
     }
 
     let card_data: PrivacyCardResponse = response
         .json()
         .await
-        .map_err(|e| format!("Failed to parse Privacy.com response: {}", e))?;
+        .map_err(|e| CanopyError::Serialization(format!("Failed to parse Privacy.com response: {}", e)))?;
 
     let last4 = card_data.last_four.or(card_data.pan).unwrap_or_else(|| "****".to_string());
 
     // We successfully minted a burner card
+    tracing::info!("Virtual card issued for agent {} (category: {})", agent_id, category);
     Ok(format!("Successfully provisioned virtual card ending in {}. It is locked to ${:.2}.", last4, buffer_amount as f64 / 100.0))
 }
 
