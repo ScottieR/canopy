@@ -168,6 +168,10 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                       );
                     }
 
+                    const totalDecor = stagedVisuals?.decor?.length || 1;
+                    const angle = (i * Math.PI * 2) / Math.max(1, totalDecor);
+                    const radius = 3.5;
+
                     return (
                       <SafeBillboard
                         key={path}
@@ -336,7 +340,8 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoin
     if (target && transform) {
       target.position.set(transform.x || 0, transform.y || 0, transform.z || 0);
       target.rotation.set(transform.rotationX || 0, transform.rotationY || 0, transform.rotationZ || 0);
-      const s = transform.scale || 0.5;
+      // Multiply by 0.01 because the canonical scale format is a percentage (e.g. 75 = 0.75 world units)
+      const s = (transform.scale !== undefined ? transform.scale : 75) * 0.01;
       target.scale.set(s, s, s);
     } else if (target && !transform) {
       // Snap to a valid decor point if available
@@ -349,7 +354,7 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoin
         target.position.set((Math.sin(seed * 1.1) * 3), 0, (Math.cos(seed * 1.3) * 3));
         target.rotation.set(0, Math.sin(seed) * Math.PI, 0);
       }
-      target.scale.set(0.5, 0.5, 0.5);
+      target.scale.set(0.75, 0.75, 0.75);
     }
   }, [target, transform, decorPoints, index, path]);
 
@@ -377,7 +382,7 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoin
                 rotationX: target.rotation.x,
                 rotationY: target.rotation.y,
                 rotationZ: target.rotation.z,
-                scale: target.scale.x
+                scale: target.scale.x * 100
               });
             }
           }}

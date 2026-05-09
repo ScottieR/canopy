@@ -4,12 +4,12 @@ import { createPortal } from '@react-three/fiber';
 import * as THREE from 'three';
 import { SkeletonUtils } from 'three-stdlib';
 
-export function AttachedAccessory({ 
-  path, 
-  accessoryData, 
+export function AttachedAccessory({
+  path,
+  accessoryData,
   clonedSceneRoot,
   transformRef
-}: { 
+}: {
   path: string;
   accessoryData: any;
   clonedSceneRoot: THREE.Object3D;
@@ -17,7 +17,7 @@ export function AttachedAccessory({
 }) {
   const glbPath = path.replace('.png', '.glb');
   const { scene } = useGLTF(glbPath.startsWith('http') ? glbPath : `http://localhost:3001${glbPath.startsWith('/') ? '' : '/'}${glbPath}`);
-  
+
   const clonedAcc = useMemo(() => {
     const clone = SkeletonUtils.clone(scene);
     clone.traverse(node => { node.userData = { ...node.userData, isAccessory: true }; });
@@ -40,7 +40,7 @@ export function AttachedAccessory({
     }
     return clone;
   }, [scene]);
-  
+
   const itemData = accessoryData?.items?.[path];
   if (!itemData) return null;
 
@@ -54,7 +54,7 @@ export function AttachedAccessory({
   // accessory to render in a wildly different place/orientation/scale.
 
   const [targetBone, setTargetBone] = useState<THREE.Object3D | null>(null);
-  
+
   useEffect(() => {
     let found: THREE.Object3D | null = null;
     clonedSceneRoot.traverse((node: any) => {
@@ -64,9 +64,9 @@ export function AttachedAccessory({
       const normalizedNodeName = node.name.toLowerCase().replace(/[._-]/g, '');
       if (node.isBone) {
         if (normalizedNodeName === b) {
-           found = node;
+          found = node;
         } else if (!found && normalizedNodeName.includes(b)) {
-           found = node;
+          found = node;
         }
       }
     });
@@ -75,12 +75,12 @@ export function AttachedAccessory({
 
   if (!targetBone) return null;
 
-  const offset = itemData.offset || [0,0,0];
-  const rotation = itemData.rotation || [0,0,0];
+  const offset = itemData.offset || [0, 0, 0];
+  const rotation = itemData.rotation || [0, 0, 0];
   const scale = itemData.scale || 1;
 
   return createPortal(
-    <group scale={boneName === 'Hand_L' ? [-1, 1, 1] : [1, 1, 1]}>
+    <group>
       <group position={offset as any} rotation={rotation as any} scale={[scale, scale, scale]} ref={transformRef}>
         <primitive object={clonedAcc} />
       </group>
