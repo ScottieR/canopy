@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { 
-  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+import {
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown
 } from "lucide-react";
@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Environment } from "@react-three/drei";
 import { Edit2 } from "lucide-react";
 import { LobsterIcon } from "../../App";
 import { GLBAgent } from "../../components/World/GLBAgent";
@@ -20,12 +20,12 @@ import { Toggle, ServiceRow, glass } from "../../App";
 
 export // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpdate?: () => void; onNavigate?: (tab: string) => void }) {
+  function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpdate?: () => void; onNavigate?: (tab: string) => void }) {
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [repairLog, setRepairLog] = useState<string | null>(null);
   const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);
   const [hardResetting, setHardResetting] = useState(false);
-  
+
   const [isEditingDetails, setIsEditingDetails] = useState(false);
   const [tempName, setTempName] = useState(agent.name);
   const [tempRole, setTempRole] = useState(agent.role);
@@ -61,7 +61,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
     setIsEditingDetails(false);
     setTempName(agent.name);
     setTempRole(agent.role);
-    
+
     // Fetch recent audit logs (which now includes chats)
     const fetchLogs = async () => {
       try {
@@ -127,7 +127,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
         <div style={{ background: "rgba(236, 178, 46, 0.1)", border: "1px solid rgba(236, 178, 46, 0.3)", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#ECB22E", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#fff"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#fff"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#fff"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#fff"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#fff"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#fff"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#fff"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#fff"/></svg>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#fff" /><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#fff" /><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#fff" /><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#fff" /><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#fff" /><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#fff" /><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#fff" /><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#fff" /></svg>
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 16, fontWeight: 700, color: "#9A6B00", marginBottom: 4 }}>Slack Pairing Required</div>
@@ -143,11 +143,11 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
                 </ol>
               </div>
             </div>
-            <button 
+            <button
               onClick={() => {
                 sessionStorage.setItem("scrollToSlack", "true");
                 if (onNavigate) onNavigate("connections");
-              }} 
+              }}
               style={{ padding: "10px 16px", background: "#ECB22E", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer", alignSelf: "center", whiteSpace: "nowrap", boxShadow: "0 2px 8px rgba(236, 178, 46, 0.3)" }}
             >
               Enter Pairing Code →
@@ -159,7 +159,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
         <div style={{ background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
             <div style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--text-muted)", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Agent Paused</div>
@@ -172,7 +172,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
         <div style={{ background: "#fffbf0", border: "1px solid #f4d58a", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
             <div style={{ width: 48, height: 48, borderRadius: "50%", background: "#F4A83A", display: "flex", alignItems: "center", justifyContent: "center", color: "white", flexShrink: 0 }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Agent is Waking Up</div>
@@ -210,21 +210,21 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
                     if (typeof invoke === 'function') {
                       // Per-agent key takes priority; global key is the fallback.
                       const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_anthropic_key` }).catch(() => "") || "")
-                                       || String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
-                      const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_openai_key` }).catch(() => "") || "")
-                                       || String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
-                      const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_gemini_key` }).catch(() => "") || "")
-                                       || String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
-                      const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_grok_key` }).catch(() => "") || "")
-                                       || String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
-                                       || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
+                        || String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
+                      const agOpenAI = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_openai_key` }).catch(() => "") || "")
+                        || String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
+                      const agGemini = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_gemini_key` }).catch(() => "") || "")
+                        || String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
+                      const agGrok = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_grok_key` }).catch(() => "") || "")
+                        || String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
+                          || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
 
                       await invoke("sync_credentials", {
                         agentId: agent.id, keys: {
                           "ANTHROPIC_API_KEY": agAnthropic,
-                          "OPENAI_API_KEY":    agOpenAI,
-                          "GEMINI_API_KEY":    agGemini,
-                          "XAI_API_KEY":       agGrok,
+                          "OPENAI_API_KEY": agOpenAI,
+                          "GEMINI_API_KEY": agGemini,
+                          "XAI_API_KEY": agGrok,
                         }
                       }).catch((err) => console.error("Sync credentials failed:", err));
 
@@ -316,8 +316,9 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
         {/* 3D Lobster View */}
         <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, position: "relative", overflow: "hidden" }}>
           <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
-            <ambientLight intensity={0.8} color="#F5E6D8" />
-            <directionalLight position={[10, 20, 5]} intensity={1} />
+            <Environment preset="city" />
+            <ambientLight intensity={0.5} />
+            <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
             <OrbitControls enablePan={false} enableZoom={false} />
             <group position={[0, -0.6, 0]}>
               <GLBAgent
@@ -326,7 +327,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
                 agentStatus={agent.status}
                 scale={1.0}
                 robeColor={agent.color || agent.robeColor}
-                forceAnimation="Long_Breathe_and_Look_Around"
+                forceAnimation="Breathe"
               />
               {/* Billboard fallback only for accessories with no 3D model.
                   /accessories/ and /models/assets/ paths are attached to bones
@@ -418,11 +419,11 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
             const hasYolo = agent.permissions.some(p => ["autonomous", "spend_auto"].includes(p.id) && p.enabled);
             const hasSecure = agent.permissions.some(p => ["ext_network", "file_write", "payments", "imessage", "photos"].includes(p.id) && p.enabled);
             const enabledPerms = agent.permissions.filter(p => p.enabled);
-            
+
             let stateLabel = "Locked Down";
             let temperatureLevel = 0;
             let iconColor = "#22c55e";
-            
+
             if (hasYolo) {
               stateLabel = "YOLO Mode (High Risk ⚠️)";
               temperatureLevel = 2;
@@ -432,7 +433,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
               temperatureLevel = 1;
               iconColor = "#f59e0b";
             }
-            
+
             return (
               <>
                 <div style={{ position: "absolute", top: 16, right: 16 }}>
@@ -447,7 +448,7 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
                     <div style={{ position: "absolute", top: -3, left: `${temperatureLevel * 50}%`, width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #333", transform: "translateX(-50%)", transition: "left 0.3s" }} />
                   </div>
                 </div>
-                
+
                 <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-sub)", alignSelf: "flex-start", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>Enabled Permissions & Connectors</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%", flex: 1, overflowY: "auto", paddingRight: 4 }}>
                   {enabledPerms.length === 0 && (!agent.integrations || agent.integrations.length === 0) && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No permissions enabled.</div>}
@@ -464,52 +465,52 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
                     );
                   })}
                   {(() => {
-                     if (!agent.integrations) return null;
-                     
-                     const normalIntegrations = agent.integrations.filter(intg => !intg.startsWith('web_'));
-                     const webIntegrations = agent.integrations.filter(intg => intg.startsWith('web_'));
-                     
-                     return (
-                        <>
-                           {normalIntegrations.map(intg => {
-                              const names: Record<string, string> = { "slack": "Slack", "github": "GitHub", "gmail": "Gmail", "cal": "Google Calendar", "telegram": "Telegram", "discord": "Discord", "drive": "Google Drive", "passwords": "Web Vault" };
-                              const label = names[intg] || intg;
-                              return (
-                               <div key={intg} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, color: "var(--text-main)", textAlign: "left" }}>
-                                 <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> {label}</div>
-                                 <div title={`Active connector: ${label}`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
-                                   <CheckCircle2 size={14} color="#4A9E96" />
-                                 </div>
-                               </div>
-                              );
-                           })}
-                           {webIntegrations.length > 0 && (
-                              <div style={{ display: "flex", flexDirection: "column", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, overflow: "hidden" }}>
-                                 <div 
-                                    onClick={() => setWebLoginsExpanded(!webLoginsExpanded)}
-                                    style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", cursor: "pointer", fontSize: 12, color: "var(--text-main)", textAlign: "left", userSelect: "none" }}
-                                 >
-                                    <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> Web Vault Logins ({webIntegrations.length})</div>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                       <div title={`Provides seamless login access to ${webIntegrations.length} sites`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
-                                          <CheckCircle2 size={14} color="#4A9E96" />
-                                       </div>
-                                       {webLoginsExpanded ? <ChevronUp size={14} color="var(--text-sub)" /> : <ChevronDown size={14} color="var(--text-sub)" />}
-                                    </div>
-                                 </div>
-                                 {webLoginsExpanded && (
-                                    <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 4, maxHeight: 150, overflowY: "auto" }}>
-                                       {webIntegrations.map(intg => (
-                                          <div key={intg} style={{ fontSize: 11, color: "var(--text-sub)", padding: "4px 8px", background: "rgba(0,0,0,0.03)", borderRadius: 4 }}>
-                                             {intg.replace('web_', '')}
-                                          </div>
-                                       ))}
-                                    </div>
-                                 )}
+                    if (!agent.integrations) return null;
+
+                    const normalIntegrations = agent.integrations.filter(intg => !intg.startsWith('web_'));
+                    const webIntegrations = agent.integrations.filter(intg => intg.startsWith('web_'));
+
+                    return (
+                      <>
+                        {normalIntegrations.map(intg => {
+                          const names: Record<string, string> = { "slack": "Slack", "github": "GitHub", "gmail": "Gmail", "cal": "Google Calendar", "telegram": "Telegram", "discord": "Discord", "drive": "Google Drive", "passwords": "Web Vault" };
+                          const label = names[intg] || intg;
+                          return (
+                            <div key={intg} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, color: "var(--text-main)", textAlign: "left" }}>
+                              <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> {label}</div>
+                              <div title={`Active connector: ${label}`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
+                                <CheckCircle2 size={14} color="#4A9E96" />
                               </div>
-                           )}
-                        </>
-                     );
+                            </div>
+                          );
+                        })}
+                        {webIntegrations.length > 0 && (
+                          <div style={{ display: "flex", flexDirection: "column", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, overflow: "hidden" }}>
+                            <div
+                              onClick={() => setWebLoginsExpanded(!webLoginsExpanded)}
+                              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", cursor: "pointer", fontSize: 12, color: "var(--text-main)", textAlign: "left", userSelect: "none" }}
+                            >
+                              <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> Web Vault Logins ({webIntegrations.length})</div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                <div title={`Provides seamless login access to ${webIntegrations.length} sites`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
+                                  <CheckCircle2 size={14} color="#4A9E96" />
+                                </div>
+                                {webLoginsExpanded ? <ChevronUp size={14} color="var(--text-sub)" /> : <ChevronDown size={14} color="var(--text-sub)" />}
+                              </div>
+                            </div>
+                            {webLoginsExpanded && (
+                              <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 4, maxHeight: 150, overflowY: "auto" }}>
+                                {webIntegrations.map(intg => (
+                                  <div key={intg} style={{ fontSize: 11, color: "var(--text-sub)", padding: "4px 8px", background: "rgba(0,0,0,0.03)", borderRadius: 4 }}>
+                                    {intg.replace('web_', '')}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    );
                   })()}
                 </div>
               </>
@@ -521,72 +522,72 @@ function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpda
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
           <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Activity Patterns</div>
           {(() => {
-             const hours = new Array(24).fill(null).map(() => ({ interactions: 0, tools: 0, system: 0, total: 0 }));
-             
-             if (recentLogs && recentLogs.length > 0) {
-               recentLogs.forEach((log: any) => {
-                 const h = new Date(log.timestamp).getHours();
-                 let type: "interactions" | "tools" | "system" = "system";
-                 if (log.action === "chatted") type = "interactions";
-                 else if (log.action === "tool_call" || log.bridge_type) type = "tools";
-                 
-                 hours[h][type] += 1;
-                 hours[h].total += 1;
-               });
-             } else {
-               for(let i=0; i<24; i++) {
-                 hours[i].system = Math.floor(Math.random() * 2);
-                 hours[i].total = hours[i].system;
-               }
-               hours[9] = { interactions: 1, tools: 2, system: 0, total: 3 };
-               hours[14] = { interactions: 2, tools: 1, system: 1, total: 4 };
-               hours[20] = { interactions: 0, tools: 0, system: 2, total: 2 };
-             }
-             const max = Math.max(...hours.map(h => h.total), 4);
-             
-             return (
-               <div style={{ flex: 1, display: "flex", flexDirection: "column", width: "100%" }}>
-                 <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#4A9E96" }}/>Chats</div>
-                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#D4A04A" }}/>Tools</div>
-                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "var(--text-muted)" }}/>System</div>
-                 </div>
-                 <div style={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 4, minHeight: 120, paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)" }}>
-                   {hours.map((val, i) => {
-                     const pctInteractions = val.total > 0 ? (val.interactions / val.total) * 100 : 0;
-                     const pctTools = val.total > 0 ? (val.tools / val.total) * 100 : 0;
-                     const pctSystem = val.total > 0 ? (val.system / val.total) * 100 : 0;
-                     
-                     const heightPct = Math.max((val.total / max) * 100, 4);
-                     
-                     return (
-                       <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }} title={`${val.interactions} Chats, ${val.tools} Tool Execs, ${val.system} System at ${i}:00`}>
-                         <div style={{ width: "100%", height: `${heightPct}%`, display: "flex", flexDirection: "column-reverse", borderRadius: "3px 3px 0 0", overflow: "hidden", transition: "height 0.5s ease-out" }}>
-                           {val.total > 0 ? (
-                             <>
-                               {val.system > 0 && <div style={{ width: "100%", height: `${pctSystem}%`, background: "var(--text-muted)", opacity: 0.6 }} />}
-                               {val.tools > 0 && <div style={{ width: "100%", height: `${pctTools}%`, background: "#D4A04A", opacity: 0.8 }} />}
-                               {val.interactions > 0 && <div style={{ width: "100%", height: `${pctInteractions}%`, background: "#4A9E96", opacity: 0.9 }} />}
-                             </>
-                           ) : (
-                             <div style={{ width: "100%", height: "100%", background: "var(--glass-light)", opacity: 0.3 }} />
-                           )}
-                         </div>
-                       </div>
-                     );
-                   })}
-                 </div>
-                 <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>
-                   <span>12 AM</span>
-                   <span>12 PM</span>
-                   <span>11 PM</span>
-                 </div>
-               </div>
-             );
+            const hours = new Array(24).fill(null).map(() => ({ interactions: 0, tools: 0, system: 0, total: 0 }));
+
+            if (recentLogs && recentLogs.length > 0) {
+              recentLogs.forEach((log: any) => {
+                const h = new Date(log.timestamp).getHours();
+                let type: "interactions" | "tools" | "system" = "system";
+                if (log.action === "chatted") type = "interactions";
+                else if (log.action === "tool_call" || log.bridge_type) type = "tools";
+
+                hours[h][type] += 1;
+                hours[h].total += 1;
+              });
+            } else {
+              for (let i = 0; i < 24; i++) {
+                hours[i].system = Math.floor(Math.random() * 2);
+                hours[i].total = hours[i].system;
+              }
+              hours[9] = { interactions: 1, tools: 2, system: 0, total: 3 };
+              hours[14] = { interactions: 2, tools: 1, system: 1, total: 4 };
+              hours[20] = { interactions: 0, tools: 0, system: 2, total: 2 };
+            }
+            const max = Math.max(...hours.map(h => h.total), 4);
+
+            return (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", width: "100%" }}>
+                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#4A9E96" }} />Chats</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#D4A04A" }} />Tools</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "var(--text-muted)" }} />System</div>
+                </div>
+                <div style={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 4, minHeight: 120, paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)" }}>
+                  {hours.map((val, i) => {
+                    const pctInteractions = val.total > 0 ? (val.interactions / val.total) * 100 : 0;
+                    const pctTools = val.total > 0 ? (val.tools / val.total) * 100 : 0;
+                    const pctSystem = val.total > 0 ? (val.system / val.total) * 100 : 0;
+
+                    const heightPct = Math.max((val.total / max) * 100, 4);
+
+                    return (
+                      <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }} title={`${val.interactions} Chats, ${val.tools} Tool Execs, ${val.system} System at ${i}:00`}>
+                        <div style={{ width: "100%", height: `${heightPct}%`, display: "flex", flexDirection: "column-reverse", borderRadius: "3px 3px 0 0", overflow: "hidden", transition: "height 0.5s ease-out" }}>
+                          {val.total > 0 ? (
+                            <>
+                              {val.system > 0 && <div style={{ width: "100%", height: `${pctSystem}%`, background: "var(--text-muted)", opacity: 0.6 }} />}
+                              {val.tools > 0 && <div style={{ width: "100%", height: `${pctTools}%`, background: "#D4A04A", opacity: 0.8 }} />}
+                              {val.interactions > 0 && <div style={{ width: "100%", height: `${pctInteractions}%`, background: "#4A9E96", opacity: 0.9 }} />}
+                            </>
+                          ) : (
+                            <div style={{ width: "100%", height: "100%", background: "var(--glass-light)", opacity: 0.3 }} />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>
+                  <span>12 AM</span>
+                  <span>12 PM</span>
+                  <span>11 PM</span>
+                </div>
+              </div>
+            );
           })()}
-          <button 
-             onClick={() => onNavigate && onNavigate("activity")}
-             style={{ width: "100%", padding: "12px", borderRadius: 8, background: "#3c6663", color: "white", fontWeight: 600, border: "none", cursor: "pointer", fontSize: 13, marginTop: 16 }}>
+          <button
+            onClick={() => onNavigate && onNavigate("activity")}
+            style={{ width: "100%", padding: "12px", borderRadius: 8, background: "#3c6663", color: "white", fontWeight: 600, border: "none", cursor: "pointer", fontSize: 13, marginTop: 16 }}>
             View Activity Feed
           </button>
         </div>

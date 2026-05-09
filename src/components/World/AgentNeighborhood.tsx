@@ -104,7 +104,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
         const glbPath = path.startsWith('http') ? path : `http://localhost:3001${path.replace('.png', '.glb')}`;
         
         return (
-          <group key={path} position={decorPos as any} rotation={decorRot as any} scale={decorScale}>
+          <group key={path} position={decorPos as any} rotation={decorRot as any} scale={decorScale * 0.01 * 0.25}>
              <React.Suspense fallback={null}>
                <GLBModel url={glbPath} />
              </React.Suspense>

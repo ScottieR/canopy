@@ -30,7 +30,7 @@ export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animation
       // GLB EXPORT PATCH: The tracks inside the new BaseLobsterRigged.glb are swapped!
       // The 11.2 second slow breathing animation is incorrectly named "run_fast_8" internally.
       if (lowerState.includes("breath") || lowerState.includes("look")) {
-        const swappedAnim = names.find(n => n === "Long_Breathe_and_Look_Around");
+        const swappedAnim = names.find(n => n === "Breathe");
         if (swappedAnim) return swappedAnim;
       }
 

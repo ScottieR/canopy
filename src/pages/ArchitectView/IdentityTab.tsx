@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { 
-  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+import {
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
@@ -9,10 +9,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, TransformControls } from "@react-three/drei";
+import { OrbitControls, TransformControls, Environment } from "@react-three/drei";
 import { TerrariumBase } from "../../components/World/WorldScene";
 import { GLBAgent, SingleGLB } from "../../components/World/GLBAgent";
-import { Toggle, ServiceRow, glass, ACCESSORIES, PASTEL_COLORS, SafeBillboard , HABITATS } from "../../App";
+import { Toggle, ServiceRow, glass, ACCESSORIES, PASTEL_COLORS, SafeBillboard, HABITATS } from "../../App";
 
 export function IdentityTab({ agent }: { agent: AgentData }) {
   const { setAgents } = useWorldStore();
@@ -131,27 +131,28 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
         {/* Area 1: Base Lobster & Accessories */}
         <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 400 }}>
           <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
-            <ambientLight intensity={0.8} color="#F5E6D8" />
-            <directionalLight position={[10, 20, 5]} intensity={1} />
+            <Environment preset="city" />
+            <ambientLight intensity={0.5} />
+            <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
             <OrbitControls enablePan={false} />
             <group position={[0, -0.6, 0]}>
               <React.Suspense fallback={null}>
-                <group 
-                  position={[-placement.x * 10.0, (-0.1 - placement.y) * 10.0, -placement.z * 10.0]} 
-                  scale={10.0} 
+                <group
+                  position={[-placement.x * 10.0, (-0.1 - placement.y) * 10.0, -placement.z * 10.0]}
+                  scale={10.0}
                   rotation={[0, Math.PI / 4 - (placement.rotationY * Math.PI / 180), 0]}
                 >
-                  <TerrariumBase 
-                    habitatId={selectedHabitat?.id || stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1} 
-                    modelUrl={selectedHabitat?.path} 
+                  <TerrariumBase
+                    habitatId={selectedHabitat?.id || stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1}
+                    modelUrl={selectedHabitat?.path}
                   />
                   {(stagedVisuals?.decor || []).map((path, i) => {
                     const is3D = path.includes("/models/assets/");
-                    
+
                     if (is3D) {
                       const glbPath = `http://localhost:3001${path.replace('.png', '.glb')}`;
                       return (
-                        <DecorObject 
+                        <DecorObject
                           key={path}
                           path={path}
                           glbPath={glbPath}
@@ -163,8 +164,8 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                           defaultDecorRotation={catalog?.items?.[path]?.decorRotation}
                           defaultRotation={catalog?.items?.[path]?.rotation}
                           onTransformChange={(updates) => {
-                             const current = stagedVisuals?.decorTransforms || {};
-                             handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
+                            const current = stagedVisuals?.decorTransforms || {};
+                            handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
                           }}
                         />
                       );
@@ -190,7 +191,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                 agentStatus={agent.status}
                 scale={1.0}
                 robeColor={stagedVisuals?.color || agent.color}
-                forceAnimation="Long_Breathe_and_Look_Around"
+                forceAnimation="Breathe"
               />
               {/* Fallback Accessory Stickers for Preview — only for paths that
                   don't have a 3D model bound to a bone via GLBAgent. Anything
@@ -257,22 +258,22 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                       onClick={() => {
                         const current = stagedVisuals?.decor || [];
                         if (isActive) {
-                           handleUpdateStaged({ decor: current.filter(x => x !== acc) });
-                           if (selectedDecor === acc) setSelectedDecor(null);
+                          handleUpdateStaged({ decor: current.filter(x => x !== acc) });
+                          if (selectedDecor === acc) setSelectedDecor(null);
                         } else {
-                           handleUpdateStaged({ decor: [...current, acc] });
-                           setSelectedDecor(acc);
+                          handleUpdateStaged({ decor: [...current, acc] });
+                          setSelectedDecor(acc);
                         }
                       }}
                       style={{ width: "100%", aspectRatio: "1/1", objectFit: "contain", background: "rgba(0,0,0,0.03)", borderRadius: 8, cursor: "pointer", border: isActive ? '2px solid var(--text-main)' : '2px solid transparent', transition: "all 0.1s ease" }}
                     />
                     {isActive && (
-                       <button 
-                         onClick={() => setSelectedDecor(acc)}
-                         style={{ position: "absolute", top: 4, right: 4, background: selectedDecor === acc ? "var(--primary)" : "rgba(0,0,0,0.5)", color: "white", border: "none", borderRadius: "50%", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
-                       >
-                         <Settings size={12} />
-                       </button>
+                      <button
+                        onClick={() => setSelectedDecor(acc)}
+                        style={{ position: "absolute", top: 4, right: 4, background: selectedDecor === acc ? "var(--primary)" : "rgba(0,0,0,0.5)", color: "white", border: "none", borderRadius: "50%", width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}
+                      >
+                        <Settings size={12} />
+                      </button>
                     )}
                   </div>
                 )
@@ -354,10 +355,10 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoin
       const rotArray = defaultDecorRotation || defaultRotation;
       const defaultY = rotArray ? rotArray[1] : Math.sin(path.length) * Math.PI;
       const rotY = transform?.rotationY !== undefined ? transform.rotationY : defaultY;
-      
+
       const rotX = rotArray ? rotArray[0] : 0;
       const rotZ = rotArray ? rotArray[2] : 0;
-      
+
       target.rotation.set(
         transform?.rotationX !== undefined ? transform.rotationX : rotX,
         rotY,
@@ -370,8 +371,8 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoin
   }, [target, transform, decorPoints, index, path, defaultDecorRotation, defaultRotation]);
 
   return (
-    <group 
-      ref={setTarget} 
+    <group
+      ref={setTarget}
       onClick={(e) => { e.stopPropagation(); onSelect(); }}
     >
       <React.Suspense fallback={null}>

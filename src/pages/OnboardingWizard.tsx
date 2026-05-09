@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { X } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls } from "@react-three/drei";
+import { OrbitControls, Environment } from "@react-three/drei";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
   try {
@@ -773,8 +773,9 @@ export function OnboardingWizard() {
               gl={{ antialias: true, alpha: true }}
               camera={{ position: [20, 20, 20], zoom: 150 }}
             >
-              <ambientLight intensity={0.7} color="#F5E6D8" />
-              <directionalLight position={[10, 20, 5]} intensity={0.8} />
+              <Environment preset="city" />
+              <ambientLight intensity={0.5} />
+              <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
               <OrbitControls enableZoom={true} enablePan={true} autoRotate autoRotateSpeed={0.8} />
               <WorldScene agents={[
                 {
