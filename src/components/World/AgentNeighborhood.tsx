@@ -7,12 +7,14 @@ import * as THREE from "three";
 export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
   const isWorking = agent?.status === "active" || agent?.status === "thinking";
 
-  // Filter for Decor or Both
+  // Filter for Decor or Both (based on per-agent behavior setting)
   const decorItems = useMemo(() => {
     const list = agent?.visual_identity?.accessories || agent?.accessories || [];
+    const behaviors = agent?.visual_identity?.accessoryBehaviors || {};
     return list.filter((path: string) => {
       const accInfo = (accessoriesData.items as any)[path];
-      return accInfo && (accInfo.type === 'decor' || accInfo.type === 'both');
+      const behavior = behaviors[path] || accInfo?.type || 'accessory';
+      return behavior === 'decor';
     });
   }, [agent]);
 
@@ -62,6 +64,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
           fileUrl={agent.visual_identity?.baseModelUrl || agent.fileUrl}
           role={agent.role}
           accessories={agent.visual_identity?.accessories || []}
+          accessoryBehaviors={agent.visual_identity?.accessoryBehaviors || {}}
           position={
             index === 0 && habitatData?.placement 
               ? [habitatData.placement.x, habitatData.placement.y, habitatData.placement.z] 
@@ -80,16 +83,17 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
 
       {/* Render Decor items */}
       {decorItems.map((path: string, i: number) => {
+        const itemData = (accessoriesData.items as any)[path];
         const transforms = agent?.visual_identity?.decorTransforms?.[path];
         
         let decorPos = [0, 0, 0];
         let decorRot = [0, 0, 0];
-        let decorScale = 0.5;
+        let decorScale = itemData?.scale || 75;
 
         if (transforms) {
           decorPos = [transforms.x || 0, transforms.y || 0, transforms.z || 0];
           decorRot = [transforms.rotationX || 0, transforms.rotationY || 0, transforms.rotationZ || 0];
-          decorScale = transforms.scale || 0.5;
+          decorScale = transforms.scale || itemData?.scale || 75;
         } else {
           const p = placedDecorPositions[i];
           const seed = (agent?.id?.length || 0) + i;

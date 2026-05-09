@@ -9,7 +9,7 @@ import { AttachedAccessory } from "./AttachedAccessory";
 // Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous
 let globalAnimationStagger = 0;
 
-export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], rotationY = 0, scale = 1, isWorking = false, agentStatus, baseColor, robeColor, accentColor, role, navPoints, forceAnimation }: { fileUrl?: string, accessories?: string[], position?: [number, number, number] | number[], rotationY?: number, scale?: number, isWorking?: boolean, agentStatus?: string, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[], forceAnimation?: string }) {
+export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, position = [0, 0, 0], rotationY = 0, scale = 1, isWorking = false, agentStatus, baseColor, robeColor, accentColor, role, navPoints, forceAnimation }: { fileUrl?: string, accessories?: string[], accessoryBehaviors?: Record<string, 'wearable' | 'decor'>, position?: [number, number, number] | number[], rotationY?: number, scale?: number, isWorking?: boolean, agentStatus?: string, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[], forceAnimation?: string }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
   const targetPos = useRef<THREE.Vector3>(new THREE.Vector3().fromArray(position as number[]));
@@ -210,7 +210,8 @@ export function GLBAgent({ fileUrl, accessories = [], position = [0, 0, 0], rota
       <React.Suspense fallback={null}>
         {(accessories || []).map((acc, i) => {
           const itemData = (accessoriesData as any)?.items?.[acc];
-          if (itemData?.type === 'decor') return null;
+          const behavior = accessoryBehaviors?.[acc] || itemData?.type || 'accessory';
+          if (behavior === 'decor') return null;
           
           return <AttachedAccessory 
             key={`${acc}-${i}`} 
