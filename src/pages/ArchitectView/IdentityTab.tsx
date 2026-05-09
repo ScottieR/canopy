@@ -160,6 +160,8 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                           transform={stagedVisuals?.decorTransforms?.[path]}
                           decorPoints={selectedHabitat?.decorPoints || []}
                           index={i}
+                          defaultDecorRotation={catalog?.items?.[path]?.decorRotation}
+                          defaultRotation={catalog?.items?.[path]?.rotation}
                           onTransformChange={(updates) => {
                              const current = stagedVisuals?.decorTransforms || {};
                              handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
@@ -333,7 +335,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
   );
 }
 
-function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoints, index, onTransformChange }: any) {
+function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoints, index, onTransformChange, defaultDecorRotation, defaultRotation }: any) {
   const [target, setTarget] = useState<THREE.Group | null>(null);
 
   useEffect(() => {
@@ -349,13 +351,23 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoin
       }
 
       // Respect the rotation and scale if provided from the template, otherwise use defaults
-      const rotY = transform?.rotationY !== undefined ? transform.rotationY : Math.sin(path.length) * Math.PI;
-      target.rotation.set(0, rotY, 0);
+      const rotArray = defaultDecorRotation || defaultRotation;
+      const defaultY = rotArray ? rotArray[1] : Math.sin(path.length) * Math.PI;
+      const rotY = transform?.rotationY !== undefined ? transform.rotationY : defaultY;
+      
+      const rotX = rotArray ? rotArray[0] : 0;
+      const rotZ = rotArray ? rotArray[2] : 0;
+      
+      target.rotation.set(
+        transform?.rotationX !== undefined ? transform.rotationX : rotX,
+        rotY,
+        transform?.rotationZ !== undefined ? transform.rotationZ : rotZ
+      );
 
       const s = (transform?.scale !== undefined ? transform.scale : 75) * 0.01;
       target.scale.set(s, s, s);
     }
-  }, [target, transform, decorPoints, index, path]);
+  }, [target, transform, decorPoints, index, path, defaultDecorRotation, defaultRotation]);
 
   return (
     <group 
