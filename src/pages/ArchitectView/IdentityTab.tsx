@@ -337,57 +337,34 @@ function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoin
   const [target, setTarget] = useState<THREE.Group | null>(null);
 
   useEffect(() => {
-    if (target && transform) {
-      target.position.set(transform.x || 0, transform.y || 0, transform.z || 0);
-      target.rotation.set(transform.rotationX || 0, transform.rotationY || 0, transform.rotationZ || 0);
-      // Multiply by 0.01 because the canonical scale format is a percentage (e.g. 75 = 0.75 world units)
-      const s = (transform.scale !== undefined ? transform.scale : 75) * 0.01;
-      target.scale.set(s, s, s);
-    } else if (target && !transform) {
-      // Snap to a valid decor point if available
+    if (target) {
+      // Auto-snap to the habitat's predefined valid decor points
       if (decorPoints && decorPoints.length > 0) {
-        const pt = decorPoints[(path.length + index) % decorPoints.length];
+        const pt = decorPoints[index % decorPoints.length];
         target.position.set(pt.x, pt.y, pt.z);
-        target.rotation.set(0, Math.sin(path.length) * Math.PI, 0);
       } else {
+        // Fallback if no decor points exist
         const seed = path.length + index;
         target.position.set((Math.sin(seed * 1.1) * 3), 0, (Math.cos(seed * 1.3) * 3));
-        target.rotation.set(0, Math.sin(seed) * Math.PI, 0);
       }
-      target.scale.set(0.75, 0.75, 0.75);
+
+      // Respect the rotation and scale if provided from the template, otherwise use defaults
+      const rotY = transform?.rotationY !== undefined ? transform.rotationY : Math.sin(path.length) * Math.PI;
+      target.rotation.set(0, rotY, 0);
+
+      const s = (transform?.scale !== undefined ? transform.scale : 75) * 0.01;
+      target.scale.set(s, s, s);
     }
   }, [target, transform, decorPoints, index, path]);
 
   return (
-    <>
-      <group 
-        ref={setTarget} 
-        onClick={(e) => { e.stopPropagation(); onSelect(); }}
-      >
-        <React.Suspense fallback={null}>
-          <SingleGLB url={glbPath} scale={1} />
-        </React.Suspense>
-      </group>
-      {isSelected && target && (
-        <TransformControls 
-          object={target} 
-          mode="translate"
-          space="local"
-          onMouseUp={() => {
-            if (target) {
-              onTransformChange({
-                x: target.position.x,
-                y: target.position.y,
-                z: target.position.z,
-                rotationX: target.rotation.x,
-                rotationY: target.rotation.y,
-                rotationZ: target.rotation.z,
-                scale: target.scale.x * 100
-              });
-            }
-          }}
-        />
-      )}
-    </>
+    <group 
+      ref={setTarget} 
+      onClick={(e) => { e.stopPropagation(); onSelect(); }}
+    >
+      <React.Suspense fallback={null}>
+        <SingleGLB url={glbPath} scale={1} />
+      </React.Suspense>
+    </group>
   );
 }
