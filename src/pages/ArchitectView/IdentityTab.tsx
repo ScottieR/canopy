@@ -11,7 +11,7 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, TransformControls, Environment } from "@react-three/drei";
 import { TerrariumBase } from "../../components/World/WorldScene";
-import { GLBAgent, SingleGLB } from "../../components/World/GLBAgent";
+import { GLBAgent, GLBModel } from "../../components/World/GLBAgent";
 import { Toggle, ServiceRow, glass, ACCESSORIES, PASTEL_COLORS, SafeBillboard, HABITATS } from "../../App";
 
 export function IdentityTab({ agent }: { agent: AgentData }) {
@@ -130,16 +130,16 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
 
         {/* Area 1: Base Lobster & Accessories */}
         <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 400 }}>
-          <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
+          <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 600 }}>
             <Environment preset="city" />
             <ambientLight intensity={0.5} />
             <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
             <OrbitControls enablePan={false} />
-            <group position={[0, -0.6, 0]}>
+            <group position={[0, -0.06, 0]}>
               <React.Suspense fallback={null}>
                 <group
-                  position={[-placement.x * 10.0, (-0.1 - placement.y) * 10.0, -placement.z * 10.0]}
-                  scale={10.0}
+                  position={[-placement.x, -0.01 - placement.y, -placement.z]}
+                  scale={1.0}
                   rotation={[0, Math.PI / 4 - (placement.rotationY * Math.PI / 180), 0]}
                 >
                   <TerrariumBase
@@ -151,6 +151,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                     return (
                       <DecorObject
                         key={path}
+                        agentId={agent.id}
                         path={path}
                         glbPath={glbPath}
                         isSelected={selectedDecor === path}
@@ -159,7 +160,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                         decorPoints={selectedHabitat?.decorPoints || []}
                         index={i}
                         defaultDecorRotation={catalog?.items?.[path]?.decorRotation}
-                        defaultRotation={catalog?.items?.[path]?.rotation}
+                        defaultScale={catalog?.items?.[path]?.scale}
                         onTransformChange={(updates: any) => {
                           const current = stagedVisuals?.decorTransforms || {};
                           handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
@@ -169,14 +170,16 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                   })}
                 </group>
               </React.Suspense>
-              <GLBAgent
-                fileUrl={stagedVisuals?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
-                accessories={stagedVisuals?.accessories || []}
-                agentStatus={agent.status}
-                scale={1.0}
-                robeColor={stagedVisuals?.color || agent.color}
-                forceAnimation="Breathe"
-              />
+              <group position={[0, 0, 0]}>
+                <GLBAgent
+                  fileUrl={stagedVisuals?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
+                  accessories={stagedVisuals?.accessories || []}
+                  agentStatus={agent.status}
+                  scale={0.25}
+                  robeColor={stagedVisuals?.color || agent.color}
+                  forceAnimation="Breathe"
+                />
+              </group>
               {/* Fallback Accessory Stickers for Preview — only for paths that
                   don't have a 3D model bound to a bone via GLBAgent. Anything
                   under /accessories/ or /models/assets/ has a baked GLB and is
@@ -189,7 +192,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                     <SafeBillboard
                       key={path}
                       url={`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}${path}`}
-                      position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]}
+                      position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 0.3, 0.6, 0]}
                     />
                   );
                 })}
@@ -318,7 +321,31 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, overflowY: "auto", flex: 1, alignContent: "flex-start", paddingRight: 4, paddingBottom: 16 }}>
               {HABITATS.map((h: any) => (
                 <div key={h}
-                  onClick={() => handleUpdateStaged({ habitatId: h })}
+                  onClick={() => {
+                    // Switching habitats: strip the position fields (x/y/z) from
+                    // each saved decorTransform so the runtime auto-snaps every
+                    // decor item to a valid decor point on the NEW habitat.
+                    // Preserve rotation and scale — those are per-item user
+                    // customizations that aren't habitat-specific. Without
+                    // this, AgentNeighborhood would keep using stale x/y/z that
+                    // belonged to the previous habitat and items would float
+                    // off-surface.
+                    const currentHabitatId = stagedVisuals?.habitatId ?? agent.visual_identity?.habitatId;
+                    if (h !== currentHabitatId) {
+                      setSelectedDecor(null);
+                      const existingTransforms = stagedVisuals?.decorTransforms || {};
+                      const repositionedTransforms: Record<string, any> = {};
+                      for (const [path, t] of Object.entries(existingTransforms)) {
+                        const { x, y, z, ...rest } = (t || {}) as any;
+                        if (Object.keys(rest).length > 0) {
+                          repositionedTransforms[path] = rest;
+                        }
+                      }
+                      handleUpdateStaged({ habitatId: h, decorTransforms: repositionedTransforms });
+                    } else {
+                      handleUpdateStaged({ habitatId: h });
+                    }
+                  }}
                   style={{ background: "rgba(0,0,0,0.03)", borderRadius: 12, height: 100, overflow: "hidden", position: "relative", cursor: "pointer", border: stagedVisuals?.habitatId === h ? "2px solid #218380" : "2px solid rgba(0,0,0,0)", transition: "all 0.1s ease" }}>
                   <Canvas orthographic camera={{ position: [5, 5, 5], zoom: 16 }} style={{ pointerEvents: "none" }}>
                     <ambientLight intensity={1} />
@@ -339,48 +366,123 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
   );
 }
 
-function DecorObject({ path, glbPath, isSelected, onSelect, transform, decorPoints, index, onTransformChange, defaultDecorRotation, defaultRotation }: any) {
+// Admin's HabitatPlacementScene scales the habitat clone by `(2.2 / maxDim) * 2`
+// (twice the size of the main app's TerrariumBase, which uses `2.2 / maxDim`),
+// for ergonomic painting. DecorPoints are saved in that 2x admin frame, so we
+// halve them whenever we apply them inside the main-app habitat group, where
+// the habitat is at 1x scale.
+const ADMIN_TO_MAIN_DECOR_SCALE = 0.5;
+
+// Same seeded RNG used by AgentNeighborhood so the IdentityTab preview snaps
+// each decor item to the EXACT point the runtime view would pick. If the
+// formula here drifts from the runtime one, the dressing-room preview lies.
+function decorSeededRandom(seed: number) {
+  let x = Math.sin(seed) * 10000;
+  return x - Math.floor(x);
+}
+function pickDecorPointIndex(agentId: string | undefined, itemIndex: number, total: number) {
+  const seed = (agentId?.length || 0) + itemIndex;
+  return Math.floor(decorSeededRandom(seed) * total);
+}
+
+// Tiny error boundary so a single missing/broken .glb doesn't blank out the
+// whole decor cluster. Falls back to a small wireframe placeholder so the user
+// can see WHICH item failed (typically: it hasn't been baked to 3D yet).
+class DecorErrorBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(err: any) { console.warn("[DecorObject] failed to render decor GLB:", err); }
+  render() { return this.state.hasError ? this.props.fallback : this.props.children; }
+}
+
+function DecorObject({ agentId, path, glbPath, isSelected, onSelect, transform, decorPoints, index, onTransformChange, defaultDecorRotation, defaultScale }: any) {
   const [target, setTarget] = useState<THREE.Group | null>(null);
 
+  // Stable random yaw per (path, index) so an item doesn't twitch each render
+  const fallbackYaw = useMemo(() => {
+    const seed = (path?.length || 0) + index * 13;
+    return Math.sin(seed * 1.7) * Math.PI;
+  }, [path, index]);
+
   useEffect(() => {
-    if (target) {
-      // Auto-snap to the habitat's predefined valid decor points
-      if (decorPoints && decorPoints.length > 0) {
-        const pt = decorPoints[index % decorPoints.length];
-        target.position.set(pt.x, pt.y, pt.z);
-      } else {
-        // Fallback if no decor points exist
-        const seed = path.length + index;
-        target.position.set((Math.sin(seed * 1.1) * 3), 0, (Math.cos(seed * 1.3) * 3));
-      }
+    if (!target) return;
 
-      // Respect the rotation and scale if provided from the template, otherwise use defaults
-      const rotArray = defaultDecorRotation || defaultRotation;
-      const defaultY = rotArray ? rotArray[1] : Math.sin(path.length) * Math.PI;
-      const rotY = transform?.rotationY !== undefined ? transform.rotationY : defaultY;
+    // --- Position --------------------------------------------------------
+    // Prefer an explicit user-saved transform, otherwise auto-snap to a
+    // valid decor point painted in the admin app for THIS habitat. Halve
+    // admin-frame coordinates so they land on the main-app surface. Pick
+    // the point with the same seeded RNG used at runtime so the dressing-
+    // room preview matches what the user will see in the world.
+    const hasSavedPos =
+      transform?.x !== undefined &&
+      transform?.y !== undefined &&
+      transform?.z !== undefined;
 
-      const rotX = rotArray ? rotArray[0] : 0;
-      const rotZ = rotArray ? rotArray[2] : 0;
-
-      target.rotation.set(
-        transform?.rotationX !== undefined ? transform.rotationX : rotX,
-        rotY,
-        transform?.rotationZ !== undefined ? transform.rotationZ : rotZ
+    if (hasSavedPos) {
+      target.position.set(transform.x, transform.y, transform.z);
+    } else if (decorPoints && decorPoints.length > 0) {
+      const pointIndex = pickDecorPointIndex(agentId, index, decorPoints.length);
+      const pt = decorPoints[pointIndex];
+      target.position.set(
+        pt.x * ADMIN_TO_MAIN_DECOR_SCALE,
+        pt.y * ADMIN_TO_MAIN_DECOR_SCALE,
+        pt.z * ADMIN_TO_MAIN_DECOR_SCALE
       );
-
-      const s = (transform?.scale !== undefined ? transform.scale : 75) * 0.01;
-      target.scale.set(s, s, s);
+    } else {
+      const seed = path.length + index;
+      target.position.set((Math.sin(seed * 1.1) * 0.6), 0, (Math.cos(seed * 1.3) * 0.6));
     }
-  }, [target, transform, decorPoints, index, path, defaultDecorRotation, defaultRotation]);
+
+    // --- Rotation --------------------------------------------------------
+    // Use the catalog's `decorRotation` when present (the upright-display
+    // pose authored in AccessoryManager). Do NOT fall back to the wearable
+    // `rotation` — that's tuned for hat-on-bone poses and would lay decor
+    // flat. With no decor pose set, default to upright with a deterministic
+    // yaw so items don't all face the same direction.
+    const rotX = defaultDecorRotation ? defaultDecorRotation[0] : 0;
+    const defaultY = defaultDecorRotation ? defaultDecorRotation[1] : fallbackYaw;
+    const rotZ = defaultDecorRotation ? defaultDecorRotation[2] : 0;
+    const rotY = transform?.rotationY !== undefined ? transform.rotationY : defaultY;
+
+    target.rotation.set(
+      transform?.rotationX !== undefined ? transform.rotationX : rotX,
+      rotY,
+      transform?.rotationZ !== undefined ? transform.rotationZ : rotZ
+    );
+
+    // --- Scale -----------------------------------------------------------
+    // Match the decor-to-HABITAT ratio you see in the runtime world view —
+    // habitat geometry is identical across both views, so it's the stable
+    // reference. Runtime: decor at `catalogScale * 0.01 * 0.25` ≈ 0.1875
+    // sits inside a 2.2-unit habitat → ~8.5%.
+    const catalogScale = (transform?.scale !== undefined ? transform.scale : (defaultScale ?? 75));
+    const s = catalogScale * 0.01 * 0.25;
+    target.scale.set(s, s, s);
+  }, [target, transform, decorPoints, index, path, defaultDecorRotation, defaultScale, fallbackYaw, agentId]);
 
   return (
     <group
       ref={setTarget}
       onClick={(e) => { e.stopPropagation(); onSelect(); }}
     >
-      <React.Suspense fallback={null}>
-        <SingleGLB url={glbPath} scale={1} />
-      </React.Suspense>
+      <DecorErrorBoundary fallback={
+        <mesh>
+          <boxGeometry args={[0.4, 0.4, 0.4]} />
+          <meshBasicMaterial color="#E57373" wireframe />
+        </mesh>
+      }>
+        <React.Suspense fallback={
+          <mesh>
+            <boxGeometry args={[0.3, 0.3, 0.3]} />
+            <meshBasicMaterial color="#FFAB91" wireframe />
+          </mesh>
+        }>
+          <GLBModel url={glbPath} />
+        </React.Suspense>
+      </DecorErrorBoundary>
     </group>
   );
 }

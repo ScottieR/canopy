@@ -173,6 +173,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             integrations: (agent.integrations || []).filter((i: string) => i !== "github"),
           });
         }
+        await invoke("sync_gateway_channels");
       } catch (e) { console.warn("Failed to update integrations after disconnect:", e); }
     } catch (e) {
       console.error(`${cfg.displayName} disconnect failed for ${agent.id}:`, e);
@@ -521,6 +522,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
       });
       setEmailMode("dedicated");
       await toggleIntegration("email_dedicated", true, ["email_read", "email_write"]);
+      await invoke("sync_gateway_channels");
     } catch (e) { console.error(e); }
     setEmailSaving(false);
   };
@@ -737,7 +739,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                   bot_user: { display_name: agent.name || "Sloane", always_online: true }
                 },
                 oauth_config: {
-                  scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
+                  scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "reactions:write", "commands"] },
                   pkce_enabled: false
                 },
                 settings: {
@@ -881,8 +883,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                        }
                      });
                      // Restart gateway to drop old Socket mode connections and apply new tokens
-                     await invoke("start_gateway");
-                     await invoke("boot_sync_agents");
+                     await invoke("sync_gateway_channels");
                   } catch (e) {
                      console.error(e);
                   }
@@ -963,6 +964,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['calendar'], readOnly: calendarMode === "read" });
             if (res && res.access_token) {
               checkDynamicStatuses();
+              await invoke("sync_gateway_channels");
             }
           } catch (e) { console.error(e); }
         }}
@@ -1419,6 +1421,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                          const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: [c.id === 'calendar' ? 'calendar' : 'drive'], readOnly: false });
                          if (res && res.access_token) {
                             checkDynamicStatuses();
+                            await invoke("sync_gateway_channels");
                          }
                       } catch (e) {
                          console.error(e);
@@ -1497,6 +1500,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                             await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
                             // Auto-enable integration after successful configuration
                             await toggleIntegration(c.id, true);
+                            await invoke("sync_gateway_channels");
                           }
                           // Provide visual feedback instead of instantly wiping the UI
                           setTimeout(() => {
