@@ -315,6 +315,7 @@ Config observe anomaly: openclaw.json (unrecognized-key: gateway.listen)
 | `gateway.model` | Not valid |
 | `gateway.agents` | Not valid |
 | `agents.defaults.embedding_provider` | Not valid in 2026.4.14 |
+| `agents.list[i].env` | **Confirmed invalid in 2026.4.14** — causes "agents.list.0: Unrecognized key: 'env'" and the gateway refuses to load any agents. To set a per-agent env var use `openclaw agents edit <id> --env KEY=VALUE` (the CLI knows the schema-valid storage path). Do NOT write `env` directly into `openclaw.json` via `node -e` or `config set`. |
 | `channels.slack.groupPolicy: "allowall"` | Invalid value — use `"open"` |
 
 ### VALID fields (confirmed working)
@@ -325,8 +326,7 @@ Config observe anomaly: openclaw.json (unrecognized-key: gateway.listen)
 | `gateway.port` | `18789` | Container-internal listen port |
 | `gateway.bind` | `"0.0.0.0"` | Optional; defaults to localhost |
 | `gateway.auth.mode` | `"token"` | Enable token auth |
-| `gateway.auth.token` | `"..."` | Server-side: validates incoming requests |
-| `gateway.token` | `"..."` | Client-side: sent by CLI when connecting |
+| `gateway.auth.token` | `"..."` | Authenticates BOTH the gateway server and the CLI client (the CLI reads this same file at startup). No separate client-side field. |
 | `agents.defaults.model` | `{"primary": "..."}` | Must be object, not string |
 | `agents.defaults.workspace` | `"/home/node/.openclaw/workspace"` | |
 | `agents.defaults.memorySearch.enabled` | `false` | Disable vector DB requirement |
@@ -338,9 +338,10 @@ Config observe anomaly: openclaw.json (unrecognized-key: gateway.listen)
 | `session.dmScope` | `"per-channel-peer"` | |
 | `tools.profile` | `"coding"` | |
 | `plugins.entries.browser.enabled` | `true` | Keep enabled — ACPX co-init dependency |
-| `plugins.entries.device-pair.enabled` | `false` | OOM risk in Docker bridge network |
-| `plugins.entries.phone-control.enabled` | `false` | OOM risk in Docker bridge network |
-| `plugins.entries.talk-voice.enabled` | `false` | OOM risk in Docker bridge network |
+| `plugins.entries.talk-voice.enabled` | `true` | Voice support is first-class; ~20-40 PIDs is within budget on prosumer hardware |
+| `plugins.entries.google.enabled` | `true` | Required for Gemini API via ACPX |
+| `plugins.entries.device-pair.enabled` | `false` | Bluetooth/LAN discovery retry-loops in Docker bridge network |
+| `plugins.entries.phone-control.enabled` | `false` | iMessage relay needs macOS IPC; Canopy uses host-side path instead |
 | `agents.list` | `[]` | Clear on boot; re-registered via boot_sync_agents |
 
 ### Size-drop anomaly

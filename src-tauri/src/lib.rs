@@ -190,6 +190,8 @@ pub fn run() {
             openclaw::import_discovered_agent,
             openclaw::repair_gateway,
             openclaw::sync_credentials,
+            openclaw::sync_agent_api_keys,
+            openclaw::sync_global_api_key,
             openclaw::update_agent_model,
             openclaw::approve_slack_pairing,
             openclaw::get_user_profile,
@@ -210,6 +212,8 @@ pub fn run() {
             browser_manager::get_browser_status,
             browser_manager::show_browser,
             browser_manager::hide_browser,
+            browser_manager::get_agent_allowed_domains,
+            browser_manager::update_agent_allowed_domains,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,
@@ -250,6 +254,8 @@ pub fn run() {
             slack::update_allowed_slack_channels,
             slack::start_slack_listener,
             slack::stop_slack_listener,
+            slack::disconnect_slack_for_agent,
+            slack::disconnect_slack_global,
             // Google
             google::start_google_oauth,
             // Messaging / productivity channels
@@ -258,6 +264,11 @@ pub fn run() {
             channels::configure_discord,
             channels::configure_github,
             channels::configure_twilio,
+            channels::disconnect_telegram,
+            channels::disconnect_whatsapp,
+            channels::disconnect_discord,
+            channels::disconnect_twilio,
+            channels::disconnect_github,
             // Voice mode
             voice::get_voice_config,
             voice::update_voice_config,
@@ -281,6 +292,8 @@ pub fn run() {
             // MCP Interceptor
             jit_server::approve_jit_request,
             jit_server::resolve_export_request,
+            jit_server::request_user_attention,
+            jit_server::resolve_permission_request,
             // Activity Sniffer
             activity_sniffer::get_network_security_alerts,
             activity_sniffer::resolve_network_security_alert,

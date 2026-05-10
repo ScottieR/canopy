@@ -466,43 +466,52 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
         "baseUrl": "http://canopy-chroma:8000"
     });
 
-    // ── Restrict skills to the requested Executive Assistant baseline ─────────
-    // We explicitly specify the heavy plugins (browser, coding) so they are available,
-    // but we PREVENT OpenClaw from defaulting to "unrestricted" which would load 
-    // all 15+ installed plugins (voice, vision, proxy, canvas, etc) and crash the container.
-    cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize", "browser", "coding"]);
+    // ── Default skills baseline (read-only, lightweight) ─────────────────────
+    //
+    // `agents.defaults.skills` is the FALLBACK applied to any agent that doesn't have
+    // its own `agents.list[i].skills` array. Per-agent skills (browser, vision, canvas,
+    // proxy, coding, etc.) are populated by `sync_agent_skills` from the user's
+    // capability toggles — the per-agent list is the source of truth.
+    //
+    // We keep the default minimal so:
+    //   1. A brand-new agent without a per-agent override doesn't accidentally inherit
+    //      heavy/risky skills (code execution, browser navigation) until explicitly opted in.
+    //   2. OpenClaw doesn't default to "unrestricted" mode, which loads all 15+ installed
+    //      plugins (voice, vision, proxy, canvas, etc.) and OOMs the container.
+    //
+    // `gog` (search) and `summarize` are the read-only baseline — every agent can search
+    // the web and condense documents; nothing else is granted unless toggled per-agent.
+    cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize"]);
 
-    // ── Disable heavyweight plugins — prevents per-agent sidecar OOM ──────────
-    // When these plugins are enabled, OpenClaw spawns per-agent sidecar processes
-    // when a new agent is hot-reloaded into a running gateway:
-    //   • browser:       Chromium instance per agent (~80–150 PIDs)
-    //   • talk-voice:    audio codec processes (~20–40 PIDs)
-    //   • phone-control: iMessage relay process (hangs in Docker — no macOS IPC)
-    //   • device-pair:   Bluetooth/LAN device discovery (retry-loops in bridge network)
-    //
-    // In Docker's bridge network these sidecars either retry indefinitely (blocking
-    // the Node.js event loop) or consume memory until the container is OOM-killed.
-    // Observed: container dies ~45s after the first hot reload with all plugins active.
-    //
-    // These are set PER-BOOT. When a user enables iMessage, voice, or browser tools
-    // from the Integrations tab, we restart the gateway with the appropriate env vars
-    // and re-enable only the needed plugin at that time. Until then: disabled.
+    // ── Plugin enable/disable defaults ────────────────────────────────────────
     //
     // Plugin IDs from gateway log: "ready (5 plugins: acpx, browser, device-pair,
     // phone-control, talk-voice)". The acpx plugin is always enabled (built-in core).
-    // browser: keep enabled — ACPX co-initializes with browser via a shared internal
-    // event (observed: both register at the exact same moment after Bonjour announces).
-    // Disabling browser leaves ACPX stuck waiting for that trigger indefinitely.
+    //
+    // Defaults below reflect a tested-stable configuration:
+    //   • browser     — REQUIRED. ACPX co-initializes with browser via a shared internal
+    //                   event (observed: both register at the exact same moment after
+    //                   Bonjour announces). Disabling leaves ACPX stuck waiting forever.
+    //   • talk-voice  — enabled. Voice support is a first-class feature; the audio codec
+    //                   sidecars (~20–40 PIDs) are within budget for prosumer Mac
+    //                   hardware now that gateway is on a dedicated container.
+    //   • google      — enabled. Required for Gemini API via ACPX.
+    //   • device-pair — DISABLED. Bluetooth/LAN device discovery retry-loops in Docker's
+    //                   bridge network and blocks the Node.js event loop. Re-enable
+    //                   only if/when Canopy adds device-pairing UX.
+    //   • phone-control — DISABLED. iMessage relay process hangs in Docker (no macOS IPC
+    //                   from inside the container). Canopy uses host-side iMessage
+    //                   integration instead.
+    //
+    // Per-agent overrides for these plugins should NOT be set here — they're global to
+    // the gateway. Agent-level capability toggles (browser/vision/canvas/etc.) live in
+    // `agents.list[i].skills` and are managed by `sync_agent_skills`.
     cfg["plugins"]["entries"]["browser"]["enabled"]       = serde_json::json!(true);
     cfg["browser"]["noSandbox"]                           = serde_json::json!(true);
-    // The three below spawn per-agent sidecar processes (iMessage relay, Bluetooth
-    // device pairing, audio codec workers) that OOM the container in Docker's bridge
-    // network. Disable them until those features are explicitly activated by the user.
+    cfg["plugins"]["entries"]["talk-voice"]["enabled"]    = serde_json::json!(true);
+    cfg["plugins"]["entries"]["google"]["enabled"]        = serde_json::json!(true);
     cfg["plugins"]["entries"]["device-pair"]["enabled"]   = serde_json::json!(false);
     cfg["plugins"]["entries"]["phone-control"]["enabled"] = serde_json::json!(false);
-    cfg["plugins"]["entries"]["talk-voice"]["enabled"]    = serde_json::json!(true);
-    // Preserve google plugin (required for Gemini API via ACPX)
-    cfg["plugins"]["entries"]["google"]["enabled"]        = serde_json::json!(true);
 
     // ── Clear the registered agents list ─────────────────────────────────────
     // This produces a stable, deterministic config that start_gateway() can compare
@@ -813,7 +822,37 @@ pub async fn start_gateway() -> Result<String, String> {
     // we force-removed the container AND wiped agent dirs above — agents.list must stay
     // empty until boot_sync_agents runs `openclaw agents add` for each agent.
     if !needs_write && !config_needs_restart {
-        if let Some(agents_list) = saved_agents_list {
+        if let Some(mut agents_list) = saved_agents_list {
+            // Sanitise the saved list before restoring it. OpenClaw 2026.4.14 rejects
+            // any key on `agents.list[i]` it doesn't recognise — and a previous Canopy
+            // build wrote `env` directly into `agents.list[i].env` (it should have used
+            // `openclaw agents edit --env`, which stores the data under a different
+            // schema-valid path). If we restore that broken state verbatim, the gateway
+            // crash-loops on next boot with:
+            //   "agents.list.0: Unrecognized key: 'env'"
+            //
+            // Strip the offending keys here so the user's container heals on next start
+            // even if the bad state was written by an older binary.
+            //
+            // The set is conservative: we only remove keys we KNOW the schema rejects.
+            // Anything else (skills, model, id, name, workspace, …) is preserved.
+            const INVALID_AGENT_KEYS: &[&str] = &["env"];
+            if let Some(arr) = agents_list.as_array_mut() {
+                for entry in arr.iter_mut() {
+                    if let Some(obj) = entry.as_object_mut() {
+                        for k in INVALID_AGENT_KEYS {
+                            if obj.remove(*k).is_some() {
+                                let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                tracing::warn!(
+                                    "start_gateway: stripped schema-invalid key '{}' from agents.list[{}] — was written by an older Canopy build",
+                                    k, id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
             let cfg_path = state_dir.join("openclaw.json");
             if let Ok(content) = std::fs::read_to_string(&cfg_path) {
                 if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {

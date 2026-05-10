@@ -216,7 +216,14 @@ pub const GATEWAY_CONTAINER_PORT: u16 = 18789;
 pub const GATEWAY_URL: &str = "http://localhost:18799";
 
 /// Internal bearer token for Canopy ↔ Gateway communication.
-/// This is set via `openclaw config set gateway.token <value>` during gateway setup.
+///
+/// Written into `openclaw.json` as `gateway.auth.token` by
+/// `docker::preflight_write_openclaw_json()` before each container boot. The CLI and
+/// the gateway server both authenticate using this single field.
+///
+/// ⚠️  Do NOT write this to a top-level `gateway.token` field — that key is rejected by
+/// OpenClaw 2026.4.14's schema and crash-loops the container. See
+/// `OPENCLAW_INTEGRATION.md` §2 and §7 for the full rationale.
 pub const GATEWAY_INTERNAL_TOKEN: &str = "canopy_internal_token_2026";
 
 /// Returns the fully-formed `Authorization: Bearer <token>` header value.

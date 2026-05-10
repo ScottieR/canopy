@@ -520,13 +520,28 @@ pub async fn update_allowed_slack_channels(
         }
         let channels_json = json!(channels_obj).to_string();
 
+        // Apply via direct JSON patch instead of `openclaw config set` so we don't SIGTERM
+        // the gateway just to refresh the allowed-channels list. The file watcher will
+        // hot-reload the change.
+        let patch_script = format!(
+            r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.channels=c.channels||{{}};
+c.channels.slack=c.channels.slack||{{}};
+c.channels.slack.channels={chs};
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+"#,
+            chs = channels_json,
+        );
+
         let cmd_future = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", "channels.slack.channels", &channels_json])
+            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_script])
             .output();
 
         if let Ok(Ok(output)) = tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
             if !output.status.success() {
-                tracing::warn!("Failed to set channels.slack.channels: {}", String::from_utf8_lossy(&output.stderr));
+                tracing::warn!("Failed to patch channels.slack.channels: {}", String::from_utf8_lossy(&output.stderr));
             } else {
                 tracing::info!("Synced {} Slack channels to OpenClaw config", channels_obj.len());
             }
@@ -645,47 +660,75 @@ pub async fn start_slack_listener() -> Result<String, String> {
         ));
     }
 
-    // Configure Slack in openclaw.json via config set.
-    // OpenClaw reads channels.slack.botToken and channels.slack.appToken from config,
-    // then establishes the Socket Mode WebSocket on gateway restart.
-    let config_steps: &[(&str, &str)] = &[
-        ("channels.slack.botToken",  &bot_token),
-        ("channels.slack.appToken",  &app_token),
-        ("channels.slack.enabled",   "true"),
-        ("channels.slack.mode",      "socket"),
-        ("channels.slack.groupPolicy", "allowlist"),
-        ("plugins.entries.slack.enabled", "true"),
-    ];
+    // Configure Slack by writing all six fields atomically into openclaw.json via a single
+    // `node -e` JSON patch. Previously this used six rapid `openclaw config set` calls in a
+    // loop — each one SIGTERMs the gateway, cascading into OOM with multiple agents
+    // (OPENCLAW_INTEGRATION.md §8). One patch + one restart is far less churn.
+    //
+    // ⚠️  groupPolicy MUST be "open" — `audit_openclaw::repair_openclaw_config` enforces
+    // this on every repair pass. Writing "allowlist" here would silently flip back to
+    // "open" on the next audit, leaving Slack DMs unanswered until the next reconfigure.
+    //
+    // String values below are JSON-encoded to handle any unusual characters in tokens
+    // safely (newlines, quotes, etc.).
+    let bot_token_json = serde_json::to_string(&bot_token).map_err(|e| format!("Token serialize error: {}", e))?;
+    let app_token_json = serde_json::to_string(&app_token).map_err(|e| format!("Token serialize error: {}", e))?;
 
-    for (key, val) in config_steps {
-        let cmd_future = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", key, val])
-            .output();
+    let patch_script = format!(
+        r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.channels=c.channels||{{}};
+c.channels.slack=c.channels.slack||{{}};
+c.channels.slack.botToken={bot};
+c.channels.slack.appToken={app};
+c.channels.slack.enabled=true;
+c.channels.slack.mode='socket';
+c.channels.slack.groupPolicy='open';
+c.plugins=c.plugins||{{}};
+c.plugins.entries=c.plugins.entries||{{}};
+c.plugins.entries.slack=c.plugins.entries.slack||{{}};
+c.plugins.entries.slack.enabled=true;
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+console.log('slack config patched');
+"#,
+        bot = bot_token_json,
+        app = app_token_json,
+    );
 
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
-            Ok(res) => res.map_err(|e| format!("Failed to set {}: {}", key, e))?,
-            Err(_) => return Err(format!("Timed out while setting {}. Is the gateway running?", key)),
-        };
+    let patch_out = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::openclaw::get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_script])
+            .output(),
+    ).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(format!("Failed to patch Slack config: {}", e)),
+        Err(_) => return Err("Timed out patching Slack config. Is the gateway running?".to_string()),
+    };
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
-            if combined.contains("cannot exec in a stopped container") {
-                combined = "Gateway container is stopped. Start infrastructure first.".to_string();
-            }
-            error!("Failed to set Slack config key {}: {}", key, combined);
-            return Err(format!("Failed to configure Slack ({}): {}", key, combined));
+    if !patch_out.status.success() {
+        let stderr = String::from_utf8_lossy(&patch_out.stderr);
+        let stdout = String::from_utf8_lossy(&patch_out.stdout);
+        let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
+        if combined.contains("cannot exec in a stopped container") || combined.contains("No such container") {
+            combined = "Gateway container is stopped. Start infrastructure first.".to_string();
         }
+        error!("Failed to patch Slack config: {}", combined);
+        return Err(format!("Failed to configure Slack: {}", combined));
     }
 
-    // Do NOT call docker restart here. OpenClaw self-SIGTERMs and restarts automatically
-    // whenever a config key is written via `openclaw config set`. Adding an explicit
-    // docker restart on top doubles the churn and can cascade into OOM with 5 agents.
-    // The self-SIGTERM is sufficient — OpenClaw will reconnect Slack Socket Mode on its
-    // own restart cycle.
+    // The `node -e` patch only changes the file on disk — OpenClaw needs a real restart
+    // to (a) drop any existing Socket Mode connection and (b) re-read the config. ONE
+    // restart total replaces the previous ~6 SIGTERMs from the config-set loop.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        crate::openclaw::get_docker_command()
+            .args(["restart", "canopy-gateway"])
+            .output(),
+    ).await;
 
-    // Brief wait for Socket Mode WebSocket to establish
+    // Brief wait for Socket Mode WebSocket to establish on the freshly-started gateway.
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
 
     info!("Slack Socket Mode configured and gateway restarted successfully.");
@@ -699,27 +742,42 @@ pub async fn start_slack_listener() -> Result<String, String> {
 /// `start_slack_listener()` again.
 #[tauri::command]
 pub async fn stop_slack_listener() -> Result<(), String> {
-    let cmd_future = crate::openclaw::get_docker_command()
-        .args([
-            "exec", "-u", "node", "canopy-gateway",
-            "openclaw", "config", "set", "channels.slack.enabled", "false"
-        ])
-        .output();
+    // Disable via direct JSON patch instead of `openclaw config set` so we get one
+    // process restart total (the explicit docker restart below) rather than the
+    // self-SIGTERM-from-config-set + explicit-restart double-churn we had previously.
+    let patch_script = r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.channels=c.channels||{};
+c.channels.slack=c.channels.slack||{};
+c.channels.slack.enabled=false;
+c.plugins=c.plugins||{};
+c.plugins.entries=c.plugins.entries||{};
+c.plugins.entries.slack=c.plugins.entries.slack||{};
+c.plugins.entries.slack.enabled=false;
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+console.log('slack disabled in config');
+"#;
 
-    let output = match tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
+    let patch_out = match tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        crate::openclaw::get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", patch_script])
+            .output(),
+    ).await {
         Ok(res) => res.map_err(|e| format!("Failed to disable Slack in gateway config: {}", e))?,
         Err(_) => return Err("Timed out while disabling Slack.".into()),
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
+    if !patch_out.status.success() {
+        let stderr = String::from_utf8_lossy(&patch_out.stderr);
+        let stdout = String::from_utf8_lossy(&patch_out.stdout);
         let combined = format!("{}\n{}", stdout, stderr).trim().to_string();
-        warn!("Failed to set channels.slack.enabled=false: {}", combined);
+        warn!("Failed to disable Slack via JSON patch: {}", combined);
         // Non-fatal — still attempt the restart so whatever state we're in gets flushed
     }
 
-    // Restart the gateway to drop the Socket Mode connection
+    // Restart the gateway to drop the Socket Mode connection.
     let _ = crate::openclaw::get_docker_command()
         .args(["restart", "canopy-gateway"])
         .output()
@@ -727,6 +785,85 @@ pub async fn stop_slack_listener() -> Result<(), String> {
 
     info!("Slack integration disabled and gateway restarted.");
     Ok(())
+}
+
+/// Per-agent Slack disconnect.
+///
+/// Wipes the agent's saved Slack tokens (`agent_{id}_slack_app_token` and
+/// `agent_{id}_slack_bot_token`) from the keychain, then triggers the gateway-channels
+/// sync so the rebuilt `channels.slack.accounts` map no longer contains this agent and
+/// the matching `bindings` entry is removed.
+///
+/// Other agents' Slack connections are unaffected — only this agent's binding goes away.
+#[tauri::command]
+pub async fn disconnect_slack_for_agent(
+    db: State<'_, Database>,
+    agent_id: String,
+) -> Result<String, String> {
+    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("disconnect_slack_for_agent: invalid agent id {:?}", agent_id));
+    }
+
+    let _ = keychain::delete_secret_internal(&format!("agent_{}_slack_app_token", agent_id));
+    let _ = keychain::delete_secret_internal(&format!("agent_{}_slack_bot_token", agent_id));
+
+    // Rebuild channels.slack.accounts and bindings WITHOUT this agent. The internal
+    // function reads the keychain, so wiping the entries above is enough — they'll be
+    // absent from the new accounts map.
+    crate::openclaw::sync_gateway_channels_internal(&db).await?;
+
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        crate::openclaw::get_docker_command()
+            .args(["restart", "canopy-gateway"])
+            .output(),
+    ).await;
+
+    info!("Slack disconnected for agent {}; tokens removed.", agent_id);
+    Ok(format!("Slack disconnected for {} and saved tokens removed.", agent_id))
+}
+
+/// Global Slack disconnect (legacy single-workspace path).
+///
+/// Wipes the global `slack-bot-token` / `slack-app-token` keychain entries, clears the
+/// matching fields in `openclaw.json`, and restarts the gateway. Use only for the legacy
+/// single-tenant Slack flow — for per-agent connections call `disconnect_slack_for_agent`.
+#[tauri::command]
+pub async fn disconnect_slack_global() -> Result<String, String> {
+    let _ = keychain::delete_secret_internal("slack-bot-token");
+    let _ = keychain::delete_secret_internal("slack-app-token");
+
+    let patch_script = r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.channels=c.channels||{};
+c.channels.slack=c.channels.slack||{};
+c.channels.slack.enabled=false;
+c.channels.slack.botToken='';
+c.channels.slack.appToken='';
+c.plugins=c.plugins||{};
+c.plugins.entries=c.plugins.entries||{};
+c.plugins.entries.slack=c.plugins.entries.slack||{};
+c.plugins.entries.slack.enabled=false;
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+"#;
+
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        crate::openclaw::get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", patch_script])
+            .output(),
+    ).await;
+
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        crate::openclaw::get_docker_command()
+            .args(["restart", "canopy-gateway"])
+            .output(),
+    ).await;
+
+    info!("Global Slack integration disconnected; tokens removed.");
+    Ok("Slack disconnected and saved tokens removed.".to_string())
 }
 
 // ============================================================================

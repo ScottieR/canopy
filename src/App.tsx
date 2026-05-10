@@ -35,6 +35,7 @@ import { DiagnosticsView } from './pages/DiagnosticsView';
 import { CanopyView } from './pages/CanopyView';
 import { TopNav } from './components/shared/TopNav';
 import { ExportInterceptModal } from './components/ExportInterceptModal';
+import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -1004,7 +1005,7 @@ export default function App() {
       try {
         // Sync preferences template from admin API to Rust before boot
         try {
-          const settingsRes = await fetch('http://localhost:3001/api/settings');
+          const settingsRes = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/settings`);
           const settings = await settingsRes.json();
           if (settings.preferencesTemplate) {
             await invoke("set_preferences_template", { content: settings.preferencesTemplate });
@@ -1019,7 +1020,7 @@ export default function App() {
         const reportUsage = async () => {
           for (const a of loadedAgents) {
             try {
-              await fetch('http://localhost:3001/api/usage', {
+              await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/usage`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1385,6 +1386,11 @@ export default function App() {
       })()}
 
       <ExportInterceptModal />
+
+      {/* Global listener for agent → user signals: attention toasts and permission
+          modals. Mounted once at the app root so it works regardless of which view
+          is active. See `AgentRequestNotifier.tsx` for the contract. */}
+      <AgentRequestNotifier agents={agents.map(a => ({ id: a.id, name: a.name }))} />
 
       <style>{`
         @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }

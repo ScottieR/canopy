@@ -124,6 +124,12 @@ pub struct Agent {
     pub stats: AgentStats,
 }
 
+// Per-agent web-navigation allowlist storage lives outside the DB to avoid a schema
+// migration. The list is persisted as a small JSON file under the agent's browser
+// profile dir at ~/Library/Application Support/Canopy/agent-browsers/{id}/allowlist.json
+// and read at browser-spawn time to generate a constrained PAC script. See
+// `browser_manager::{get_agent_allowed_domains, update_agent_allowed_domains}`.
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {

@@ -69,24 +69,20 @@ impl BrowserManager {
         });
         std::fs::write(&prefs_path, serde_json::to_string(&prefs_json)?)?;
 
-        // Generate a PAC (Proxy Auto-Config) script to block Host SSRF
-        // This prevents the agent from navigating to localhost or local network IPs from the host.
-        let pac_script = r#"
-            function FindProxyForURL(url, host) {
-                // Block local subnets and file paths
-                if (shExpMatch(host, "127.0.0.1") || 
-                    shExpMatch(host, "localhost") || 
-                    shExpMatch(host, "192.168.*") || 
-                    shExpMatch(host, "10.*") || 
-                    shExpMatch(host, "172.16.*") ||
-                    url.startsWith("file://")) {
-                    return "PROXY 127.0.0.1:99999"; // Blackhole invalid port
-                }
-                return "DIRECT";
-            }
-        "#;
+        // Build the PAC (Proxy Auto-Config) script for this agent.
+        //
+        // Always blocks SSRF (localhost / private subnets / file:// URLs) so an agent can't
+        // pivot through the host's local network regardless of allowlist settings.
+        //
+        // If the agent has an allowlist configured (allowed_domains.json next to its profile),
+        // ONLY hosts that match a listed domain are allowed; everything else is blackholed.
+        // Wildcard `*.example.com` matches any subdomain of example.com (and example.com itself).
+        //
+        // If no allowlist is configured, the agent has open web access (still subject to SSRF).
+        let allowlist = read_agent_allowlist(agent_id);
+        let pac_script = build_pac_script(allowlist.as_deref());
         use base64::Engine;
-        let pac_base64 = base64::engine::general_purpose::STANDARD.encode(pac_script);
+        let pac_base64 = base64::engine::general_purpose::STANDARD.encode(&pac_script);
         let pac_url = format!("data:application/x-ns-proxy-autoconfig;base64,{}", pac_base64);
 
         // Try to find Google Chrome on macOS
@@ -95,25 +91,37 @@ impl BrowserManager {
             return Err(anyhow::anyhow!("Google Chrome not found at {}. Please install it to use Machine Browser.", chrome_path));
         }
 
+        // Compute a safe off-screen point that avoids every connected monitor.
+        // See `compute_offscreen_position` for why a fixed (-3000, 0) is wrong.
+        let (offscreen_x, offscreen_y) = compute_offscreen_position();
+        let window_position = format!("--window-position={},{}", offscreen_x, offscreen_y);
+
         let mut child = Command::new(chrome_path)
             .args([
                 "--remote-debugging-port=0",
-                "--remote-debugging-address=127.0.0.1", 
+                "--remote-debugging-address=127.0.0.1",
                 &format!("--user-data-dir={}", profile_path),
                 "--no-first-run",
                 "--no-default-browser-check",
-                
-                // Hide off-screen!
-                "--window-position=-3000,0",
+
+                // Spawn off-screen — the user makes it visible explicitly via `show_browser`,
+                // or the agent requests attention via `request_user_attention`.
+                &window_position,
                 "--window-size=1280,800",
                 
                 // Security Flags
-                "--disable-extensions", // Prevent malicious extensions
+                "--disable-extensions",      // Prevent malicious extensions
                 "--deny-permission-prompts", // Block location, camera, mic prompts
-                "--disable-sync", // Ensure no accidental profile sync
+                "--disable-sync",            // Ensure no accidental profile sync
                 "--disable-features=TranslateUI",
-                "--safebrowsing-disable-download-protection", // Allow raw downloads to workspace without prompt
-                
+                // ⚠️ DO NOT add --safebrowsing-disable-download-protection. Chrome's
+                // malware-download check is the cheapest mitigation we have for an agent
+                // that gets prompt-injected into pulling a malicious binary. Silent
+                // workspace-scoped downloads are still possible because the Preferences
+                // file (written above) sets `prompt_for_download: false` and pins the
+                // download directory to the agent's workspace — we get the no-prompt UX
+                // without disabling the malware scanner.
+
                 // Network Guardrail: PAC script to block SSRF
                 &format!("--proxy-pac-url={}", pac_url),
                 "about:blank",
@@ -213,7 +221,9 @@ pub async fn start_machine_browser(
     // Inject the secure CDP endpoint returned by Chrome
     let ws_endpoint = status.cdp_endpoint.replace("127.0.0.1", "host.docker.internal");
     let _ = crate::openclaw::get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "agents", "edit", &agent_id, "--env", &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint)])
+        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+               "openclaw", "agents", "edit", &agent_id,
+               "--env", &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint)])
         .output().await;
         
     Ok(status)
@@ -318,15 +328,34 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
 
 #[tauri::command]
 pub async fn show_browser(state: tauri::State<'_, BrowserManager>, agent_id: String) -> Result<(), String> {
-    move_browser(&state, &agent_id, 0).await.map_err(|e| e.to_string())
+    // 1) Move the window onto the primary monitor via CDP setWindowBounds.
+    move_browser(&state, &agent_id, 0, 0).await.map_err(|e| e.to_string())?;
+
+    // 2) Bring Chrome to OS-level focus so the user actually sees it. CDP's
+    //    `Browser.setWindowBounds` repositions the window but doesn't raise it above
+    //    other apps. Without this step the window slides on-screen but stays behind
+    //    whatever app the user has focused — they have to alt-tab to find it.
+    //
+    //    Note: this activates ALL Google Chrome processes (macOS treats them as one
+    //    application bundle). Other agent browsers stay parked at their off-screen
+    //    coordinates so they remain invisible — only their process focus changes.
+    let _ = tokio::process::Command::new("osascript")
+        .args(["-e", r#"tell application "Google Chrome" to activate"#])
+        .output()
+        .await;
+
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn hide_browser(state: tauri::State<'_, BrowserManager>, agent_id: String) -> Result<(), String> {
-    move_browser(&state, &agent_id, -3000).await.map_err(|e| e.to_string())
+    // Move the window back to the safe off-screen coordinate computed in
+    // `compute_offscreen_position` (left of all monitors, above all monitors).
+    let (x, y) = compute_offscreen_position();
+    move_browser(&state, &agent_id, x, y).await.map_err(|e| e.to_string())
 }
 
-async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32) -> Result<()> {
+async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32, top: i32) -> Result<()> {
     let cdp_url = match state.get_status(agent_id).await? {
         Some(s) => s.cdp_endpoint,
         None => return Err(anyhow::anyhow!("Browser not running")),
@@ -365,7 +394,7 @@ async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32) -> Resu
                 "bounds": {
                     "windowState": "normal",
                     "left": left,
-                    "top": 0,
+                    "top": top,
                     "width": 1280,
                     "height": 800
                 }
@@ -375,6 +404,211 @@ async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32) -> Resu
     }
 
     Ok(())
+}
+
+// ─── Per-agent web-navigation allowlist ───────────────────────────────────────
+//
+// The allowlist is stored as a small JSON file at:
+//   ~/Library/Application Support/Canopy/agent-browsers/{agent_id}/allowlist.json
+//
+// Shape: `{"domains": ["example.com", "*.google.com"]}`
+//
+// Persistence is intentionally a separate file (not in the SQLite agents table) so
+// adding/removing this feature doesn't require a DB migration. The file lives next to
+// the agent's Chrome profile so deleting the agent's browser dir wipes the allowlist
+// alongside cookies/history — single point of truth.
+
+fn allowlist_path_for(agent_id: &str) -> Option<std::path::PathBuf> {
+    dirs::data_dir().map(|d| {
+        d.join("Canopy")
+            .join("agent-browsers")
+            .join(agent_id)
+            .join("allowlist.json")
+    })
+}
+
+fn read_agent_allowlist(agent_id: &str) -> Option<Vec<String>> {
+    let path = allowlist_path_for(agent_id)?;
+    let raw = std::fs::read_to_string(&path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let arr = v.get("domains")?.as_array()?;
+    let domains: Vec<String> = arr.iter()
+        .filter_map(|d| d.as_str().map(|s| s.trim().to_lowercase()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if domains.is_empty() { None } else { Some(domains) }
+}
+
+/// Build the PAC (Proxy Auto-Config) script for an agent.
+///
+/// Always blocks SSRF (localhost, RFC1918, file://). If `allowlist` is `Some(non-empty)`,
+/// the script additionally denies any host that doesn't match a listed domain.
+/// Wildcard `*.example.com` matches any subdomain of example.com AND example.com itself.
+fn build_pac_script(allowlist: Option<&[String]>) -> String {
+    let allowlist_clause = match allowlist {
+        Some(domains) if !domains.is_empty() => {
+            // Build a JS array literal of (host pattern, allow_subdomains) pairs.
+            // We split into two checks so `*.foo.com` matches `foo.com` AND `*.foo.com`,
+            // while `foo.com` (no wildcard) matches ONLY `foo.com`.
+            let entries: Vec<String> = domains.iter().map(|d| {
+                let d_clean = d.trim().to_lowercase();
+                if let Some(stripped) = d_clean.strip_prefix("*.") {
+                    // Wildcard: match `stripped` exactly OR any subdomain of `stripped`.
+                    format!(r#"["{}",true]"#, stripped.replace('"', ""))
+                } else {
+                    format!(r#"["{}",false]"#, d_clean.replace('"', ""))
+                }
+            }).collect();
+            format!(
+                r#"
+                var allowed = [{}];
+                var allowed_match = false;
+                for (var i = 0; i < allowed.length; i++) {{
+                    var pattern = allowed[i][0];
+                    var includeSub = allowed[i][1];
+                    if (host === pattern) {{ allowed_match = true; break; }}
+                    if (includeSub && host.length > pattern.length &&
+                        host.substring(host.length - pattern.length - 1) === ("." + pattern)) {{
+                        allowed_match = true; break;
+                    }}
+                }}
+                if (!allowed_match) return "PROXY 127.0.0.1:99999";
+                "#,
+                entries.join(",")
+            )
+        }
+        _ => String::new(),
+    };
+
+    format!(
+        r#"function FindProxyForURL(url, host) {{
+    // SSRF block — always on, regardless of allowlist setting.
+    if (shExpMatch(host, "127.0.0.1") ||
+        shExpMatch(host, "localhost") ||
+        shExpMatch(host, "192.168.*") ||
+        shExpMatch(host, "10.*") ||
+        shExpMatch(host, "172.16.*") ||
+        url.startsWith("file://")) {{
+        return "PROXY 127.0.0.1:99999";
+    }}
+    {}
+    return "DIRECT";
+}}"#,
+        allowlist_clause
+    )
+}
+
+/// Returns the current allowlist for an agent (empty array → open web access).
+#[tauri::command]
+pub async fn get_agent_allowed_domains(agent_id: String) -> Result<Vec<String>, String> {
+    Ok(read_agent_allowlist(&agent_id).unwrap_or_default())
+}
+
+/// Replace the agent's allowlist with `domains`. An empty list disables the allowlist
+/// (open web access, still subject to SSRF block). Restarts the agent's browser if it's
+/// currently running so the new PAC takes effect.
+#[tauri::command]
+pub async fn update_agent_allowed_domains(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+    domains: Vec<String>,
+) -> Result<(), String> {
+    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("invalid agent id {:?}", agent_id));
+    }
+
+    // Normalize: trim, lowercase, drop blanks, dedupe.
+    let mut normalized: Vec<String> = domains.into_iter()
+        .map(|d| d.trim().to_lowercase())
+        .filter(|d| !d.is_empty())
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+
+    let path = allowlist_path_for(&agent_id)
+        .ok_or_else(|| "could not resolve allowlist path".to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir failed: {}", e))?;
+    }
+
+    let body = serde_json::json!({ "domains": normalized });
+    std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap_or_default())
+        .map_err(|e| format!("write failed: {}", e))?;
+
+    // If the browser is currently alive, kill it so the next JIT spawn picks up the
+    // new PAC. We can't change PAC on a running Chrome instance.
+    let needs_restart = state.get_status(&agent_id).await
+        .map_err(|e| e.to_string())?
+        .is_some();
+    if needs_restart {
+        state.stop_browser(&agent_id).await.map_err(|e| e.to_string())?;
+        // Don't auto-respawn — the next agent action that needs the browser will trigger
+        // the JIT proxy to start a fresh Chrome with the updated PAC.
+        let _ = app_handle; // reserved for future events
+    }
+    Ok(())
+}
+
+/// Compute a safe off-screen coordinate that avoids ALL connected monitors.
+///
+/// Why this isn't trivially `(-3000, 0)`:
+///   • Multi-monitor desktops commonly extend horizontally either left OR right of the
+///     primary display, so `-3000` lands inside a left-side monitor on dual-screen Macs.
+///   • Some setups also stack monitors vertically, so a small y-offset above the primary
+///     can also land inside a screen.
+///
+/// Strategy: query macOS for the bounding rectangle of every active display and place the
+/// hidden window 3000 px LEFT and 1500 px ABOVE that rectangle. Both "off the left edge"
+/// and "off the top edge" are uncommon directions for monitor extension, so combining
+/// them is robust against typical dual-/triple-monitor layouts.
+///
+/// Falls back to (-3000, -1500) if the AppleScript probe fails (e.g. permission denied,
+/// non-mac dev environment).
+fn compute_offscreen_position() -> (i32, i32) {
+    // Cache the result for the lifetime of the process — monitor topology rarely changes
+    // mid-session and the AppleScript probe is ~50 ms.
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<(i32, i32)> = OnceLock::new();
+    if let Some(p) = CACHED.get() { return *p; }
+
+    let probe = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            // Returns "minX,minY,maxX,maxY" across all displays.
+            // `bounds of every desktop` returns each display's {x,y,w,h} rect; we fold
+            // them into a single bounding rectangle.
+            r#"tell application "Finder"
+                set b to bounds of window of desktop
+                return (item 1 of b as string) & "," & (item 2 of b as string) & "," & (item 3 of b as string) & "," & (item 4 of b as string)
+            end tell"#,
+        ])
+        .output();
+
+    let (left, top) = match probe {
+        Ok(out) if out.status.success() => {
+            let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let parts: Vec<i32> = raw.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            if parts.len() == 4 {
+                let (min_x, min_y) = (parts[0], parts[1]);
+                // 3000 px LEFT of the leftmost monitor edge, 1500 px ABOVE the topmost edge.
+                (min_x.saturating_sub(3000), min_y.saturating_sub(1500))
+            } else {
+                tracing::warn!("compute_offscreen_position: unparseable Finder bounds {:?}", raw);
+                (-3000, -1500)
+            }
+        }
+        _ => {
+            // AppleScript unavailable or failed (e.g. dev container, permission denied).
+            // Fall back to the previous fixed coordinate, just go up too.
+            (-3000, -1500)
+        }
+    };
+
+    let result = (left, top);
+    let _ = CACHED.set(result);
+    tracing::info!("compute_offscreen_position: hidden browser parked at ({}, {})", left, top);
+    result
 }
 
 async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, cdp_url: String) {

@@ -76,6 +76,18 @@ export function ProvidersVault({ embedded = false, filterProvider }: { embedded?
          await invoke("store_secret_cmd", { key: keyName, value });
       }
       setKeys(prev => ({ ...prev, [providerId]: value }));
+
+      // Propagate the change to OpenClaw — refresh auth-profiles.json for every agent
+      // that DOESN'T have its own per-agent override for this provider. Agents with
+      // their own per-agent key are intentionally left alone (the global change doesn't
+      // apply to them). The Rust side handles the precedence via `get_creds_for_agent`.
+      try {
+        await invoke("sync_global_api_key", { provider: providerId });
+      } catch (e) {
+        // Non-fatal: keys are saved to keychain regardless. Next time any agent triggers
+        // a credential sync (chat, boot, OAuth callback, etc.) it will pick up the new key.
+        console.warn(`sync_global_api_key for ${providerId} failed (non-fatal):`, e);
+      }
     } catch (err) {
       console.error(`Failed to update ${keyName}:`, err);
     }

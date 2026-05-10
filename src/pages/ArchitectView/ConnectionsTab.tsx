@@ -10,6 +10,34 @@ import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMes
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, MultiPicker, glass } from "../../App";
 import { PasswordInput } from "../../components/shared/PasswordInput";
+import { ConfirmDisconnectModal } from "../../components/shared/ConfirmDisconnectModal";
+
+// ─── Per-agent disconnect modal config ────────────────────────────────────────
+//
+// Per-agent disconnects (Slack / GitHub) only affect THIS agent — other agents'
+// connections are unaffected. The Tauri commands (`disconnect_slack_for_agent`,
+// `disconnect_github`) take an `agentId` arg, wipe the per-agent keychain entries,
+// rebuild bindings, and restart the gateway.
+type AgentDisconnectKey = "slack-agent" | "github-agent";
+
+const AGENT_DISCONNECT_CONFIG: Record<AgentDisconnectKey, {
+  displayName: string;
+  command: string;
+  tokens: string[];
+  extraNote?: string;
+}> = {
+  "slack-agent": {
+    displayName: "Slack",
+    command: "disconnect_slack_for_agent",
+    tokens: ["This agent's Slack Bot Token", "This agent's Slack App Token"],
+  },
+  "github-agent": {
+    displayName: "GitHub",
+    command: "disconnect_github",
+    tokens: ["This agent's GitHub Personal Access Token", "This agent's GitHub username"],
+    extraNote: "Also wipes the agent's gh CLI wrapper script and .github_env file inside the gateway workspace.",
+  },
+};
 
 export function ConnectionsTab({ agent }: { agent: AgentData }) {
   const { setActiveView } = useWorldStore();
@@ -114,6 +142,45 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [slackPairingError, setSlackPairingError] = useState("");
 
   const [githubToken, setGithubToken] = useState("");
+
+  // Per-agent disconnect-confirmation modal state.
+  const [agentDisconnectTarget, setAgentDisconnectTarget] = useState<AgentDisconnectKey | null>(null);
+  const [agentDisconnectBusy, setAgentDisconnectBusy] = useState(false);
+
+  const handleAgentDisconnect = useCallback(async () => {
+    if (!agentDisconnectTarget) return;
+    const cfg = AGENT_DISCONNECT_CONFIG[agentDisconnectTarget];
+    setAgentDisconnectBusy(true);
+    try {
+      await invoke(cfg.command, { agentId: agent.id });
+      // Clear the corresponding token field in the form so the UI reflects disconnect.
+      if (agentDisconnectTarget === "slack-agent") {
+        setSlackBotToken("");
+        setSlackAppToken("");
+      } else if (agentDisconnectTarget === "github-agent") {
+        setGithubToken("");
+      }
+      // Also turn the integration toggle off so the skills list is updated.
+      try {
+        if (agentDisconnectTarget === "slack-agent") {
+          await invoke("update_agent_integrations", {
+            agentId: agent.id,
+            integrations: (agent.integrations || []).filter((i: string) => !i.startsWith("slack")),
+          });
+        } else if (agentDisconnectTarget === "github-agent") {
+          await invoke("update_agent_integrations", {
+            agentId: agent.id,
+            integrations: (agent.integrations || []).filter((i: string) => i !== "github"),
+          });
+        }
+      } catch (e) { console.warn("Failed to update integrations after disconnect:", e); }
+    } catch (e) {
+      console.error(`${cfg.displayName} disconnect failed for ${agent.id}:`, e);
+    } finally {
+      setAgentDisconnectBusy(false);
+      setAgentDisconnectTarget(null);
+    }
+  }, [agentDisconnectTarget, agent.id, agent.integrations]);
 
   useEffect(() => {
     if (typeof (window as any).__TAURI_INTERNALS__?.invoke === 'function') {
@@ -259,13 +326,14 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
 
         const finalModel = selectedModel || defaultModelInfo?.id || "google/gemini-3.1-flash-lite-preview";
 
-        let mappedKeys: Record<string, string> = {};
-        if (keys["OpenAI"]) mappedKeys["OPENAI_API_KEY"] = keys["OpenAI"];
-        if (keys["Anthropic"]) mappedKeys["ANTHROPIC_API_KEY"] = keys["Anthropic"];
-        if (keys["Gemini"]) mappedKeys["GEMINI_API_KEY"] = keys["Gemini"];
-        if (keys["Grok"]) mappedKeys["XAI_API_KEY"] = keys["Grok"];
-
-        await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys });
+        // Synchronize keys to auth-profiles.json for THIS agent only via
+        // `sync_agent_api_keys`. The Rust side reads the keychain and applies the
+        // per-agent → global precedence (`get_creds_for_agent`), which means clearing
+        // a per-agent override correctly falls back to the global key instead of
+        // dropping the provider entirely (which is what the older `sync_credentials`
+        // path would do when given an empty `mappedKeys` value). No other agents are
+        // touched.
+        await invoke("sync_agent_api_keys", { agentId: agent.id });
         await invoke("update_agent_personality", {
           agentId: agent.id,
           personality: { ...agent.personality, active_model: finalModel }
@@ -800,33 +868,49 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                 style={{ width: "100%", padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "monospace", background: "var(--surface-card)", color: "var(--text-main)", boxSizing: "border-box" }}
               />
             </div>
-            <button
-              onClick={async () => {
-                setSlackTokensSaving(true);
-                try {
-                   const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                   await invoke("store_batch_secrets_cmd", {
-                     secrets: { 
-                        [`agent_${agent.id}_slack_app_token`]: slackAppToken,
-                        [`agent_${agent.id}_slack_bot_token`]: slackBotToken
-                     }
-                   });
-                   // Restart gateway to drop old Socket mode connections and apply new tokens
-                   await invoke("start_gateway");
-                   await invoke("boot_sync_agents");
-                } catch (e) {
-                   console.error(e);
-                }
-                setTimeout(() => setSlackTokensSaving(false), 1000);
-              }}
-              disabled={slackTokensSaving}
-              style={{
-                alignSelf: "flex-start", padding: "6px 14px", background: "var(--surface-card)", color: "var(--text-main)", border: "1px solid var(--border-subtle)",
-                borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginTop: 4
-              }}
-            >
-              {slackTokensSaving ? "Saving..." : "Save Tokens"}
-            </button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+              <button
+                onClick={async () => {
+                  setSlackTokensSaving(true);
+                  try {
+                     const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                     await invoke("store_batch_secrets_cmd", {
+                       secrets: {
+                          [`agent_${agent.id}_slack_app_token`]: slackAppToken,
+                          [`agent_${agent.id}_slack_bot_token`]: slackBotToken
+                       }
+                     });
+                     // Restart gateway to drop old Socket mode connections and apply new tokens
+                     await invoke("start_gateway");
+                     await invoke("boot_sync_agents");
+                  } catch (e) {
+                     console.error(e);
+                  }
+                  setTimeout(() => setSlackTokensSaving(false), 1000);
+                }}
+                disabled={slackTokensSaving}
+                style={{
+                  padding: "6px 14px", background: "var(--surface-card)", color: "var(--text-main)", border: "1px solid var(--border-subtle)",
+                  borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer"
+                }}
+              >
+                {slackTokensSaving ? "Saving..." : "Save Tokens"}
+              </button>
+              {/* Show Disconnect only when this agent has tokens saved. The modal warns
+                  about tokens-and-bindings before invoking `disconnect_slack_for_agent`. */}
+              {(slackAppToken || slackBotToken) && (
+                <button
+                  onClick={() => setAgentDisconnectTarget("slack-agent")}
+                  style={{
+                    padding: "6px 14px", background: "transparent", color: "#ef4444",
+                    border: "1px solid #fca5a5", borderRadius: 6, fontSize: 12,
+                    fontWeight: 600, cursor: "pointer",
+                  }}
+                >
+                  Disconnect Slack
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </ServiceRow>
@@ -1434,6 +1518,21 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                     {dynamicSetupLoading[c.id] ? "Saving..." : "Save"}
                   </button>
                   <button onClick={() => setDynamicSetupState(prev => ({ ...prev, [c.id]: false }))} style={{ padding: "6px 12px", background: "none", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-sub)", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                  {/* Per-agent GitHub disconnect — only when this agent has a saved PAT.
+                      Routes through `disconnect_github` which wipes both keychain entries
+                      and the gh wrapper script inside the gateway workspace. */}
+                  {c.id === 'github' && githubToken && (
+                    <button
+                      onClick={() => setAgentDisconnectTarget("github-agent")}
+                      style={{
+                        padding: "6px 12px", background: "transparent", color: "#ef4444",
+                        border: "1px solid #fca5a5", borderRadius: 6, fontSize: 12,
+                        fontWeight: 600, cursor: "pointer",
+                      }}
+                    >
+                      Disconnect
+                    </button>
+                  )}
                 </div>
               </div>
             )}
@@ -1542,6 +1641,19 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
           ))}
       </div>
 
+      {/* Per-agent disconnect-confirmation modal. Used by both the per-agent Slack
+          disconnect button (above) and the GitHub Disconnect button (in the dynamic
+          connector setup block). Other agents' connections are NOT affected. */}
+      <ConfirmDisconnectModal
+        open={agentDisconnectTarget !== null}
+        integrationName={agentDisconnectTarget ? AGENT_DISCONNECT_CONFIG[agentDisconnectTarget].displayName : ""}
+        tokens={agentDisconnectTarget ? AGENT_DISCONNECT_CONFIG[agentDisconnectTarget].tokens : []}
+        boundAgents={agentDisconnectTarget ? [agent.name] : []}
+        extraNote={agentDisconnectTarget ? AGENT_DISCONNECT_CONFIG[agentDisconnectTarget].extraNote : undefined}
+        busy={agentDisconnectBusy}
+        onCancel={() => { if (!agentDisconnectBusy) setAgentDisconnectTarget(null); }}
+        onConfirm={handleAgentDisconnect}
+      />
 
     </div>
   );

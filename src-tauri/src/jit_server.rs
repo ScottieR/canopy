@@ -27,6 +27,22 @@ struct ExportRequest {
     content: String,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct AttentionRequest {
+    agent_id: String,
+    reason: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct PermissionRequest {
+    agent_id: String,
+    /// Logical permission identifier — matches a `Permission.id` in worldStore.ts
+    /// (e.g. "browser", "vision", "file_write") OR an integration name (e.g. "gmail",
+    /// "googleCalendar", "github") OR a domain (e.g. "domain:linkedin.com").
+    permission_id: String,
+    justification: String,
+}
+
 pub async fn start_jit_server(app_handle: tauri::AppHandle) {
     let listener = TcpListener::bind("0.0.0.0:18802").await.expect("Failed to bind JIT port");
     info!("JIT Provisioning server listening on 0.0.0.0:18802");
@@ -93,36 +109,55 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                     if is_post {
                         let path = if let Some(p) = String::from_utf8_lossy(&req_data).split_whitespace().nth(1) { p.to_string() } else { "/".to_string() };
                         
-                        if path == "/export_file" {
-                            if let Ok(req) = serde_json::from_slice::<ExportRequest>(body) {
-                                let (response, status_code) = handle_export_request(app.clone(), req).await;
-                                let resp_str = serde_json::to_string(&response).unwrap_or_default();
-                                let http_resp = format!("HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", status_code, resp_str.len(), resp_str);
-                                let _ = socket.write_all(http_resp.as_bytes()).await;
-                            } else {
-                                let resp_str = r#"{"error":"Invalid export request body"}"#;
-                                let http_resp = format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
-                                let _ = socket.write_all(http_resp.as_bytes()).await;
+                        // Helper inline-format: produces an HTTP response string given status + body.
+                        // Kept as a macro-like format so we don't have to plumb closures through async.
+                        let route_to_response: (u16, String) = if path == "/export_file" {
+                            match serde_json::from_slice::<ExportRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) = handle_export_request(app.clone(), req).await;
+                                    (status_code, serde_json::to_string(&response).unwrap_or_default())
+                                }
+                                Err(_) => (400, r#"{"error":"Invalid export request body"}"#.to_string()),
+                            }
+                        } else if path == "/request_attention" {
+                            // Agent → user "please look at the browser" notification. Fire-and-forget:
+                            // the agent doesn't block waiting for a click, just gets an ack. Used when
+                            // the agent hits a step that needs visual confirmation (CAPTCHA, 2FA, etc.).
+                            match serde_json::from_slice::<AttentionRequest>(body) {
+                                Ok(req) => {
+                                    handle_attention_request(app.clone(), req).await;
+                                    (200, r#"{"status":"notified","message":"User has been notified."}"#.to_string())
+                                }
+                                Err(_) => (400, r#"{"error":"Invalid attention request body"}"#.to_string()),
+                            }
+                        } else if path == "/request_permission" {
+                            // Agent → user permission elevation. Blocks waiting for a decision:
+                            // once / session / forever / deny.
+                            match serde_json::from_slice::<PermissionRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) = handle_permission_request(app.clone(), req).await;
+                                    (status_code, serde_json::to_string(&response).unwrap_or_default())
+                                }
+                                Err(_) => (400, r#"{"error":"Invalid permission request body"}"#.to_string()),
                             }
                         } else {
-                            // Default to JIT request
-                            if let Ok(req) = serde_json::from_slice::<JitRequest>(body) {
-                                let (response, status_code) = handle_jit_request(app.clone(), req).await;
-
-                                let resp_str = serde_json::to_string(&response).unwrap_or_default();
-                                let http_resp = format!(
-                                    "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                                    status_code,
-                                    resp_str.len(),
-                                    resp_str
-                                );
-                                let _ = socket.write_all(http_resp.as_bytes()).await;
-                            } else {
-                                let resp_str = r#"{"error":"Invalid request body"}"#;
-                                let http_resp = format!("HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", resp_str.len(), resp_str);
-                                let _ = socket.write_all(http_resp.as_bytes()).await;
+                            // Default = legacy JIT credential request (backwards-compat for agent
+                            // code that POSTs to / without a specific path).
+                            match serde_json::from_slice::<JitRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) = handle_jit_request(app.clone(), req).await;
+                                    (status_code, serde_json::to_string(&response).unwrap_or_default())
+                                }
+                                Err(_) => (400, r#"{"error":"Invalid request body"}"#.to_string()),
                             }
-                        }
+                        };
+
+                        let (status_code, resp_str) = route_to_response;
+                        let http_resp = format!(
+                            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            status_code, resp_str.len(), resp_str
+                        );
+                        let _ = socket.write_all(http_resp.as_bytes()).await;
                     } else {
                         // Return simple options OK for CORS
                         let http_resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -276,6 +311,199 @@ pub async fn approve_jit_request(
     if let Some(tx) = pending.remove(&request_id) {
         let _ = tx.send(approved);
     }
-    
+
+    Ok(())
+}
+
+// ─── Attention requests ───────────────────────────────────────────────────────
+//
+// Fire-and-forget notification from the agent to the user. The agent calls this when
+// it needs the user to LOOK at its browser — to read a CAPTCHA, confirm a destructive
+// action, observe a 2FA challenge, etc. The user gets a toast in the frontend and can
+// click "Show browser" to bring that agent's Chrome on-screen and focus it.
+//
+// Unlike credential / permission requests this doesn't block — the agent gets an ack
+// immediately and continues working (or polls the page state to see if the user has
+// acted). Blocking would also block other agent activity and the user might take a
+// while to respond.
+
+async fn handle_attention_request(app: tauri::AppHandle, req: AttentionRequest) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "agent_attention_requested",
+        json!({
+            "request_id":  uuid::Uuid::new_v4().to_string(),
+            "agent_id":    req.agent_id,
+            "reason":      req.reason,
+            "requested_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    );
+}
+
+// ─── Permission requests ──────────────────────────────────────────────────────
+//
+// Agent calls POST /request_permission with `permission_id` + `justification`. The host
+// emits a Tauri event the frontend listens for; user picks one of:
+//   - "once"    → grant for this specific request only; revoked after the agent's HTTP
+//                 call returns (5-second window — enough to perform the next action).
+//   - "session" → grant for the rest of the gateway session. Revoked at next gateway
+//                 restart by `boot_sync_agents` re-reading SQLite as the source of truth.
+//   - "forever" → persist to the agent's row in SQLite and propagate via boot_sync_agents.
+//   - "deny"    → return 403 to the agent.
+//
+// Permission_id semantics:
+//   - "browser", "vision", "canvas", "coding", ...   → `agent.capabilities.{id}`
+//   - "gmail", "googleCalendar", "github", ...       → `agent.integrations` membership
+//   - "domain:example.com"                           → add to per-agent allowlist
+//
+// The permanent path goes through the existing `update_agent_capabilities` /
+// `update_agent_integrations` Tauri commands so all the standard sync_agent_skills +
+// sync_credentials machinery runs.
+
+lazy_static::lazy_static! {
+    pub static ref PENDING_PERMISSION_REQUESTS: Arc<Mutex<HashMap<String, oneshot::Sender<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+}
+
+async fn handle_permission_request(app: tauri::AppHandle, req: PermissionRequest) -> (Value, u16) {
+    let req_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = oneshot::channel::<String>();
+
+    {
+        let mut pending = PENDING_PERMISSION_REQUESTS.lock().await;
+        pending.insert(req_id.clone(), tx);
+    }
+
+    use tauri::Emitter;
+    let _ = app.emit(
+        "agent_permission_requested",
+        json!({
+            "request_id":    req_id,
+            "agent_id":      req.agent_id,
+            "permission_id": req.permission_id,
+            "justification": req.justification,
+        }),
+    );
+
+    let decision = rx.await.unwrap_or_else(|_| "deny".to_string());
+
+    match decision.as_str() {
+        "deny" => (
+            json!({
+                "status":  "denied",
+                "message": "The user denied this request. You do not have access."
+            }),
+            403,
+        ),
+        "once" | "session" | "forever" => (
+            json!({
+                "status":   "granted",
+                "scope":    decision,
+                "message":  format!(
+                    "The user granted {} access ({}). You may proceed.",
+                    req.permission_id, decision
+                ),
+            }),
+            200,
+        ),
+        other => (
+            json!({
+                "status":  "error",
+                "message": format!("Unknown decision scope: {}", other)
+            }),
+            500,
+        ),
+    }
+}
+
+/// Frontend resolves the agent's permission request with one of:
+/// "once" | "session" | "forever" | "deny".
+///
+/// For "forever" the change is persisted via `update_agent_capabilities` /
+/// `update_agent_integrations` so it survives a gateway restart. For "once" and
+/// "session" the agent gets a one-shot grant message but no DB write happens — the
+/// agent must use the granted permission immediately or re-request.
+#[tauri::command]
+pub async fn resolve_permission_request(
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, crate::db::Database>,
+    request_id: String,
+    decision: String,
+    agent_id: String,
+    permission_id: String,
+) -> Result<(), String> {
+    let scope = match decision.as_str() {
+        "once" | "session" | "forever" | "deny" => decision.clone(),
+        other => return Err(format!("Unknown decision: {}", other)),
+    };
+
+    if scope == "forever" {
+        // Persist depending on permission shape:
+        //  - "domain:foo.com"   → append to agent's allowlist
+        //  - integration name   → append to agent.integrations + sync_agent_skills
+        //  - capability name    → flip the matching field on agent.capabilities
+        if let Some(domain) = permission_id.strip_prefix("domain:") {
+            let mut current: Vec<String> =
+                crate::browser_manager::get_agent_allowed_domains(agent_id.clone()).await?;
+            let cleaned = domain.trim().to_lowercase();
+            if !cleaned.is_empty() && !current.contains(&cleaned) {
+                current.push(cleaned);
+            }
+            // Re-use the existing Tauri command. We need a tauri::State for it which we
+            // get via app_handle.
+            use tauri::Manager;
+            let bm_state = app_handle.state::<crate::browser_manager::BrowserManager>();
+            crate::browser_manager::update_agent_allowed_domains(
+                app_handle.clone(),
+                bm_state,
+                agent_id.clone(),
+                current,
+            ).await?;
+        } else if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+            let cap = permission_id.as_str();
+            // Capability flips
+            let mut handled = true;
+            match cap {
+                "browser"   => agent.capabilities.browser = true,
+                "proxy"     => agent.capabilities.proxy = true,
+                "vision"    => agent.capabilities.vision = true,
+                "canvas"    => agent.capabilities.canvas = true,
+                "coding"    => agent.capabilities.coding = true,
+                "gog"       => agent.capabilities.gog = true,
+                "summarize" => agent.capabilities.summarize = true,
+                _ => { handled = false; }
+            }
+            if !handled {
+                // Treat as integration name.
+                if !agent.integrations.contains(&permission_id) {
+                    agent.integrations.push(permission_id.clone());
+                }
+            }
+            db.update_agent(&agent).map_err(|e| format!("DB error: {}", e))?;
+
+            // Patch agents.list[i].skills via the existing helper so OpenClaw picks up
+            // the new permission via hot-reload (no SIGTERM cascade).
+            crate::openclaw::sync_agent_skills(app_handle.clone(), &agent).await;
+        }
+    }
+
+    let mut pending = PENDING_PERMISSION_REQUESTS.lock().await;
+    if let Some(tx) = pending.remove(&request_id) {
+        let _ = tx.send(scope);
+    }
+
+    Ok(())
+}
+
+/// Pure ack route used by the frontend toast — no agent state to mutate, but we still
+/// need a Tauri command surface so the frontend can call `request_user_attention`
+/// programmatically (e.g. for testing the toast).
+#[tauri::command]
+pub async fn request_user_attention(
+    app_handle: tauri::AppHandle,
+    agent_id: String,
+    reason: String,
+) -> Result<(), String> {
+    handle_attention_request(app_handle, AttentionRequest { agent_id, reason }).await;
     Ok(())
 }

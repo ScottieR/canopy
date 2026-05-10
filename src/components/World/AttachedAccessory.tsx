@@ -16,7 +16,7 @@ export function AttachedAccessory({
   transformRef?: React.Ref<THREE.Group>;
 }) {
   const glbPath = path.replace('.png', '.glb');
-  const { scene } = useGLTF(glbPath.startsWith('http') ? glbPath : `http://localhost:3001${glbPath.startsWith('/') ? '' : '/'}${glbPath}`);
+  const { scene } = useGLTF(glbPath.startsWith('http') ? glbPath : `${import.meta.env.VITE_API_URL || 'http://localhost:3001'}${glbPath.startsWith('/') ? '' : '/'}${glbPath}`);
 
   const clonedAcc = useMemo(() => {
     const clone = SkeletonUtils.clone(scene);

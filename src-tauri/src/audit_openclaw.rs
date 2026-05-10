@@ -253,7 +253,8 @@ pub async fn repair_openclaw_config(
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(8),
                     crate::openclaw::get_docker_command()
-                        .args(["exec", "canopy-gateway", "openclaw", "config", "set", key, val])
+                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+                               "openclaw", "config", "set", key, val])
                         .output(),
                 ).await;
             }
@@ -300,7 +301,8 @@ pub async fn repair_openclaw_config(
 
     for (key, val) in fixes.iter() {
         let cmd_future = crate::openclaw::get_docker_command()
-            .args(["exec", "canopy-gateway", "openclaw", "config", "set", key, val])
+            .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+                   "openclaw", "config", "set", key, val])
             .output();
 
         let output = match tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
@@ -325,7 +327,8 @@ pub async fn repair_openclaw_config(
 #[tauri::command]
 pub async fn get_openclaw_status() -> Result<String, String> {
     let status_fut = crate::openclaw::get_docker_command()
-        .args(["exec", "canopy-gateway", "openclaw", "status"])
+        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+               "openclaw", "status"])
         .output();
 
     let output = match tokio::time::timeout(std::time::Duration::from_secs(10), status_fut).await {

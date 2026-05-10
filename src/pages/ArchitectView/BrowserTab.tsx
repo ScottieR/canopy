@@ -1,13 +1,23 @@
-import React, { useState, useEffect } from "react";
-import { 
-  Globe, Play, Square, Shield, Lock, AlertTriangle, 
-  ExternalLink, Eye, RefreshCw, Terminal, Monitor, 
-  Zap, Settings, Info, CheckCircle2, Activity
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  Globe, Play, Square, Shield, Lock, AlertTriangle,
+  ExternalLink, Eye, RefreshCw, Terminal, Monitor,
+  Zap, Settings, Info, CheckCircle2, Activity, Plus, X as XIcon
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AgentData, useWorldStore, BrowserStatus } from "../../store/worldStore";
 import { glass, Toggle } from "../../App";
+
+// Archetypes for which a navigation allowlist is *suggested* (still optional).
+// These tend to handle high-stakes context (financial, mental-health, education) where
+// limiting the agent's web reach reduces the blast radius of prompt injection.
+const SENSITIVE_ARCHETYPES = new Set(["accountant", "coach", "tutor", "property_manager"]);
+
+function isSensitiveArchetype(role: string): boolean {
+  const r = (role || "").toLowerCase().replace(/\s+/g, "_");
+  return SENSITIVE_ARCHETYPES.has(r);
+}
 
 export function BrowserTab({ agent }: { agent: AgentData }) {
   const updateAgentBrowserStatus = useWorldStore(s => s.updateAgentBrowserStatus);
@@ -15,6 +25,13 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [frameData, setFrameData] = useState<string | null>(null);
+
+  // Per-agent web-navigation allowlist. Empty array = open web access (still subject to
+  // SSRF block on private subnets). Non-empty = browser is constrained to these domains.
+  const [allowedDomains, setAllowedDomains] = useState<string[]>([]);
+  const [allowlistDraft, setAllowlistDraft] = useState("");
+  const [allowlistSaving, setAllowlistSaving] = useState(false);
+  const allowlistActive = allowedDomains.length > 0;
 
   const browserStatus = agent.browser_status;
   const isRunning = browserStatus?.is_running || false;
@@ -38,7 +55,12 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
 
   useEffect(() => {
     refreshStatus();
-    
+
+    // Load the persisted per-agent allowlist from Rust on tab mount.
+    invoke<string[]>("get_agent_allowed_domains", { agentId: agent.id })
+      .then(d => setAllowedDomains(d || []))
+      .catch(() => setAllowedDomains([]));
+
     let unlisten: () => void;
     listen<any>("browser_stream_frame", (e) => {
       if (e.payload.agent_id === agent.id) {
@@ -52,6 +74,37 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
       if (unlisten) unlisten();
     };
   }, [agent.id]);
+
+  // Save the allowlist back to Rust. The Rust side restarts the agent's Chrome if it's
+  // running so the new PAC script takes effect (you can't change PAC on a live Chrome).
+  const persistAllowlist = useCallback(async (next: string[]) => {
+    setAllowlistSaving(true);
+    try {
+      await invoke("update_agent_allowed_domains", { agentId: agent.id, domains: next });
+      setAllowedDomains(next);
+    } catch (e) {
+      setError(`Failed to save allowlist: ${e}`);
+    } finally {
+      setAllowlistSaving(false);
+    }
+  }, [agent.id]);
+
+  const addDomain = useCallback(() => {
+    const candidate = allowlistDraft.trim().toLowerCase();
+    if (!candidate) return;
+    // Strip protocol + path if user pasted a full URL.
+    const cleaned = candidate.replace(/^https?:\/\//, "").split("/")[0];
+    if (!cleaned || allowedDomains.includes(cleaned)) {
+      setAllowlistDraft("");
+      return;
+    }
+    persistAllowlist([...allowedDomains, cleaned]);
+    setAllowlistDraft("");
+  }, [allowlistDraft, allowedDomains, persistAllowlist]);
+
+  const removeDomain = useCallback((d: string) => {
+    persistAllowlist(allowedDomains.filter(x => x !== d));
+  }, [allowedDomains, persistAllowlist]);
 
   const handleShowBrowser = async () => {
     try {
@@ -176,17 +229,43 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
           <Lock size={16} style={{ color: "#D4A04A" }} />
           <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Active Guardrails</span>
         </div>
-        
+
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* SSRF block — always on. */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <Shield size={14} style={{ color: "var(--text-sub)" }} />
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Local Network Block</div>
+                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Denies localhost, 192.168.*, 10.*, 172.16.*, file://</div>
+              </div>
+            </div>
+            <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
+          </div>
+
+          {/* Navigation Allowlist — dynamic. Reflects actual allowedDomains state. */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <Globe size={14} style={{ color: "var(--text-sub)" }} />
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Navigation Approval</div>
-                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Pauses agent on sensitive domains</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Navigation Allowlist</div>
+                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>
+                  {allowlistActive
+                    ? `Constrained to ${allowedDomains.length} domain${allowedDomains.length === 1 ? "" : "s"}`
+                    : "Open web access — no allowlist set"}
+                </div>
               </div>
             </div>
-            <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
+            <span style={{
+              fontSize: 10,
+              background: allowlistActive ? "#dcfce7" : "var(--border-subtle)",
+              color: allowlistActive ? "#166534" : "var(--text-sub)",
+              padding: "1px 6px",
+              borderRadius: 10,
+              fontWeight: 600,
+            }}>
+              {allowlistActive ? "Active" : "Off"}
+            </span>
           </div>
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8 }}>
@@ -194,7 +273,7 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
               <Eye size={14} style={{ color: "var(--text-sub)" }} />
               <div>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Optical Monitoring</div>
-                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Headed mode ensures visibility</div>
+                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Headed mode + 2 FPS visual stream</div>
               </div>
             </div>
             <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
@@ -205,12 +284,91 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
               <Zap size={14} style={{ color: "var(--text-sub)" }} />
               <div>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Bot-Blocker Bypass</div>
-                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Using high-fidelity host fingerprint</div>
+                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Real Chrome on host (not headless Chromium)</div>
               </div>
             </div>
             <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
           </div>
         </div>
+      </div>
+
+      {/* Navigation Allowlist editor */}
+      <div style={{ ...glass(0.4), padding: 20, borderRadius: 16, border: "1px solid var(--border-subtle)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <Globe size={16} style={{ color: "#3c6663" }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Site Access</span>
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-sub)", margin: 0, lineHeight: 1.5, maxWidth: 540 }}>
+              By default this agent has open web access. Add domains here to restrict it to ONLY those sites.
+              Use <code>*.example.com</code> to allow all subdomains.
+            </p>
+          </div>
+        </div>
+
+        {isSensitiveArchetype(agent.role) && !allowlistActive && (
+          <div style={{ padding: 10, background: "rgba(212, 160, 74, 0.1)", border: "1px solid rgba(212, 160, 74, 0.3)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--text-main)" }}>
+            <strong style={{ color: "#D4A04A" }}>Suggestion:</strong> {agent.name} handles sensitive context. Consider adding a navigation allowlist so they can only reach the sites needed for their role.
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input
+            type="text"
+            value={allowlistDraft}
+            onChange={e => setAllowlistDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addDomain(); } }}
+            placeholder="example.com or *.example.com"
+            style={{
+              flex: 1, padding: "7px 11px", borderRadius: 7, border: "1px solid var(--border-subtle)",
+              fontSize: 12, fontFamily: "monospace", background: "var(--surface-base)", color: "var(--text-main)",
+            }}
+          />
+          <button
+            onClick={addDomain}
+            disabled={!allowlistDraft.trim() || allowlistSaving}
+            style={{
+              padding: "7px 14px", background: "#3c6663", color: "#fff", border: "none",
+              borderRadius: 7, fontSize: 12, fontWeight: 600,
+              cursor: allowlistDraft.trim() && !allowlistSaving ? "pointer" : "not-allowed",
+              opacity: allowlistDraft.trim() && !allowlistSaving ? 1 : 0.5,
+              display: "flex", alignItems: "center", gap: 4,
+            }}
+          >
+            <Plus size={14} /> Allow
+          </button>
+        </div>
+
+        {allowedDomains.length > 0 ? (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {allowedDomains.map(d => (
+              <div key={d} style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "4px 6px 4px 10px", background: "var(--surface-base)",
+                border: "1px solid var(--border-subtle)", borderRadius: 14,
+                fontSize: 12, fontFamily: "monospace", color: "var(--text-main)",
+              }}>
+                {d}
+                <button
+                  onClick={() => removeDomain(d)}
+                  disabled={allowlistSaving}
+                  aria-label={`Remove ${d}`}
+                  style={{
+                    background: "transparent", border: "none", padding: 2,
+                    color: "var(--text-sub)", cursor: "pointer", display: "flex",
+                  }}
+                >
+                  <XIcon size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 11, color: "var(--text-sub)", fontStyle: "italic" }}>
+            No domains restricted — agent can navigate anywhere on the public internet (except local network, which is always blocked).
+          </div>
+        )}
       </div>
 
       {/* Live View */}
