@@ -107,34 +107,61 @@ pub async fn create_agent(
     }
 
     // ─── Step 2: Configure gateway (best effort — agent is already in SQLite) ──
-    let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "gateway.mode", "local"]).output().await;
-    // Set proper tooling and session scopes to match the working 'Sloane' defaults
-    let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "session.dmScope", "per-channel-peer"]).output().await;
+    //
+    // Previously this ran THREE rapid `openclaw config set` calls. Each one SIGTERMs
+    // the gateway process, so creating an agent triggered three back-to-back restarts —
+    // a cascade that sometimes OOM'd the container. See OPENCLAW_INTEGRATION.md §8.
+    //
+    // Replaced with one direct JSON patch via `node -e` (no SIGTERM) that sets ONLY
+    // the value not already covered by `docker::preflight_write_openclaw_json`:
+    //   - `gateway.mode = "local"`            ← already set by preflight on every boot
+    //   - `agents.defaults.model.primary`     ← per-agent override; see `--model` flag below
+    //   - `session.dmScope`                   ← apply here, hot-reloaded via file-watcher
+    //
+    // For `agents.defaults.model`, we no longer overwrite the global default (preflight
+    // already chooses one based on available API keys). Instead we pass `--model <id>`
+    // directly to `openclaw agents add` below, which scopes the model to THIS agent only.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        get_docker_command()
+            .args([
+                "exec", "-u", "node", "canopy-gateway", "node", "-e",
+                "const fs=require('fs');const p='/home/node/.openclaw/openclaw.json';\
+                 let c=JSON.parse(fs.readFileSync(p,'utf8'));\
+                 c.session=c.session||{};c.session.dmScope='per-channel-peer';\
+                 fs.writeFileSync(p,JSON.stringify(c,null,2));",
+            ])
+            .output(),
+    ).await;
 
-    if let Some(ref model) = personality.active_model {
-        // ⚠️  Use "agents.defaults.model.primary" to produce the nested object format
-        // that OpenClaw expects: model: { "primary": "provider/model-id" }
-        // Confirmed against working reference at /Users/scottieryan/agents/sloane/config/openclaw.json
-        let _ = get_docker_command().args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "config", "set", "agents.defaults.model.primary", model]).output().await;
-    } else {
+    // If this agent has no chosen model AND we couldn't pick a default from keys,
+    // run the audit/repair pass once to recover. (Keeps the previous fall-back semantics.)
+    if personality.active_model.is_none() {
         let _ = crate::audit_openclaw::repair_openclaw_config(app_handle.clone(), None).await;
     }
-
-    // Move file generation after agents add
 
     // ─── Step 4: Register agent in OpenClaw ─────────────────────────────────────
     // If this fails (e.g. OOM kill), the agent is still in SQLite. boot_sync_agents
     // will complete the registration on next launch.
+    //
+    // We pass `--model <id>` here (not as a global default) so the per-agent model
+    // override lives on `agents.list[i].model` rather than `agents.defaults.model`.
     let workspace_path = format!("/home/node/.openclaw/workspace/{}", agent_id);
+
+    let mut add_args: Vec<&str> = vec![
+        "exec", "-u", "node",
+        "-e", "NODE_OPTIONS=--v8-pool-size=1",   // prevents uv_thread_create/EAGAIN under PID pressure
+        "canopy-gateway",
+        "openclaw", "agents", "add",
+        &agent_id,
+        "--workspace", &workspace_path,
+    ];
+    if let Some(ref model) = personality.active_model {
+        add_args.push("--model");
+        add_args.push(model.as_str());
+    }
     let output = get_docker_command()
-        .args([
-            "exec", "-u", "node",
-            "-e", "NODE_OPTIONS=--v8-pool-size=1",   // prevents uv_thread_create/EAGAIN under PID pressure
-            "canopy-gateway",
-            "openclaw", "agents", "add",
-            &agent_id,
-            "--workspace", &workspace_path,
-        ])
+        .args(&add_args)
         .output()
         .await
         .map_err(|e| format!("Failed to register agent with gateway: {}", e))?;
@@ -157,7 +184,8 @@ pub async fn create_agent(
     }
 
     let _ = get_docker_command()
-        .args(["exec", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "agents", "set-identity",
+        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+               "openclaw", "agents", "set-identity",
                "--agent", &agent_id, "--emoji", &emoji])
         .output()
         .await;
@@ -196,6 +224,16 @@ pub async fn create_agent(
 
     // Sync credentials
     write_auth_profiles(&agent_id, &get_creds_for_agent(&agent_id)).await;
+
+    // Populate the per-agent skills array in openclaw.json so the agent isn't stuck on
+    // the bare ["gog","summarize"] global default. `sync_agent_skills` does a single
+    // `node -e` JSON patch — no SIGTERM, hot-reloaded by OpenClaw's file watcher.
+    sync_agent_skills(app_handle.clone(), &agent).await;
+
+    // Write the agent's PERMISSIONS.md so it knows from its very first task what it has
+    // access to and how to request more. Re-written by boot_sync_agents on every restart
+    // and by update_agent_capabilities/update_agent_integrations after toggles.
+    write_permissions_md(&agent);
 
     // Step 6: Asynchronously ensure Playwright is installed
     // This provides a fallback to ensure the browser tool dependencies are installed 
@@ -286,9 +324,12 @@ pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
     let mut parsed: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("Invalid JSON: {}", e))?;
 
-    // Dynamically fetch OpenClaw skills
+    // Dynamically fetch OpenClaw skills.
+    // NODE_OPTIONS=--v8-pool-size=1 — required on every `openclaw` CLI invocation to
+    // prevent uv_thread_create EAGAIN under PID pressure (see OPENCLAW_INTEGRATION.md §5).
     let output = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "skills", "list", "--json"])
+        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+               "openclaw", "skills", "list", "--json"])
         .output()
         .await;
 
@@ -536,12 +577,28 @@ pub async fn update_agent_personality(
         .output()
         .await
         .map_err(|e| format!("Failed to update PREFERENCES.md: {}", e))?;
-        
+
     log_terminal_command_internal(&agent_id, "printf '%s' '...' > ~/.openclaw/agents/[id]/agent/PREFERENCES.md", "PREFERENCES.md successfully updated with latest personality.");
 
     if !output.status.success() {
         return Err("Failed to update personality in container".to_string());
     }
+
+    // Regenerate SOUL.md from the new personality so the running agent's identity, vibe,
+    // soul template, and identity template all reflect the user's latest edits. Previously
+    // this function only wrote PREFERENCES.md, which left SOUL.md frozen at whatever was
+    // generated on agent creation — every personality edit silently no-op'd in the agent's
+    // actual behavior. Mirrors the SOUL.md write block in `update_agent_details`.
+    let soul_md = generate_soul_md(&personality);
+    let soul_cmd = format!(
+        "mkdir -p \"$(dirname '{}')\" && cat > '{}' << 'SOULEOF'\n{}\nSOULEOF",
+        escaped_path, escaped_path, soul_md
+    );
+    let _ = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &soul_cmd])
+        .output()
+        .await;
+    log_terminal_command_internal(&agent_id, "regenerated SOUL.md from updated personality", "");
 
     // Update agent in DB with new personality
     if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
@@ -591,76 +648,121 @@ async fn get_best_user_md_content(db: &tauri::State<'_, crate::db::Database>) ->
     "# USER.md - About Your Human\n\n- **Name:** User\n- **Timezone:** UTC\n".to_string()
 }
 
-async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::models::Agent) {
-    let output = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "get", "agents.list"])
-        .output()
-        .await
-        .unwrap_or_else(|_| std::process::Output { status: Default::default(), stdout: vec![], stderr: vec![] });
+pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::models::Agent) {
+    // Build the canonical skills list from capabilities + integrations.
+    let mut skills: Vec<String> = Vec::new();
+    let caps = &agent.capabilities;
+    if caps.browser   { skills.push("browser".to_string()); }
+    if caps.proxy     { skills.push("proxy".to_string()); }
+    if caps.vision    { skills.push("vision".to_string()); }
+    if caps.canvas    { skills.push("canvas".to_string()); }
+    if caps.coding    { skills.push("coding".to_string()); }
+    if caps.gog       { skills.push("gog".to_string()); }
+    if caps.summarize { skills.push("summarize".to_string()); }
 
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if let Ok(agents) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            if let Some(agents_array) = agents.as_array() {
-                if let Some(index) = agents_array.iter().position(|a| a.get("id").and_then(|v| v.as_str()) == Some(&agent.id)) {
-                    let mut skills = Vec::new();
-                    let caps = &agent.capabilities;
-                    if caps.browser { 
-                        skills.push("browser".to_string()); 
-                        
-                        let agent_id_clone = agent.id.clone();
-                        let app_handle_clone = app_handle.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Ok(port) = crate::browser_manager::enable_jit_proxy(app_handle_clone, agent_id_clone.clone()).await {
-                                let ws_endpoint = format!("ws://host.docker.internal:{}", port);
-                                let path = format!("agents.list[{}].env.PLAYWRIGHT_CDP_ENDPOINT", index);
-                                let _ = get_docker_command()
-                                    .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", &path, &ws_endpoint])
-                                    .output().await;
-                            }
-                        });
-                    }
-                    if caps.proxy { skills.push("proxy".to_string()); }
-                    if caps.vision { skills.push("vision".to_string()); }
-                    if caps.canvas { skills.push("canvas".to_string()); }
-                    if caps.coding { skills.push("coding".to_string()); }
-                    if caps.gog { skills.push("gog".to_string()); }
-                    if caps.summarize { skills.push("summarize".to_string()); }
+    // Map Canopy integration IDs to OpenClaw plugin/channel names and append.
+    for i in &agent.integrations {
+        if i.starts_with("web_") { continue; }
+        let mapped = match i.as_str() {
+            "calendar" | "cal" | "calendar_read" | "calendar_write" => "googleCalendar".to_string(),
+            "email"                                                  => "gmail".to_string(),
+            "drive"                                                  => "googleDrive".to_string(),
+            other                                                    => other.to_string(),
+        };
+        if !skills.contains(&mapped) {
+            skills.push(mapped);
+        }
+    }
 
-                    // Append integrations that act as skills (e.g. gmail, calendar)
-                    // We map internal Canopy IDs to OpenClaw plugin/channel names
-                    for i in &agent.integrations {
-                        if !i.starts_with("web_") {
-                            let mut skill_name = i.clone();
-                            if skill_name == "calendar" || skill_name == "cal" || skill_name == "calendar_read" || skill_name == "calendar_write" {
-                                skill_name = "googleCalendar".to_string();
-                            } else if skill_name == "email" {
-                                skill_name = "gmail".to_string();
-                            } else if skill_name == "drive" {
-                                skill_name = "googleDrive".to_string();
-                            }
-                            
-                            if !skills.contains(&skill_name) {
-                                skills.push(skill_name);
-                            }
-                        }
-                    }
+    // Apply skills (and optionally PLAYWRIGHT_CDP_ENDPOINT) via a single `node -e`
+    // JSON patch. Previously this used `openclaw config get agents.list` plus up to two
+    // `openclaw config set` calls — each set SIGTERMs the gateway. With multiple agents
+    // and frequent integration toggles, that cascade would routinely tip the container
+    // into OOM. One JSON write triggers exactly one hot-reload via the file watcher
+    // (no process restart), so toggling integrations is now ~free.
+    //
+    // For browser-capable agents we also need to launch the JIT proxy and write its
+    // websocket endpoint into `agents.list[i].env.PLAYWRIGHT_CDP_ENDPOINT`. That step
+    // is a separate spawned task — once the proxy port is known, it patches the same
+    // openclaw.json with one more node -e call.
+    let agent_id = agent.id.clone();
+    let skills_json = serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string());
 
-                    let skills_json = serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string());
+    let patch_script = format!(
+        r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.agents=c.agents||{{}};
+c.agents.list=c.agents.list||[];
+const i=c.agents.list.findIndex(a=>a&&a.id==='{id}');
+if(i>=0){{
+  c.agents.list[i].skills={skills};
+  fs.writeFileSync(p,JSON.stringify(c,null,2));
+  console.log('skills patched for {id}');
+}} else {{
+  console.log('agent {id} not found in agents.list — skipping skills patch');
+}}
+"#,
+        id = agent_id,
+        skills = skills_json,
+    );
 
-                    let path = format!("agents.list[{}].skills", index);
-                    let cmd_str = format!("openclaw config set {} '{}' --strict-json", path, skills_json);
-                    let output2 = get_docker_command()
-                        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "config", "set", &path, &skills_json, "--strict-json"])
-                        .output()
-                        .await;
-                        
-                    if let Ok(out) = output2 {
-                        log_terminal_command_internal(&agent.id, &cmd_str, &String::from_utf8_lossy(&out.stdout));
-                    }
-                }
+    let cmd_str = format!("[node -e patch] agents.list[{}].skills = {}", agent_id, skills_json);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_script])
+            .output(),
+    ).await;
+
+    match &output {
+        Ok(Ok(o)) => {
+            log_terminal_command_internal(&agent_id, &cmd_str, &String::from_utf8_lossy(&o.stdout));
+            if !o.status.success() {
+                tracing::warn!(
+                    "sync_agent_skills: patch exited {} for {}: {}",
+                    o.status, agent_id, String::from_utf8_lossy(&o.stderr).trim()
+                );
             }
         }
+        Ok(Err(e)) => tracing::warn!("sync_agent_skills: docker exec failed for {}: {}", agent_id, e),
+        Err(_)     => tracing::warn!("sync_agent_skills: patch timed out for {}", agent_id),
+    }
+
+    // Browser capability: launch the JIT proxy and tell OpenClaw the resulting
+    // websocket endpoint as a per-agent env var.
+    //
+    // ⚠️  This MUST go through the `openclaw agents edit <id> --env KEY=VAL` CLI rather
+    // than a direct JSON patch. OpenClaw 2026.4.14's schema does NOT recognise `env`
+    // as a top-level key on `agents.list[i]`; writing it directly produces:
+    //   "agents.list.0: Unrecognized key: 'env'"
+    // and the entire config fails validation on the next gateway start, which then
+    // refuses to load any agents until the user runs `openclaw doctor --fix`.
+    //
+    // The CLI command knows the correct internal shape (it normalises the env into the
+    // schema-valid storage format), so we delegate to it. Same approach used by
+    // `start_machine_browser` in browser_manager.rs.
+    if caps.browser {
+        let agent_id_clone = agent_id.clone();
+        let app_handle_clone = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Ok(port) = crate::browser_manager::enable_jit_proxy(app_handle_clone, agent_id_clone.clone()).await {
+                let ws_endpoint = format!("ws://host.docker.internal:{}", port);
+                let env_arg = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    get_docker_command()
+                        .args([
+                            "exec", "-u", "node",
+                            "-e", "NODE_OPTIONS=--v8-pool-size=1",
+                            "canopy-gateway",
+                            "openclaw", "agents", "edit", &agent_id_clone,
+                            "--env", &env_arg,
+                        ])
+                        .output(),
+                ).await;
+            }
+        });
     }
 }
 
@@ -675,8 +777,11 @@ pub async fn update_agent_integrations(
         agent.integrations = integrations;
         let _ = db.update_agent(&agent);
         let _ = db.log_audit(&agent_id, "update_integrations", None, "Agent integrations updated", None);
-        
+
         sync_agent_skills(app_handle, &agent).await;
+        // Refresh PERMISSIONS.md so the agent immediately knows about the new access
+        // (or its loss) at its next inference.
+        write_permissions_md(&agent);
     }
     Ok(())
 }
@@ -707,9 +812,11 @@ pub async fn update_agent_capabilities(
         agent.capabilities = capabilities.clone();
         let _ = db.update_agent(&agent);
         let _ = db.log_audit(&agent_id, "update_capabilities", Some("security"), "Agent capabilities and network permissions updated", None);
-        
+
         // 2. Push to OpenClaw Container
         sync_agent_skills(app_handle, &agent).await;
+        // 3. Refresh PERMISSIONS.md so the agent's self-awareness matches reality.
+        write_permissions_md(&agent);
     } else {
         return Err("Agent not found".to_string());
     }
@@ -782,11 +889,20 @@ pub async fn toggle_agent_isolation(
         return Err("Agent not found".to_string());
     }
 
-    // 1. Remove the agent from the shared gateway (best-effort)
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "agents", "remove", &agent_id])
-        .output()
-        .await;
+    // 1. Remove the agent from the shared gateway (best-effort).
+    // NODE_OPTIONS=--v8-pool-size=1 prevents uv_thread_create EAGAIN under PID pressure
+    // (see OPENCLAW_INTEGRATION.md §5).
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        get_docker_command()
+            .args([
+                "exec", "-u", "node",
+                "-e", "NODE_OPTIONS=--v8-pool-size=1",
+                "canopy-gateway",
+                "openclaw", "agents", "remove", &agent_id,
+            ])
+            .output(),
+    ).await;
 
     let data_dir = dirs::data_dir()
         .ok_or("Could not find data directory")?
@@ -809,7 +925,7 @@ pub async fn toggle_agent_isolation(
             .output()
             .await
             .map_err(|e| format!("Failed to run docker-compose: {}", e))?;
-            
+
         if !out.status.success() {
             tracing::warn!("Failed to start isolated container: {}", String::from_utf8_lossy(&out.stderr));
         }
@@ -820,13 +936,43 @@ pub async fn toggle_agent_isolation(
             .output()
             .await;
 
-        // Add back to shared gateway
-        let _ = get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "agents", "add", 
-                   "--id", &agent_id,
-                   "--workspace", &format!("/home/node/.openclaw/workspace/{}", agent_id)])
-            .output()
-            .await;
+        // Add back to shared gateway. Mirrors the hardened pattern in `set_agent_paused`:
+        //   - workspace dir mkdir'd first (agents add fails silently without it)
+        //   - pkill any leftover `openclaw agents` processes from previous boots
+        //   - container-side `timeout` binary (175s) kills orphans inside the container
+        //   - Rust timeout (180s) is slightly longer so docker exec exits cleanly
+        //   - NODE_OPTIONS=--v8-pool-size=1 prevents the uv_thread_create EAGAIN crash
+        //   - <id> is POSITIONAL, not `--id <id>` (which is not a valid flag).
+        let workspace_path = format!("/home/node/.openclaw/workspace/{}", agent_id);
+
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            get_docker_command()
+                .args(["exec", "-u", "node", "canopy-gateway", "mkdir", "-p", &workspace_path])
+                .output(),
+        ).await;
+
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            get_docker_command()
+                .args(["exec", "canopy-gateway", "sh", "-c",
+                       "pkill -f 'openclaw agents' 2>/dev/null; true"])
+                .output(),
+        ).await;
+
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(180),
+            get_docker_command()
+                .args([
+                    "exec", "-u", "node",
+                    "-e", "NODE_OPTIONS=--v8-pool-size=1 --max-old-space-size=512",
+                    "canopy-gateway",
+                    "timeout", "175",
+                    "openclaw", "agents", "add", &agent_id,
+                    "--workspace", &workspace_path,
+                ])
+                .output(),
+        ).await;
     }
 
     Ok(())
@@ -1450,7 +1596,9 @@ pub async fn check_agent_status(agent_id: String) -> Result<String, String> {
     // until the async runtime is exhausted. With the timeout, we get "offline" briefly
     // during warmup and "active" once the IPC is available again.
     let exec_future = get_docker_command()
-        .args(["exec", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "timeout", "-k", "2", "7", "openclaw", "agents", "list", "--json"])
+        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+               "timeout", "-k", "2", "7",
+               "openclaw", "agents", "list", "--json"])
         .output();
 
     match tokio::time::timeout(std::time::Duration::from_secs(8), exec_future).await {
@@ -1574,6 +1722,102 @@ async fn write_auth_profiles(agent_id: &str, keys: &std::collections::HashMap<St
         _ =>
             tracing::warn!("write_auth_profiles: timed out writing credentials for {}", agent_id),
     }
+}
+
+// ─── Provider API key propagation ─────────────────────────────────────────────
+//
+// Two Tauri commands let the UI propagate API key changes to OpenClaw without
+// touching agents that shouldn't be affected:
+//
+//  • `sync_agent_api_keys(agent_id)` — refreshes auth-profiles.json for ONE agent.
+//    Use after the user edits the per-agent provider keys for that agent only.
+//    Other agents are NOT touched.
+//
+//  • `sync_global_api_key(provider)`  — fans out to every agent EXCEPT those that
+//    have their own per-agent override for that provider. Use after the user
+//    edits a global provider key in the Vault/Settings.
+//
+// Both commands are idempotent and silently skip agents whose dir doesn't yet
+// exist (mirroring the guard in `sync_credentials`).
+
+fn provider_to_per_agent_suffix(provider: &str) -> Option<&'static str> {
+    match provider.to_lowercase().as_str() {
+        "anthropic"           => Some("anthropic_key"),
+        "openai"              => Some("openai_key"),
+        "gemini" | "google"   => Some("gemini_key"),
+        "xai" | "grok"        => Some("grok_key"),
+        _                     => None,
+    }
+}
+
+/// Refresh auth-profiles.json for ONE specific agent. Called after the user changes a
+/// per-agent provider key. Never touches other agents.
+#[tauri::command]
+pub async fn sync_agent_api_keys(agent_id: String) -> Result<(), String> {
+    // Skip if the agent dir doesn't exist yet — same guard as `sync_credentials`,
+    // prevents creating an empty agent dir before `agents add` has registered it.
+    let agent_dir_exists = dirs::data_dir()
+        .map(|d| d.join("Canopy").join("openclaw-state").join("agents").join(&agent_id).exists())
+        .unwrap_or(false);
+    if !agent_dir_exists {
+        tracing::info!("sync_agent_api_keys: agent dir for {} not yet created — skipping", agent_id);
+        return Ok(());
+    }
+
+    let creds = get_creds_for_agent(&agent_id);
+    if creds.is_empty() {
+        tracing::info!("sync_agent_api_keys: no provider keys available for {}", agent_id);
+        return Ok(());
+    }
+    write_auth_profiles(&agent_id, &creds).await;
+    Ok(())
+}
+
+/// Refresh auth-profiles.json for every agent that DOES NOT have its own per-agent
+/// override for the given provider. Called after the user changes a global provider
+/// key. Returns the number of agents that were refreshed.
+///
+/// Provider must be one of: "anthropic" | "openai" | "gemini" | "google" | "xai" | "grok".
+#[tauri::command]
+pub async fn sync_global_api_key(
+    db: tauri::State<'_, crate::db::Database>,
+    provider: String,
+) -> Result<u32, String> {
+    let suffix = provider_to_per_agent_suffix(&provider)
+        .ok_or_else(|| format!("Unknown provider: {}", provider))?;
+
+    let agents = db.list_agents().map_err(|e| format!("DB error: {}", e))?;
+    let mut updated: u32 = 0;
+
+    for agent in agents {
+        // If this agent has its own per-agent key for `provider`, the global change
+        // doesn't apply to them — skip.
+        let per_agent_key = format!("agent_{}_{}", agent.id, suffix);
+        if let Ok(v) = crate::keychain::get_secret(&per_agent_key) {
+            if !v.trim().is_empty() {
+                tracing::debug!(
+                    "sync_global_api_key: skipping {} — has per-agent {} override",
+                    agent.id, provider
+                );
+                continue;
+            }
+        }
+
+        // Skip agents whose dir doesn't exist yet (not registered with OpenClaw).
+        let dir_exists = dirs::data_dir()
+            .map(|d| d.join("Canopy").join("openclaw-state").join("agents").join(&agent.id).exists())
+            .unwrap_or(false);
+        if !dir_exists { continue; }
+
+        let creds = get_creds_for_agent(&agent.id);
+        if creds.is_empty() { continue; }
+
+        write_auth_profiles(&agent.id, &creds).await;
+        updated += 1;
+    }
+
+    tracing::info!("sync_global_api_key: refreshed {} agent(s) after global '{}' key change", updated, provider);
+    Ok(updated)
 }
 
 #[tauri::command]
@@ -2750,7 +2994,9 @@ pub async fn boot_sync_agents(
                 if let Ok(port) = crate::browser_manager::enable_jit_proxy(app_handle_clone, id_clone.clone()).await {
                     let ws_endpoint = format!("ws://host.docker.internal:{}", port);
                     let _ = crate::openclaw::get_docker_command()
-                        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "agents", "edit", &id_clone, "--env", &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint)])
+                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+                               "openclaw", "agents", "edit", &id_clone,
+                               "--env", &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint)])
                         .output().await;
                 }
             });
@@ -3057,7 +3303,15 @@ pub async fn boot_sync_agents(
 
         // Step 3: Write auth-profiles.json — load API keys from keychain and write.
         write_auth_profiles(id, &get_creds_for_agent(id)).await;
-        
+
+        // Step 3b: Populate `agents.list[i].skills` from this agent's capabilities so
+        // OpenClaw doesn't fall back to the bare ["gog","summarize"] global default.
+        sync_agent_skills(app_handle.clone(), &agent).await;
+
+        // Step 3c: Refresh PERMISSIONS.md so the agent's understanding of its own access
+        // is up-to-date when it picks up its first task this session.
+        write_permissions_md(&agent);
+
         seed_user_md(&db, id);
 
         ok += 1;
@@ -3575,6 +3829,183 @@ fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
             let _ = std::fs::write(&user_md_path, content);
         }
     }
+}
+
+/// Write `PERMISSIONS.md` to the agent's workspace describing exactly what it has access
+/// to AND how to request more access at runtime. The agent reads this at the start of
+/// each task so it knows which actions will succeed without trying-and-failing, and so
+/// it knows the well-defined channel to request elevation through (POST to
+/// localhost:18802/request_permission).
+///
+/// Called from:
+///   - `create_agent` (immediately after the agent is registered with OpenClaw)
+///   - `boot_sync_agents` (every gateway start, so changes propagate after restarts)
+///   - `update_agent_capabilities` / `update_agent_integrations` (best-effort refresh
+///     after the user toggles something)
+///
+/// Path: `~/Library/Application Support/Canopy/openclaw-state/workspace/{agent_id}/PERMISSIONS.md`
+/// Inside the container the workspace mount surfaces it at
+/// `/home/node/.openclaw/workspace/{agent_id}/PERMISSIONS.md`.
+pub fn write_permissions_md(agent: &crate::models::Agent) {
+    let Some(workspace_root) = dirs::data_dir().map(|d| {
+        d.join("Canopy").join("openclaw-state").join("workspace").join(&agent.id)
+    }) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&workspace_root);
+    let path = workspace_root.join("PERMISSIONS.md");
+
+    // Capability skills the agent currently has.
+    let caps = &agent.capabilities;
+    let skill_lines: Vec<&str> = [
+        ("browser",   caps.browser),
+        ("proxy",     caps.proxy),
+        ("vision",    caps.vision),
+        ("canvas",    caps.canvas),
+        ("coding",    caps.coding),
+        ("gog",       caps.gog),
+        ("summarize", caps.summarize),
+    ].iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect();
+
+    // Integrations (channel/connector access).
+    let integrations: Vec<&str> = agent.integrations.iter().map(|s| s.as_str()).collect();
+
+    // Web allowlist — read directly from the per-agent file (separate storage).
+    let allowed_domains: Vec<String> = dirs::data_dir()
+        .map(|d| d.join("Canopy").join("agent-browsers").join(&agent.id).join("allowlist.json"))
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("domains").cloned())
+        .and_then(|d| d.as_array().cloned())
+        .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|x| x.to_string())).collect())
+        .unwrap_or_default();
+
+    // Saved web logins — list of domains we've stored credentials for in keychain.
+    // The agent doesn't get the credentials themselves; just knows that if they encounter
+    // a login wall on `domain`, the user has already saved a login for it.
+    let saved_login_domains: Vec<String> = crate::keychain::get_web_credentials_cmd()
+        .ok()
+        .map(|creds| {
+            creds.iter()
+                .filter_map(|v| v.get("domain").and_then(|d| d.as_str().map(|s| s.to_string())))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Provider API keys available to this agent (per-agent override OR global fallback).
+    let creds = get_creds_for_agent(&agent.id);
+    let mut provider_keys: Vec<&str> = creds.keys()
+        .filter_map(|k| match k.as_str() {
+            "ANTHROPIC_API_KEY" => Some("anthropic"),
+            "OPENAI_API_KEY"    => Some("openai"),
+            "GEMINI_API_KEY"    => Some("google"),
+            "XAI_API_KEY"       => Some("xai"),
+            _ => None,
+        })
+        .collect();
+    provider_keys.sort();
+
+    let isolation_note = if agent.isolated {
+        "Yes — runs in a dedicated container; cannot reach other agents' workspaces or sessions."
+    } else {
+        "No — shares the gateway container with other agents (separate workspaces, separate browser profiles)."
+    };
+
+    let allowlist_block = if allowed_domains.is_empty() {
+        "Open web access. You may navigate to any public domain, except local network \
+         addresses (localhost, 192.168.*, 10.*, 172.16.*, file://) which are always blocked."
+            .to_string()
+    } else {
+        format!(
+            "Restricted to these domains only:\n{}\n(Wildcard `*.example.com` includes \
+             all subdomains.) Anything else returns a proxy error.",
+            allowed_domains.iter().map(|d| format!("  - `{}`", d)).collect::<Vec<_>>().join("\n")
+        )
+    };
+
+    let saved_logins_block = if saved_login_domains.is_empty() {
+        "(none yet)".to_string()
+    } else {
+        saved_login_domains.iter().map(|d| format!("  - `{}`", d)).collect::<Vec<_>>().join("\n")
+    };
+
+    let skills_block = if skill_lines.is_empty() {
+        "(none)".to_string()
+    } else {
+        skill_lines.iter().map(|s| format!("  - `{}`", s)).collect::<Vec<_>>().join("\n")
+    };
+
+    let integrations_block = if integrations.is_empty() {
+        "(none)".to_string()
+    } else {
+        integrations.iter().map(|s| format!("  - `{}`", s)).collect::<Vec<_>>().join("\n")
+    };
+
+    let providers_block = if provider_keys.is_empty() {
+        "(none)".to_string()
+    } else {
+        provider_keys.iter().map(|p| format!("  - `{}`", p)).collect::<Vec<_>>().join("\n")
+    };
+
+    let content = format!(
+        "# PERMISSIONS.md — What you have access to\n\n\
+         _This file is regenerated whenever your permissions change. Read it at the start \
+         of each task. If you need something not listed here, request it via the channel \
+         described at the bottom — don't try and fail._\n\n\
+         ## Skills enabled\n\
+         {skills}\n\n\
+         ## Integrations connected\n\
+         {integrations}\n\n\
+         ## LLM provider keys available\n\
+         {providers}\n\n\
+         ## Web access\n\
+         {allowlist}\n\n\
+         ## Saved web logins\n\
+         The user has stored credentials for these domains. If you hit a login page on \
+         one of them, the credentials will be available via the WebVault auto-fill flow:\n\
+         {saved_logins}\n\n\
+         ## Container isolation\n\
+         {isolation}\n\n\
+         ---\n\n\
+         ## Requesting more access\n\n\
+         If you need a permission you don't have, ask the user **once** by POSTing to:\n\n\
+         ```\n\
+         POST http://host.docker.internal:18802/request_permission\n\
+         Content-Type: application/json\n\n\
+         {{\n  \"agent_id\": \"{agent_id}\",\n  \"permission_id\": \"<id>\",\n  \"justification\": \"<why you need it>\"\n}}\n\
+         ```\n\n\
+         The user will see a modal with four buttons: **Allow once** (single use), \
+         **Allow this session** (until next gateway restart), **Allow forever** (persists \
+         to your config), or **Deny**. The HTTP call blocks until they decide. On grant \
+         you'll get `{{\"status\":\"granted\",\"scope\":\"once|session|forever\"}}`; on deny, \
+         `{{\"status\":\"denied\"}}` with HTTP 403.\n\n\
+         Valid `permission_id` values:\n\
+         - Skill names: `browser`, `proxy`, `vision`, `canvas`, `coding`, `gog`, `summarize`\n\
+         - Integration names: `gmail`, `googleCalendar`, `googleDrive`, `slack`, `github`, etc.\n\
+         - Domain access: `domain:example.com` (adds to your web allowlist)\n\n\
+         ## Asking the user to look at your browser\n\n\
+         If you need the user to visually inspect or confirm something on a webpage \
+         (CAPTCHA, 2FA prompt, ambiguous result), POST to:\n\n\
+         ```\n\
+         POST http://host.docker.internal:18802/request_attention\n\
+         Content-Type: application/json\n\n\
+         {{\n  \"agent_id\": \"{agent_id}\",\n  \"reason\": \"<short reason>\"\n}}\n\
+         ```\n\n\
+         This is fire-and-forget. You'll get an immediate ack and the user gets a toast \
+         offering to reveal your browser window. Use this instead of just waiting.\n",
+        agent_id    = agent.id,
+        skills      = skills_block,
+        integrations = integrations_block,
+        providers   = providers_block,
+        allowlist   = allowlist_block,
+        saved_logins = saved_logins_block,
+        isolation   = isolation_note,
+    );
+
+    let _ = std::fs::write(&path, content);
+    tracing::debug!("write_permissions_md: wrote PERMISSIONS.md for agent {}", agent.id);
 }
 
 /// Generates the content for a new agent's USER.md

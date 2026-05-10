@@ -89,7 +89,8 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
                                     let _ = db.set_agent_paused(&agent.id, true);
                                     
                                     let _ = crate::openclaw::get_docker_command()
-                                        .args(["exec", "-u", "node", "canopy-gateway", "openclaw", "agents", "remove", &agent.id])
+                                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+                                               "openclaw", "agents", "remove", &agent.id])
                                         .output()
                                         .await;
                                         

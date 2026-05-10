@@ -394,7 +394,7 @@ export function OnboardingWizard() {
   // Sync static import changes during Vite HMR
   useEffect(() => {
     // Robust sync with admin server — bypass cache to ensure real-time updates
-    fetch('http://localhost:3001/api/agents', { cache: 'no-store' })
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/agents`, { cache: 'no-store' })
       .then(res => {
         if (!res.ok) throw new Error("Server not reachable");
         return res.json();
@@ -409,7 +409,7 @@ export function OnboardingWizard() {
   }, []);
 
   useEffect(() => {
-    fetch('http://localhost:3001/api/library')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/library`)
       .then(res => res.json())
       .then(data => setGlobalLibrary(data))
       .catch(err => console.warn("Local API server not running for library.", err));
@@ -514,7 +514,7 @@ export function OnboardingWizard() {
 
         let defaultAccessories: string[] = [];
         try {
-          const accRes = await fetch('http://localhost:3001/api/accessories');
+          const accRes = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/accessories`);
           if (accRes.ok) {
             const catalog = await accRes.json();
             defaultAccessories = catalog.defaults?.[selectedRole as string] || [];
@@ -1190,7 +1190,7 @@ export function OnboardingWizard() {
                         setRecentlyRead([...recentlyRead, title]);
                         setCustomBookInput("");
                         if (selectedRole && selectedRole !== "Custom") {
-                          fetch('http://localhost:3001/api/agents/add-suggestion', {
+                          fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/agents/add-suggestion`, {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ role: selectedRole, bookTitle: title })

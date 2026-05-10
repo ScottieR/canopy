@@ -216,14 +216,12 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
         // Fallback to the Rust-side default if nothing is selected.
         const finalModel = selectedModel || defaultModelInfo?.id || "google/gemini-3.1-flash-lite-preview";
 
-        // Synchronize updated keys directly to OpenClaw's auth-profiles.json layer
-        let mappedKeys: Record<string, string> = {};
-        if (keys["OpenAI"]) mappedKeys["OPENAI_API_KEY"] = keys["OpenAI"];
-        if (keys["Anthropic"]) mappedKeys["ANTHROPIC_API_KEY"] = keys["Anthropic"];
-        if (keys["Gemini"]) mappedKeys["GEMINI_API_KEY"] = keys["Gemini"];
-        if (keys["Grok"]) mappedKeys["XAI_API_KEY"] = keys["Grok"];
-
-        await invoke("sync_credentials", { agentId: agent.id, keys: mappedKeys });
+        // Synchronize updated keys to OpenClaw's auth-profiles.json layer for THIS agent
+        // only. We use `sync_agent_api_keys` (which reads keychain + applies the per-agent
+        // → global precedence via `get_creds_for_agent`) instead of the older
+        // `sync_credentials` that only wrote the explicit map and would silently drop the
+        // global fallback if a per-agent key was cleared. Other agents are NOT affected.
+        await invoke("sync_agent_api_keys", { agentId: agent.id });
 
         // Push personality state to SQLite. Use the full provider/model-name string.
         await invoke("update_agent_personality", {

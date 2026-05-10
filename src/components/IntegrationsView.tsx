@@ -4,7 +4,39 @@ import { open } from "@tauri-apps/plugin-shell";
 import { ProvidersVault } from "./ProvidersVault";
 import { WebVault } from "./WebVault";
 import { PasswordInput } from "./shared/PasswordInput";
+import { ConfirmDisconnectModal } from "./shared/ConfirmDisconnectModal";
 import { Link, Calendar, HardDrive, Github, MessageCircle, Cloud, Database } from "lucide-react";
+
+// ─── Disconnect modal config (per integration) ────────────────────────────────
+//
+// One central definition makes it easy to add new integrations and keeps the modal
+// copy consistent. Each entry describes: which Tauri command to invoke, which
+// keychain tokens we'll be wiping (shown in the modal), and any extra warning copy.
+type DisconnectIntegrationKey = "telegram" | "discord" | "slack-global";
+
+const DISCONNECT_CONFIG: Record<DisconnectIntegrationKey, {
+  displayName: string;
+  command: string;
+  tokens: string[];
+  extraNote?: string;
+}> = {
+  telegram: {
+    displayName: "Telegram",
+    command: "disconnect_telegram",
+    tokens: ["Telegram Bot Token"],
+  },
+  discord: {
+    displayName: "Discord",
+    command: "disconnect_discord",
+    tokens: ["Discord Bot Token", "Discord Guild ID (if set)"],
+  },
+  "slack-global": {
+    displayName: "Slack",
+    command: "disconnect_slack_global",
+    tokens: ["Slack Bot Token", "Slack App Token"],
+    extraNote: "This is the legacy single-workspace Slack connection. Per-agent Slack connections are managed in each agent's Connections tab.",
+  },
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -161,6 +193,13 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
   const [gmailLoading, setGmailLoading] = useState(false);
   const [calLoading, setCalLoading] = useState(false);
 
+  // Disconnect-confirmation modal state. We track which integration the user is about
+  // to disconnect, plus a `busy` flag so we can disable the buttons while the Tauri
+  // call is in flight (the disconnect involves a `docker restart` and can take a few
+  // seconds). The actual `handleConfirmDisconnect` callback is declared further down,
+  // after `checkStatuses` is in scope (so it can re-check statuses on completion).
+  const [disconnectTarget, setDisconnectTarget] = useState<DisconnectIntegrationKey | null>(null);
+  const [disconnectBusy, setDisconnectBusy] = useState(false);
 
   const [connectors, setConnectors] = useState<any[]>([]);
 
@@ -199,6 +238,24 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       setDiscordStatus({ connected: !!tok });
     } catch { setDiscordStatus({ connected: false }); }
   }, []);
+
+  // Disconnect handler — declared here (after `checkStatuses`) so we can re-check
+  // statuses immediately after the disconnect completes and the UI reflects the
+  // new disconnected state without requiring the user to refresh.
+  const handleConfirmDisconnect = useCallback(async () => {
+    if (!disconnectTarget) return;
+    const cfg = DISCONNECT_CONFIG[disconnectTarget];
+    setDisconnectBusy(true);
+    try {
+      await invoke(cfg.command);
+    } catch (e) {
+      console.error(`${cfg.displayName} disconnect failed:`, e);
+    } finally {
+      setDisconnectBusy(false);
+      setDisconnectTarget(null);
+      checkStatuses();
+    }
+  }, [disconnectTarget, checkStatuses]);
 
   useEffect(() => { 
     checkStatuses(); 
@@ -374,6 +431,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               status={telegramStatus}
               connectedAgents={getConnectedAgentsWithMode("telegram")}
               onConnect={() => launchCompanion("telegram", "Telegram")}
+              onDisconnect={() => setDisconnectTarget("telegram")}
             />
 
             {/* Discord */}
@@ -384,6 +442,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               status={discordStatus}
               connectedAgents={getConnectedAgentsWithMode("discord")}
               onConnect={() => launchCompanion("discord", "Discord")}
+              onDisconnect={() => setDisconnectTarget("discord")}
             />
 
             {/* Github */}
@@ -462,6 +521,26 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
           </div>
         )}
       </div>
+
+      {/* Disconnect-confirmation modal — rendered for any integration that supports
+          a hosted disconnect command. Per-agent disconnects (Slack, GitHub) are
+          handled in each agent's Connections tab, not here. */}
+      <ConfirmDisconnectModal
+        open={disconnectTarget !== null}
+        integrationName={disconnectTarget ? DISCONNECT_CONFIG[disconnectTarget].displayName : ""}
+        tokens={disconnectTarget ? DISCONNECT_CONFIG[disconnectTarget].tokens : []}
+        boundAgents={
+          disconnectTarget
+            ? getConnectedAgentsWithMode(
+                disconnectTarget === "slack-global" ? "slack" : disconnectTarget
+              ).map(a => a.name)
+            : []
+        }
+        extraNote={disconnectTarget ? DISCONNECT_CONFIG[disconnectTarget].extraNote : undefined}
+        busy={disconnectBusy}
+        onCancel={() => { if (!disconnectBusy) setDisconnectTarget(null); }}
+        onConfirm={handleConfirmDisconnect}
+      />
     </div>
   );
 }

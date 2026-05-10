@@ -64,7 +64,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
 
   const [catalog, setCatalog] = useState<any>(null);
   useEffect(() => {
-    fetch('http://localhost:3001/api/accessories')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/accessories`)
       .then(r => r.json())
       .then(d => setCatalog(d))
       .catch(() => { });
@@ -72,7 +72,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
 
   const [habitats, setHabitats] = useState<any[]>([]);
   useEffect(() => {
-    fetch('http://localhost:3001/api/habitats')
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/habitats`)
       .then(r => r.json())
       .then(d => setHabitats(d))
       .catch(() => { });
@@ -188,7 +188,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                   return (
                     <SafeBillboard
                       key={path}
-                      url={`http://localhost:3001${path}`}
+                      url={`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}${path}`}
                       position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 1.2, 2.5, 0]}
                     />
                   );
