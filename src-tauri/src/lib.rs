@@ -197,6 +197,7 @@ pub fn run() {
             openclaw::get_global_audit_log,
             openclaw::preflight_cleanup,
             openclaw::boot_sync_agents,
+            openclaw::sync_gateway_channels,
             openclaw::get_available_models,
             openclaw::get_connectors_config,
             openclaw::get_openclaw_status_json,
@@ -219,6 +220,7 @@ pub fn run() {
             bridge::list_available_bridge_types,
             // iMessage bridge
             imessage::check_full_disk_access,
+            imessage::open_full_disk_access_settings,
             imessage::list_imessage_threads,
             imessage::read_imessage_messages,
             imessage::get_allowed_imessage_threads,

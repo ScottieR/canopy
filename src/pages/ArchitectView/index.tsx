@@ -16,7 +16,7 @@ import { OverviewTab } from './OverviewTab';
 import { IdentityTab } from './IdentityTab';
 import { PersonalityTab } from './PersonalityTab';
 import { PermissionsTab } from './PermissionsTab';
-import { MemoryTab } from './MemoryTab';
+
 import { SpendTab } from './SpendTab';
 import { ActivityTab } from './ActivityTab';
 import { ChatTab } from './ChatTab';

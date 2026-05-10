@@ -173,20 +173,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
   }, []);
 
   const checkStatuses = useCallback(async () => {
-    // Slack is now per-agent, so no global status check needed here
-
-    // Gmail — check if token is in keychain
-    try {
-      const tok = await invoke<string>("get_secret_cmd", { key: "GMAIL_ACCESS_TOKEN" });
-      const email = await invoke<string>("get_secret_cmd", { key: "GMAIL_USER_EMAIL" }).catch(() => "");
-      setGmailStatus({ connected: !!tok, label: email || undefined });
-    } catch { setGmailStatus({ connected: false }); }
-
-    // Calendar
-    try {
-      const tok = await invoke<string>("get_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
-      setCalendarStatus({ connected: !!tok });
-    } catch { setCalendarStatus({ connected: false }); }
+    // Gmail & Calendar are now per-agent, so no global status check needed here
 
     // iMessage
     try {
@@ -253,43 +240,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       return { id: a.id, name: a.name, mode };
     });
 
-  // ── Gmail connect
-  const connectGmail = async () => {
-    setGmailLoading(true);
-    try {
-      const result = await invoke<{ access_token?: string }>("start_google_oauth", {
-        scopes: ["email"],
-        readOnly: false,
-      });
-      if (result.access_token) {
-        await invoke("store_secret_cmd", { key: "GMAIL_ACCESS_TOKEN", value: result.access_token });
-        setGmailStatus({ connected: true });
-      }
-    } catch (e) {
-      console.error("Gmail connect failed:", e);
-    } finally {
-      setGmailLoading(false);
-    }
-  };
-
-  // ── Calendar connect
-  const connectCalendar = async () => {
-    setCalLoading(true);
-    try {
-      const result = await invoke<{ access_token?: string }>("start_google_oauth", {
-        scopes: ["calendar"],
-        readOnly: false,
-      });
-      if (result.access_token) {
-        await invoke("store_secret_cmd", { key: "GCAL_ACCESS_TOKEN", value: result.access_token });
-        setCalendarStatus({ connected: true });
-      }
-    } catch (e) {
-      console.error("Calendar connect failed:", e);
-    } finally {
-      setCalLoading(false);
-    }
-  };
+  // ── Global connect for Gmail and Calendar has been removed in favor of strict per-agent isolation ──
 
   // ── iMessage — just prompts for Full Disk Access
   const connectIMessage = async () => {
@@ -305,22 +256,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       console.error("iMessage setup error:", e);
     }
   };
-
-
-
-  const disconnectGmail = async () => {
-    try {
-      await invoke("delete_secret_cmd", { key: "GMAIL_ACCESS_TOKEN" });
-      setGmailStatus({ connected: false });
-    } catch (e) { console.error(e); }
-  };
-
-  const disconnectCalendar = async () => {
-    try {
-      await invoke("delete_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
-      setCalendarStatus({ connected: false });
-    } catch (e) { console.error(e); }
-  };
+  // ── Global disconnect for Gmail and Calendar has been removed ──
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -389,24 +325,18 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
             <ServiceCard
               icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2z" fill="#fff" stroke="#E8EAED" strokeWidth="1.5"/><path d="M2 6l10 7 10-7" stroke="#EA4335" strokeWidth="2" strokeLinecap="round"/><path d="M2 6l10 7" stroke="#FBBC05" strokeWidth="1.5"/><path d="M22 6l-10 7" stroke="#34A853" strokeWidth="1.5"/></svg>}
               name="Gmail"
-              description="Read emails and send replies on behalf of your agents (using your Google account)."
-              status={gmailStatus}
+              description="Read emails and send replies. Configured per-agent."
+              status={{ connected: getConnectedAgentsWithMode("email").length > 0 }}
               connectedAgents={getConnectedAgentsWithMode("email")}
-              onConnect={connectGmail}
-              onDisconnect={gmailStatus.connected ? disconnectGmail : undefined}
-              isLoading={gmailLoading}
             />
 
             {/* Calendar */}
             <ServiceCard
               icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4285F4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>}
               name="Google Calendar"
-              description="Read events and create calendar items for scheduling agents."
-              status={calendarStatus}
+              description="View and schedule events. Configured per-agent."
+              status={{ connected: getConnectedAgentsWithMode("calendar").length > 0 }}
               connectedAgents={getConnectedAgentsWithMode("calendar")}
-              onConnect={connectCalendar}
-              onDisconnect={calendarStatus.connected ? disconnectCalendar : undefined}
-              isLoading={calLoading}
             />
 
             {/* File System */}

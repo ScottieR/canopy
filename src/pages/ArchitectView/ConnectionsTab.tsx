@@ -36,7 +36,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
     { id: "filesystem", name: "Workspace (File System)", subtitle: "Allow agent to read and mutate local files in their designated workspace directory.", icon: "folder", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: false },
     { id: "calendar", name: "Google Calendar", subtitle: "Allow agent to view and schedule events on your Google Calendar", icon: "calendar", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
     { id: "drive", name: "Google Drive", subtitle: "Allow agent to read, write, and organize files in your Google Drive", icon: "hard-drive", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "github", name: "GitHub", subtitle: "Allow agent to read repositories, create PRs, and review code", icon: "github", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "github", name: "GitHub", subtitle: "Allow agent to read repositories, create PRs, and review code", icon: "github", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
     { id: "telegram", name: "Telegram", subtitle: "Connect a Telegram bot so this agent can chat in channels or DMs", icon: "send", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
     { id: "discord", name: "Discord", subtitle: "Connect a Discord bot to respond in channels and DMs.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
     { id: "figma", name: "Figma", subtitle: "A design agent can co-create and modify design files directly in Figma.", icon: "figma", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true, type: "oauth" },
@@ -113,11 +113,14 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [slackPairingStatus, setSlackPairingStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [slackPairingError, setSlackPairingError] = useState("");
 
+  const [githubToken, setGithubToken] = useState("");
+
   useEffect(() => {
     if (typeof (window as any).__TAURI_INTERNALS__?.invoke === 'function') {
       const invoke = (window as any).__TAURI_INTERNALS__.invoke;
       invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_app_token` }).then((t: any) => setSlackAppToken(t as string)).catch(() => {});
       invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_bot_token` }).then((t: any) => setSlackBotToken(t as string)).catch(() => {});
+      invoke("get_secret_cmd", { key: `github-access-token-${agent.id}` }).then((t: any) => setGithubToken(t as string)).catch(() => {});
     }
   }, [agent.id]);
 
@@ -320,8 +323,8 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
     for (const c of connectors) {
       if (['slack', 'gmail', 'imessage', 'filesystem'].includes(c.id)) continue;
       let key = c.id.toUpperCase() + "_TOKEN";
-      if (c.id === 'calendar') key = 'GCAL_ACCESS_TOKEN';
-      if (c.id === 'drive') key = 'GDRIVE_ACCESS_TOKEN';
+      if (c.id === 'calendar') key = `agent_${agent.id}_google_calendar_access_token`;
+      if (c.id === 'drive') key = `agent_${agent.id}_google_drive_access_token`;
       try {
         const tok = await invoke("get_secret_cmd", { key });
         obj[c.id] = !!tok;
@@ -370,18 +373,18 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
       const isConnected = !!(appTok && botTok);
       setSlackConnected(isConnected);
       if (isConnected) {
-        const chs = await invoke<Array<{ id: string; name: string; member_count: number }>>("list_slack_channels").catch(() => []);
+        const chs = await invoke<Array<{ id: string; name: string; member_count: number }>>("list_slack_channels", { agentId: agent.id }).catch(() => []);
         setSlackChannels(chs);
       }
     } catch { setSlackConnected(false); }
 
     try {
-      const tok = await invoke<string>("get_secret_cmd", { key: "GMAIL_ACCESS_TOKEN" });
+      const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_email_access_token` });
       setGmailConnected(!!tok);
     } catch { setGmailConnected(false); }
 
     try {
-      const tok = await invoke<string>("get_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
+      const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_calendar_access_token` });
       setCalConnected(!!tok);
     } catch { setCalConnected(false); }
 
@@ -875,7 +878,6 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
             const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['calendar'], readOnly: calendarMode === "read" });
             if (res && res.access_token) {
-              await invoke('store_secret_cmd', { key: 'GCAL_ACCESS_TOKEN', value: res.access_token });
               checkDynamicStatuses();
             }
           } catch (e) { console.error(e); }
@@ -1330,9 +1332,8 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                    if (c.id === 'calendar' || c.id === 'drive') {
                       try {
                          const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                         const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: [c.id], readOnly: false });
+                         const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: [c.id === 'calendar' ? 'calendar' : 'drive'], readOnly: false });
                          if (res && res.access_token) {
-                            await invoke('store_secret_cmd', { key: c.id === 'calendar' ? 'GCAL_ACCESS_TOKEN' : 'GDRIVE_ACCESS_TOKEN', value: res.access_token });
                             checkDynamicStatuses();
                          }
                       } catch (e) {
@@ -1349,21 +1350,49 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
               }
             }}
           >
-            {dynamicSetupState[c.id] && c.id !== 'twilio' && (
+            {(dynamicSetupState[c.id] || dynamicStatuses[c.id]) && c.id !== 'twilio' && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
-                  Enter {c.name} Personal Access Token
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{dynamicStatuses[c.id] ? `Update ${c.name} Personal Access Token` : `Enter ${c.name} Personal Access Token`}</span>
+                  {c.id === 'github' && (
+                    <a 
+                      href="#" 
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        window.open("https://github.com/settings/tokens/new?description=Canopy%20Agent", "_blank");
+                        try {
+                          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                          new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
+                            url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
+                            title: `Setup ${c.name}`,
+                            width: 420,
+                            height: 760,
+                            x: window.screen.availWidth - 440,
+                            y: 50,
+                            alwaysOnTop: true,
+                            decorations: true,
+                          });
+                        } catch(err) { console.error(err); }
+                      }}
+                      style={{ fontSize: 11, color: "#3c6663", textDecoration: "none" }}
+                    >
+                      Get Token →
+                    </a>
+                  )}
                 </div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <PasswordInput
-                    value={dynamicSetupValue[c.id] || ""}
-                    onChange={e => setDynamicSetupValue(prev => ({ ...prev, [c.id]: e.target.value }))}
-                    placeholder="ghp_..."
+                    value={c.id === 'github' ? githubToken : (dynamicSetupValue[c.id] || "")}
+                    onChange={e => {
+                      if (c.id === 'github') setGithubToken(e.target.value);
+                      else setDynamicSetupValue(prev => ({ ...prev, [c.id]: e.target.value }));
+                    }}
+                    placeholder={c.id === 'github' ? "ghp_..." : ""}
                     style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)" }}
                   />
                   <button
                     onClick={async () => {
-                      const val = dynamicSetupValue[c.id];
+                      const val = c.id === 'github' ? githubToken : dynamicSetupValue[c.id];
                       if (val) {
                         setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
                         try {
@@ -1385,8 +1414,14 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                             // Auto-enable integration after successful configuration
                             await toggleIntegration(c.id, true);
                           }
-                          setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
-                          setDynamicSetupValue(prev => ({ ...prev, [c.id]: "" }));
+                          // Provide visual feedback instead of instantly wiping the UI
+                          setTimeout(() => {
+                            if (c.id !== 'github') {
+                              setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
+                              setDynamicSetupValue(prev => ({ ...prev, [c.id]: "" }));
+                            }
+                          }, 1500);
+                          checkDynamicStatuses();
                         } catch (e) {
                           alert('Failed to save token');
                         }
@@ -1402,7 +1437,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                 </div>
               </div>
             )}
-            {dynamicSetupState[c.id] && c.id === 'twilio' && (
+            {(dynamicSetupState[c.id] || dynamicStatuses[c.id]) && c.id === 'twilio' && (
               <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>
                   Configure Twilio Credentials

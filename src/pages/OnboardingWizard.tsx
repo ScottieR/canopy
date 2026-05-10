@@ -63,6 +63,8 @@ export function OnboardingWizard() {
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any } | null>(draft?.customIdentity || null);
 
+  const optimisticId = `agent-${(agentName || "new").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, '')}`;
+
   const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
   const [isolated, setIsolated] = useState(draft?.isolated || false);
   const [agentPermissions, setAgentPermissions] = useState<Permission[]>(() => {
@@ -87,7 +89,7 @@ export function OnboardingWizard() {
   const [wsCalConnected, setWsCalConnected] = useState(false);
 
   // Only agent-local plugins go through Step 5 integration testing
-  const AGENT_LOCAL_PLUGINS = ["folders", "imessage", "photos"];
+  const AGENT_LOCAL_PLUGINS = ["slack", "folders", "imessage", "photos"];
   const enabledPlugins = Object.entries(plugins)
     .filter(([k, v]) => v && AGENT_LOCAL_PLUGINS.includes(k))
     .map(([k]) => k);
@@ -122,11 +124,11 @@ export function OnboardingWizard() {
         setWsSlackConnected(s?.connected ?? false);
       } catch {}
       try {
-        const tok = await invoke<string>("get_secret_cmd", { key: "GMAIL_ACCESS_TOKEN" });
+        const tok = await invoke<string>("get_secret_cmd", { key: `agent_${optimisticId}_google_email_access_token` });
         setWsGmailConnected(!!tok && tok.length > 10);
       } catch {}
       try {
-        const tok = await invoke<string>("get_secret_cmd", { key: "GCAL_ACCESS_TOKEN" });
+        const tok = await invoke<string>("get_secret_cmd", { key: `agent_${optimisticId}_google_calendar_access_token` });
         setWsCalConnected(!!tok && tok.length > 10);
       } catch {}
       try {
@@ -163,11 +165,11 @@ export function OnboardingWizard() {
     } else if (key === 'email' || key === 'calendar') {
         try {
           const result = await invoke<{ access_token?: string }>("start_google_oauth", {
+            agentId: optimisticId,
             scopes: [key === 'email' ? 'email' : 'calendar'],
             readOnly: false,
           });
           if (result.access_token) {
-            await invoke("store_secret_cmd", { key: key === 'email' ? "GMAIL_ACCESS_TOKEN" : "GCAL_ACCESS_TOKEN", value: result.access_token });
             checkConnections();
             setPlugins(prev => ({ ...prev, [key]: true }));
           }
@@ -612,16 +614,7 @@ export function OnboardingWizard() {
         }));
 
         if (plugins.slack) {
-          const slackBotTok = String(await invoke("get_secret_cmd", { key: "slack-bot-token" }).catch(() => "") || "");
-          const slackAppTok = String(await invoke("get_secret_cmd", { key: "slack-app-token" }).catch(() => "") || "");
-          if (slackBotTok) {
-            await invoke("store_secret_cmd", { key: `agent_${newAgentData.id}_slack_bot_token`, value: slackBotTok }).catch(() => {});
-          }
-          if (slackAppTok) {
-            await invoke("store_secret_cmd", { key: `agent_${newAgentData.id}_slack_app_token`, value: slackAppTok }).catch(() => {});
-          }
           await invoke("boot_sync_agents").catch(() => {});
-          await invoke("start_slack_listener").catch(() => {});
         }
         
         return newAgentData;
@@ -1378,7 +1371,7 @@ export function OnboardingWizard() {
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
             <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
             <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.5 }}>
-              Choose what {agentName || "your agent"} can access. Workspace tools like Slack and Gmail are shared across all your agents — connect them once in Integrations.
+              Choose what {agentName || "your agent"} can access. Workspace tools like Gmail are shared across all your agents. Slack requires a dedicated bot app per agent.
             </p>
 
             {/* ── Security Posture ── */}
@@ -1413,7 +1406,6 @@ export function OnboardingWizard() {
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {([
-                  { key: "slack",    label: "Slack",          icon: "💬", connected: wsSlackConnected, desc: "Send and receive Slack messages" },
                   { key: "email",    label: "Gmail",          icon: "📧", connected: wsGmailConnected, desc: "Read and send email on your behalf" },
                   { key: "calendar", label: "Google Calendar",icon: "📅", connected: wsCalConnected,   desc: "View and create calendar events" },
                 ] as const).map(({ key, label, icon, connected, desc }) => (
@@ -1452,13 +1444,14 @@ export function OnboardingWizard() {
               </div>
             </div>
 
-            {/* ── Device Permissions (agent-local) ── */}
+            {/* ── Agent-Specific Connections ── */}
             <div style={{ marginBottom: 32 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
-                Device Permissions
+                Agent-Specific Connections
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {([
+                  { key: "slack",   label: "Slack App",     icon: "💬", desc: `Create a dedicated Slack bot for this agent` },
                   { key: "folders", label: "File System",   icon: "📁", desc: `Let ${agentName || "the agent"} read and write files on your Mac` },
                   { key: "imessage",label: "iMessage",      icon: "💬", desc: `Access your iMessage conversations` },
                   { key: "photos",  label: "Apple Photos",  icon: "🖼️", desc: `Browse and reference your photo library` },
@@ -1594,7 +1587,7 @@ export function OnboardingWizard() {
 
                       const windowLabel = 'slackCompanion_' + Date.now();
                       const companionWindow = new WebviewWindow(windowLabel, {
-                        url: '/index.html?companion=slack',
+                        url: `/index.html?companion=slack&agentId=${optimisticId}&agentName=${encodeURIComponent(agentName || "Agent")}`,
                         title: 'Setup Guide',
                         width: 420,
                         height: 760,
@@ -1683,6 +1676,11 @@ export function OnboardingWizard() {
                     <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Permission Required</div>
                     <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 20, lineHeight: 1.5 }}>
                       macOS blocks access to iMessage databases by default. To securely connect this, please toggle Canopy <strong>on</strong> in your System Settings under <strong>Full Disk Access</strong>.
+                      {import.meta.env.DEV && (
+                        <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(255, 165, 0, 0.1)", border: "1px solid rgba(255, 165, 0, 0.3)", borderRadius: 6, fontSize: 12, color: "#b37400" }}>
+                          <strong>Dev Mode Note:</strong> Since you are running in development, "Canopy" won't appear in the list. You must grant Full Disk Access to your <strong>Terminal</strong> or <strong>IDE</strong> (e.g., VS Code, Cursor) instead.
+                        </div>
+                      )}
                     </div>
 
                     <div style={{ background: "var(--surface-card)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid rgba(0,0,0,0.08)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)", marginBottom: 20 }}>
@@ -1698,30 +1696,30 @@ export function OnboardingWizard() {
                       </div>
                     </div>
 
-                    <button onClick={async () => {
-                      try {
-                        const { open: shellOpen } = await import('@tauri-apps/plugin-shell');
-                        await shellOpen("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
-                      } catch (e) {
-                        // Fallback for older Tauri versions
-                        window.location.href = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles";
-                      }
-                      // Auto-check when the user switches back — no need to click a button
-                      const onFocus = async () => {
-                        window.removeEventListener('focus', onFocus);
+                    <div style={{ display: "flex", justifyContent: "center", width: "100%" }}>
+                      <button onClick={async () => {
                         try {
-                          const isGranted = await invoke("check_full_disk_access");
-                          if (isGranted) {
-                            setFullDiskAccessGranted(true);
-                            const threads = await invoke("list_imessage_threads");
-                            setIMessageThreads(threads as any[]);
-                          }
-                        } catch (e) { console.error("Permission re-check failed:", e); }
-                      };
-                      window.addEventListener('focus', onFocus);
-                    }} style={{ width: "100%", padding: "14px 16px", background: "#3c6663", color: "var(--surface-card)", border: "none", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
-                      Open System Settings → Full Disk Access
-                    </button>
+                          await invoke("open_full_disk_access_settings");
+                        } catch (e) {
+                          console.error("Failed to open System Settings:", e);
+                        }
+                        // Auto-check when the user switches back — no need to click a button
+                        const onFocus = async () => {
+                          window.removeEventListener('focus', onFocus);
+                          try {
+                            const isGranted = await invoke("check_full_disk_access");
+                            if (isGranted) {
+                              setFullDiskAccessGranted(true);
+                              const threads = await invoke("list_imessage_threads");
+                              setIMessageThreads(threads as any[]);
+                            }
+                          } catch (e) { console.error("Permission re-check failed:", e); }
+                        };
+                        window.addEventListener('focus', onFocus);
+                      }} style={{ padding: "14px 24px", background: "#3c6663", color: "var(--surface-card)", border: "none", borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: "pointer", transition: "all 0.2s" }}>
+                        Open System Settings → Full Disk Access
+                      </button>
+                    </div>
                     <div style={{ fontSize: 12, color: "#a0aab2", marginTop: 12, textAlign: "center" }}>
                       Toggle Canopy on in Full Disk Access, then switch back here — it will auto-detect.
                     </div>
@@ -2023,6 +2021,21 @@ export function OnboardingWizard() {
 
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <button onClick={() => {
+              if (testPluginIndex > 0) {
+                setTestPluginIndex(testPluginIndex - 1);
+                setTestStatus("idle");
+              } else {
+                setStep(4);
+                setTestStatus("idle");
+              }
+            }} style={{
+              padding: "12px 24px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)",
+              background: "transparent", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
+              cursor: "pointer", fontFamily: "inherit"
+            }}>
+              Back
+            </button>
+            <button onClick={() => {
               if (testStatus === "success" || testStatus === "error") {
                 if (testPluginIndex < enabledPlugins.length - 1) {
                   setTestPluginIndex(testPluginIndex + 1);
@@ -2130,10 +2143,18 @@ export function OnboardingWizard() {
             color: "var(--surface-card)", fontSize: 16, fontWeight: 600, cursor: isCreatingAgent ? "not-allowed" : "pointer",
             boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
             transition: "all 0.3s ease",
-            opacity: isCreatingAgent ? 0.7 : 1
+            opacity: isCreatingAgent ? 0.7 : 1,
+            display: "inline-flex", justifyContent: "center", alignItems: "center", gap: 12
           }}>
+            {isCreatingAgent && <span style={{ display: "inline-block", width: 16, height: 16, border: "3px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 1s linear infinite" }} />}
             {isCreatingAgent ? "Deploying Agent..." : (createAgentError ? "Retry Deployment" : (plugins.slack ? "Deploy & Pair Slack" : "Deploy & Go to Dashboard"))}
           </button>
+          
+          {isCreatingAgent && (
+            <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-sub)", textAlign: "center", maxWidth: 300, margin: "16px auto 0" }}>
+              Creating secure workspace and applying personality. This may take up to a minute, please don't close this window...
+            </div>
+          )}
         </div>
       )}
 

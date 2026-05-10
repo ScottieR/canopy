@@ -81,7 +81,7 @@ pub async fn create_agent(
     let agent = Agent {
         id: agent_id.clone(),
         name: name.clone(),
-        role,
+        role: role.clone(),
         emoji: emoji.clone(),
         color: "#34D399".to_string(),
         status: AgentStatus::Active,
@@ -120,7 +120,9 @@ pub async fn create_agent(
         let _ = crate::audit_openclaw::repair_openclaw_config(app_handle.clone(), None).await;
     }
 
-    // ─── Step 3: Register agent in OpenClaw ─────────────────────────────────────
+    // Move file generation after agents add
+
+    // ─── Step 4: Register agent in OpenClaw ─────────────────────────────────────
     // If this fails (e.g. OOM kill), the agent is still in SQLite. boot_sync_agents
     // will complete the registration on next launch.
     let workspace_path = format!("/home/node/.openclaw/workspace/{}", agent_id);
@@ -154,28 +156,45 @@ pub async fn create_agent(
         }
     }
 
-    // ─── Step 4: Write SOUL.md and set identity ──────────────────────────────────
-    // SECURITY: Use proper shell quoting to prevent command injection
-    let soul_md = generate_soul_md(&personality);
-    let soul_path = agent_soul_path(&agent_id);
-    let escaped_soul = soul_md.replace('\'', "'\\''");
-    let escaped_path = soul_path.replace('\'', "'\\''");
-    let write_cmd = format!(
-        "mkdir -p \"$(dirname '{}')\" && printf '%s' '{}' > '{}'",
-        escaped_path, escaped_soul, escaped_path
-    );
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
-        .output()
-        .await;
-
     let _ = get_docker_command()
         .args(["exec", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway", "openclaw", "agents", "set-identity",
                "--agent", &agent_id, "--emoji", &emoji])
         .output()
         .await;
 
-    // Step 5: Write API keys so the agent can respond
+    // ─── Step 5: Write SOUL.md and set identity ──────────────────────────────────
+    // Write these AFTER running openclaw agents add, so that our edits apply cleanly
+    // over the default scaffold.
+    let soul_md = generate_soul_md(&personality);
+    let soul_path = agent_soul_path(&agent_id);
+    let identity_md = format!(
+        "# IDENTITY.md - Who Am I?\n\n\
+        - **Name:** {}\n\
+        - **Role:** {}\n\
+        - **Creature:** AI Agent\n\
+        - **Vibe:** {}\n\
+        - **Emoji:** {}\n\n\
+        {}",
+        personality.name, role, personality.communication_style.replace('\n', " "), emoji, personality.identity_template.clone().unwrap_or_default()
+    );
+    
+    // Create the sync command to write both SOUL.md and IDENTITY.md without overwriting user edits
+    let write_cmd = generate_personality_sync_cmd(
+        &soul_path,
+        &soul_md,
+        &identity_md,
+        "" // prefs
+    );
+    
+    let _ = get_docker_command()
+        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
+        .output()
+        .await;
+
+    // Seed USER.md with context
+    seed_user_md(&db, &agent_id);
+
+    // Sync credentials
     write_auth_profiles(&agent_id, &get_creds_for_agent(&agent_id)).await;
 
     // Step 6: Asynchronously ensure Playwright is installed
@@ -3051,6 +3070,48 @@ pub async fn boot_sync_agents(
             tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
         }
     }
+    let _ = sync_gateway_channels_internal(&db).await;
+
+    tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
+
+    // Post-boot diagnostic: log container PID/CPU/MEM so we can tell if a PID spiral
+    // or memory pressure is starting after agents are registered and channels begin init.
+    // The gateway starts connecting Slack/iMessage sidecars here — this is where PID count
+    // can climb. Log once so we have a baseline.
+    if let Ok(stats_out) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_docker_command()
+            .args(["stats", "canopy-gateway", "--no-stream",
+                   "--format", "PIDs={{.PIDs}} CPU={{.CPUPerc}} MEM={{.MemUsage}}"])
+            .output(),
+    ).await {
+        if let Ok(out) = stats_out {
+            let stats = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            tracing::info!("boot_sync_agents post-boot container stats: {}", stats);
+        }
+    }
+
+    // Note: the post-registration IPC probe (openclaw agents list loop) was removed.
+    // It had the same orphaned-process problem as the pre-registration probe.
+    // The `openclaw agents add` call above blocks until ACPX processes the request,
+    // meaning by the time agents add returns successfully, ACPX is already initialised.
+    // Sidecar init (Slack, browser, voice) runs concurrently and doesn't block chat IPC —
+    // send_message goes through the same ACPX queue that agents add unblocked.
+
+    let summary = if errs == 0 {
+        if ok == 1 { "1 agent is ready".to_string() }
+        else { format!("{} agents are ready", ok) }
+    } else {
+        format!("{} agent{} ready, {} couldn't connect", ok, if ok == 1 { "" } else { "s" }, errs)
+    };
+    let _ = app_handle.emit("boot-sync-progress", &summary);
+    Ok(format!("{} agents synced, {} errors", ok, errs))
+}
+
+
+pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<(), String> {
+    let active_agents = db.list_agents().unwrap_or_default();
+    
     // ── Configure Per-Agent Channels (Slack & Google) ───────────────────────
     let mut slack_accounts = serde_json::Map::new();
     let mut gmail_accounts = serde_json::Map::new();
@@ -3079,16 +3140,9 @@ pub async fn boot_sync_agents(
         }
 
         // Google
-        let mut handle_google = |service: &str, service_prefix: &str, channel_key: &str, accounts: &mut serde_json::Map<String, serde_json::Value>| {
-            let mut acc = crate::keychain::get_secret(&format!("agent_{}_google_{}_access_token", agent.id, service)).unwrap_or_default();
-            let mut ref_tok = crate::keychain::get_secret(&format!("agent_{}_google_{}_refresh_token", agent.id, service)).unwrap_or_default();
-            
-            // Fallback to global credentials if agent lacks dedicated ones
-            if acc.trim().is_empty() {
-                acc = crate::keychain::get_secret(&format!("{}-access-token", service_prefix)).unwrap_or_default();
-                ref_tok = crate::keychain::get_secret(&format!("{}-refresh-token", service_prefix)).unwrap_or_default();
-            }
-
+        let mut handle_google = |service: &str, _service_prefix: &str, channel_key: &str, accounts: &mut serde_json::Map<String, serde_json::Value>| {
+            let acc = crate::keychain::get_secret(&format!("agent_{}_google_{}_access_token", agent.id, service)).unwrap_or_default();
+            let ref_tok = crate::keychain::get_secret(&format!("agent_{}_google_{}_refresh_token", agent.id, service)).unwrap_or_default();
             let acc = acc.trim().to_string();
             if !acc.is_empty() {
                 let mut account = serde_json::Map::new();
@@ -3140,7 +3194,16 @@ c.channels.slack.accounts={};
 c.plugins.entries.slack=c.plugins.entries.slack||{{}};
 if (c.channels.slack.enabled === true) c.plugins.entries.slack.enabled=true;
 
-// Google integrations temporarily disabled due to schema validation errors
+// Remove any broken channel injections
+if (c.channels.gmail) delete c.channels.gmail;
+if (c.channels.googleCalendar) delete c.channels.googleCalendar;
+if (c.channels.googleDrive) delete c.channels.googleDrive;
+
+// Enable google plugin if any accounts exist
+c.plugins.entries.google=c.plugins.entries.google||{{}};
+if ({}) {{
+    c.plugins.entries.google.enabled=true;
+}}
 
 c.bindings={};
 
@@ -3152,6 +3215,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 "#,
         if slack_accounts.is_empty() { "false" } else { "true" },
         serde_json::to_string(&slack_accounts).unwrap_or_else(|_| "{}".to_string()),
+        if gmail_accounts.is_empty() && calendar_accounts.is_empty() && drive_accounts.is_empty() { "false" } else { "true" },
         serde_json::to_string(&bindings).unwrap_or_else(|_| "[]".to_string())
     );
 
@@ -3165,49 +3229,30 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
     if let Ok(Ok(out)) = patch_out {
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            tracing::error!("boot_sync_agents: Config update failed! Error:\n{}", stderr);
-            let _ = app_handle.emit("boot-sync-progress", "Warning: Failed to apply Slack configuration.");
+            tracing::error!("sync_gateway_channels: Config update failed! Error:\n{}", stderr);
+            return Err("Failed to apply configuration".to_string());
         } else {
-            tracing::info!("boot_sync_agents: updated per-agent bindings successfully");
+            tracing::info!("sync_gateway_channels: updated per-agent bindings successfully");
         }
     } else {
-        tracing::error!("boot_sync_agents: patch script failed to execute or timed out");
+        tracing::error!("sync_gateway_channels: patch script failed to execute or timed out");
+        return Err("Patch script failed to execute or timed out".to_string());
     }
+    
+    Ok(())
+}
 
-    tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
-
-    // Post-boot diagnostic: log container PID/CPU/MEM so we can tell if a PID spiral
-    // or memory pressure is starting after agents are registered and channels begin init.
-    // The gateway starts connecting Slack/iMessage sidecars here — this is where PID count
-    // can climb. Log once so we have a baseline.
-    if let Ok(stats_out) = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        get_docker_command()
-            .args(["stats", "canopy-gateway", "--no-stream",
-                   "--format", "PIDs={{.PIDs}} CPU={{.CPUPerc}} MEM={{.MemUsage}}"])
-            .output(),
-    ).await {
-        if let Ok(out) = stats_out {
-            let stats = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            tracing::info!("boot_sync_agents post-boot container stats: {}", stats);
-        }
-    }
-
-    // Note: the post-registration IPC probe (openclaw agents list loop) was removed.
-    // It had the same orphaned-process problem as the pre-registration probe.
-    // The `openclaw agents add` call above blocks until ACPX processes the request,
-    // meaning by the time agents add returns successfully, ACPX is already initialised.
-    // Sidecar init (Slack, browser, voice) runs concurrently and doesn't block chat IPC —
-    // send_message goes through the same ACPX queue that agents add unblocked.
-
-    let summary = if errs == 0 {
-        if ok == 1 { "1 agent is ready".to_string() }
-        else { format!("{} agents are ready", ok) }
-    } else {
-        format!("{} agent{} ready, {} couldn't connect", ok, if ok == 1 { "" } else { "s" }, errs)
-    };
-    let _ = app_handle.emit("boot-sync-progress", &summary);
-    Ok(format!("{} agents synced, {} errors", ok, errs))
+#[tauri::command]
+pub async fn sync_gateway_channels(db: tauri::State<'_, crate::db::Database>) -> Result<(), String> {
+    sync_gateway_channels_internal(&db).await?;
+    
+    // Restart the gateway to apply the new tokens and bindings for Socket Mode
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        get_docker_command().args(["restart", "canopy-gateway"]).output(),
+    ).await;
+    
+    Ok(())
 }
 
 // ─── Regression Tests ─────────────────────────────────────────────────────────
@@ -3480,9 +3525,35 @@ mod tests {
 
 /// Helper function to seed USER.md with the current UserProfile and settings template if it's empty or missing.
 fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
-    if let Some(workspace) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)) {
-        let user_md_path = workspace.join("USER.md");
+    if let Some(workspace_root) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace")) {
+        let agent_workspace = workspace_root.join(agent_id);
+        let _ = std::fs::create_dir_all(&agent_workspace);
+        let user_md_path = agent_workspace.join("USER.md");
+        
         if !user_md_path.exists() || std::fs::metadata(&user_md_path).map(|m| m.len()).unwrap_or(0) == 0 {
+            // First, try to find an existing USER.md from other agents that has been populated by the user
+            let mut best_content = String::new();
+            if let Ok(entries) = std::fs::read_dir(&workspace_root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() && path.file_name().and_then(|n| n.to_str()) != Some(agent_id) {
+                        let other_user_md = path.join("USER.md");
+                        if let Ok(content) = std::fs::read_to_string(&other_user_md) {
+                            if content.len() > best_content.len() {
+                                best_content = content;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If we found a meaningful USER.md from another agent (> 400 chars, usually boilerplate is ~350), copy it!
+            if best_content.len() > 400 {
+                let _ = std::fs::write(&user_md_path, best_content);
+                return;
+            }
+
+            // Fallback: generate default
             let profile_opt = db.get_user_profile().ok();
             let mut template_content = String::from("#USER.md - Your Human's Preferences\n_Read this file. Everything in here is a fact about how I live, what I like, and how I want you to behave. Do not ask me to set things up; if you need a piece of information to complete a task and it isn't in here, look it up or make a best guess based on the 'vibe' of my other preferences. If you get it wrong, I will correct you once, and you should update this file immediately so you never ask again._\n");
             

@@ -101,7 +101,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
           decorRot = [0, seededRandom(seed + 1) * Math.PI * 2, 0]; // Random Y rotation
         }
 
-        const glbPath = path.startsWith('http') ? path : `http://localhost:3001${path.replace('.png', '.glb')}`;
+        const glbPath = path.startsWith('http') ? path : path.replace('.png', '.glb');
         
         return (
           <group key={path} position={decorPos as any} rotation={decorRot as any} scale={decorScale * 0.01 * 0.25}>
