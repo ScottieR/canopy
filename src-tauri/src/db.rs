@@ -514,6 +514,8 @@ impl Database {
         tx.execute("DELETE FROM budgets WHERE agent_id = ?1", params![id])?;
         tx.execute("DELETE FROM purchase_history WHERE agent_id = ?1", params![id])?;
         tx.execute("DELETE FROM audit_log WHERE agent_id = ?1", params![id])?;
+        tx.execute("DELETE FROM security_alerts WHERE agent_id = ?1", params![id])?;
+        tx.execute("DELETE FROM voice_configs WHERE agent_id = ?1", params![id])?;
         
         // Finally delete the main agent record
         tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;

@@ -63,6 +63,10 @@ export function SlackCompanion() {
             "slack-bot-token": slackBotToken
           }
         });
+        
+        // Sync the changes to the Gateway configuration
+        await invoke("sync_gateway_channels");
+        
         // We bypass full check_slack_connection here since the gateway handles it per-agent now
         // Let's assume it works if they provided valid-looking tokens.
         setTestStatus("success");

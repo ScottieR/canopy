@@ -237,7 +237,12 @@ pub async fn start_slack_oauth(
 // Slack API Client
 // ============================================================================
 
-async fn get_bot_token() -> Result<String, String> {
+async fn get_bot_token(agent_id: Option<&str>) -> Result<String, String> {
+    if let Some(id) = agent_id {
+        if let Ok(token) = keychain::get_secret(&format!("agent_{}_slack_bot_token", id)) {
+            return Ok(token);
+        }
+    }
     keychain::get_secret("slack-bot-token")
         .map_err(|e| format!("Failed to get bot token: {}", e))
 }
@@ -245,8 +250,9 @@ async fn get_bot_token() -> Result<String, String> {
 async fn make_api_call(
     endpoint: &str,
     params: Option<&[(&str, &str)]>,
+    agent_id: Option<&str>,
 ) -> Result<Value, String> {
-    let token = get_bot_token().await?;
+    let token = get_bot_token(agent_id).await?;
     let client = Client::new();
     let url = format!("{}/{}", SLACK_API_BASE, endpoint);
 
@@ -281,9 +287,9 @@ async fn make_api_call(
 
 /// List all channels the bot has access to
 #[tauri::command]
-pub async fn list_slack_channels() -> Result<Vec<SlackChannel>, String> {
+pub async fn list_slack_channels(agent_id: Option<String>) -> Result<Vec<SlackChannel>, String> {
     let response: ConversationsListResponse = serde_json::from_value(
-        make_api_call("conversations.list", Some(&[("types", "public_channel,private_channel")]))
+        make_api_call("conversations.list", Some(&[("types", "public_channel,private_channel")]), agent_id.as_deref())
             .await?
     ).map_err(|e| format!("Failed to parse channels: {}", e))?;
 
@@ -331,6 +337,7 @@ pub async fn read_slack_messages(
                 ("channel", &channel_id),
                 ("limit", &limit.to_string()),
             ]),
+            Some(&agent_id),
         )
         .await?
     ).map_err(|e| format!("Failed to parse messages: {}", e))?;
@@ -385,6 +392,7 @@ pub async fn send_slack_message(
                 ("channel", &channel_id),
                 ("text", &text),
             ]),
+            Some(&agent_id),
         )
         .await?
     ).map_err(|e| format!("Failed to parse response: {}", e))?;
@@ -535,8 +543,8 @@ pub async fn update_allowed_slack_channels(
 
 /// Check if Slack is connected and get workspace/bot info
 #[tauri::command]
-pub async fn check_slack_connection() -> Result<SlackConnectionStatus, String> {
-    let token_result = keychain::get_secret("slack-bot-token");
+pub async fn check_slack_connection(agent_id: Option<String>) -> Result<SlackConnectionStatus, String> {
+    let token_result = get_bot_token(agent_id.as_deref()).await;
 
     if token_result.is_err() {
         return Ok(SlackConnectionStatus {
@@ -548,7 +556,7 @@ pub async fn check_slack_connection() -> Result<SlackConnectionStatus, String> {
 
     // Test token with auth.test
     let response: AuthTestResponse = serde_json::from_value(
-        make_api_call("auth.test", None)
+        make_api_call("auth.test", None, agent_id.as_deref())
             .await
             .unwrap_or_else(|_| json!({"ok": false}))
     ).unwrap_or(AuthTestResponse {

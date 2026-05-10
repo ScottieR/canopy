@@ -397,6 +397,17 @@ pub async fn check_full_disk_access() -> Result<bool, String> {
     }
 }
 
+/// Open System Settings to the Full Disk Access page
+#[tauri::command]
+pub async fn open_full_disk_access_settings() -> Result<(), String> {
+    // macOS 13+ (Ventura and later) uses the new System Settings deep link URL
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")
+        .spawn()
+        .map_err(|e| format!("Failed to open system settings: {}", e))?;
+    Ok(())
+}
+
 /// List all available iMessage threads
 #[tauri::command]
 pub async fn list_imessage_threads() -> Result<Vec<IMessageThread>, String> {

@@ -18,7 +18,7 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
     if (!navPoints) {
       targetPos.current.fromArray(position as number[]);
     }
-  }, [position, navPoints]);
+  }, [JSON.stringify(position), navPoints]);
 
   // Tracks whether the lobster is currently lerping toward a navPoint.
   // Drives auto-switching between the idle (breathe) and Walking clips when no
@@ -136,15 +136,18 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
     return () => { if (action) action.stop(); };
   }, [isWorking, actions, names, forceAnimation, isMoving]);
 
+  const hasSpawnedRef = useRef(false);
+
   useEffect(() => {
     // 1. Initial Spawn: Instantly snap them to the habitat's saved spawn point, or to spawnpoint.
-    if (groupRef.current) {
+    if (groupRef.current && !hasSpawnedRef.current) {
       const startPos = new THREE.Vector3().fromArray(position as number[]);
       groupRef.current.position.copy(startPos);
       targetPos.current.copy(startPos);
       groupRef.current.rotation.set(0, rotationY, 0);
+      hasSpawnedRef.current = true;
     }
-  }, [navPoints, position, rotationY]);
+  }, [JSON.stringify(position), rotationY]);
 
   useEffect(() => {
     // 2. Roaming Logic: Periodically pick a new safe topological node to wander towards

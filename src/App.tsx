@@ -563,7 +563,7 @@ export const ServiceRow = ({
           </div>
         )}
       </div>
-      {connected && open && children && (
+      {((connected && open) || (!connected && children)) && (
         <div style={{ borderTop: "1px solid var(--border-subtle)", padding: "14px 16px" }}>
           {children}
         </div>
@@ -790,6 +790,18 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Approve the Full Access scope in the browser integration." },
         { text: "Paste the YOLO token below.", input: { key: "calendar-oauth-write", placeholder: "oauth_..." } }
       ]
+    },
+    github: {
+      title: "GitHub Setup",
+      avatar: "/app-icon.png",
+      intro: "Let's give your agent access to GitHub so it can read repositories, create PRs, and review code.",
+      steps: [
+        { text: "First, click this link to open the GitHub Token settings page: https://github.com/settings/tokens/new" },
+        { text: "Name the token 'Canopy Agent'." },
+        { text: "Check the following scopes: 'repo', 'read:org', and 'user'." },
+        { text: "Click 'Generate token' at the bottom of the page." },
+        { text: "Copy the generated token (starts with ghp_ or github_pat_) and paste it into the input field in the main app window." }
+      ]
     }
   }[type] || null;
 
@@ -805,7 +817,10 @@ export function CompanionGuide({ type }: { type: string }) {
       setStatus("saving");
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        await invoke("store_secret_cmd", { key: currentStepData.input.key, value: tokens[currentStepData.input.key].trim() });
+        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive'))
+          ? `agent_${agentId}_${currentStepData.input.key.replace(/-/g, '_')}`
+          : currentStepData.input.key;
+        await invoke("store_secret_cmd", { key: secureKey, value: tokens[currentStepData.input.key].trim() });
 
         // If there are more steps, just advance
         if (step < config.steps.length - 1) {
@@ -819,13 +834,19 @@ export function CompanionGuide({ type }: { type: string }) {
             const { emit } = await import('@tauri-apps/api/event');
             await emit('companion-finished', { type, key: tokens[currentStepData.input.key] });
 
-            // If it was Slack, finalize the connection via start_slack_listener which
-            // writes botToken + appToken into openclaw.json via config set. No pairing
-            // code needed — Socket Mode authenticates with the xapp- token directly.
+            // If it was Slack, finalize the connection by syncing all per-agent
+            // gateway channels to openclaw.json. This respects the Zero-Trust mandate.
             if (type === "slack") {
               await emit('slack-credentials-saved');
               const { invoke } = await import('@tauri-apps/api/core');
-              await invoke("start_slack_listener").catch(() => { });
+              await invoke("sync_gateway_channels").catch(() => { });
+            }
+
+            // If it was GitHub, finalize the connection by installing the CLI
+            // and securely writing the token wrapper to the agent's bin directory.
+            if (type === "github" && agentId) {
+              const { invoke } = await import('@tauri-apps/api/core');
+              await invoke("configure_github", { agentId: agentId, personalAccessToken: tokens[currentStepData.input.key].trim() }).catch(() => { });
             }
           } catch (evtErr) { }
 

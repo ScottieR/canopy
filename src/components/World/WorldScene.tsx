@@ -77,10 +77,9 @@ export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }
       const hits = scanRay.intersectObject(clone, true);
       if (hits.length > 0) {
         const hit = hits[0];
-        // Check surface normal. if normal.y > 0.85, it is a flat, horizontal walkable plane.
-        if (hit.face && hit.face.normal.y > 0.85) {
-          // Because clone isn't in the global parent group yet, this world point 
-          // is perfectly relative to the localized AgentNeighborhood root coords!
+        // Since we anchored the floor to roughly Y=0, any hit point near Y=0 is ground level.
+        // This avoids Blender's local-space face normal issues (where Y might actually be Z).
+        if (hit.point.y > -0.5 && hit.point.y < 0.5) {
           navPoints.push(hit.point.clone());
         }
       }

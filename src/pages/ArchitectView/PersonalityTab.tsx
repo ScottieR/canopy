@@ -8,7 +8,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
-import { MemoryTab } from "./MemoryTab";
+
 import { Toggle, ServiceRow, glass } from "../../App";
 
 const ROLE_VOICE_MAP: Record<string, string> = {
@@ -91,7 +91,7 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
     }, 400);
   };
 
-  const [selectedFile, setSelectedFile] = useState("Library");
+  const [selectedFile, setSelectedFile] = useState("IDENTITY.md");
   const [fileContent, setFileContent] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [fileSaveStatus, setFileSaveStatus] = useState("");
@@ -291,7 +291,7 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20, flex: 1 }}>
         <div style={{ display: "flex", gap: 12 }}>
-          {["Library", "Memory", "USER.md", "IDENTITY.md", "TOOLS.md", "SOUL.md"].map(f => (
+          {["IDENTITY.md", "USER.md", "SOUL.md", "TOOLS.md", "Library"].map(f => (
             <button
               key={f}
               onClick={() => setSelectedFile(f)}
@@ -396,10 +396,6 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
                 }} style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "var(--surface-base)", color: "var(--text-main)", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "inherit" }}>Add</button>
               </div>
             </div>
-          </div>
-        ) : selectedFile === "Memory" ? (
-          <div style={{ flex: 1, overflowY: "auto" }}>
-            <MemoryTab agent={agent} isEmbedded={true} />
           </div>
         ) : (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", position: "relative" }}>

@@ -4,7 +4,9 @@ import { Github } from "lucide-react";
 import { PasswordInput } from "../shared/PasswordInput";
 import { open } from "@tauri-apps/plugin-shell";
 
-export function GithubCompanion({ agentId }: { agentId: string }) {
+export function GithubCompanion() {
+  const searchParams = new URLSearchParams(window.location.search);
+  const agentId = searchParams.get("agentId") || "";
   const [githubToken, setGithubToken] = useState("");
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");

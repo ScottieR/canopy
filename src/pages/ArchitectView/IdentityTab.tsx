@@ -106,7 +106,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
   }, [catalog]);
 
   const sortedAccessories = useMemo(() => {
-    const copy = visibleAccessories.filter(p => !catalog?.items?.[p]?.type || catalog.items[p].type === 'accessory' || catalog.items[p].type === 'both');
+    const copy = visibleAccessories.filter(p => !catalog?.items?.[p]?.type || catalog.items[p].type === 'wearable' || catalog.items[p].type === 'both');
     const seed = agent.role.charCodeAt(0) % 6;
     const suggestions = copy.splice(seed * 25, 5);
     const combined = [...suggestions, ...copy];
@@ -147,39 +147,23 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                     modelUrl={selectedHabitat?.path}
                   />
                   {(stagedVisuals?.decor || []).map((path, i) => {
-                    const is3D = path.includes("/models/assets/");
-
-                    if (is3D) {
-                      const glbPath = `http://localhost:3001${path.replace('.png', '.glb')}`;
-                      return (
-                        <DecorObject
-                          key={path}
-                          path={path}
-                          glbPath={glbPath}
-                          isSelected={selectedDecor === path}
-                          onSelect={() => setSelectedDecor(path)}
-                          transform={stagedVisuals?.decorTransforms?.[path]}
-                          decorPoints={selectedHabitat?.decorPoints || []}
-                          index={i}
-                          defaultDecorRotation={catalog?.items?.[path]?.decorRotation}
-                          defaultRotation={catalog?.items?.[path]?.rotation}
-                          onTransformChange={(updates) => {
-                            const current = stagedVisuals?.decorTransforms || {};
-                            handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
-                          }}
-                        />
-                      );
-                    }
-
-                    const totalDecor = stagedVisuals?.decor?.length || 1;
-                    const angle = (i * Math.PI * 2) / Math.max(1, totalDecor);
-                    const radius = 3.5;
-
+                    const glbPath = path.replace('.png', '.glb');
                     return (
-                      <SafeBillboard
+                      <DecorObject
                         key={path}
-                        url={`http://localhost:3001${path}`}
-                        position={[Math.cos(angle) * radius, 0.5, Math.sin(angle) * radius]}
+                        path={path}
+                        glbPath={glbPath}
+                        isSelected={selectedDecor === path}
+                        onSelect={() => setSelectedDecor(path)}
+                        transform={stagedVisuals?.decorTransforms?.[path]}
+                        decorPoints={selectedHabitat?.decorPoints || []}
+                        index={i}
+                        defaultDecorRotation={catalog?.items?.[path]?.decorRotation}
+                        defaultRotation={catalog?.items?.[path]?.rotation}
+                        onTransformChange={(updates: any) => {
+                          const current = stagedVisuals?.decorTransforms || {};
+                          handleUpdateStaged({ decorTransforms: { ...current, [path]: { ...current[path], ...updates } } });
+                        }}
                       />
                     );
                   })}
@@ -235,7 +219,26 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
         </div>
 
         {/* Lower row: Interactive Selectors */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, height: 260 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, height: 260 }}>
+          
+          {/* Selector 0: Pigment (Robe Color) */}
+          <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>PIGMENT</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, overflowY: "auto", flex: 1, paddingRight: 4, paddingBottom: 16 }}>
+              {PASTEL_COLORS.map(color => (
+                <div key={color}
+                  onClick={() => handleUpdateStaged({ color: color })}
+                  style={{
+                    backgroundColor: color,
+                    width: "100%", aspectRatio: "1/1",
+                    borderRadius: 8, cursor: "pointer",
+                    border: stagedVisuals?.color === color ? '2px solid var(--text-main)' : '2px solid rgba(0,0,0,0.1)',
+                    transition: "all 0.1s ease"
+                  }}
+                />
+              ))}
+            </div>
+          </div>
 
           {/* Selector 1: Decor Grid */}
           <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
