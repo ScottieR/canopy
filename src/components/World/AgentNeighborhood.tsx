@@ -4,6 +4,18 @@ import accessoriesData from "../../../../shared/accessories.json";
 import habitatsData from "../../../../shared/habitats.json";
 import * as THREE from "three";
 
+// Admin's HabitatPlacementScene paints decor points with the habitat scaled
+// `(2.2 / maxDim) * 2` for ergonomics. The runtime habitat (TerrariumBase) uses
+// `2.2 / maxDim` — half the admin scale — so painted decor coordinates need to
+// be halved when applied here. Keep this in sync with IdentityTab.tsx.
+const ADMIN_TO_MAIN_DECOR_SCALE = 0.5;
+
+// Use a saved transform's position only when the user has explicitly set it
+// (not just when the object key happens to exist). `transforms.x || 0` would
+// silently treat undefined as 0 and override auto-snap with the world origin.
+const hasSavedDecorPosition = (t: any) =>
+  !!t && t.x !== undefined && t.y !== undefined && t.z !== undefined;
+
 export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
   const isWorking = agent?.status === "active" || agent?.status === "thinking";
 
@@ -25,23 +37,33 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
   };
 
   const habitatData = (habitatsData as any[]).find(h => h.id === agent?.visual_identity?.habitatId);
-  const validDecorPoints = habitatData?.decorPoints || navPoints || [];
+  // Decor MUST be anchored to the per-habitat decor points the user painted in
+  // the admin app. Only fall through to navPoints when there are literally no
+  // painted points for this habitat — otherwise we'd ignore the user's intent.
+  const validDecorPoints = (habitatData?.decorPoints && habitatData.decorPoints.length > 0)
+    ? habitatData.decorPoints
+    : (navPoints || []);
 
-  // Pre-compute decor positions to avoid lobster overlapping them
+  // Pre-compute decor positions (used by the lobster nav-grid so the lobster
+  // doesn't walk through decor). These are in the runtime/main-app frame.
   const placedDecorPositions = useMemo(() => {
     return decorItems.map((path: string, i: number) => {
       const transforms = agent?.visual_identity?.decorTransforms?.[path];
-      if (transforms) {
-        return new THREE.Vector3(transforms.x || 0, transforms.y || 0, transforms.z || 0);
+      if (hasSavedDecorPosition(transforms)) {
+        return new THREE.Vector3(transforms.x, transforms.y, transforms.z);
       } else if (validDecorPoints && validDecorPoints.length > 0) {
         const seed = (agent?.id?.length || 0) + i;
         const pointIndex = Math.floor(seededRandom(seed) * validDecorPoints.length);
         const p = validDecorPoints[pointIndex];
-        return new THREE.Vector3(p.x, p.y, p.z);
+        // navPoints are already in the runtime frame; painted decorPoints come
+        // from the admin's 2x frame and need rescaling.
+        const usingPainted = habitatData?.decorPoints && habitatData.decorPoints.length > 0;
+        const k = usingPainted ? ADMIN_TO_MAIN_DECOR_SCALE : 1;
+        return new THREE.Vector3(p.x * k, p.y * k, p.z * k);
       }
       return new THREE.Vector3(0, 0, 0);
     });
-  }, [decorItems, agent, validDecorPoints]);
+  }, [decorItems, agent, validDecorPoints, habitatData]);
 
   const filteredNavPoints = useMemo(() => {
     if (!navPoints) return undefined;
@@ -85,26 +107,36 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
       {decorItems.map((path: string, i: number) => {
         const itemData = (accessoriesData.items as any)[path];
         const transforms = agent?.visual_identity?.decorTransforms?.[path];
-        
-        let decorPos = [0, 0, 0];
-        let decorRot = [0, 0, 0];
-        let decorScale = itemData?.scale || 75;
 
-        if (transforms) {
-          decorPos = [transforms.x || 0, transforms.y || 0, transforms.z || 0];
-          decorRot = [transforms.rotationX || 0, transforms.rotationY || 0, transforms.rotationZ || 0];
-          decorScale = transforms.scale || itemData?.scale || 75;
-        } else {
-          const p = placedDecorPositions[i];
-          const seed = (agent?.id?.length || 0) + i;
-          decorPos = [p.x, p.y, p.z];
-          decorRot = [0, seededRandom(seed + 1) * Math.PI * 2, 0]; // Random Y rotation
-        }
+        // Position: explicit user-saved position wins; otherwise we use the
+        // pre-computed snapped position (already rescaled for the runtime frame).
+        const p = placedDecorPositions[i];
+        const decorPos: [number, number, number] = hasSavedDecorPosition(transforms)
+          ? [transforms.x, transforms.y, transforms.z]
+          : [p.x, p.y, p.z];
+
+        // Rotation: catalog `decorRotation` is the upright-display pose authored
+        // in AccessoryManager. Use it as the base so models that exported with a
+        // non-Y-up axis stand correctly. If the user explicitly rotated this item,
+        // their value wins per-axis. If neither is set, default to upright with a
+        // deterministic random yaw.
+        const seed = (agent?.id?.length || 0) + i;
+        const baseDecorRot: [number, number, number] = itemData?.decorRotation
+          ? itemData.decorRotation
+          : [0, seededRandom(seed + 1) * Math.PI * 2, 0];
+
+        const decorRot: [number, number, number] = [
+          transforms?.rotationX !== undefined ? transforms.rotationX : baseDecorRot[0],
+          transforms?.rotationY !== undefined ? transforms.rotationY : baseDecorRot[1],
+          transforms?.rotationZ !== undefined ? transforms.rotationZ : baseDecorRot[2],
+        ];
+
+        const decorScale = (transforms?.scale !== undefined ? transforms.scale : itemData?.scale) || 75;
 
         const glbPath = path.startsWith('http') ? path : path.replace('.png', '.glb');
-        
+
         return (
-          <group key={path} position={decorPos as any} rotation={decorRot as any} scale={decorScale * 0.01 * 0.25}>
+          <group key={path} position={decorPos} rotation={decorRot} scale={decorScale * 0.01 * 0.25}>
              <React.Suspense fallback={null}>
                <GLBModel url={glbPath} />
              </React.Suspense>

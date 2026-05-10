@@ -29,7 +29,7 @@ export function SlackCompanion() {
           bot_user: { display_name: agentName || "Agent", always_online: true }
         },
         oauth_config: {
-          scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands", "files:read"] },
+          scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "reactions:write", "commands", "files:read"] },
           pkce_enabled: false
         },
         settings: {

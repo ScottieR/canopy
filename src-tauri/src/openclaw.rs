@@ -1422,6 +1422,8 @@ pub async fn get_conversation_history(
                                                 }
                                             }
                                         }
+                                    } else if let Some(content_str) = msg_obj.get("content").and_then(|v| v.as_str()) {
+                                        final_content.push_str(content_str.trim());
                                     }
                                     
                                     if !final_content.is_empty() {
@@ -1448,6 +1450,45 @@ pub async fn get_conversation_history(
         let ts_b = chrono::DateTime::parse_from_rfc3339(&b.timestamp).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_default();
         ts_b.cmp(&ts_a)
     });
+
+    // Deduplicate adjacent identical messages (same role and content)
+    // Many messages exist in both SQLite and OpenClaw sessions (JSONL) with slightly different timestamps
+    let mut unique_messages: Vec<crate::db::Message> = Vec::new();
+    let mut last_role = String::new();
+    let mut last_clean_content = String::new();
+    
+    for mut msg in parsed_messages {
+        let clean_content = |s: &str| -> String {
+            let mut result = s.to_string();
+            while let Some(start) = result.find("[THOUGHT_PROCESS]") {
+                if let Some(end) = result[start..].find("[/THOUGHT_PROCESS]") {
+                    result.replace_range(start..start + end + 18, "");
+                } else {
+                    break;
+                }
+            }
+            result.trim().to_string()
+        };
+        
+        let c1 = clean_content(&msg.content);
+        let role_matches = msg.role == last_role || (msg.role == "agent" && last_role == "assistant") || (msg.role == "assistant" && last_role == "agent");
+        
+        if role_matches && (c1 == last_clean_content || c1.contains(&last_clean_content) || last_clean_content.contains(&c1)) {
+            // It's a duplicate. We want to keep the one with the thought process if possible.
+            if msg.content.contains("[THOUGHT_PROCESS]") && !unique_messages.is_empty() {
+                let last_idx = unique_messages.len() - 1;
+                if !unique_messages[last_idx].content.contains("[THOUGHT_PROCESS]") {
+                    // The previous one didn't have the thought process, but this one does! Replace it.
+                    unique_messages[last_idx] = msg.clone();
+                }
+            }
+        } else {
+            unique_messages.push(msg.clone());
+            last_role = msg.role;
+            last_clean_content = c1;
+        }
+    }
+    let mut parsed_messages = unique_messages;
 
     let mut seen_ids = std::collections::HashSet::new();
     parsed_messages.retain(|msg| seen_ids.insert(msg.id.clone()));

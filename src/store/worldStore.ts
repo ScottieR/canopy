@@ -104,6 +104,7 @@ export interface AgentData extends Agent {
   permissions: Permission[];
   recentSpend: Array<{ date: string; amount: number; merchant: string; category: string; status: "approved" | "pending" | "flagged" }>;
   chatLog: ChatMessage[];
+  draftMessage?: string;
   memories: Array<{ type: string; text: string; when: string; confidence: number }>;
   browser_status?: BrowserStatus | null;
   personalityPrompt: string;

@@ -615,6 +615,7 @@ export function OnboardingWizard() {
 
         if (plugins.slack) {
           await invoke("boot_sync_agents").catch(() => {});
+          await invoke("sync_gateway_channels").catch(() => {});
         }
         
         return newAgentData;
@@ -1605,7 +1606,7 @@ export function OnboardingWizard() {
                             bot_user: { display_name: agentName || "Sloane", always_online: true }
                           },
                           oauth_config: {
-                            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
+                            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "reactions:write", "commands"] },
                             pkce_enabled: false
                           },
                           settings: {
@@ -1637,7 +1638,7 @@ export function OnboardingWizard() {
                           bot_user: { display_name: agentName || "Sloane", always_online: true }
                         },
                         oauth_config: {
-                          scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "commands"] },
+                          scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "reactions:write", "commands"] },
                           pkce_enabled: false
                         },
                         settings: {

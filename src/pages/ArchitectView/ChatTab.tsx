@@ -17,7 +17,21 @@ export // ─── Chat / Communion Component ───────────
 function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boolean }) {
   const { agents, setAgents, setArchitectTab } = useWorldStore();
   const gatewayReady = useWorldStore(s => s.gatewayReady);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState(agent.draftMessage || "");
+
+  // Load draft when switching agents
+  useEffect(() => {
+    setMessage(agent.draftMessage || "");
+  }, [agent.id]);
+
+  // Persist draft to global store
+  useEffect(() => {
+    if (agent.draftMessage !== message) {
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => a.id === agent.id ? { ...a, draftMessage: message } : a)
+      }));
+    }
+  }, [message, agent.id]);
   const [chatLog, setChatLog] = useState<ChatMessage[]>(agent.chatLog);
   const [loading, setLoading] = useState(false);
   const [needsRepair, setNeedsRepair] = useState(false);
@@ -56,8 +70,10 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       });
     }
     // Keep global state in sync so errors remain when switching tabs
-    setAgents(agents.map(a => a.id === agent.id ? { ...a, chatLog } : a));
-  }, [chatLog]);
+    useWorldStore.setState(state => ({
+      agents: state.agents.map(a => a.id === agent.id ? { ...a, chatLog } : a)
+    }));
+  }, [chatLog, agent.id]);
 
   useEffect(() => {
     if (typeof invoke === 'function') {
@@ -83,7 +99,15 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
           const localOnly = agent.chatLog.filter(msg => !allMessages.some((m: any) => m.id === msg.id) && msg.text.includes("⚠️ **System"));
           
           if (allMessages.length > 0 || localOnly.length > 0) {
-            setChatLog([...allMessages, ...localOnly].sort((a, b) => a.ts - b.ts));
+            const newLog = [...allMessages, ...localOnly].sort((a, b) => a.ts - b.ts);
+            setChatLog(prev => {
+              const lastPrev = prev[prev.length - 1];
+              const lastNew = newLog[newLog.length - 1];
+              if (prev.length === newLog.length && lastPrev?.id === lastNew?.id) {
+                return prev; // Prevent unnecessary re-renders and scroll yanking
+              }
+              return newLog;
+            });
           }
 
         } catch (err) {
@@ -92,6 +116,8 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       };
       
       fetchHistory();
+      const interval = setInterval(fetchHistory, 3000);
+      return () => clearInterval(interval);
     }
   }, [agent.id]);
 
