@@ -371,38 +371,48 @@ pub async fn configure_github(
             .map_err(|e| format!("Keychain error: {}", e))?;
     }
 
-    // Install gh CLI if not installed
+    // Install gh CLI and global dynamic wrapper (runs as root)
+    let root_setup_script = r#"
+        if ! command -v gh >/dev/null 2>&1; then
+            apt-get update && apt-get install -y curl gnupg && \
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+            chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+            apt-get update && apt-get install gh -y
+        fi
+        
+        # Create global dynamic wrapper to isolate tokens per workspace
+        cat << 'EOF' > /usr/local/bin/gh
+#!/bin/bash
+AGENT_ID=$(pwd | sed -n 's|.*/workspace/\([^/]*\).*|\1|p')
+if [ -n "$AGENT_ID" ] && [ -f "/home/node/.openclaw/workspace/$AGENT_ID/.github_env" ]; then
+    source "/home/node/.openclaw/workspace/$AGENT_ID/.github_env"
+    export GH_TOKEN="$GITHUB_TOKEN"
+fi
+exec /usr/bin/gh "$@"
+EOF
+        chmod +x /usr/local/bin/gh
+    "#;
+
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         get_docker_command()
-            .args(["exec", "-u", "root", "-e", "DEBIAN_FRONTEND=noninteractive", "canopy-gateway", "sh", "-c",
-                "if ! command -v gh >/dev/null 2>&1; then \
-                apt-get update && apt-get install -y curl gnupg && \
-                curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
-                chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
-                echo \"deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-                apt-get update && apt-get install gh -y; fi"])
+            .args(["exec", "-u", "root", "-e", "DEBIAN_FRONTEND=noninteractive", "canopy-gateway", "sh", "-c", root_setup_script])
             .output()
     ).await;
 
-    // Inject token via a custom bin wrapper inside the agent's isolated workspace
-    let agent_bin_dir = format!("/home/node/.openclaw/workspace/{}/bin", agent_id);
-    let agent_gh_script = format!("{}/gh", agent_bin_dir);
-    let inject_script = format!(
-        "mkdir -p {bin_dir}; \
-         echo '#!/bin/bash' > {gh_script}; \
-         echo 'export GITHUB_TOKEN={token}' >> {gh_script}; \
-         echo 'export GH_TOKEN={token}' >> {gh_script}; \
-         echo '/usr/bin/gh \"$@\"' >> {gh_script}; \
-         chmod +x {gh_script}; \
-         echo 'GITHUB_TOKEN={token}' > /home/node/.openclaw/workspace/{agent_id}/.github_env",
-        bin_dir = agent_bin_dir,
-        gh_script = agent_gh_script,
+    // Inject the token securely into the agent's workspace and configure git helper
+    let node_setup_script = format!(
+        "echo 'GITHUB_TOKEN={token}' > /home/node/.openclaw/workspace/{agent_id}/.github_env; \
+         git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
+         git config --global url.\"https://github.com/\".insteadOf \"git@github.com:\"; \
+         git config --global url.\"https://github.com/\".insteadOf \"ssh://git@github.com/\"",
         token = token,
         agent_id = agent_id
     );
+    
     let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &inject_script])
+        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &node_setup_script])
         .output().await;
 
     restart_gateway_soft().await;
