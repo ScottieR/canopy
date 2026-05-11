@@ -24,7 +24,6 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
   const togglePermission = useWorldStore(s => s.togglePermission);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [frameData, setFrameData] = useState<string | null>(null);
 
   // Per-agent web-navigation allowlist. Empty array = open web access (still subject to
   // SSRF block on private subnets). Non-empty = browser is constrained to these domains.
@@ -60,37 +59,6 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
     invoke<string[]>("get_agent_allowed_domains", { agentId: agent.id })
       .then(d => setAllowedDomains(d || []))
       .catch(() => setAllowedDomains([]));
-
-    let unlistenFn: (() => void) | undefined;
-    let isMounted = true;
-
-    async function setupBrowserStream() {
-      if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return;
-      try {
-        const unlisten = await listen<any>("browser_stream_frame", (e) => {
-          if (e.payload.agent_id === agent.id) {
-            setFrameData(e.payload.frame);
-          }
-        });
-
-        if (isMounted) {
-          unlistenFn = unlisten;
-        } else {
-          try { unlisten(); } catch (e) {}
-        }
-      } catch (e) {
-        console.warn("Browser stream listener setup failed:", e);
-      }
-    }
-    setupBrowserStream();
-
-    return () => {
-      isMounted = false;
-      if (unlistenFn) {
-        try { unlistenFn(); } catch (e) {}
-        unlistenFn = undefined;
-      }
-    };
   }, [agent.id]);
 
   // Save the allowlist back to Rust. The Rust side restarts the agent's Chrome if it's
@@ -389,41 +357,6 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
         )}
       </div>
 
-      {/* Live View */}
-      {isRunning && (
-        <div style={{ 
-          background: "#000", borderRadius: 16, overflow: "hidden", 
-          display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-          color: "white", border: "1px solid rgba(255,255,255,0.1)",
-          backgroundImage: frameData ? "none" : "linear-gradient(45deg, #000 25%, #111 25%, #111 50%, #000 50%, #000 75%, #111 75%, #111 100%)",
-          backgroundSize: "20px 20px",
-          position: "relative",
-          minHeight: 300,
-        }}>
-          {frameData ? (
-            <img 
-              src={`data:image/jpeg;base64,${frameData}`} 
-              style={{ width: "100%", height: "auto", display: "block" }} 
-              alt="Live Browser View" 
-            />
-          ) : (
-            <>
-              <Monitor size={32} opacity={0.5} style={{ marginBottom: 12 }} />
-              <div style={{ fontSize: 14, fontWeight: 600 }}>Connecting to Host Browser...</div>
-            </>
-          )}
-          
-          <div style={{ 
-            position: "absolute", top: 12, right: 12, 
-            display: "flex", gap: 8, alignItems: "center" 
-          }}>
-            <div style={{ width: 8, height: 8, borderRadius: 4, background: frameData ? "#10b981" : "#f59e0b", boxShadow: "0 0 8px currentColor" }}></div>
-            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", background: "rgba(0,0,0,0.6)", padding: "4px 8px", borderRadius: 6, backdropFilter: "blur(4px)" }}>
-              {frameData ? "LIVE" : "WAITING"}
-            </span>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

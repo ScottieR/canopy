@@ -29,6 +29,62 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
     photos: { desc: "Access local photo library database.", recommended: "Off unless the agent is specifically for photo management." }
   };
 
+  const PROFILES = {
+    locked: {
+      ext_network: false, int_network: false, autonomous: false,
+      file_write: false, payments: false, spend_auto: false,
+      imessage: false, browser: false, proxy: false
+    },
+    balanced: {
+      ext_network: true, int_network: true, browser: true,
+      vision: true, gog: true, coding: true, file_read: true,
+      autonomous: false, file_write: false, payments: false,
+      spend_auto: false
+    },
+    yolo: {
+      ext_network: true, int_network: true, autonomous: true,
+      file_write: true, file_read: true, payments: true,
+      spend_auto: true, imessage: true, browser: true,
+      proxy: true, vision: true, coding: true, gog: true
+    }
+  };
+
+  const isProfileMatch = (profileMap: Record<string, boolean>) => {
+    return Object.entries(profileMap).every(([key, value]) => {
+      const perm = agent.permissions.find(p => p.id === key);
+      return perm ? perm.enabled === value : true;
+    });
+  };
+
+  const currentProfile = isProfileMatch(PROFILES.locked) ? 'locked' :
+                         isProfileMatch(PROFILES.balanced) ? 'balanced' :
+                         isProfileMatch(PROFILES.yolo) ? 'yolo' : 'custom';
+
+  const applyProfile = async (profileId: 'locked' | 'balanced' | 'yolo') => {
+    const map = PROFILES[profileId];
+    const newPerms = [...agent.permissions];
+    
+    Object.entries(map).forEach(([key, desired]) => {
+       const p = newPerms.find(x => x.id === key);
+       if (p && p.enabled !== desired) {
+          toggle(agent.id, key);
+          p.enabled = desired;
+       }
+    });
+    
+    try {
+      if (typeof (window as any).__TAURI_INTERNALS__?.invoke === 'function') {
+        const invoke = (window as any).__TAURI_INTERNALS__.invoke;
+        const capabilitiesObj: any = {};
+        newPerms.forEach(px => capabilitiesObj[px.id] = px.enabled);
+        await invoke("update_agent_capabilities", {
+          agentId: agent.id,
+          capabilities: capabilitiesObj
+        });
+      }
+    } catch (e) { console.error("Failed to update capabilities", e); }
+  };
+
   return (
     <div>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Permissions</h1>
@@ -90,6 +146,56 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           </div>
         </div>
       )}
+
+      <div style={{ marginBottom: 32 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>Risk Profiles</h2>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          {/* Locked Down */}
+          <div 
+            onClick={() => applyProfile('locked')}
+            style={{ 
+              padding: 16, borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+              background: currentProfile === 'locked' ? "rgba(46, 204, 113, 0.15)" : "var(--surface-card)",
+              border: currentProfile === 'locked' ? "2px solid #2ecc71" : "2px solid transparent",
+              boxShadow: currentProfile === 'locked' ? "0 4px 12px rgba(46, 204, 113, 0.1)" : "none"
+            }}
+          >
+            <div style={{ fontSize: 24, marginBottom: 8 }}>🛡️</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Locked Down</div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Safest. Read-only access, no outbound network, no file writes.</div>
+          </div>
+          
+          {/* Balanced */}
+          <div 
+            onClick={() => applyProfile('balanced')}
+            style={{ 
+              padding: 16, borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+              background: currentProfile === 'balanced' ? "rgba(52, 152, 219, 0.15)" : "var(--surface-card)",
+              border: currentProfile === 'balanced' ? "2px solid #3498db" : "2px solid transparent",
+              boxShadow: currentProfile === 'balanced' ? "0 4px 12px rgba(52, 152, 219, 0.1)" : "none"
+            }}
+          >
+            <div style={{ fontSize: 24, marginBottom: 8 }}>⚖️</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Balanced <span style={{ fontSize: 10, background: "#3498db", color: "white", padding: "2px 6px", borderRadius: 4, marginLeft: 4 }}>Recommended</span></div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Useful but safe. Web search, vision, code execution. No file writes or autonomous actions.</div>
+          </div>
+          
+          {/* YOLO */}
+          <div 
+            onClick={() => applyProfile('yolo')}
+            style={{ 
+              padding: 16, borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
+              background: currentProfile === 'yolo' ? "rgba(231, 76, 60, 0.15)" : "var(--surface-card)",
+              border: currentProfile === 'yolo' ? "2px solid #e74c3c" : "2px solid transparent",
+              boxShadow: currentProfile === 'yolo' ? "0 4px 12px rgba(231, 76, 60, 0.1)" : "none"
+            }}
+          >
+            <div style={{ fontSize: 24, marginBottom: 8 }}>🔥</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>YOLO</div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Full access. Autonomous file writes, payments, proxy interception, and messaging.</div>
+          </div>
+        </div>
+      </div>
 
       <div style={{ marginBottom: 32 }}>
         <div style={{
