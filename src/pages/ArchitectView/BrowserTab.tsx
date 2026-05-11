@@ -61,17 +61,35 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
       .then(d => setAllowedDomains(d || []))
       .catch(() => setAllowedDomains([]));
 
-    let unlisten: () => void;
-    listen<any>("browser_stream_frame", (e) => {
-      if (e.payload.agent_id === agent.id) {
-        setFrameData(e.payload.frame);
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+
+    async function setupBrowserStream() {
+      if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return;
+      try {
+        const unlisten = await listen<any>("browser_stream_frame", (e) => {
+          if (e.payload.agent_id === agent.id) {
+            setFrameData(e.payload.frame);
+          }
+        });
+
+        if (isMounted) {
+          unlistenFn = unlisten;
+        } else {
+          try { unlisten(); } catch (e) {}
+        }
+      } catch (e) {
+        console.warn("Browser stream listener setup failed:", e);
       }
-    }).then(f => {
-      unlisten = f;
-    });
+    }
+    setupBrowserStream();
 
     return () => {
-      if (unlisten) unlisten();
+      isMounted = false;
+      if (unlistenFn) {
+        try { unlistenFn(); } catch (e) {}
+        unlistenFn = undefined;
+      }
     };
   }, [agent.id]);
 

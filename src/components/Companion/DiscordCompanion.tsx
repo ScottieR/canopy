@@ -6,6 +6,7 @@ import { open } from "@tauri-apps/plugin-shell";
 
 export function DiscordCompanion() {
   const searchParams = new URLSearchParams(window.location.search);
+  const agentId = searchParams.get("agentId") || "";
   const agentName = searchParams.get("agentName") || "Shared";
 
   const [discordToken, setDiscordToken] = useState("");
@@ -24,10 +25,22 @@ export function DiscordCompanion() {
     if (!discordToken.trim()) return;
     setTestStatus("testing");
     setErrorMsg("");
-    
+
+    // Require agentId from the URL — this companion is per-agent and we refuse to
+    // silently fall back to a globally-scoped token slot. Same guard as SlackCompanion.
+    if (!agentId) {
+      setTestStatus("error");
+      setErrorMsg(
+        "This Discord setup window was opened without an agentId. Close it and " +
+        "click \"Connect Discord\" from the specific agent's Connections tab so " +
+        "the bot token is stored under this agent only."
+      );
+      return;
+    }
+
     try {
       if (typeof invoke === "function") {
-        await invoke("configure_discord", { botToken: discordToken.trim() });
+        await invoke("configure_discord", { agentId, botToken: discordToken.trim() });
         setTestStatus("success");
         window.dispatchEvent(new Event("refresh_integrations"));
         

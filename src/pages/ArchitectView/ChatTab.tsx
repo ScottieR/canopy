@@ -335,7 +335,13 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             Start a conversation...
           </div>
         ) : (
-          chatLog.map(msg => (
+          chatLog.filter(msg => {
+             const t = msg.text.trim();
+             if (t.includes("Read HEARTBEAT.md if it exists")) return false;
+             if (t === "HEARTBEAT_OK" || t === "HEARTBEAT OK") return false;
+             if (t.includes('"lastMorningQuote"')) return false;
+             return true;
+          }).map(msg => (
             <div key={msg.id} style={{
               display: "flex", flexDirection: "column",
               alignItems: msg.sender === "user" ? "flex-end" : "flex-start",
@@ -351,7 +357,55 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 borderBottomLeftRadius: msg.sender === "agent" ? 4 : 14,
               }}>
                 {(() => {
-                  let text = msg.text;
+                  const textTrimmed = msg.text.trim();
+                  let isSystemDump = false;
+                  let dumpTitle = "System Output";
+
+                  if (msg.sender === "agent") {
+                      if ((textTrimmed.startsWith("{") && textTrimmed.endsWith("}")) || (textTrimmed.startsWith("[") && textTrimmed.endsWith("]"))) {
+                          try {
+                              JSON.parse(textTrimmed);
+                              isSystemDump = true;
+                              dumpTitle = "JSON Payload";
+                          } catch(e) {
+                              if (textTrimmed.includes('":"') && (textTrimmed.includes('","') || textTrimmed.includes('"}'))) {
+                                   isSystemDump = true;
+                                   dumpTitle = "Raw Data Payload";
+                              }
+                          }
+                      } else if (textTrimmed.includes("Traceback (most recent call") || textTrimmed.includes("(Command exited with code")) {
+                          isSystemDump = true;
+                          dumpTitle = "Command Error";
+                      }
+                  }
+
+                  if (isSystemDump) {
+                      return (
+                          <details style={{ margin: "4px 0", fontSize: 12, color: "inherit", opacity: 0.9 }}>
+                            <summary style={{ cursor: "pointer", fontWeight: 600, outline: "none" }}>{dumpTitle}</summary>
+                            <div style={{ marginTop: 8, fontFamily: "monospace", whiteSpace: "pre-wrap", overflowX: "auto", fontSize: 11 }}>{msg.text}</div>
+                          </details>
+                      );
+                  }
+
+                  let text = msg.text.replace(/<think>/gi, "[THOUGHT_PROCESS]").replace(/<\/think>/gi, "[/THOUGHT_PROCESS]");
+
+                  if (msg.sender === "user") {
+                      // 1. Remove queue headers
+                      text = text.replace(/\[Queued messages while agent was busy\][\s\S]*?---\n?/i, "");
+                      text = text.replace(/Queued #\d+\s*\(from[^)]+\)\s*/gi, "");
+
+                      // 2. Remove OpenClaw injected context tags
+                      text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+UTC\][^:\n]+:\s*/gi, "");
+                      text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+UTC\][^\.\n]+\.\s*/gi, "");
+
+                      // 3. Deduplicate exact adjacent text blocks
+                      const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b);
+                      const deduped = blocks.filter((item, pos, arr) => pos === 0 || item !== arr[pos - 1]);
+                      text = deduped.join("\n\n");
+                      if (!text) text = "[System Event]";
+                  }
+
                   const elements: React.ReactNode[] = [];
 
                   // Extract thoughts

@@ -53,33 +53,77 @@ export function AgentRequestNotifier({
 
     // Subscribe to attention-request events.
     useEffect(() => {
-        let unlisten: (() => void) | null = null;
-        listen<AttentionToast>("agent_attention_requested", (event) => {
-            const payload = event.payload;
-            setAttentionToasts(prev => {
-                // Coalesce — if this agent already has an outstanding toast, replace
-                // it with the latest reason rather than stacking duplicates.
-                const filtered = prev.filter(t => t.agent_id !== payload.agent_id);
-                return [payload, ...filtered].slice(0, 3); // cap at 3 visible toasts
-            });
-            // Auto-expire after a generous window so a missed notification doesn't sit forever.
-            setTimeout(() => {
-                setAttentionToasts(prev => prev.filter(t => t.request_id !== payload.request_id));
-            }, TOAST_TIMEOUT_MS);
-        }).then(f => { unlisten = f; });
-        return () => { if (unlisten) unlisten(); };
+        let unlistenFn: (() => void) | undefined;
+        let isMounted = true;
+
+        async function setup() {
+            try {
+                const { listen } = await import("@tauri-apps/api/event");
+                if (!isMounted) return;
+                
+                const unlisten = await listen<AttentionToast>("agent_attention_requested", (event) => {
+                    const payload = event.payload;
+                    setAttentionToasts(prev => {
+                        const filtered = prev.filter(t => t.agent_id !== payload.agent_id);
+                        return [payload, ...filtered].slice(0, 3);
+                    });
+                    setTimeout(() => {
+                        setAttentionToasts(prev => prev.filter(t => t.request_id !== payload.request_id));
+                    }, TOAST_TIMEOUT_MS);
+                });
+
+                if (isMounted) {
+                    unlistenFn = unlisten;
+                } else {
+                    try { unlisten(); } catch (e) {}
+                }
+            } catch (e) {
+                console.warn("Attention listener setup failed", e);
+            }
+        }
+        setup();
+
+        return () => {
+            isMounted = false;
+            if (unlistenFn) {
+                try { unlistenFn(); } catch (e) {}
+                unlistenFn = undefined;
+            }
+        };
     }, []);
 
     // Subscribe to permission-request events.
     useEffect(() => {
-        let unlisten: (() => void) | null = null;
-        listen<PermissionPrompt>("agent_permission_requested", (event) => {
-            // We only show one permission modal at a time. If another fires while one is
-            // open, the second one is dropped — the agent will time out and re-request
-            // when the first is resolved. Stacking modals would be confusing.
-            setPendingPermission(prev => prev ?? event.payload);
-        }).then(f => { unlisten = f; });
-        return () => { if (unlisten) unlisten(); };
+        let unlistenFn: (() => void) | undefined;
+        let isMounted = true;
+
+        async function setup() {
+            try {
+                const { listen } = await import("@tauri-apps/api/event");
+                if (!isMounted) return;
+                
+                const unlisten = await listen<PermissionPrompt>("agent_permission_requested", (event) => {
+                    setPendingPermission(prev => prev ?? event.payload);
+                });
+
+                if (isMounted) {
+                    unlistenFn = unlisten;
+                } else {
+                    try { unlisten(); } catch (e) {}
+                }
+            } catch (e) {
+                console.warn("Permission listener setup failed", e);
+            }
+        }
+        setup();
+
+        return () => {
+            isMounted = false;
+            if (unlistenFn) {
+                try { unlistenFn(); } catch (e) {}
+                unlistenFn = undefined;
+            }
+        };
     }, []);
 
     const handleShowBrowser = useCallback(async (toast: AttentionToast) => {

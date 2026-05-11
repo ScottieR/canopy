@@ -39,7 +39,14 @@ const AGENT_DISCONNECT_CONFIG: Record<AgentDisconnectKey, {
   },
 };
 
-export function ConnectionsTab({ agent }: { agent: AgentData }) {
+export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
+  const fallbackIntegrations = useMemo(() => [], []);
+  const fallbackPermissions = useMemo(() => [], []);
+  const agent = { 
+    ..._agent, 
+    integrations: _agent.integrations || fallbackIntegrations,
+    permissions: _agent.permissions || fallbackPermissions
+  };
   const { setActiveView } = useWorldStore();
 
   // Gateway connection statuses (read-only here)
@@ -199,11 +206,10 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
   const [iMsgPickerOpen, setIMsgPickerOpen] = useState(false);
   const [iMsgSearch, setIMsgSearch] = useState("");
 
-  // Per-agent email mode (uses user's Gmail vs dedicated address)
-  const [emailMode, setEmailMode] = useState<"none" | "read" | "write" | "dedicated">(
+  // Per-agent email mode
+  const [emailMode, setEmailMode] = useState<"none" | "read" | "write">(
     agent.integrations.includes("email_write") ? "write"
     : agent.integrations.includes("email_read") ? "read"
-    : agent.integrations.includes("email_dedicated") ? "dedicated"
     : "none"
   );
   
@@ -213,9 +219,6 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
     : agent.integrations.includes("calendar") ? "write" // Legacy fallback
     : "none"
   );
-  const [dedicatedEmail, setDedicatedEmail] = useState("");
-  const [dedicatedPassword, setDedicatedPassword] = useState("");
-  const [emailSaving, setEmailSaving] = useState(false);
 
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
 
@@ -359,12 +362,16 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
 
   // ── Companion listener ──
   useEffect(() => {
-    let unlisten: any;
-    (async () => {
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+
+    async function setupCompanion() {
+      if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return;
       try {
-        const { listen: tauriListen } = await import('@tauri-apps/api/event');
-        const listen = (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) ? tauriListen : async () => () => {};
-        unlisten = await listen('companion-finished', async (e: any) => {
+        const { listen } = await import('@tauri-apps/api/event');
+        if (!isMounted) return;
+        
+        const unlisten = await listen('companion-finished', async (e: any) => {
           const { type } = e.payload || {};
           if (type) {
             checkDynamicStatuses();
@@ -378,10 +385,24 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             }
           }
         });
-      } catch (e) {}
-    })();
+
+        if (isMounted) {
+          unlistenFn = unlisten;
+        } else {
+          try { unlisten(); } catch (e) {}
+        }
+      } catch (e) {
+        console.warn("Companion listener setup failed:", e);
+      }
+    }
+    setupCompanion();
+
     return () => {
-      if (unlisten) unlisten();
+      isMounted = false;
+      if (unlistenFn) {
+        try { unlistenFn(); } catch (e) {}
+        unlistenFn = undefined;
+      }
     };
   }, [agent.id]);
 
@@ -413,25 +434,38 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
     if (connectors.length > 0) {
       checkDynamicStatuses();
     }
-    let unlisten: any;
-    const setupListener = async () => {
-      const { listen } = (window as any).__TAURI_INTERNALS__ || {};
-      if (listen) {
-         unlisten = await listen('refresh_integrations', () => {
-           checkGatewayStatus();
-           checkDynamicStatuses();
-         });
-      } else {
-         const { listen: tauriListen } = await import('@tauri-apps/api/event');
-         unlisten = await tauriListen('refresh_integrations', () => {
-           checkGatewayStatus();
-           checkDynamicStatuses();
-         });
+    
+    let unlistenFn: (() => void) | undefined;
+    let isMounted = true;
+
+    const setupRefreshListener = async () => {
+      if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return;
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        if (!isMounted) return;
+
+        const unlisten = await listen('refresh_integrations', () => {
+          checkGatewayStatus();
+          checkDynamicStatuses();
+        });
+
+        if (isMounted) {
+          unlistenFn = unlisten;
+        } else {
+          try { unlisten(); } catch (e) {}
+        }
+      } catch (e) {
+        console.warn("Refresh listener setup failed:", e);
       }
     };
-    setupListener();
+    setupRefreshListener();
+
     return () => {
-      if (typeof unlisten === 'function') unlisten();
+      isMounted = false;
+      if (unlistenFn) {
+        try { unlistenFn(); } catch (e) {}
+        unlistenFn = undefined;
+      }
     };
   }, [agent.id, connectors]);
 
@@ -481,15 +515,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
       const im = await invoke<string[]>("get_allowed_imessage_threads", { agentId: agent.id });
       setAllowedThreads(im || []);
     } catch {}
-    // Load dedicated email creds if set
-    try {
-      const cred = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_email_dedicated` });
-      if (cred) {
-        const [em, pw] = cred.split(" : ");
-        setDedicatedEmail(em || "");
-        setDedicatedPassword(pw || "");
-      }
-    } catch {}
+
     try {
       const paired = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_slack_paired` });
       if (paired === "true") setIsSlackPaired(true);
@@ -511,21 +537,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
     } catch (e) { console.error(e); }
   };
 
-  const saveDedicatedEmail = async () => {
-    if (!dedicatedEmail.trim() || !dedicatedPassword.trim()) return;
-    setEmailSaving(true);
-    try {
-      // Store agent-scoped credential: "email : app-password"
-      await invoke("store_secret_cmd", {
-        key: `agent_${agent.id}_email_dedicated`,
-        value: `${dedicatedEmail.trim()} : ${dedicatedPassword.trim()}`,
-      });
-      setEmailMode("dedicated");
-      await toggleIntegration("email_dedicated", true, ["email_read", "email_write"]);
-      await invoke("sync_gateway_channels");
-    } catch (e) { console.error(e); }
-    setEmailSaving(false);
-  };
+
 
   useEffect(() => {
     if (allowlistsLoaded && agent.integrations.includes("slack") && allowedSlack.length === 0 && !isSlackPaired && !hasScrolledToSlack) {
@@ -670,39 +682,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         </div>
       )}
 
-      {/* Agent's own email */}
-      <div style={{ border: "1px solid var(--border-subtle)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card)", marginBottom: 24 }}>
-        <div style={{ padding: "14px 16px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>Dedicated agent email</span>
-            <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Optional</span>
-          </div>
-          <p style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, margin: "0 0 12px" }}>
-            Give <strong>{agent.name}</strong> their own email identity. Create a Gmail account for them, then generate an App Password under <em>Google Account → Security → 2-Step Verification → App Passwords</em>.
-          </p>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <input
-              value={dedicatedEmail}
-              onChange={e => setDedicatedEmail(e.target.value)}
-              placeholder="agent@gmail.com"
-              style={{ flex: "1 1 180px", padding: "7px 10px", border: "1px solid var(--border-subtle)", borderRadius: 7, fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
-            />
-            <PasswordInput
-              value={dedicatedPassword}
-              onChange={e => setDedicatedPassword(e.target.value)}
-              placeholder="xxxx-xxxx-xxxx-xxxx (App Password)"
-              style={{ flex: "1 1 200px", padding: "7px 10px", borderRadius: 7, border: "1px solid var(--border-subtle)", fontSize: 12, fontFamily: "inherit", background: "var(--surface-card)", color: "var(--text-main)" }}
-            />
-            <button onClick={saveDedicatedEmail} disabled={emailSaving || !dedicatedEmail || !dedicatedPassword} style={{
-              padding: "7px 16px", background: "#3c6663", color: "#fff", border: "none",
-              borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
-              opacity: (!dedicatedEmail || !dedicatedPassword) ? 0.5 : 1,
-            }}>
-              {emailSaving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </div>
-      </div>
+
 
       {/* Slack */}
       <ServiceRow
@@ -925,7 +905,7 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
         enabled={emailMode !== "none"}
         onToggle={async (v) => {
           setEmailMode(v ? "read" : "none");
-          await toggleIntegration("email_read", v, ["email_write", "email_dedicated"]);
+          await toggleIntegration("email_read", v, ["email_write"]);
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -934,13 +914,19 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
             <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
               <input type="radio" name={`email-mode-${agent.id}`} checked={emailMode === m} onChange={async () => {
                 setEmailMode(m);
-                await toggleIntegration(`email_${m}`, true, ["email_read", "email_write", "email_dedicated"].filter(x => x !== `email_${m}`));
+                await toggleIntegration(`email_${m}`, true, ["email_read", "email_write"].filter(x => x !== `email_${m}`));
               }} style={{ accentColor: "#3c6663" }} />
               <span style={{ color: "var(--text-main)", fontWeight: emailMode === m ? 600 : 400 }}>
                 {m === "read" ? "Read-only — monitor inbox, search, summarise" : "Read + Send — can draft and send replies"}
               </span>
             </label>
           ))}
+          <div style={{ marginTop: 8, padding: 12, background: "rgba(66, 133, 244, 0.1)", border: "1px solid rgba(66, 133, 244, 0.2)", borderRadius: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#4285F4", marginBottom: 4 }}>💡 Tip: Dedicated Agent Email</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.4 }}>
+              Want to set up an agent with their own dedicated email? Create a new Gmail account and select it during the Google Sign-in flow instead of your personal account.
+            </div>
+          </div>
         </div>
       </ServiceRow>
 
@@ -1489,12 +1475,12 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                             // Auto-enable GitHub integration after successful configuration
                             await toggleIntegration("github", true);
                           } else if (c.id === 'telegram') {
-                            await invoke("configure_telegram", { botToken: val });
-                            // Auto-enable Telegram integration after successful configuration
+                            // Per-agent: scope the Telegram bot token to THIS agent.
+                            // See channels.rs configure_telegram comment.
+                            await invoke("configure_telegram", { agentId: agent.id, botToken: val });
                             await toggleIntegration("telegram", true);
                           } else if (c.id === 'discord') {
-                            await invoke("configure_discord", { botToken: val });
-                            // Auto-enable Discord integration after successful configuration
+                            await invoke("configure_discord", { agentId: agent.id, botToken: val });
                             await toggleIntegration("discord", true);
                           } else {
                             await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
@@ -1572,7 +1558,8 @@ export function ConnectionsTab({ agent }: { agent: AgentData }) {
                         setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
                         try {
                           const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                          await invoke("configure_twilio", { accountSid: sid, authToken: token, phoneNumber: phone });
+                          // Per-agent: each agent has its own Twilio sub-account credentials.
+                          await invoke("configure_twilio", { agentId: agent.id, accountSid: sid, authToken: token, phoneNumber: phone });
                           setDynamicSetupState(prev => ({ ...prev, [c.id]: false }));
                           checkDynamicStatuses();
                         } catch (e: any) {

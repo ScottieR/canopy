@@ -8,10 +8,24 @@ use crate::model_constants::{
 use crate::models::{Agent, AgentPersonality, AgentCapabilities, AgentStats, AgentStatus, DiscoveredAgent};
 use crate::errors::{CanopyError, Result as CanopyResult};
 use crate::app_state::AppState;
+use lazy_static::lazy_static;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::{Emitter, State};
+
+// Cache of the most recent gateway-channels config hash. Used by
+// `sync_gateway_channels_internal` to detect "nothing actually changed" and skip the
+// docker restart that previously fired on every call. The previous behaviour bounced
+// the gateway (and dropped every agent's Slack Socket Mode connection) every time the
+// UI nudged an allowlist toggle, which is exactly the "Slack is touch-and-go" pattern
+// the user reported. Process-local cache: first call after launch always restarts
+// (acceptable — we want to push the boot-sync state once), subsequent identical calls
+// are no-ops.
+lazy_static! {
+    static ref LAST_GATEWAY_CHANNELS_HASH: Mutex<Option<u64>> = Mutex::new(None);
+}
 
 /// Returns the current list of available models for the frontend model picker.
 ///
@@ -3404,9 +3418,20 @@ pub async fn boot_sync_agents(
 }
 
 
-pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<(), String> {
+/// Rebuild the gateway's per-agent `channels.*.accounts` maps and `bindings` from
+/// the current keychain state, write them into openclaw.json, and report whether
+/// anything actually changed.
+///
+/// Returns `Ok(true)`  if the on-disk config was rewritten (caller should restart
+///                       the gateway to pick up the new config).
+/// Returns `Ok(false)` if the new config is identical to the previously written
+///                       one (caller should NOT restart — restarting wastefully
+///                       drops every agent's Socket Mode connection and is the
+///                       biggest contributor to Slack flakiness when multiple
+///                       agents are connected).
+pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<bool, String> {
     let active_agents = db.list_agents().unwrap_or_default();
-    
+
     // ── Configure Per-Agent Channels (Slack & Google) ───────────────────────
     let mut slack_accounts = serde_json::Map::new();
     let mut gmail_accounts = serde_json::Map::new();
@@ -3459,7 +3484,36 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
         handle_google("calendar", "google-calendar", "googleCalendar", &mut calendar_accounts);
         handle_google("drive", "google-drive", "googleDrive", &mut drive_accounts);
     }
-    
+
+    // ── Short-circuit: nothing changed since last write? Skip patch + restart. ──
+    // Hash exactly the inputs that drive the patch script. If they match the
+    // cached value from the previous call in this process, the openclaw.json we'd
+    // be about to write is byte-identical to what's already there, so we can
+    // return Ok(false) and let the caller skip the docker restart.
+    let new_hash = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        // Serialise to canonical JSON via Value so map ordering is consistent
+        // between calls (serde_json::Map preserves insertion order; ordering is
+        // stable because db.list_agents() returns rows in primary-key order).
+        let snapshot = json!({
+            "slack":    slack_accounts,
+            "gmail":    gmail_accounts,
+            "calendar": calendar_accounts,
+            "drive":    drive_accounts,
+            "bindings": bindings,
+        });
+        serde_json::to_string(&snapshot).unwrap_or_default().hash(&mut h);
+        h.finish()
+    };
+    {
+        let cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
+        if cache.as_ref() == Some(&new_hash) {
+            tracing::info!("sync_gateway_channels: config unchanged — skipping patch + restart");
+            return Ok(false);
+        }
+    }
+
     // SECURITY: Try keychain first for OAuth secrets (secure storage)
     // Fall back to environment variables, then to embedded constants
     let google_client_id = crate::keychain::get_secret("GOOGLE_CLIENT_ID")
@@ -3533,20 +3587,31 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
         tracing::error!("sync_gateway_channels: patch script failed to execute or timed out");
         return Err("Patch script failed to execute or timed out".to_string());
     }
-    
-    Ok(())
+
+    // Patch succeeded — record the new hash so the next no-op call can skip.
+    {
+        let mut cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
+        *cache = Some(new_hash);
+    }
+
+    Ok(true)
 }
 
 #[tauri::command]
 pub async fn sync_gateway_channels(db: tauri::State<'_, crate::db::Database>) -> Result<(), String> {
-    sync_gateway_channels_internal(&db).await?;
-    
-    // Restart the gateway to apply the new tokens and bindings for Socket Mode
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        get_docker_command().args(["restart", "canopy-gateway"]).output(),
-    ).await;
-    
+    let changed = sync_gateway_channels_internal(&db).await?;
+
+    // Only bounce the gateway if the channels config actually changed. Restarting
+    // when nothing changed pointlessly drops every agent's Slack Socket Mode
+    // connection and is the main reason "Slack feels touch-and-go" with several
+    // agents connected.
+    if changed {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            get_docker_command().args(["restart", "canopy-gateway"]).output(),
+        ).await;
+    }
+
     Ok(())
 }
 

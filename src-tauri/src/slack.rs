@@ -1,6 +1,7 @@
 use crate::db::Database;
 use crate::keychain;
 use crate::models::{Bridge, BridgeConfig, BridgePermissions, BridgeType};
+use lazy_static::lazy_static;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -12,6 +13,29 @@ use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 const SLACK_API_BASE: &str = "https://slack.com/api";
+
+// Shared reqwest client for ALL Slack API calls.
+//
+// Why: a fresh `Client::new()` per call (the previous behaviour) re-opens TLS
+// against api.slack.com every single time — easily 100-500ms of overhead
+// before Slack even sees the request, plus no HTTP/2 multiplexing, plus no
+// connection pool. Five Slack calls in a row could waste 2+ seconds of pure
+// handshake time. That was a major contributor to "Slack feels slow" once
+// multiple agents started polling.
+//
+// Also sets a real timeout — `Client::new()` defaults to NO timeout, which
+// means a hung Slack call could stall a Tauri command indefinitely and
+// cascade into the chat UI looking frozen.
+lazy_static! {
+    static ref HTTP: Client = Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .pool_max_idle_per_host(8)
+        .user_agent("canopy/slack")
+        .build()
+        .unwrap_or_else(|_| Client::new());
+}
 
 // ============================================================================
 // Data Types
@@ -199,9 +223,8 @@ pub async fn start_slack_oauth(
     .await
     .map_err(|e| format!("Task join error: {}", e))??;
 
-    // Exchange code for token
-    let http_client = Client::new();
-    let token_response: OAuthTokenResponse = http_client
+    // Exchange code for token (reuse the shared client — same pool + timeout).
+    let token_response: OAuthTokenResponse = HTTP
         .post(&format!("{}/oauth.v2.access", SLACK_API_BASE))
         .form(&[
             ("client_id", client_id.as_str()),
@@ -237,11 +260,30 @@ pub async fn start_slack_oauth(
 // Slack API Client
 // ============================================================================
 
+/// Resolve a Slack bot token.
+///
+/// Per-agent isolation rule (important — this is the "no shared keys" guarantee):
+///
+/// * When `agent_id == Some(id)`, look up ONLY `agent_{id}_slack_bot_token`. If the
+///   per-agent token isn't in the keychain, error out cleanly. Do NOT fall back to
+///   the global `slack-bot-token` slot. The previous fallback meant that as soon as
+///   the global slot had a stale token (e.g. left over from the legacy single-tenant
+///   `start_slack_listener` path), every agent missing its own connection would
+///   silently use that one — Agent A's messages going through Agent B's bot. Hard
+///   fail makes the UI prompt for a real per-agent connection instead.
+///
+/// * When `agent_id == None`, this is a global/legacy call site (e.g. the global
+///   IntegrationsView, or a "is Slack working at all" health check) and falling
+///   through to the global slot is the intended behaviour.
 async fn get_bot_token(agent_id: Option<&str>) -> Result<String, String> {
     if let Some(id) = agent_id {
-        if let Ok(token) = keychain::get_secret(&format!("agent_{}_slack_bot_token", id)) {
-            return Ok(token);
-        }
+        return keychain::get_secret(&format!("agent_{}_slack_bot_token", id))
+            .map_err(|_| format!(
+                "Slack is not connected for agent '{}'. Open this agent's Connections \
+                 tab and complete the Slack setup. (Not falling back to the global \
+                 token to avoid cross-agent context leaks.)",
+                id
+            ));
     }
     keychain::get_secret("slack-bot-token")
         .map_err(|e| format!("Failed to get bot token: {}", e))
@@ -253,10 +295,9 @@ async fn make_api_call(
     agent_id: Option<&str>,
 ) -> Result<Value, String> {
     let token = get_bot_token(agent_id).await?;
-    let client = Client::new();
     let url = format!("{}/{}", SLACK_API_BASE, endpoint);
 
-    let mut request = client.post(&url)
+    let mut request = HTTP.post(&url)
         .bearer_auth(&token);
 
     if let Some(p) = params {
@@ -809,15 +850,19 @@ pub async fn disconnect_slack_for_agent(
 
     // Rebuild channels.slack.accounts and bindings WITHOUT this agent. The internal
     // function reads the keychain, so wiping the entries above is enough — they'll be
-    // absent from the new accounts map.
-    crate::openclaw::sync_gateway_channels_internal(&db).await?;
+    // absent from the new accounts map. It returns `true` when openclaw.json was
+    // actually rewritten; we only bounce the gateway in that case so we don't drop
+    // OTHER agents' Slack Socket Mode connections for nothing.
+    let changed = crate::openclaw::sync_gateway_channels_internal(&db).await?;
 
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        crate::openclaw::get_docker_command()
-            .args(["restart", "canopy-gateway"])
-            .output(),
-    ).await;
+    if changed {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            crate::openclaw::get_docker_command()
+                .args(["restart", "canopy-gateway"])
+                .output(),
+        ).await;
+    }
 
     info!("Slack disconnected for agent {}; tokens removed.", agent_id);
     Ok(format!("Slack disconnected for {} and saved tokens removed.", agent_id))

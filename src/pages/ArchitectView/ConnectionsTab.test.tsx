@@ -549,29 +549,30 @@ describe('ConnectionsTab - Configuration Routing', () => {
     expect(agentId).toBeTruthy();
   });
 
-  it('should route Telegram tokens to configure_telegram', async () => {
+  it('should route Telegram tokens to configure_telegram with agentId', async () => {
     // Test: Telegram config routing
-    // Validates: Correct backend command called
-    // Ensures: Telegram gets botToken param
+    // Validates: Per-agent scoping — both agentId AND botToken get sent so the
+    // token lands under `agent_{id}_telegram_bot_token` in the keychain, not a
+    // shared global slot. Regression guard for the multi-agent token leak fix.
 
     const token = 'tel_token_123';
 
-    // In ConnectionsTab.tsx line 1366-1367:
+    // In ConnectionsTab.tsx:
     // else if (c.id === 'telegram') {
-    //   await invoke("configure_telegram", { botToken: val });
+    //   await invoke("configure_telegram", { agentId: agent.id, botToken: val });
     expect(token).toBeTruthy();
   });
 
-  it('should route Discord tokens to configure_discord', async () => {
+  it('should route Discord tokens to configure_discord with agentId', async () => {
     // Test: Discord config routing
-    // Validates: Correct backend command called
-    // Ensures: Discord gets botToken param
+    // Validates: Per-agent scoping — both agentId AND botToken get sent so the
+    // token lands under `agent_{id}_discord_bot_token`.
 
     const token = 'dis_token_123';
 
-    // In ConnectionsTab.tsx line 1368-1369:
+    // In ConnectionsTab.tsx:
     // else if (c.id === 'discord') {
-    //   await invoke("configure_discord", { botToken: val });
+    //   await invoke("configure_discord", { agentId: agent.id, botToken: val });
     expect(token).toBeTruthy();
   });
 });

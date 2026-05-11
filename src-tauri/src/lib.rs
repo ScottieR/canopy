@@ -265,9 +265,13 @@ pub fn run() {
             channels::configure_github,
             channels::configure_twilio,
             channels::disconnect_telegram,
+            channels::disconnect_telegram_for_agent,
             channels::disconnect_whatsapp,
+            channels::disconnect_whatsapp_for_agent,
             channels::disconnect_discord,
+            channels::disconnect_discord_for_agent,
             channels::disconnect_twilio,
+            channels::disconnect_twilio_for_agent,
             channels::disconnect_github,
             // Voice mode
             voice::get_voice_config,
