@@ -51,16 +51,30 @@ export function SlackCompanion() {
     if (!slackAppToken || !slackBotToken) return;
     setTestStatus("testing");
     setErrorMsg("");
-    
+
+    // Hard guard: this companion is per-agent and the agentId must come from the URL
+    // (set by ConnectionsTab when opening this window). Falling back to the global
+    // `slack-bot-token` / `slack-app-token` slots — the prior behaviour — was the
+    // source of cross-agent token contamination: whichever agent connected last
+    // would overwrite the global slot, and any subsequently-created agent missing
+    // its own token would silently use it. Refuse to proceed instead. The matching
+    // Rust-side guard lives in slack.rs `get_bot_token`.
+    if (!agentId) {
+      setTestStatus("error");
+      setErrorMsg(
+        "This Slack setup window was opened without an agentId. Close it and " +
+        "click \"Connect Slack\" from the specific agent's Connections tab — that " +
+        "ensures the tokens are stored under this agent only."
+      );
+      return;
+    }
+
     try {
       if (typeof invoke === "function") {
-        await invoke("store_batch_secrets_cmd", { 
-          secrets: agentId ? {
+        await invoke("store_batch_secrets_cmd", {
+          secrets: {
             [`agent_${agentId}_slack_app_token`]: slackAppToken,
-            [`agent_${agentId}_slack_bot_token`]: slackBotToken
-          } : {
-            "slack-app-token": slackAppToken,
-            "slack-bot-token": slackBotToken
+            [`agent_${agentId}_slack_bot_token`]: slackBotToken,
           }
         });
         

@@ -47,3 +47,10 @@ async-trait = "0.1.89"
 tokio-test = "0.4"
 mockall = "0.12"
 tempfile = "3"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

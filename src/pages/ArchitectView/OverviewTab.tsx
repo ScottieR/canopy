@@ -18,9 +18,16 @@ import { ProgressBar } from "../../App";
 import { ChatTab } from "./ChatTab";
 import { Toggle, ServiceRow, glass } from "../../App";
 
-export // ─── Overview Tab ────────────────────────────────────────────────────────────
+// ─── Overview Tab ────────────────────────────────────────────────────────────
 
-  function OverviewTab({ agent, onUpdate, onNavigate }: { agent: AgentData; onUpdate?: () => void; onNavigate?: (tab: string) => void }) {
+export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: AgentData; onUpdate?: () => void; onNavigate?: (tab: string) => void }) {
+  const fallbackIntegrations = useMemo(() => [], []);
+  const fallbackPermissions = useMemo(() => [], []);
+  const agent = { 
+    ..._agent, 
+    integrations: _agent.integrations || fallbackIntegrations,
+    permissions: _agent.permissions || fallbackPermissions
+  };
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [repairLog, setRepairLog] = useState<string | null>(null);
   const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);

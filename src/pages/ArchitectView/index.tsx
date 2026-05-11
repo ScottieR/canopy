@@ -28,7 +28,13 @@ export // ═══════════════════════�
 
 // function OnboardingWizard() { Extracted
 
-function ArchitectView({ agent }: { agent: AgentData }) {
+function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
+  const agent = useMemo(() => ({
+    ...rawAgent,
+    integrations: rawAgent.integrations || [],
+    permissions: rawAgent.permissions || []
+  }), [rawAgent]);
+
   const { agents, setSelectedAgent, setActiveView, architectTab, setArchitectTab, togglePermission } = useWorldStore();
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [diagErrors, setDiagErrors] = useState<string[]>([]);

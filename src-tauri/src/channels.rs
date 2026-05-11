@@ -12,9 +12,42 @@
 /// Security model: all tokens are stored in the macOS Keychain, never in plaintext
 /// files. The gateway only receives them via docker exec stdin (in this case, embedded
 /// as JSON-quoted string literals inside the `node -e` script).
+///
+/// ── Per-agent isolation (matters — read this) ────────────────────────────────
+/// Every `configure_*` command takes an `agent_id` parameter and namespaces all
+/// keychain entries as `agent_{id}_{service}_{field}`. This is the same shape that
+/// Slack and GitHub use and is the user-visible contract: each agent has its own
+/// app/bot credentials, no cross-contamination, the keychain is auditable per
+/// agent. Older builds wrote to globally-scoped keys (`telegram-bot-token`, etc.);
+/// any agent reconnecting clobbered the previous one's secrets. Those global keys
+/// are now legacy — kept ONLY for the `disconnect_*_global` paths used by the
+/// "wipe all" Settings page.
+///
+/// Gateway routing caveat: OpenClaw's `channels.{name}.botToken` is still a
+/// SINGLE string for Telegram/Discord/WhatsApp/Twilio (unlike Slack, which uses
+/// an `accounts` map keyed by agent_id). So even though credentials are stored
+/// per-agent in the keychain, the gateway's *active* bot for each channel is the
+/// one written most recently. The keychain isolation prevents data corruption
+/// (you can always retrieve any agent's token), but full per-agent runtime
+/// routing requires OpenClaw to grow `channels.{name}.accounts` support — see
+/// TODO inside each configurator. Until then: assume one active bot per channel,
+/// reconfigure to switch which agent owns it.
 
 use crate::openclaw::get_docker_command;
 use serde_json::{json, Value};
+
+/// Reject obviously-bad agent ids so they can't be smuggled into keychain key
+/// names or `node -e` patch scripts. Matches the shape Slack and GitHub already
+/// validate on their per-agent paths.
+fn validate_agent_id(agent_id: &str) -> Result<(), String> {
+    if agent_id.is_empty() {
+        return Err("agent_id is required for per-agent channel configuration".into());
+    }
+    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("invalid agent id {:?} — only [a-zA-Z0-9_-] allowed", agent_id));
+    }
+    Ok(())
+}
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -99,7 +132,8 @@ async fn restart_gateway_soft() {
 // OpenClaw channel key: channels.telegram.*
 
 #[tauri::command]
-pub async fn configure_telegram(bot_token: String) -> Result<String, String> {
+pub async fn configure_telegram(agent_id: String, bot_token: String) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
     let token = bot_token.trim().to_string();
 
     // Validate format: numeric ID, colon, alphanumeric string
@@ -110,35 +144,58 @@ pub async fn configure_telegram(bot_token: String) -> Result<String, String> {
         );
     }
 
-    // Save to keychain
-    crate::keychain::store_secret("telegram-bot-token", &token)
+    // Per-agent keychain. Each agent's Telegram bot lives under its own slot so two
+    // agents using Telegram can't overwrite each other.
+    crate::keychain::store_secret(&format!("agent_{}_telegram_bot_token", agent_id), &token)
         .map_err(|e| format!("Keychain error: {}", e))?;
 
-    // Configure OpenClaw — single atomic patch, one restart.
+    // TODO(multi-tenant): OpenClaw currently reads ONE `channels.telegram.botToken`,
+    // so only one agent's bot is active at the gateway level at a time — last writer
+    // wins. To grow this into Slack-style multi-tenancy we'd need OpenClaw to support
+    // `channels.telegram.accounts.{agent_id}` + a binding entry, mirroring the Slack
+    // path in `openclaw::sync_gateway_channels_internal`. Until then, the keychain is
+    // already in the right per-agent shape and the gateway can be re-pointed at any
+    // agent's saved token without losing the others.
     patch_channel_config("telegram", json!({
         "botToken": token,
-        "enabled": true,
-        "mode": "polling",
+        "enabled":  true,
+        "mode":     "polling",
     })).await?;
 
     restart_gateway_soft().await;
 
-    Ok("Telegram bot connected. Your agent will now respond to Telegram messages.".to_string())
+    Ok(format!(
+        "Telegram bot connected for agent '{}'. It will now respond to Telegram messages.",
+        agent_id
+    ))
 }
 
+/// Per-agent Telegram disconnect: wipes ONLY this agent's saved Telegram token.
+///
+/// Mirrors `disconnect_slack_for_agent`. Does NOT touch other agents' tokens. Other
+/// agents' Telegram connections are unaffected (modulo the single-active-bot caveat
+/// noted above — if this agent was the currently-active gateway bot, Telegram will
+/// stop routing until another agent (re)configures Telegram).
+#[tauri::command]
+pub async fn disconnect_telegram_for_agent(agent_id: String) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_telegram_bot_token", agent_id));
+    Ok(format!("Telegram token removed for agent '{}'.", agent_id))
+}
+
+/// Global Telegram disconnect — disables the channel at the gateway and wipes the
+/// legacy global keychain entry. Per-agent tokens (`agent_{id}_telegram_bot_token`)
+/// are NOT touched; use `disconnect_telegram_for_agent` for those. Called by the
+/// global IntegrationsView "Wipe Telegram" path.
 #[tauri::command]
 pub async fn disconnect_telegram() -> Result<String, String> {
-    // Wipe the saved Bot Token from the keychain so a future reconnect requires the
-    // user to re-paste it. Mirrors the "tokens + bindings" disconnect contract used by
-    // every other channel disconnect command.
     let _ = crate::keychain::delete_secret_internal("telegram-bot-token");
-    // Clear sensitive fields and disable the channel + plugin in openclaw.json.
     patch_channel_config("telegram", json!({
         "enabled":  false,
         "botToken": "",
     })).await?;
     restart_gateway_soft().await;
-    Ok("Telegram disconnected and saved token removed.".to_string())
+    Ok("Telegram disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
 
 // ─── WhatsApp (Meta Cloud API) ────────────────────────────────────────────────
@@ -154,10 +211,12 @@ pub async fn disconnect_telegram() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn configure_whatsapp(
+    agent_id: String,
     phone_number_id: String,
     business_account_id: String,
     api_token: String,
 ) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
     let phone_id = phone_number_id.trim().to_string();
     let biz_id = business_account_id.trim().to_string();
     let token = api_token.trim().to_string();
@@ -172,15 +231,19 @@ pub async fn configure_whatsapp(
         );
     }
 
-    // Save to keychain
-    crate::keychain::store_secret("whatsapp-phone-number-id", &phone_id)
+    // Per-agent keychain. WhatsApp Business has THREE secrets per agent; each goes
+    // under its own slot so a second agent connecting can't clobber the first.
+    crate::keychain::store_secret(&format!("agent_{}_whatsapp_phone_number_id", agent_id), &phone_id)
         .map_err(|e| format!("Keychain error: {}", e))?;
-    crate::keychain::store_secret("whatsapp-business-account-id", &biz_id)
+    crate::keychain::store_secret(&format!("agent_{}_whatsapp_business_account_id", agent_id), &biz_id)
         .map_err(|e| format!("Keychain error: {}", e))?;
-    crate::keychain::store_secret("whatsapp-api-token", &token)
+    crate::keychain::store_secret(&format!("agent_{}_whatsapp_api_token", agent_id), &token)
         .map_err(|e| format!("Keychain error: {}", e))?;
 
-    // Configure OpenClaw — single atomic patch, one restart.
+    // TODO(multi-tenant): same caveat as Telegram — OpenClaw reads single
+    // `channels.whatsapp.{field}` values so last writer wins at the gateway. Storage
+    // is per-agent; runtime routing is single-tenant until OpenClaw grows accounts
+    // support for whatsapp.
     patch_channel_config("whatsapp", json!({
         "phoneNumberId":     phone_id,
         "businessAccountId": biz_id,
@@ -190,7 +253,20 @@ pub async fn configure_whatsapp(
 
     restart_gateway_soft().await;
 
-    Ok("WhatsApp Business connected. Your agent will now respond to WhatsApp messages.".to_string())
+    Ok(format!(
+        "WhatsApp Business connected for agent '{}'. It will now respond to WhatsApp messages.",
+        agent_id
+    ))
+}
+
+/// Per-agent WhatsApp disconnect: wipes only this agent's three saved credentials.
+#[tauri::command]
+pub async fn disconnect_whatsapp_for_agent(agent_id: String) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_whatsapp_phone_number_id", agent_id));
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_whatsapp_business_account_id", agent_id));
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_whatsapp_api_token", agent_id));
+    Ok(format!("WhatsApp credentials removed for agent '{}'.", agent_id))
 }
 
 // ─── Twilio ───────────────────────────────────────────────────────────────────
@@ -200,10 +276,12 @@ pub async fn configure_whatsapp(
 
 #[tauri::command]
 pub async fn configure_twilio(
+    agent_id: String,
     account_sid: String,
     auth_token: String,
     phone_number: String,
 ) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
     let sid = account_sid.trim().to_string();
     let token = auth_token.trim().to_string();
     let phone = phone_number.trim().to_string();
@@ -216,15 +294,18 @@ pub async fn configure_twilio(
         return Err("Account SID looks wrong — Twilio Account SIDs start with 'AC'.".to_string());
     }
 
-    // Save to keychain
-    crate::keychain::store_secret("twilio-account-sid", &sid)
+    // Per-agent keychain. Each agent's Twilio sub-account / auth token lives under
+    // its own slot — important since a Twilio subaccount per agent is the standard
+    // way to do voice/SMS per persona.
+    crate::keychain::store_secret(&format!("agent_{}_twilio_account_sid", agent_id), &sid)
         .map_err(|e| format!("Keychain error: {}", e))?;
-    crate::keychain::store_secret("twilio-auth-token", &token)
+    crate::keychain::store_secret(&format!("agent_{}_twilio_auth_token", agent_id), &token)
         .map_err(|e| format!("Keychain error: {}", e))?;
-    crate::keychain::store_secret("twilio-phone-number", &phone)
+    crate::keychain::store_secret(&format!("agent_{}_twilio_phone_number", agent_id), &phone)
         .map_err(|e| format!("Keychain error: {}", e))?;
 
-    // Configure OpenClaw — single atomic patch, one restart.
+    // TODO(multi-tenant): same caveat as Telegram/WhatsApp — gateway still reads a
+    // single `channels.twilio.{field}` set.
     patch_channel_config("twilio", json!({
         "accountSid":  sid,
         "authToken":   token,
@@ -234,7 +315,20 @@ pub async fn configure_twilio(
 
     restart_gateway_soft().await;
 
-    Ok("Twilio Voice & SMS connected. Your agent will now respond to calls and texts.".to_string())
+    Ok(format!(
+        "Twilio Voice & SMS connected for agent '{}'. It will now respond to calls and texts.",
+        agent_id
+    ))
+}
+
+/// Per-agent Twilio disconnect: wipes only this agent's three saved credentials.
+#[tauri::command]
+pub async fn disconnect_twilio_for_agent(agent_id: String) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_account_sid", agent_id));
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_auth_token", agent_id));
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_phone_number", agent_id));
+    Ok(format!("Twilio credentials removed for agent '{}'.", agent_id))
 }
 
 // ─── Discord ──────────────────────────────────────────────────────────────────
@@ -247,9 +341,11 @@ pub async fn configure_twilio(
 
 #[tauri::command]
 pub async fn configure_discord(
+    agent_id: String,
     bot_token: String,
     guild_id: Option<String>,
 ) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
     let token = bot_token.trim().to_string();
 
     // Discord bot tokens are base64-encoded and contain two dots
@@ -260,7 +356,9 @@ pub async fn configure_discord(
         );
     }
 
-    crate::keychain::store_secret("discord-bot-token", &token)
+    // Per-agent keychain. Each agent gets its own Discord app + bot token in its
+    // own slot so two agents can't overwrite each other on connect.
+    crate::keychain::store_secret(&format!("agent_{}_discord_bot_token", agent_id), &token)
         .map_err(|e| format!("Keychain error: {}", e))?;
 
     // Build the patch object — guildId is conditional.
@@ -271,29 +369,44 @@ pub async fn configure_discord(
 
     if let Some(gid) = guild_id.as_deref().filter(|s| !s.trim().is_empty()) {
         let gid_trimmed = gid.trim().to_string();
-        crate::keychain::store_secret("discord-guild-id", &gid_trimmed)
+        crate::keychain::store_secret(&format!("agent_{}_discord_guild_id", agent_id), &gid_trimmed)
             .map_err(|e| format!("Keychain error: {}", e))?;
         fields["guildId"] = Value::String(gid_trimmed);
     }
 
-    // Configure OpenClaw — single atomic patch, one restart.
+    // TODO(multi-tenant): same caveat as Telegram/WhatsApp/Twilio — gateway still
+    // reads a single `channels.discord.botToken`.
     patch_channel_config("discord", fields).await?;
 
     restart_gateway_soft().await;
 
-    Ok("Discord bot connected. Your agent will now respond to Discord messages.".to_string())
+    Ok(format!(
+        "Discord bot connected for agent '{}'. It will now respond to Discord messages.",
+        agent_id
+    ))
 }
 
-// ─── Disconnect commands (WhatsApp / Twilio / Discord) ────────────────────────
+/// Per-agent Discord disconnect: wipes only this agent's bot token + guild id.
+#[tauri::command]
+pub async fn disconnect_discord_for_agent(agent_id: String) -> Result<String, String> {
+    validate_agent_id(&agent_id)?;
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_discord_bot_token", agent_id));
+    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_discord_guild_id", agent_id));
+    Ok(format!("Discord credentials removed for agent '{}'.", agent_id))
+}
+
+// ─── Global "disable channel at the gateway" disconnects ─────────────────────
 //
-// All three follow the same shape:
-//   1. Wipe credentials from the macOS keychain so future reconnects require fresh tokens.
-//   2. Patch openclaw.json to clear the channel's secret fields and set enabled=false
-//      (and the matching `plugins.entries.X.enabled = false`).
+// These three mirror `disconnect_telegram` / `disconnect_slack_global`. They:
+//   1. Wipe the LEGACY global keychain entries (e.g. `whatsapp-api-token`). Modern
+//      per-agent entries (`agent_{id}_whatsapp_api_token`) are NOT touched — that's
+//      what `disconnect_*_for_agent` is for.
+//   2. Patch openclaw.json to clear the channel's active secret fields and set
+//      enabled=false (and the matching `plugins.entries.X.enabled = false`).
 //   3. Restart the gateway once so the channel sidecar tears down cleanly.
 //
-// `disconnect_telegram` lives next to its `configure_telegram` sibling above and follows
-// the same contract.
+// Use when the user wants to turn off a channel globally regardless of which agent
+// owned it. Use the per-agent variants when removing a single agent's credentials.
 
 #[tauri::command]
 pub async fn disconnect_whatsapp() -> Result<String, String> {
@@ -307,7 +420,7 @@ pub async fn disconnect_whatsapp() -> Result<String, String> {
         "apiToken":          "",
     })).await?;
     restart_gateway_soft().await;
-    Ok("WhatsApp disconnected and saved tokens removed.".to_string())
+    Ok("WhatsApp disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
 
 #[tauri::command]
@@ -322,7 +435,7 @@ pub async fn disconnect_twilio() -> Result<String, String> {
         "phoneNumber": "",
     })).await?;
     restart_gateway_soft().await;
-    Ok("Twilio disconnected and saved tokens removed.".to_string())
+    Ok("Twilio disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
 
 #[tauri::command]
@@ -335,7 +448,7 @@ pub async fn disconnect_discord() -> Result<String, String> {
         "guildId":  "",
     })).await?;
     restart_gateway_soft().await;
-    Ok("Discord disconnected and saved tokens removed.".to_string())
+    Ok("Discord disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
 
 // ─── GitHub ───────────────────────────────────────────────────────────────────
