@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Eye, EyeOff } from 'lucide-react';
 
 interface PasswordInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   rightAction?: React.ReactNode;
@@ -19,10 +20,10 @@ export function PasswordInput({ rightAction, style, ...props }: PasswordInputPro
         <button 
           type="button"
           onClick={() => setVisible(!visible)} 
-          style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 14, opacity: 0.6, padding: 6, display: "flex", alignItems: "center", justifyContent: "center" }}
+          style={{ background: "transparent", border: "none", cursor: "pointer", opacity: 0.6, padding: 6, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-main)" }}
           title={visible ? "Hide token" : "Show token"}
         >
-          {visible ? "👁️‍🗨️" : "👁️"}
+          {visible ? <EyeOff size={16} /> : <Eye size={16} />}
         </button>
         {rightAction}
       </div>
