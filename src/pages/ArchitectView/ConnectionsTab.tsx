@@ -411,7 +411,7 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
     const invoke = (window as any).__TAURI_INTERNALS__.invoke;
     const obj: Record<string, boolean> = {};
     for (const c of connectors) {
-      if (['slack', 'gmail', 'imessage', 'filesystem'].includes(c.id)) continue;
+      if (['slack', 'gmail', 'imessage', 'filesystem', 'github'].includes(c.id)) continue;
       let key = c.id.toUpperCase() + "_TOKEN";
       if (c.id === 'calendar') key = `agent_${agent.id}_google_calendar_access_token`;
       if (c.id === 'drive') key = `agent_${agent.id}_google_drive_access_token`;
@@ -1423,10 +1423,10 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
               }
             }}
           >
-            {(dynamicSetupState[c.id] || dynamicStatuses[c.id]) && c.id !== 'twilio' && (
+            {(dynamicSetupState[c.id] || (c.id === 'github' ? !!githubToken : dynamicStatuses[c.id])) && c.id !== 'twilio' && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span>{dynamicStatuses[c.id] ? `Update ${c.name} Personal Access Token` : `Enter ${c.name} Personal Access Token`}</span>
+                  <span>{(c.id === 'github' ? !!githubToken : dynamicStatuses[c.id]) ? `Update ${c.name} Personal Access Token` : `Enter ${c.name} Personal Access Token`}</span>
                   {c.id === 'github' && (
                     <a 
                       href="#" 
