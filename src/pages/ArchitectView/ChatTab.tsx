@@ -37,6 +37,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   const [needsRepair, setNeedsRepair] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const lastBootSync = useRef<number>(0);
   
   // Inline Auth Modal State
   const [authDomain, setAuthDomain] = useState<string | null>(null);
@@ -276,8 +277,13 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         // Timeout — agent may not be registered yet (dir missing → agents add timed out on a previous boot).
         // Fire boot_sync_agents in the background so the NEXT send attempt succeeds.
         // We don't await it so the error message shows immediately. No VM restart — safe.
+        // Cooldown: only fire once per 5 minutes to avoid a boot loop on repeated timeouts.
         const { invoke: inv } = await import('@tauri-apps/api/core');
-        inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
+        const now = Date.now();
+        if (now - lastBootSync.current > 5 * 60 * 1000) {
+          lastBootSync.current = now;
+          inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
+        }
         friendlyError = "The agent is taking a while to respond. Registration is being refreshed — please try again in 30 seconds.";
       } else if (friendlyError.includes("No API key found for provider")) {
         const match = friendlyError.match(/No API key found for provider "([^"]+)"/);

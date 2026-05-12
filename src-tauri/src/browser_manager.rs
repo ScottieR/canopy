@@ -612,27 +612,31 @@ fn compute_offscreen_position() -> (i32, i32) {
 }
 
 async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, cdp_url: String) {
+    let mut retries = 0;
+    loop {
+        match try_stream_browser_visuals(&app_handle, &agent_id, &cdp_url).await {
+            Ok(_) => break,
+            Err(e) if retries < 5 => {
+                retries += 1;
+                eprintln!("Browser stream disconnected, reconnecting in 3s (attempt {}/5): {}", retries, e);
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            }
+            Err(e) => {
+                eprintln!("Browser stream failed after 5 retries: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &str, cdp_url: &str) -> Result<(), String> {
     use tokio_tungstenite::connect_async;
     use futures_util::{SinkExt, StreamExt};
     use tauri::Emitter;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::Duration;
 
-    let mut retry_count = 0;
-    let max_retries = 5;
-    
-    let (mut ws_stream, _) = loop {
-        match connect_async(&cdp_url).await {
-            Ok(ws) => break ws,
-            Err(e) => {
-                retry_count += 1;
-                if retry_count >= max_retries {
-                    tracing::error!("Failed to connect to CDP websocket for visual streaming: {}", e);
-                    return;
-                }
-                sleep(Duration::from_millis(500)).await;
-            }
-        }
-    };
+    let (mut ws_stream, _) = connect_async(cdp_url).await
+        .map_err(|e| e.to_string())?;
 
     let mut msg_id = 1;
     let mut interval = tokio::time::interval(Duration::from_millis(500)); // 2 FPS
@@ -650,7 +654,7 @@ async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, 
         });
 
         if ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(req.to_string().into())).await.is_err() {
-            break;
+            return Err("WebSocket send failed".to_string());
         }
 
         // Wait for response
@@ -669,7 +673,7 @@ async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, 
                 }
             }
         }
-        
+
         msg_id += 1;
     }
 }

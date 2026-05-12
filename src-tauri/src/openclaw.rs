@@ -3379,6 +3379,31 @@ pub async fn boot_sync_agents(
             tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
         }
     }
+    // Migration: copy global slack tokens to per-agent slots if missing.
+    // This is a no-op if per-agent slots already exist.
+    if let Ok(global_bot_token) = crate::keychain::get_secret("slack-bot-token") {
+        if !global_bot_token.trim().is_empty() {
+            for agent in &active_agents {
+                if agent.integrations.iter().any(|i| i == "slack") {
+                    let per_agent_key = format!("agent_{}_slack_bot_token", agent.id);
+                    let missing = crate::keychain::get_secret(&per_agent_key)
+                        .map(|s| s.trim().is_empty())
+                        .unwrap_or(true);
+                    if missing {
+                        let _ = crate::keychain::store_secret(&per_agent_key, &global_bot_token);
+                        if let Ok(global_app_token) = crate::keychain::get_secret("slack-app-token") {
+                            if !global_app_token.trim().is_empty() {
+                                let app_key = format!("agent_{}_slack_app_token", agent.id);
+                                let _ = crate::keychain::store_secret(&app_key, &global_app_token);
+                            }
+                        }
+                        tracing::info!("boot_sync_agents: migrated global slack tokens to per-agent slot for {}", agent.id);
+                    }
+                }
+            }
+        }
+    }
+
     let _ = sync_gateway_channels_internal(&db).await;
 
     tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
