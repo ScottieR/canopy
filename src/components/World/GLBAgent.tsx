@@ -3,7 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
-import accessoriesData from "../../../../shared/accessories.json";
+import accessoriesData from "../../../shared/accessories.json";
 import { AttachedAccessory } from "./AttachedAccessory";
 
 // Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous

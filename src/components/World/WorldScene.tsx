@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import agentsData from "../../../../shared/agents.json";
-import habitatsData from "../../../../shared/habitats.json";
+import agentsData from "../../../shared/agents.json";
+import habitatsData from "../../../shared/habitats.json";
 import { AgentNeighborhood } from "./AgentNeighborhood";
 import { OnboardingCompanion } from "./OnboardingCompanion";
 import { useGLTF } from "@react-three/drei";
