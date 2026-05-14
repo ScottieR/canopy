@@ -94,32 +94,6 @@ const WindowWrapper = ({ children }: { children: React.ReactNode }) => {
   
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <div style={{ 
-        padding: "12px 16px", 
-        borderBottom: "1px solid var(--border-subtle)", 
-        background: "var(--surface-base)",
-        display: "flex", justifyContent: "flex-end",
-        // @ts-ignore
-        WebkitAppRegion: "drag",
-        position: "sticky", top: 0, zIndex: 100
-      }}>
-        <button 
-          onClick={async () => {
-            const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-            getCurrentWebviewWindow().close();
-          }}
-          style={{
-            padding: "6px 12px", background: "rgba(229, 115, 115, 0.1)", 
-            color: "#c62828", border: "1px solid rgba(229, 115, 115, 0.3)", 
-            borderRadius: 6, fontWeight: 600, cursor: "pointer",
-            // @ts-ignore
-            WebkitAppRegion: "no-drag",
-            fontSize: 12
-          }}
-        >
-          Close Window
-        </button>
-      </div>
       <div style={{ flex: 1, overflow: "auto", position: "relative" }}>
         {children}
       </div>

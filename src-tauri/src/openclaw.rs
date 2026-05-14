@@ -503,6 +503,51 @@ pub async fn write_workspace_file(agent_id: String, filename: String, content: S
     std::fs::write(&file_path, content).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub async fn upload_workspace_file(agent_id: String, filename: String, base64_data: String) -> Result<(), String> {
+    use base64::Engine;
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err("Invalid filename".into());
+    }
+    let workspace = dirs::data_dir()
+        .ok_or("No data dir")?
+        .join("Canopy")
+        .join("openclaw-state")
+        .join("workspace")
+        .join(&agent_id);
+
+    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+    let file_path = workspace.join(&filename);
+    
+    let clean_base64 = if let Some(idx) = base64_data.find(',') {
+        &base64_data[idx + 1..]
+    } else {
+        &base64_data
+    };
+    
+    let decoded = base64::engine::general_purpose::STANDARD.decode(clean_base64).map_err(|e| format!("Base64 decode error: {}", e))?;
+    std::fs::write(&file_path, decoded).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn copy_file_to_workspace(agent_id: String, source_path: String, target_filename: String) -> Result<(), String> {
+    if target_filename.contains("..") || target_filename.contains('/') || target_filename.contains('\\') {
+        return Err("Invalid filename".into());
+    }
+    let workspace = dirs::data_dir()
+        .ok_or("No data dir")?
+        .join("Canopy")
+        .join("openclaw-state")
+        .join("workspace")
+        .join(&agent_id);
+
+    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+    let file_path = workspace.join(&target_filename);
+    
+    std::fs::copy(&source_path, &file_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn log_terminal_command_internal(agent_id: &str, command: &str, output: &str) {
     let workspace = match dirs::data_dir() {
         Some(dir) => dir.join("Canopy").join("openclaw-state").join("workspace").join(agent_id),
@@ -1181,6 +1226,7 @@ pub async fn delete_agent(
 
 pub async fn send_message_internal(
     db: &crate::db::Database,
+    app: &tauri::AppHandle,
     agent_id: &str,
     message: &str,
 ) -> Result<Value, String> {
@@ -1190,6 +1236,21 @@ pub async fn send_message_internal(
 
     // Step 2: Log user message to DB
     let _ = db.insert_message(&conv_id, "user", message);
+
+    // Step 2.5: Inject live DIAGNOSTICS.md into the agent's workspace
+    if let Ok(diagnostics) = crate::channels::ping_agent_connections_internal(db, agent_id).await {
+        if let Some(workspace_root) = dirs::data_dir().map(|d| {
+            d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)
+        }) {
+            let _ = std::fs::create_dir_all(&workspace_root);
+            let mut diag_content = String::from("# Live Connection Diagnostics\n\n_This file is updated automatically before you process a message. It contains the live status of your integrations._\n\n");
+            for diag in diagnostics {
+                let status = if diag.is_ok { "✅ ONLINE" } else { "❌ OFFLINE/ERROR" };
+                diag_content.push_str(&format!("- **{}**: {} - {}\n", diag.service, status, diag.message));
+            }
+            let _ = std::fs::write(workspace_root.join("DIAGNOSTICS.md"), diag_content);
+        }
+    }
 
     // Step 3: Kill any orphaned `openclaw agents add` processes before spawning the agent
     // command. Without the container-side timeout (older binaries), a timed-out agents add
@@ -1250,6 +1311,17 @@ pub async fn send_message_internal(
             }
             combined = format!("OpenClaw execution failed silently with status code: {}", output.status);
         }
+        // Log the unhandled error to the bug reports table for the Developer Agent
+        let bug = crate::models::AgentBugReport {
+            id: uuid::Uuid::new_v4().to_string(),
+            agent_id: agent_id.to_string(),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            service: "OpenClawGateway".to_string(),
+            error_message: combined.clone(),
+            resolved: false,
+        };
+        let _ = db.insert_agent_bug_report(&bug);
+
         return Err(combined);
     }
     
@@ -1302,14 +1374,79 @@ pub async fn send_message_internal(
 
     let _ = db.insert_message(&conv_id, "assistant", &response_text);
 
-    // Step 5: Log audit event
-    let _ = db.log_audit(agent_id, "send_message", Some("openclaw"), "Message sent to agent", None);
+    // ── INTERCEPT TOOL: RequestIntegration ───────────────────────────────────────
+    // If the LLM has emitted the `<RequestIntegration service="..." rationale="...">` tool format,
+    // we intercept it here to launch the Secure Consent Bridge modal on the frontend,
+    // instead of showing raw XML to the user.
+    if response_text.contains("<RequestIntegration") {
+        if let Some(start_idx) = response_text.find("<RequestIntegration") {
+            if let Some(end_idx) = response_text[start_idx..].find("/>") {
+                let tag = &response_text[start_idx..start_idx + end_idx + 2];
+                
+                // Super naive extraction just for the structural skeleton.
+                let mut service = String::new();
+                let mut rationale = String::new();
+                
+                if let Some(srv_idx) = tag.find("service=\"") {
+                    let s = &tag[srv_idx + 9..];
+                    if let Some(quote_idx) = s.find("\"") {
+                        service = s[..quote_idx].to_string();
+                    }
+                }
+                if let Some(rat_idx) = tag.find("rationale=\"") {
+                    let r = &tag[rat_idx + 11..];
+                    if let Some(quote_idx) = r.find("\"") {
+                        rationale = r[..quote_idx].to_string();
+                    }
+                }
+
+                if !service.is_empty() {
+                    tracing::info!("Intercepted RequestIntegration from agent {} for service {}", agent_id, service);
+                    let _ = app.emit("RequestConnection", serde_json::json!({
+                        "agent_id": agent_id,
+                        "service": service,
+                        "rationale": rationale
+                    }));
+                }
+            }
+        }
+    }
+
+    // ── Extract tokens and update stats ───────────────────────────────────────
+    let prompt_tokens = body["meta"]["usage"]["prompt_tokens"]
+        .as_u64()
+        .or_else(|| body["result"]["meta"]["usage"]["prompt_tokens"].as_u64())
+        .unwrap_or(0);
+    let completion_tokens = body["meta"]["usage"]["completion_tokens"]
+        .as_u64()
+        .or_else(|| body["result"]["meta"]["usage"]["completion_tokens"].as_u64())
+        .unwrap_or(0);
+    let model = body["meta"]["model"]
+        .as_str()
+        .or_else(|| body["result"]["meta"]["model"].as_str())
+        .unwrap_or("unknown");
+
+    if prompt_tokens > 0 || completion_tokens > 0 {
+        if let Ok(Some(mut agent)) = db.get_agent(agent_id) {
+            agent.stats.record_usage(model, prompt_tokens, completion_tokens);
+            let _ = db.update_agent(&agent);
+        }
+    }
+
+    // Step 5: Log audit event (action="chatted" so UI graphs it correctly)
+    let detail = if prompt_tokens > 0 || completion_tokens > 0 {
+        format!("Message sent ({} in, {} out)", prompt_tokens, completion_tokens)
+    } else {
+        "Message sent to agent".to_string()
+    };
+    let _ = db.log_audit(agent_id, "chatted", Some("openclaw"), &detail, None);
 
     Ok(json!({ "response": response_text }))
 }
 
 #[tauri::command]
 pub async fn send_message(
+    app: tauri::AppHandle,
     agent_id: String,
     message: String,
     state: State<'_, AppState>,
@@ -1347,7 +1484,7 @@ pub async fn send_message(
     );
 
     // ─── SEND MESSAGE ───────────────────────────────────────────
-    let result = send_message_internal(&*db, &agent_id, &message).await?;
+    let result = send_message_internal(&*db, &app, &agent_id, &message).await?;
 
     // ─── AUDIT LOGGING ───────────────────────────────────────────
     tracing::info!(
@@ -2638,6 +2775,66 @@ pub fn get_global_audit_log(
     state.get_audit_log(agent_id.as_deref(), limit.unwrap_or(100)).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn get_agent_activity_heatmap(
+    agent_id: String,
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<Vec<crate::db::ActivityHeatmapEntry>, String> {
+    state.get_agent_activity_heatmap(&agent_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_agent_browser_history(
+    agent_id: String,
+    state: tauri::State<'_, crate::db::Database>,
+) -> Result<Vec<crate::db::BrowserHistoryEntry>, String> {
+    state.get_agent_browser_history(&agent_id, 100).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn ping_agent_routing(agent_id: String) -> Result<bool, String> {
+    // Escaping safety: agent_id must only contain [a-zA-Z0-9_-]
+    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Invalid agent ID format".to_string());
+    }
+
+    let cmd_future = get_docker_command()
+        .args([
+            "exec",
+            "-u", "node",
+            "-e", "NODE_OPTIONS=--v8-pool-size=1",
+            "canopy-gateway",
+            "openclaw",
+            "agent",
+            "--agent",
+            &agent_id,
+            "--message",
+            "System diagnostic ping. Please reply 'PONG'.",
+            "--json"
+        ])
+        .output();
+
+    let output = match tokio::time::timeout(std::time::Duration::from_secs(30), cmd_future).await {
+        Ok(res) => res.map_err(|e| format!("Docker command failed: {}", e))?,
+        Err(_) => return Err("Routing ping timed out after 30 seconds".to_string()),
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Routing error: {}", stderr));
+    }
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    
+    // Check if the response actually contains a successful message processing indication
+    // OpenClaw CLI outputs JSON, but if there's an error it might print "OpenClaw: error"
+    if stdout.contains("OpenClaw: error") || stdout.trim().is_empty() {
+        return Ok(false);
+    }
+    
+    Ok(true)
+}
+
 // ─── Boot Agent Sync ──────────────────────────────────────────────────────────
 
 /// Poll until the canopy-gateway container is running AND openclaw is responsive.
@@ -3379,7 +3576,52 @@ pub async fn boot_sync_agents(
             tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
         }
     }
-    let _ = sync_gateway_channels_internal(&db).await;
+
+    // ── Apply per-agent Slack/Google config to the RUNNING gateway ───────────
+    //
+    // Important sequencing detail: `preflight_write_openclaw_json` (in docker.rs)
+    // intentionally wipes `channels.slack.{enabled, botToken, appToken, accounts}`
+    // every gateway start to enforce per-agent isolation. The gateway then boots
+    // and reads openclaw.json with Slack DISABLED. By the time we get here, the
+    // gateway is already running with that empty Slack config cached in memory.
+    //
+    // `sync_gateway_channels_internal` writes the per-agent Slack accounts and
+    // bindings BACK into openclaw.json on disk — but the live OpenClaw process
+    // does NOT reload plugin state from the file. Tools like
+    // `openclaw agents list` read the file directly and happily report
+    // "Slack <agent>: configured", which is misleading: the running process is
+    // still operating with Slack disabled. Inbound Slack messages then surface
+    // the user-visible error "Slack bot token missing for account 'agent-X'".
+    //
+    // To make the live process actually pick up the config we just wrote, we
+    // restart the gateway once at the end of boot_sync_agents — but ONLY when
+    // the channel config changed (return value == true). After process restart
+    // the LAST_GATEWAY_CHANNELS_HASH cache is empty, so the first call always
+    // reports `true`, which is exactly what we want: one restart per boot,
+    // taking us from the preflight-wiped empty Slack state to the per-agent
+    // populated state in a single bounce.
+    let channels_changed = sync_gateway_channels_internal(&db).await.unwrap_or(false);
+    if channels_changed {
+        tracing::info!(
+            "boot_sync_agents: per-agent channel config (Slack/Google) was written — \
+             restarting gateway so the running process picks it up"
+        );
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            get_docker_command().args(["restart", "canopy-gateway"]).output(),
+        ).await;
+        // Give the gateway a chance to come back before downstream code (e.g. the
+        // per-agent JIT browser proxies) tries to talk to it. If readiness times
+        // out we don't fail boot_sync_agents — the gateway will catch up shortly
+        // after this function returns and chat will start working a beat later.
+        if let Err(e) = wait_for_gateway_ready(60, Some(app_handle.clone())).await {
+            tracing::warn!(
+                "boot_sync_agents: gateway didn't report ready after channel-sync restart: {}. \
+                 Continuing anyway; agents may take a moment to be reachable.",
+                e
+            );
+        }
+    }
 
     tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
 
@@ -3418,17 +3660,98 @@ pub async fn boot_sync_agents(
 }
 
 
+/// Hash the channel-account inputs that drive the openclaw.json patch. Used by
+/// the fast-path cache in `sync_gateway_channels_internal`. Map iteration order
+/// is stable: serde_json::Map preserves insertion order, and db.list_agents()
+/// returns rows in primary-key order, so the same logical state always hashes
+/// to the same value.
+fn compute_channels_hash(
+    slack:    &serde_json::Map<String, serde_json::Value>,
+    gmail:    &serde_json::Map<String, serde_json::Value>,
+    calendar: &serde_json::Map<String, serde_json::Value>,
+    drive:    &serde_json::Map<String, serde_json::Value>,
+    bindings: &[serde_json::Value],
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let snapshot = json!({
+        "slack":    slack,
+        "gmail":    gmail,
+        "calendar": calendar,
+        "drive":    drive,
+        "bindings": bindings,
+    });
+    serde_json::to_string(&snapshot).unwrap_or_default().hash(&mut h);
+    h.finish()
+}
+
+/// Returns `true` when the channel-account state currently on disk in
+/// openclaw.json already matches the keychain-derived state we'd be about to
+/// write. Used as a slow path in `sync_gateway_channels_internal` for the
+/// first call after a Canopy process restart — the in-memory hash cache is
+/// empty in that case, but the file (preserved by preflight_write_openclaw_json)
+/// may already be in sync, in which case we can skip the patch and the
+/// gateway restart entirely.
+async fn file_channels_match(
+    desired_slack:    &serde_json::Map<String, serde_json::Value>,
+    desired_gmail:    &serde_json::Map<String, serde_json::Value>,
+    desired_calendar: &serde_json::Map<String, serde_json::Value>,
+    desired_drive:    &serde_json::Map<String, serde_json::Value>,
+    desired_bindings: &[serde_json::Value],
+) -> bool {
+    let cat_out = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "cat", "/home/node/.openclaw/openclaw.json"])
+            .output(),
+    ).await {
+        Ok(Ok(out)) if out.status.success() => out,
+        _ => return false, // can't read the file → assume mismatch, force a write
+    };
+
+    let cfg: serde_json::Value = match serde_json::from_slice(&cat_out.stdout) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+
+    // Helper: pull an accounts map out of the file. Returns an empty map if the
+    // pointer is missing or isn't an object — that's correctly treated as "no
+    // accounts" rather than "unknown".
+    let extract_accounts = |ptr: &str| -> serde_json::Map<String, serde_json::Value> {
+        cfg.pointer(ptr)
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default()
+    };
+
+    let on_disk_slack    = extract_accounts("/channels/slack/accounts");
+    let on_disk_gmail    = extract_accounts("/channels/gmail/accounts");
+    let on_disk_calendar = extract_accounts("/channels/googleCalendar/accounts");
+    let on_disk_drive    = extract_accounts("/channels/googleDrive/accounts");
+    let on_disk_bindings: Vec<serde_json::Value> = cfg
+        .pointer("/bindings")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    &on_disk_slack    == desired_slack
+        && &on_disk_gmail    == desired_gmail
+        && &on_disk_calendar == desired_calendar
+        && &on_disk_drive    == desired_drive
+        && on_disk_bindings.as_slice() == desired_bindings
+}
+
 /// Rebuild the gateway's per-agent `channels.*.accounts` maps and `bindings` from
 /// the current keychain state, write them into openclaw.json, and report whether
 /// anything actually changed.
 ///
 /// Returns `Ok(true)`  if the on-disk config was rewritten (caller should restart
 ///                       the gateway to pick up the new config).
-/// Returns `Ok(false)` if the new config is identical to the previously written
-///                       one (caller should NOT restart — restarting wastefully
-///                       drops every agent's Socket Mode connection and is the
-///                       biggest contributor to Slack flakiness when multiple
-///                       agents are connected).
+/// Returns `Ok(false)` if the new config is identical to what's already in
+///                       openclaw.json (either matched our in-process hash cache
+///                       OR matched the file on disk). Caller should NOT restart
+///                       — restarting wastefully drops every agent's Socket Mode
+///                       connection and is a major contributor to Slack flakiness.
 pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<bool, String> {
     let active_agents = db.list_agents().unwrap_or_default();
 
@@ -3485,33 +3808,41 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
         handle_google("drive", "google-drive", "googleDrive", &mut drive_accounts);
     }
 
-    // ── Short-circuit: nothing changed since last write? Skip patch + restart. ──
-    // Hash exactly the inputs that drive the patch script. If they match the
-    // cached value from the previous call in this process, the openclaw.json we'd
-    // be about to write is byte-identical to what's already there, so we can
-    // return Ok(false) and let the caller skip the docker restart.
-    let new_hash = {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        // Serialise to canonical JSON via Value so map ordering is consistent
-        // between calls (serde_json::Map preserves insertion order; ordering is
-        // stable because db.list_agents() returns rows in primary-key order).
-        let snapshot = json!({
-            "slack":    slack_accounts,
-            "gmail":    gmail_accounts,
-            "calendar": calendar_accounts,
-            "drive":    drive_accounts,
-            "bindings": bindings,
-        });
-        serde_json::to_string(&snapshot).unwrap_or_default().hash(&mut h);
-        h.finish()
-    };
+    // ── Short-circuit: nothing changed since the file's current state? ──────
+    //
+    // We compare against THE FILE, not just a process-local cache. The cache is
+    // a fast path that survives within one Canopy run; the file-state check is
+    // the correct authority and survives across Canopy restarts. Without the
+    // file-state check, the very first sync_gateway_channels call after every
+    // app launch would always report "changed" (cache empty) and trigger a
+    // restart even when openclaw.json was already perfectly aligned with the
+    // keychain — which is the common case for repeat users with stable
+    // connections. preflight_write_openclaw_json now preserves the per-agent
+    // account maps, so a no-op call here is genuinely a no-op end-to-end.
+    let new_hash = compute_channels_hash(
+        &slack_accounts, &gmail_accounts, &calendar_accounts, &drive_accounts, &bindings,
+    );
     {
         let cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
         if cache.as_ref() == Some(&new_hash) {
-            tracing::info!("sync_gateway_channels: config unchanged — skipping patch + restart");
+            tracing::info!("sync_gateway_channels: config unchanged (cache hit) — skipping patch + restart");
             return Ok(false);
         }
+    }
+    // Cache miss: check the file. This covers two important cases:
+    //   1. First call after Canopy launch — cache is empty but file may already
+    //      be in sync (preflight preserved channels.slack.accounts).
+    //   2. Concurrent edits via another tool that bypassed Canopy — unlikely
+    //      but harmless to detect.
+    if file_channels_match(&slack_accounts, &gmail_accounts, &calendar_accounts, &drive_accounts, &bindings).await {
+        // File already correct — populate the cache so subsequent calls take
+        // the fast path, and return "no change" so callers skip restart.
+        let mut cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
+        *cache = Some(new_hash);
+        tracing::info!(
+            "sync_gateway_channels: openclaw.json already matches keychain-derived channel state — skipping patch + restart"
+        );
+        return Ok(false);
     }
 
     // SECURITY: Try keychain first for OAuth secrets (secure storage)

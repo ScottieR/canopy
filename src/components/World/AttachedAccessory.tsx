@@ -20,7 +20,23 @@ export function AttachedAccessory({
 
   const clonedAcc = useMemo(() => {
     const clone = SkeletonUtils.clone(scene);
-    clone.traverse(node => { node.userData = { ...node.userData, isAccessory: true }; });
+    clone.traverse(node => {
+      node.userData = { ...node.userData, isAccessory: true };
+      if (node.isMesh && node.material) {
+        const materials = Array.isArray(node.material) ? node.material : [node.material];
+        materials.forEach((mat: any) => {
+          if (mat.map) {
+            mat.map.generateMipmaps = false;
+            mat.map.minFilter = THREE.LinearFilter;
+            mat.map.needsUpdate = true;
+          }
+          mat.transparent = false;
+          mat.alphaTest = 0;
+          mat.depthWrite = true;
+          mat.needsUpdate = true;
+        });
+      }
+    });
     const box = new THREE.Box3().setFromObject(clone);
     const size = new THREE.Vector3();
     box.getSize(size);

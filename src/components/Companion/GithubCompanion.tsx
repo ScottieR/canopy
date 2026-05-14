@@ -10,6 +10,9 @@ export function GithubCompanion() {
   const [githubToken, setGithubToken] = useState("");
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [repoMode, setRepoMode] = useState<"all" | "specific">("all");
+  const [repos, setRepos] = useState<{ id: number; name: string; full_name: string; private: boolean }[]>([]);
+  const [step, setStep] = useState<1 | 2>(1);
 
   const [isVisible, setIsVisible] = useState(false);
   useEffect(() => {
@@ -19,7 +22,7 @@ export function GithubCompanion() {
     }, 500);
   }, []);
 
-  const handleConnect = async () => {
+  const handleVerify = async () => {
     if (!githubToken.trim()) return;
     setTestStatus("testing");
     setErrorMsg("");
@@ -27,6 +30,47 @@ export function GithubCompanion() {
     try {
       if (typeof invoke === "function") {
         await invoke("configure_github", { agentId: agentId, personalAccessToken: githubToken.trim() });
+        
+        try {
+          const fetchedRepos: any = await invoke("fetch_github_repos", { token: githubToken.trim() });
+          setRepos(fetchedRepos || []);
+        } catch (e) {
+          console.error("Failed to fetch repos", e);
+        }
+
+        setStep(2);
+        setTestStatus("idle");
+      }
+    } catch (e: any) {
+      console.error(e);
+      setTestStatus("error");
+      setErrorMsg(e.toString());
+    }
+  };
+
+  const handleComplete = async () => {
+    setTestStatus("testing");
+    try {
+      if (typeof invoke === "function") {
+        // Save the configured repos into the agent's integrations array
+        const { useWorldStore } = await import('../../store/worldStore');
+        const agent = useWorldStore.getState().agents.find(a => a.id === agentId);
+        if (agent) {
+          let newIntegrations = [...agent.integrations];
+          // Remove old github_repo items
+          newIntegrations = newIntegrations.filter(i => !i.startsWith("github_repo_"));
+          // Add new ones
+          repos.forEach(r => {
+             newIntegrations.push(`github_repo_${r.full_name}`);
+          });
+          if (!newIntegrations.includes("github")) newIntegrations.push("github");
+          
+          await invoke("update_agent_integrations", { agentId: agentId, integrations: newIntegrations });
+          useWorldStore.getState().setAgents(
+            useWorldStore.getState().agents.map(a => a.id === agentId ? { ...a, integrations: newIntegrations } as any : a)
+          );
+        }
+
         setTestStatus("success");
         try {
           const { emit } = await import('@tauri-apps/api/event');
@@ -101,36 +145,101 @@ export function GithubCompanion() {
           </p>
         </div>
 
-        <div style={{ marginBottom: 24, padding: 16, background: "white", borderRadius: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.03)", border: "1px solid rgba(0,0,0,0.05)" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663", marginBottom: 8 }}>Step 1: Create a Personal Access Token</div>
-          <div style={{ fontSize: 13, color: "#4A5568", marginBottom: 16, lineHeight: 1.5 }}>
-            <ol style={{ margin: "0 0 8px -5px", paddingLeft: "20px" }}>
-              <li style={{ marginBottom: 8 }}>
-                Click here to open <a href="#" onClick={(e) => { e.preventDefault(); open("https://github.com/settings/tokens/new"); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>GitHub Token Settings</a> in your browser.
-              </li>
-              <li style={{ marginBottom: 8 }}>Name the token <strong>Canopy</strong> and set expiration to <strong>No expiration</strong> (or 90 days).</li>
-              <li>Under "Select scopes", check the box for exactly <strong>repo</strong> (Full control of private repositories).</li>
-            </ol>
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 24, padding: 16, background: "white", borderRadius: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.03)", border: "1px solid rgba(0,0,0,0.05)" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663", marginBottom: 8 }}>Step 2: Save Token Securely</div>
-          <div style={{ fontSize: 13, color: "#4A5568", marginBottom: 12, lineHeight: 1.5 }}>
-            Scroll to the bottom, click "Generate Token", and paste the resulting string below:
-          </div>
-          <PasswordInput 
-            value={githubToken} 
-            onChange={e => setGithubToken(e.target.value)} 
-            placeholder="ghp_..." 
-            style={{ width: "100%", padding: "12px", borderRadius: 8, border: (githubToken.trim() && !githubToken.trim().startsWith("ghp_")) ? "1px solid #E53E3E" : "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} 
-          />
-          {githubToken.trim() && !githubToken.trim().startsWith("ghp_") && (
-            <div style={{ marginTop: 6, fontSize: 11, color: "#E53E3E", fontWeight: 500 }}>
-              Token usually starts with 'ghp_'
+        {step === 1 && (
+          <>
+            <div style={{ display: "flex", gap: 12, marginBottom: 24 }}>
+              <button 
+                onClick={() => setRepoMode("all")}
+                style={{
+                  flex: 1, padding: "12px", borderRadius: 8, border: repoMode === "all" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)",
+                  background: repoMode === "all" ? "rgba(60,102,99,0.05)" : "white", cursor: "pointer",
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: 4
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700, color: repoMode === "all" ? "#3c6663" : "var(--text-main)" }}>All Repositories</div>
+                <div style={{ fontSize: 11, color: "var(--text-sub)", textAlign: "center" }}>Grant access to everything</div>
+              </button>
+              <button 
+                onClick={() => setRepoMode("specific")}
+                style={{
+                  flex: 1, padding: "12px", borderRadius: 8, border: repoMode === "specific" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)",
+                  background: repoMode === "specific" ? "rgba(60,102,99,0.05)" : "white", cursor: "pointer",
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: 4
+                }}
+              >
+                <div style={{ fontSize: 13, fontWeight: 700, color: repoMode === "specific" ? "#3c6663" : "var(--text-main)" }}>Specific Repositories</div>
+                <div style={{ fontSize: 11, color: "var(--text-sub)", textAlign: "center" }}>Fine-grained control</div>
+              </button>
             </div>
-          )}
-        </div>
+
+            <div style={{ marginBottom: 24, padding: 16, background: "white", borderRadius: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.03)", border: "1px solid rgba(0,0,0,0.05)" }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663", marginBottom: 8 }}>Step 1: Create a Personal Access Token</div>
+              <div style={{ fontSize: 13, color: "#4A5568", marginBottom: 16, lineHeight: 1.5 }}>
+                {repoMode === "all" ? (
+                  <ol style={{ margin: "0 0 8px -5px", paddingLeft: "20px" }}>
+                    <li style={{ marginBottom: 8 }}>
+                      Click here to open <a href="#" onClick={(e) => { e.preventDefault(); open("https://github.com/settings/tokens/new"); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>GitHub Token Settings</a>.
+                    </li>
+                    <li style={{ marginBottom: 8 }}>Name the token <strong>Canopy</strong> and set expiration to <strong>No expiration</strong>.</li>
+                    <li>Under "Select scopes", check the box for exactly <strong>repo</strong>.</li>
+                  </ol>
+                ) : (
+                  <ol style={{ margin: "0 0 8px -5px", paddingLeft: "20px" }}>
+                    <li style={{ marginBottom: 8 }}>
+                      Click here to open <a href="#" onClick={(e) => { e.preventDefault(); open("https://github.com/settings/personal-access-tokens/new"); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>Fine-grained Tokens</a>.
+                    </li>
+                    <li style={{ marginBottom: 8 }}>Name the token <strong>Canopy</strong>. Under "Repository access", select <strong>Only select repositories</strong> and choose the ones you want.</li>
+                    <li>Under "Permissions", grant <strong>Repository permissions</strong> for Contents, Pull requests, and Issues.</li>
+                  </ol>
+                )}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 24, padding: 16, background: "white", borderRadius: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.03)", border: "1px solid rgba(0,0,0,0.05)" }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663", marginBottom: 8 }}>Step 2: Save Token Securely</div>
+              <div style={{ fontSize: 13, color: "#4A5568", marginBottom: 12, lineHeight: 1.5 }}>
+                Scroll to the bottom, click "Generate Token", and paste the resulting string below:
+              </div>
+              <PasswordInput 
+                value={githubToken} 
+                onChange={e => setGithubToken(e.target.value)} 
+                placeholder={repoMode === "all" ? "ghp_..." : "github_pat_..."} 
+                style={{ width: "100%", padding: "12px", borderRadius: 8, border: (githubToken.trim() && !githubToken.trim().startsWith(repoMode === "all" ? "ghp_" : "github_pat_")) ? "1px solid #E53E3E" : "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", boxSizing: "border-box", background: "#f9f9f9" }} 
+              />
+              {githubToken.trim() && !githubToken.trim().startsWith(repoMode === "all" ? "ghp_" : "github_pat_") && (
+                <div style={{ marginTop: 6, fontSize: 11, color: "#E53E3E", fontWeight: 500 }}>
+                  Token usually starts with '{repoMode === "all" ? "ghp_" : "github_pat_"}'
+                </div>
+              )}
+            </div>
+            
+            <div style={{ fontSize: 11, color: "#636E72", opacity: 0.8, marginBottom: 12, textAlign: "center", lineHeight: 1.4, padding: "0 16px" }}>
+              🔒 Note: macOS will ask for your password to securely lock this token in your system Keychain.
+            </div>
+          </>
+        )}
+
+        {step === 2 && (
+          <div style={{ marginBottom: 24, padding: 16, background: "white", borderRadius: 16, boxShadow: "0 2px 8px rgba(0,0,0,0.03)", border: "1px solid rgba(0,0,0,0.05)" }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#3c6663", marginBottom: 8 }}>Step 3: Verify Access</div>
+            <div style={{ fontSize: 13, color: "#4A5568", marginBottom: 12, lineHeight: 1.5 }}>
+              The following {repos.length} repositories are accessible to the agent:
+            </div>
+            <div style={{ maxHeight: 200, overflowY: "auto", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, background: "#f9f9f9" }}>
+              {repos.length === 0 ? (
+                <div style={{ padding: 16, fontSize: 13, color: "var(--text-sub)", textAlign: "center" }}>No repositories found. Ensure the token has correct scopes.</div>
+              ) : (
+                repos.map(r => (
+                  <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid rgba(0,0,0,0.05)" }}>
+                    <Github size={14} style={{ color: "var(--text-sub)" }} />
+                    <div style={{ fontSize: 13, color: "var(--text-main)", fontWeight: 600 }}>{r.full_name}</div>
+                    {r.private && <div style={{ fontSize: 10, background: "rgba(0,0,0,0.05)", padding: "2px 6px", borderRadius: 4, color: "var(--text-sub)" }}>Private</div>}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
 
         {errorMsg && (
           <div style={{ fontSize: 12, color: "#E53E3E", marginBottom: 16, padding: "8px 12px", background: "rgba(229,62,62,0.05)", borderRadius: 8 }}>
@@ -144,25 +253,41 @@ export function GithubCompanion() {
            </div>
         )}
 
-        <div style={{ fontSize: 11, color: "#636E72", opacity: 0.8, marginBottom: 12, textAlign: "center", lineHeight: 1.4, padding: "0 16px" }}>
-          🔒 Note: macOS will ask for your password to securely lock this token in your system Keychain.
-        </div>
-        <button 
-          onClick={handleConnect}
-          disabled={!githubToken.trim() || testStatus === "testing" || testStatus === "success"}
-          style={{
-            marginTop: "auto",
-            width: "100%",
-            padding: "16px", borderRadius: 12, border: "none", 
-            background: githubToken.trim() ? "#3c6663" : "rgba(0,0,0,0.06)", 
-            color: githubToken.trim() ? "white" : "rgba(0,0,0,0.3)", 
-            fontSize: 15, fontWeight: 700, 
-            cursor: githubToken.trim() ? "pointer" : "default",
-            transition: "all 0.2s"
-          }}
-        >
-          {testStatus === "testing" ? "Verifying..." : testStatus === "success" ? "Connected ✨" : "Securely Encrypt"}
-        </button>
+        {step === 1 ? (
+          <button 
+            onClick={handleVerify}
+            disabled={!githubToken.trim() || testStatus === "testing" || testStatus === "success"}
+            style={{
+              marginTop: "auto",
+              width: "100%",
+              padding: "16px", borderRadius: 12, border: "none", 
+              background: githubToken.trim() ? "#3c6663" : "rgba(0,0,0,0.06)", 
+              color: githubToken.trim() ? "white" : "rgba(0,0,0,0.3)", 
+              fontSize: 15, fontWeight: 700, 
+              cursor: githubToken.trim() ? "pointer" : "default",
+              transition: "all 0.2s"
+            }}
+          >
+            {testStatus === "testing" ? "Verifying..." : "Verify Token"}
+          </button>
+        ) : (
+          <button 
+            onClick={handleComplete}
+            disabled={testStatus === "testing" || testStatus === "success"}
+            style={{
+              marginTop: "auto",
+              width: "100%",
+              padding: "16px", borderRadius: 12, border: "none", 
+              background: "#3c6663", 
+              color: "white", 
+              fontSize: 15, fontWeight: 700, 
+              cursor: "pointer",
+              transition: "all 0.2s"
+            }}
+          >
+            {testStatus === "testing" ? "Saving..." : testStatus === "success" ? "Connected ✨" : "Complete Setup"}
+          </button>
+        )}
 
       </div>
     </div>

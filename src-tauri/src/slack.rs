@@ -28,9 +28,10 @@ const SLACK_API_BASE: &str = "https://slack.com/api";
 // cascade into the chat UI looking frozen.
 lazy_static! {
     static ref HTTP: Client = Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .timeout(std::time::Duration::from_secs(30))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .pool_idle_timeout(std::time::Duration::from_secs(15)) // macOS aggressively drops idle sockets; close them before 60s
+        .tcp_keepalive(std::time::Duration::from_secs(15))
         .pool_max_idle_per_host(8)
         .user_agent("canopy/slack")
         .build()
@@ -290,6 +291,7 @@ async fn get_bot_token(agent_id: Option<&str>) -> Result<String, String> {
 }
 
 async fn make_api_call(
+    method: reqwest::Method,
     endpoint: &str,
     params: Option<&[(&str, &str)]>,
     agent_id: Option<&str>,
@@ -297,40 +299,56 @@ async fn make_api_call(
     let token = get_bot_token(agent_id).await?;
     let url = format!("{}/{}", SLACK_API_BASE, endpoint);
 
-    let mut request = HTTP.post(&url)
-        .bearer_auth(&token);
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        let mut request = HTTP.request(method.clone(), &url)
+            .bearer_auth(&token);
 
-    if let Some(p) = params {
-        request = request.form(&p.to_vec());
+        if let Some(p) = params {
+            if method == reqwest::Method::GET {
+                request = request.query(&p.to_vec());
+            } else {
+                request = request.form(&p.to_vec());
+            }
+        }
+
+        match request.send().await {
+            Ok(response) => {
+                let json_resp = response
+                    .json::<Value>()
+                    .await
+                    .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+                let ok = json_resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+
+                if !ok {
+                    let error = json_resp
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown error");
+                    return Err(format!("Slack API error: {}", error));
+                }
+
+                return Ok(json_resp);
+            }
+            Err(e) => {
+                if attempt == 0 {
+                    tracing::warn!("Slack connection dropped, likely stale pool socket. Retrying once: {}", e);
+                    continue;
+                }
+                last_error = e.to_string();
+            }
+        }
     }
 
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("API request failed: {}", e))?
-        .json::<Value>()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-    let ok = response.get("ok")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    if !ok {
-        let error = response.get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown error");
-        return Err(format!("Slack API error: {}", error));
-    }
-
-    Ok(response)
+    Err(format!("API request failed: {}", last_error))
 }
 
 /// List all channels the bot has access to
 #[tauri::command]
 pub async fn list_slack_channels(agent_id: Option<String>) -> Result<Vec<SlackChannel>, String> {
     let response: ConversationsListResponse = serde_json::from_value(
-        make_api_call("conversations.list", Some(&[("types", "public_channel,private_channel")]), agent_id.as_deref())
+        make_api_call(reqwest::Method::GET, "conversations.list", Some(&[("types", "public_channel,private_channel")]), agent_id.as_deref())
             .await?
     ).map_err(|e| format!("Failed to parse channels: {}", e))?;
 
@@ -373,6 +391,7 @@ pub async fn read_slack_messages(
 
     let response: ConversationsHistoryResponse = serde_json::from_value(
         make_api_call(
+            reqwest::Method::GET,
             "conversations.history",
             Some(&[
                 ("channel", &channel_id),
@@ -428,6 +447,7 @@ pub async fn send_slack_message(
 
     let response: PostMessageResponse = serde_json::from_value(
         make_api_call(
+            reqwest::Method::POST,
             "chat.postMessage",
             Some(&[
                 ("channel", &channel_id),
@@ -602,7 +622,8 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 pub async fn check_slack_connection(agent_id: Option<String>) -> Result<SlackConnectionStatus, String> {
     let token_result = get_bot_token(agent_id.as_deref()).await;
 
-    if token_result.is_err() {
+    if let Err(e) = token_result {
+        tracing::error!("check_slack_connection token error: {}", e);
         return Ok(SlackConnectionStatus {
             connected: false,
             workspace_name: None,
@@ -610,11 +631,14 @@ pub async fn check_slack_connection(agent_id: Option<String>) -> Result<SlackCon
         });
     }
 
-    // Test token with auth.test
+    // Test token with auth.test using POST and empty form to ensure Content-Type is set
     let response: AuthTestResponse = serde_json::from_value(
-        make_api_call("auth.test", None, agent_id.as_deref())
+        make_api_call(reqwest::Method::POST, "auth.test", Some(&[]), agent_id.as_deref())
             .await
-            .unwrap_or_else(|_| json!({"ok": false}))
+            .unwrap_or_else(|e| {
+                tracing::error!("check_slack_connection api error: {}", e);
+                json!({"ok": false})
+            })
     ).unwrap_or(AuthTestResponse {
         ok: false,
         url: None,

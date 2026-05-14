@@ -36,6 +36,7 @@ import { CanopyView } from './pages/CanopyView';
 import { TopNav } from './components/shared/TopNav';
 import { ExportInterceptModal } from './components/ExportInterceptModal';
 import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
+import { getAssetUrl } from './utils/assets';
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -109,7 +110,7 @@ export function LobsterIcon({ size = 48, className = "", role, agentImage }: { s
   const imageSrc = agentImage || (info?.image) || "/agents/Custom.png";
   return (
     <img
-      src={imageSrc}
+      src={getAssetUrl(imageSrc)}
       alt="Lobster Agent"
       style={{ width: size, height: size, objectFit: "cover", borderRadius: "50%" }}
       className={className}
@@ -853,7 +854,9 @@ export function CompanionGuide({ type }: { type: string }) {
 
           setTimeout(async () => {
             try {
-              const { getCurrentWindow } = await import('@tauri-apps/api/window');
+              const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
+              const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
+              if (mainWindow) await mainWindow.setFocus();
               await getCurrentWindow().close();
             } catch (e) { }
           }, 2000);
@@ -884,7 +887,7 @@ export function CompanionGuide({ type }: { type: string }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 20 }}>
         {/* Intro */}
         <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
-          <img src={config.avatar} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
+          <img src={getAssetUrl(config.avatar)} style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover" }} />
           <div style={{ background: "var(--surface-card)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, color: "var(--text-main)", boxShadow: "0 2px 8px rgba(0,0,0,0.04)" }}>
             {config.intro}
           </div>

@@ -31,6 +31,7 @@ mod jit_server;
 mod browser_manager;
 mod security_scanner;
 mod activity_sniffer;
+mod health_monitor;
 
 use tauri::Manager;
 
@@ -96,6 +97,9 @@ pub fn run() {
             
             // Start Activity Sniffer Daemon
             activity_sniffer::start_sniffer_daemon(handle.clone());
+            
+            // Start Health Monitor Daemon
+            health_monitor::start_health_monitor_daemon(handle.clone());
             
             // Sync pricing asynchronously from Admin Oracle
             tauri::async_runtime::spawn(async move {
@@ -197,6 +201,9 @@ pub fn run() {
             openclaw::get_user_profile,
             openclaw::save_user_profile,
             openclaw::get_global_audit_log,
+            openclaw::get_agent_activity_heatmap,
+            openclaw::ping_agent_routing,
+            openclaw::get_agent_browser_history,
             openclaw::preflight_cleanup,
             openclaw::boot_sync_agents,
             openclaw::sync_gateway_channels,
@@ -205,11 +212,15 @@ pub fn run() {
             openclaw::get_openclaw_status_json,
             openclaw::read_workspace_file,
             openclaw::write_workspace_file,
+            openclaw::upload_workspace_file,
+            openclaw::copy_file_to_workspace,
             openclaw::set_preferences_template,
             // Machine Browser
             browser_manager::start_machine_browser,
             browser_manager::stop_machine_browser,
             browser_manager::get_browser_status,
+            browser_manager::ping_agent_browser,
+            browser_manager::reset_machine_browsers,
             browser_manager::show_browser,
             browser_manager::hide_browser,
             browser_manager::get_agent_allowed_domains,
@@ -263,6 +274,7 @@ pub fn run() {
             channels::configure_whatsapp,
             channels::configure_discord,
             channels::configure_github,
+            channels::fetch_github_repos,
             channels::configure_twilio,
             channels::disconnect_telegram,
             channels::disconnect_telegram_for_agent,
@@ -273,6 +285,7 @@ pub fn run() {
             channels::disconnect_twilio,
             channels::disconnect_twilio_for_agent,
             channels::disconnect_github,
+            channels::ping_agent_connections,
             // Voice mode
             voice::get_voice_config,
             voice::update_voice_config,

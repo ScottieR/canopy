@@ -181,6 +181,7 @@ function ServiceCard({ icon, name, description, status, connectedAgents, onConne
 export function IntegrationsView({ agents }: { agents: Array<{ id: string; name: string; integrations: string[] }> }) {
   const [section, setSection] = useState<Section>("services");
   const [searchQuery, setSearchQuery] = useState("");
+  const [slackChannelsMap, setSlackChannelsMap] = useState<Record<string, string[]>>({});
 
   const [gmailStatus, setGmailStatus] = useState<ServiceStatus>({ connected: false });
   const [calendarStatus, setCalendarStatus] = useState<ServiceStatus>({ connected: false });
@@ -210,6 +211,29 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       })
       .catch(console.error);
   }, []);
+
+  useEffect(() => {
+    // Fetch Slack channels for connected agents
+    const fetchSlackChannels = async () => {
+      const slackAgents = agents.filter(a => a.integrations?.includes("slack"));
+      const newMap: Record<string, string[]> = {};
+      for (const a of slackAgents) {
+        try {
+          const channelIds = await invoke<string[]>("get_allowed_slack_channels", { agentId: a.id });
+          
+          // Also try to get names if possible, but fallback to IDs
+          const chs = await invoke<any[]>("list_slack_channels", { agentId: a.id }).catch(() => []);
+          const idToName = Object.fromEntries(chs.map((c: any) => [c.id, c.name]));
+          
+          newMap[a.id] = channelIds.map(id => idToName[id] ? `#${idToName[id]}` : id);
+        } catch (e) {
+          console.error(`Failed to get slack channels for ${a.id}`, e);
+        }
+      }
+      setSlackChannelsMap(newMap);
+    };
+    fetchSlackChannels();
+  }, [agents]);
 
   const checkStatuses = useCallback(async () => {
     // Gmail & Calendar are now per-agent, so no global status check needed here
@@ -293,6 +317,19 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       } else if (integration === "calendar") {
         if (a.integrations.includes("calendar_write") || a.integrations.includes("calendar")) mode = "Read/Write";
         else if (a.integrations.includes("calendar_read")) mode = "Read-Only";
+      } else if (integration === "slack") {
+        if (slackChannelsMap[a.id] && slackChannelsMap[a.id].length > 0) {
+          mode = slackChannelsMap[a.id].join(", ");
+        } else {
+          mode = "All Channels";
+        }
+      } else if (integration === "github") {
+        const repos = a.integrations.filter(i => i.startsWith("github_repo_")).map(i => i.replace("github_repo_", ""));
+        if (repos.length > 0) {
+          mode = repos.join(", ");
+        } else {
+          mode = "All Repositories";
+        }
       }
       return { id: a.id, name: a.name, mode };
     });

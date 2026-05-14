@@ -6,20 +6,21 @@ import { OnboardingCompanion } from "./OnboardingCompanion";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import React from "react";
+import { getAssetUrl } from "../../utils/assets";
 
 // Initiate early network fetching for high-priority onboarding assets so the 3D world loads instantly,
 // avoiding the piecemeal "pop-in" effect as React mounts individual components.
 [1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(i => {
-  useGLTF.preload(`/models/habitats/Habitat_${i}.glb`);
+  useGLTF.preload(getAssetUrl(`/models/habitats/Habitat_${i}.glb`));
 });
 ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].forEach(role => {
-  useGLTF.preload(`/models/lobsters/${role}.glb`);
+  useGLTF.preload(getAssetUrl(`/models/lobsters/${role}.glb`));
 });
 
 export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }: { index?: number, habitatId?: number, modelUrl?: string, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
   const modelNum = habitatId || ((index % 9) + 1);
   const finalModelUrl = modelUrl || `/models/habitats/Habitat_${modelNum}.glb`;
-  const { scene } = useGLTF(finalModelUrl);
+  const { scene } = useGLTF(getAssetUrl(finalModelUrl));
   const navPointsRef = React.useRef<THREE.Vector3[]>([]);
 
   // Clone the scene so we can instance it multiple times across the grid

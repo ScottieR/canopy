@@ -21,6 +21,7 @@ import { SpendTab } from './SpendTab';
 import { ActivityTab } from './ActivityTab';
 import { ChatTab } from './ChatTab';
 import { BrowserTab } from './BrowserTab';
+import { DiagnosticsTab } from './DiagnosticsTab';
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // ONBOARDING WIZARD
@@ -160,6 +161,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
     { id: "personality", label: "Brain", icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
     { id: "connections", label: "Connections", icon: <path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /> },
     { id: "spend", label: "Spend", icon: <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" /> },
+    { id: "diagnostics", label: "Diagnostics", icon: <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path> },
   ];
 
   const SvgIcon = ({ children, size = 20 }: { children: React.ReactNode; size?: number }) => (
@@ -305,7 +307,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
         <div style={{ flex: 1 }} />
 
         {/* Danger Zone */}
-        <div style={{ padding: "10px 0", borderTop: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", gap: 8, position: "relative" }}>
+        <div style={{ padding: showDangerZone ? "10px 0" : "10px 0 0 0", borderTop: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", gap: 8, position: "relative" }}>
           <button
             onClick={() => setShowDangerZone(!showDangerZone)}
             style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", textAlign: "right", padding: "4px 8px" }}
@@ -373,24 +375,6 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
             </div>
           )}
         </div>
-
-        <button
-          onClick={() => {
-            if (diagErrors.length > 0 || diagSuccess || openclawStatusOutput) {
-              setShowDiagnosticsPane(true);
-            } else {
-              runDiagnostics();
-            }
-          }}
-          style={{
-            display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-            padding: "10px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 12, cursor: "pointer",
-            background: "var(--glass-light)", color: "#218380", fontSize: 12, fontFamily: "inherit",
-            fontWeight: 600, marginTop: 4, transition: "all 0.2s ease"
-          }}>
-          <SvgIcon size={14}><path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><circle cx="12" cy="12" r="3"></circle></SvgIcon>
-          <span id="diag-btn-text">Diagnostics</span>
-        </button>
 
         <button onClick={() => setActiveView("canopy")} style={{
           display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
@@ -502,6 +486,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           {architectTab === "browser" && <BrowserTab key={agent.id} agent={agent} />}
           {architectTab === "spend" && <SpendTab key={agent.id} agent={agent} />}
           {architectTab === "activity" && <ActivityTab key={agent.id} agent={agent} />}
+          {architectTab === "diagnostics" && <DiagnosticsTab key={agent.id} agent={agent} />}
         </div>
       )}
     </div>

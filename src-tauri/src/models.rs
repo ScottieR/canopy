@@ -275,6 +275,18 @@ impl AgentStats {
 }
 
 
+// ─── Self-Healing Agent Models ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBugReport {
+    pub id: String,
+    pub agent_id: String,
+    pub timestamp: String,
+    pub service: String,
+    pub error_message: String,
+    pub resolved: bool,
+}
+
 // ─── Container Models ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
