@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { 
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, ChevronDown,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Github, MessageCircle, Cloud, Link
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, MultiPicker, glass } from "../../App";
@@ -57,6 +58,23 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
   const [githubConnected, setGithubConnected] = useState(false);
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [iMsgConnected, setIMsgConnected] = useState(false);
+  const [allowedDirs, setAllowedDirs] = useState<string[]>([]);
+  const [foldersExpanded, setFoldersExpanded] = useState(false);
+
+  // Fetch allowed directories for the agent
+  useEffect(() => {
+    let active = true;
+    const fetchDirs = async () => {
+      try {
+        const dirs = await invoke<string[]>("get_agent_allowed_directories", { agentId: agent.id });
+        if (active) setAllowedDirs(dirs || []);
+      } catch (e) {
+        console.error("Failed to fetch allowed directories:", e);
+      }
+    };
+    fetchDirs();
+    return () => { active = false; };
+  }, [agent.id]);
 
   // Web Credentials
   const [webCredentials, setWebCredentials] = useState<Array<{ domain: string; username: string }>>([]);
@@ -218,6 +236,16 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
     : agent.integrations.includes("calendar_read") ? "read"
     : agent.integrations.includes("calendar") ? "write" // Legacy fallback
     : "none"
+  );
+  
+  const [driveMode, setDriveMode] = useState<"none" | "read" | "write">(
+    agent.integrations.includes("drive_write") ? "write"
+    : agent.integrations.includes("drive_read") ? "read"
+    : agent.integrations.includes("drive") ? "write" // Legacy fallback
+    : "none"
+  );
+  const [driveAccessScope, setDriveAccessScope] = useState<"all" | "granular">(
+    agent.integrations.includes("drive_granular") ? "granular" : "all"
   );
 
   const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
@@ -502,6 +530,11 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
       const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_calendar_access_token` });
       setCalConnected(!!tok);
     } catch { setCalConnected(false); }
+
+    try {
+      const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_drive_access_token` });
+      setGDriveConnected(!!tok);
+    } catch { setGDriveConnected(false); }
 
     try {
       const granted = await invoke<boolean>("check_full_disk_access");
@@ -952,6 +985,106 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
         </div>
       </ServiceRow>
 
+      {/* Google Drive */}
+      <ServiceRow
+        icon={<HardDrive size={18} color="#4285F4" />}
+        name="Google Drive"
+        subtitle="Allow agent to read, write, and organize files in your Google Drive"
+        connected={gDriveConnected}
+        enabled={driveMode !== "none"}
+        onToggle={async (v) => {
+          setDriveMode(v ? "read" : "none");
+          await toggleIntegration("drive_read", v, ["drive_write", "drive"]);
+          if (!v) {
+            await toggleIntegration("drive_granular", false);
+          } else if (driveAccessScope === "granular") {
+            await toggleIntegration("drive_granular", true);
+          }
+        }}
+        onSetup={async () => {
+          try {
+            const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+            const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['drive'], readOnly: driveMode === "read" });
+            if (res && res.access_token) {
+              checkDynamicStatuses();
+              await invoke("sync_gateway_channels");
+            }
+          } catch (e) { console.error(e); }
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
+          {(["read", "write"] as const).map(m => (
+            <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
+              <input type="radio" name={`drive-mode-${agent.id}`} checked={driveMode === m} onChange={async () => {
+                setDriveMode(m);
+                await toggleIntegration(`drive_${m}`, true, ["drive_read", "drive_write", "drive"].filter(x => x !== `drive_${m}`));
+              }} style={{ accentColor: "#3c6663" }} />
+              <span style={{ color: "var(--text-main)", fontWeight: driveMode === m ? 600 : 400 }}>
+                {m === "read" ? "Read-only — can view file contents and metadata" : "Read + Write — can create, modify, and delete files"}
+              </span>
+            </label>
+          ))}
+          
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginTop: 8 }}>Access Scope</div>
+          {(["all", "granular"] as const).map(s => (
+            <label key={s} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
+              <input type="radio" name={`drive-scope-${agent.id}`} checked={driveAccessScope === s} onChange={async () => {
+                setDriveAccessScope(s);
+                await toggleIntegration("drive_granular", s === "granular");
+              }} style={{ accentColor: "#3c6663" }} />
+              <span style={{ color: "var(--text-main)", fontWeight: driveAccessScope === s ? 600 : 400 }}>
+                {s === "all" ? "All Files — agent can access entire drive" : "Specific Files — agent only accesses files you pick"}
+              </span>
+            </label>
+          ))}
+
+          <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-main)", display: "flex", alignItems: "flex-start", gap: 6 }}>
+            <HardDrive size={14} style={{ flexShrink: 0, marginTop: 1, color: "var(--brand-main)" }} />
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
+              <span style={{ fontSize: 11, lineHeight: "1.4" }}>
+                <strong>Note on Access:</strong> {driveAccessScope === "all" ? "Connecting Google Drive grants this agent full read/write access to your entire drive based on the toggle above. You can instruct the agent in its system prompt to restrict its operations to specific folders." : "Connecting Google Drive with Granular Access strictly limits the agent to only the specific files or folders you authorize using the Google Picker API."}
+              </span>
+              {gDriveConnected && (
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                  <button
+                    onClick={async () => {
+                      if (driveAccessScope === "granular") {
+                        if (!import.meta.env.VITE_GOOGLE_API_KEY) {
+                           alert("Google Picker requires a Developer API Key in your environment variables (VITE_GOOGLE_API_KEY). Please add it to .env to use granular access.");
+                           return;
+                        }
+                        // Placeholder for loading Google Picker JS API
+                        alert("Google Picker API UI is not fully implemented yet. Please switch to 'All Files' or configure the API Key.");
+                        return;
+                      }
+
+                      try {
+                        const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                        const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['drive'], readOnly: driveMode === "read", granular_drive: driveAccessScope === "granular" });
+                        if (res && res.access_token) {
+                          checkDynamicStatuses();
+                          await invoke("sync_gateway_channels");
+                        }
+                      } catch (e) { console.error(e); }
+                    }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)",
+                      padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+                      color: "var(--text-main)", fontWeight: 500
+                    }}
+                  >
+                    <HardDrive size={12} />
+                    {driveAccessScope === "granular" ? "Select Files via Picker" : "Update Connection Scope"}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </ServiceRow>
+
       {/* iMessage */}
       <ServiceRow
         icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.02 2 11c0 2.64 1.15 5.02 3 6.71V22l4.29-2.13C10.12 20.28 11.04 20.5 12 20.5c5.52 0 10-3.58 10-8s-4.48-8-10-8z" fill="#34C759"/></svg>}
@@ -1063,6 +1196,109 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
               </label>
             );
           })}
+        </div>
+
+        {/* Allowed Folders section */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
+          <div 
+            onClick={() => setFoldersExpanded(!foldersExpanded)}
+            style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {foldersExpanded ? <ChevronDown size={14} color="var(--text-muted)" /> : <ChevronRight size={14} color="var(--text-muted)" />}
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Allowed Folders ({allowedDirs.length})</div>
+            </div>
+          </div>
+          
+          {foldersExpanded && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 4 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button 
+                  disabled={!agent.isolated}
+                onClick={async () => {
+                  if (!agent.isolated) return;
+                  try {
+                    const selected = await open({
+                      directory: true,
+                      multiple: true,
+                      title: "Select Allowed Folders"
+                    });
+                    if (selected) {
+                      const newDirs = Array.isArray(selected) ? selected : [selected];
+                      const uniqueDirs = Array.from(new Set([...allowedDirs, ...newDirs]));
+                      setAllowedDirs(uniqueDirs);
+                      await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: uniqueDirs });
+                      // Force a restart of the gateway to pick up the new volumes
+                      await invoke("start_gateway");
+                    }
+                  } catch (e) {
+                    console.error("Failed to select directories:", e);
+                  }
+                }}
+                style={{ 
+                  display: "flex", alignItems: "center", gap: 4, 
+                  background: agent.isolated ? "transparent" : "var(--bg-subtle)", 
+                  border: "1px solid var(--border-subtle)", 
+                  padding: "4px 8px", borderRadius: 6, fontSize: 11, 
+                  cursor: agent.isolated ? "pointer" : "not-allowed",
+                  color: agent.isolated ? "var(--text-main)" : "var(--text-muted)",
+                  opacity: agent.isolated ? 1 : 0.6
+                }}
+                title={!agent.isolated ? "Agent must be isolated to add custom folders" : ""}
+              >
+                <Plus size={12} />
+                Add Folder
+              </button>
+            </div>
+            
+            {allowedDirs.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
+                No specific folders allowed. The agent will only have access to its default workspace.
+                {!agent.isolated && (
+                  <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-main)", display: "flex", alignItems: "flex-start", gap: 6 }}>
+                    <ShieldCheck size={14} style={{ flexShrink: 0, marginTop: 1, color: "var(--brand-main)" }} />
+                    <span style={{ fontSize: 11, lineHeight: "1.4" }}>
+                      <strong>Strict Isolation Required:</strong> Custom folder access must be explicitly scoped per-agent. To enforce this security boundary, you must switch this agent to <strong>Isolated Mode</strong> before selecting custom folders. Alternatively, for agents in the Shared Gateway, consider connecting Google Drive where folder access can be scoped explicitly per-agent via OAuth.
+                    </span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {allowedDirs.map(dir => (
+                  <div key={dir} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--bg-elevated)", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, overflow: "hidden" }}>
+                      <HardDrive size={14} color="var(--text-muted)" />
+                      <span style={{ fontSize: 12, color: "var(--text-main)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={dir}>
+                        {dir}
+                      </span>
+                    </div>
+                    <button 
+                      onClick={async () => {
+                        const newDirs = allowedDirs.filter(d => d !== dir);
+                        setAllowedDirs(newDirs);
+                        await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: newDirs });
+                        await invoke("start_gateway");
+                      }}
+                      style={{ background: "transparent", border: "none", cursor: "pointer", padding: 4, display: "flex", alignItems: "center", color: "var(--text-muted)" }}
+                      title="Remove folder"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+                {!agent.isolated && allowedDirs.length > 0 && (
+                  <div style={{ marginTop: 8, padding: "8px 12px", background: "#fefce8", border: "1px solid #fef08a", borderRadius: 6, color: "#854d0e", display: "flex", alignItems: "flex-start", gap: 6 }}>
+                    <Shield size={14} style={{ flexShrink: 0, marginTop: 1, color: "#ca8a04" }} />
+                    <span style={{ fontSize: 11, lineHeight: "1.4" }}>
+                      <strong>Warning:</strong> These folders were added during a previous session. Because this agent is currently in the Shared Gateway, these folders are mounted into the shared container and could theoretically be accessed by other non-isolated agents. <strong>Please switch to Isolated Mode for strict security scoping, or consider using Google Drive for secure file access in the Shared Gateway.</strong>
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
+            </div>
+          )}
         </div>
       </ServiceRow>
 
@@ -1345,7 +1581,7 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
         </div>
       </ServiceRow>
       {/* Dynamic Connectors from Admin */}
-      {connectors.filter(c => c.isVisible && c.isSuggested && !['slack', 'gmail', 'imessage', 'filesystem', 'calendar'].includes(c.id)).map(c => {
+      {connectors.filter(c => c.isVisible && c.isSuggested && !['slack', 'gmail', 'imessage', 'filesystem', 'calendar', 'drive'].includes(c.id)).map(c => {
         let IconComponent: any = Link;
         if (c.icon === 'calendar') IconComponent = Calendar;
         if (c.icon === 'hard-drive') IconComponent = HardDrive;

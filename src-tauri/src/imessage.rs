@@ -152,7 +152,8 @@ fn query_imessage_threads() -> Result<Vec<IMessageThread>, String> {
     let threads = stmt
         .query_map([], |row| {
             let chat_identifier: String = row.get(0)?;
-            let display_name: String = row.get(1)?;
+            let display_name_opt: Option<String> = row.get(1)?;
+            let display_name = display_name_opt.filter(|s| !s.is_empty()).unwrap_or_else(|| chat_identifier.clone());
             let last_date_opt: Option<i64> = row.get(2)?;
             let message_count: i64 = row.get(3).unwrap_or(0);
 
