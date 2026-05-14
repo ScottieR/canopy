@@ -26,6 +26,7 @@ pub async fn start_google_oauth(
     agent_id: String,
     scopes: Vec<String>,
     read_only: Option<bool>,
+    granular_drive: Option<bool>,
 ) -> Result<GoogleTokenResponse, String> {
     // SECURITY: Prefer keychain for client secret (most secure)
     // Then environment variable for dev/testing
@@ -73,9 +74,15 @@ pub async fn start_google_oauth(
             }
         }
         if scope == "drive" {
-            requested_scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
-            if !read_only {
+            let is_granular = granular_drive.unwrap_or(false);
+            if is_granular {
                 requested_scopes.push("https://www.googleapis.com/auth/drive.file".to_string());
+            } else {
+                if read_only {
+                    requested_scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
+                } else {
+                    requested_scopes.push("https://www.googleapis.com/auth/drive".to_string());
+                }
             }
         }
     }

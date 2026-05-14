@@ -142,6 +142,16 @@ fn generate_compose_file(data_dir: &PathBuf, provider_keys: &HashMap<String, Str
         .map(|(k, v)| format!("      - {}={}\n", k, v))
         .collect();
 
+    let mut extra_volumes = String::new();
+    if let Ok(dirs) = crate::workspace_manager::get_all_agents_allowed_directories() {
+        for dir in dirs {
+            let path = std::path::Path::new(&dir);
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                extra_volumes.push_str(&format!("      - {}:/home/node/.openclaw/workspace/mounts/{}\n", dir, name));
+            }
+        }
+    }
+
     format!(
         r#"services:
   canopy-gateway:
@@ -161,7 +171,7 @@ fn generate_compose_file(data_dir: &PathBuf, provider_keys: &HashMap<String, Str
       # workspace → /home/node/.openclaw/workspace  (SOUL.md, IDENTITY.md, state/, etc.)
       # ⚠️  Must be INSIDE .openclaw, not a sibling dir — verified from working reference agent
       - {data}/openclaw-state/workspace:/home/node/.openclaw/workspace
-    environment:
+{extra_volumes}    environment:
       - NODE_ENV=production
 {extra_env}    extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -214,11 +224,26 @@ volumes:
 "#,
         data = data_dir.display(),
         extra_env = extra_env,
+        extra_volumes = extra_volumes,
     )
 }
 
 /// Generate docker-compose for an isolated agent container
 pub fn generate_isolated_compose(agent_id: &str, data_dir: &PathBuf, host_port: u16) -> String {
+    let mut extra_volumes = String::new();
+    if let Ok(path) = crate::workspace_manager::get_agent_workspace_config_path(agent_id) {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&content) {
+                for dir in dirs {
+                    let path = std::path::Path::new(&dir);
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        extra_volumes.push_str(&format!("      - {}:/home/node/.openclaw/workspace/mounts/{}\n", dir, name));
+                    }
+                }
+            }
+        }
+    }
+
     format!(
         r#"services:
   canopy-isolated-{id}:
@@ -234,7 +259,7 @@ pub fn generate_isolated_compose(agent_id: &str, data_dir: &PathBuf, host_port: 
     volumes:
       - {data}/isolated/{id}/state:/home/node/.openclaw
       - {data}/isolated/{id}/workspace:/home/node/.openclaw/workspace
-      # - {data}/isolated/{id}/config/openclaw.json:/home/node/.openclaw/openclaw.json:ro
+{extra_volumes}      # - {data}/isolated/{id}/config/openclaw.json:/home/node/.openclaw/openclaw.json:ro
     environment:
       - NODE_ENV=production
     pids_limit: 200
@@ -253,7 +278,8 @@ networks:
 "#,
         id = agent_id,
         data = data_dir.display(),
-        port = host_port
+        port = host_port,
+        extra_volumes = extra_volumes
     )
 }
 

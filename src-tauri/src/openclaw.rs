@@ -225,7 +225,8 @@ pub async fn create_agent(
         &soul_path,
         &soul_md,
         &identity_md,
-        "" // prefs
+        "", // prefs
+        LIBRARY_MD_TEMPLATE // library
     );
     
     let _ = get_docker_command()
@@ -391,6 +392,18 @@ pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
     let mut cache = CONNECTORS_CACHE.lock().await;
     *cache = Some(parsed.clone());
 
+    Ok(parsed)
+}
+
+#[tauri::command]
+pub async fn get_library_books() -> Result<serde_json::Value, String> {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let path = std::path::Path::new(manifest_dir).join("../../shared/library.json");
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("Failed to read library.json at {:?}: {}", path, e))?;
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| format!("Invalid JSON: {}", e))?;
     Ok(parsed)
 }
 
@@ -2177,24 +2190,38 @@ fn generate_soul_md(personality: &AgentPersonality) -> String {
     soul
 }
 
+const LIBRARY_MD_TEMPLATE: &str = r#"LIBRARY.md - Your Library of Favorite Books
+
+## How to use this file
+
+These are the list of books you have recently "read". Be curious and "read" more and add to your own library list to round out your personality and understanding, particularly if a book might add dynamic understanding of your given field or role / identity.  Don't bloat this space with every website you've visited or article you've looked at: keep it as a list of compelling and interesting books you would purchase and put on your shelf for historic reference or re-reading for enjoyment.
+
+While these books might inform your personality and knoweldge base, DO NOT over-index on the content OR reference it explicitly unless 100% applicable to the user's query or goal.  
+
+If there are "core skill" documents for which the contents have deep applicability to your role and you want to reference them often for your work, they should be added as links to the full content of the work.  For all other books (eg fiction or general knowledge) they can remain listes as titles and authors without a link or linked full content.
+"#;
+
 /// Generates the shell command to sync personality files to the container.
 /// This uses `if [ ! -f ... ]` to ensure we NEVER overwrite existing files,
 /// protecting user edits in SOUL.md, IDENTITY.md, and PREFERENCES.md.
-fn generate_personality_sync_cmd(soul_path: &str, soul: &str, identity: &str, prefs: &str) -> String {
+fn generate_personality_sync_cmd(soul_path: &str, soul: &str, identity: &str, prefs: &str, library: &str) -> String {
     let escaped_soul = soul.replace('\'', "'\\''");
     let escaped_identity = identity.replace('\'', "'\\''");
     let escaped_prefs = prefs.replace('\'', "'\\''");
+    let escaped_library = library.replace('\'', "'\\''");
     
     format!(
         "mkdir -p \"$(dirname '{soul_path}')\" && \
          if [ ! -f '{soul_path}' ]; then printf '%s' '{soul}' > '{soul_path}'; fi && \
          if [ ! -f \"$(dirname '{soul_path}')\"/IDENTITY.md ]; then printf '%s' '{identity}' > \"$(dirname '{soul_path}')\"/IDENTITY.md; fi && \
          if [ ! -f \"$(dirname '{soul_path}')\"/PREFERENCES.md ]; then printf '%s' '{prefs}' > \"$(dirname '{soul_path}')\"/PREFERENCES.md; fi && \
+         if [ ! -f \"$(dirname '{soul_path}')\"/LIBRARY.md ]; then printf '%s' '{library}' > \"$(dirname '{soul_path}')\"/LIBRARY.md; fi && \
          touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
         soul_path = soul_path,
         soul = escaped_soul,
         identity = escaped_identity,
         prefs = escaped_prefs,
+        library = escaped_library,
     )
 }
 
@@ -3544,7 +3571,8 @@ pub async fn boot_sync_agents(
             &soul_path,
             &soul_content,
             &identity_content,
-            custom_instructions
+            custom_instructions,
+            LIBRARY_MD_TEMPLATE
         );
 
         let _ = tokio::time::timeout(
@@ -4047,7 +4075,8 @@ mod tests {
             "/workspace/agent1/SOUL.md", 
             "Soul Content", 
             "Identity Content", 
-            "Prefs Content"
+            "Prefs Content",
+            LIBRARY_MD_TEMPLATE
         );
         
         // Ensure it uses file existence guards to NEVER overwrite files

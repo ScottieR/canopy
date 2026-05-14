@@ -32,6 +32,7 @@ mod browser_manager;
 mod security_scanner;
 mod activity_sniffer;
 mod health_monitor;
+mod workspace_manager;
 
 use tauri::Manager;
 
@@ -221,12 +222,15 @@ pub fn run() {
             openclaw::sync_gateway_channels,
             openclaw::get_available_models,
             openclaw::get_connectors_config,
+            openclaw::get_library_books,
             openclaw::get_openclaw_status_json,
             openclaw::read_workspace_file,
             openclaw::write_workspace_file,
             openclaw::upload_workspace_file,
             openclaw::copy_file_to_workspace,
             openclaw::set_preferences_template,
+            workspace_manager::get_agent_allowed_directories,
+            workspace_manager::update_agent_allowed_directories,
             // Machine Browser
             browser_manager::start_machine_browser,
             browser_manager::stop_machine_browser,
