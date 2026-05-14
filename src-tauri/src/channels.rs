@@ -451,6 +451,38 @@ pub async fn disconnect_discord() -> Result<String, String> {
     Ok("Discord disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct GithubRepo {
+    pub id: u64,
+    pub name: String,
+    pub full_name: String,
+    pub private: bool,
+}
+
+#[tauri::command]
+pub async fn fetch_github_repos(token: String) -> Result<Vec<GithubRepo>, String> {
+    let client = reqwest::Client::new();
+    let res = client
+        .get("https://api.github.com/user/repos?per_page=100")
+        .header("User-Agent", "Canopy-App")
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to request GitHub API: {}", e))?;
+
+    if !res.status().is_success() {
+        return Err(format!("GitHub API returned error: {}", res.status()));
+    }
+
+    let repos: Vec<GithubRepo> = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse GitHub repos: {}", e))?;
+
+    Ok(repos)
+}
+
 // ─── GitHub ───────────────────────────────────────────────────────────────────
 //
 // Requires a Personal Access Token (classic) or Fine-grained PAT.
@@ -597,4 +629,220 @@ mod tests {
 
         assert!(check_gh.status.success(), "gh CLI is not installed in the container");
     }
+}
+
+// ─── Connection Diagnostics ───────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct ConnectionDiagnostic {
+    pub service: String,
+    pub is_ok: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn ping_agent_connections(db: tauri::State<'_, crate::db::Database>, agent_id: String) -> Result<Vec<ConnectionDiagnostic>, String> {
+    ping_agent_connections_internal(&db, &agent_id).await
+}
+
+pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id: &str) -> Result<Vec<ConnectionDiagnostic>, String> {
+    let agent = db.get_agent(agent_id)
+        .map_err(|e| format!("Failed to get agent: {}", e))?
+        .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+    let mut diagnostics = Vec::new();
+    let client = reqwest::Client::new();
+
+    for integration in agent.integrations {
+        match integration.as_str() {
+            "slack" => {
+                match crate::slack::check_slack_connection(Some(agent_id.to_string())).await {
+                    Ok(status) => {
+                        if status.connected {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Slack".to_string(),
+                                is_ok: true,
+                                message: format!("Connected to Workspace: {}", status.workspace_name.unwrap_or_default()),
+                            });
+                        } else {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Slack".to_string(),
+                                is_ok: false,
+                                message: "Slack token invalid or missing. Please reconnect in the Connections tab.".to_string(),
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        diagnostics.push(ConnectionDiagnostic {
+                            service: "Slack".to_string(),
+                            is_ok: false,
+                            message: format!("Slack check failed: {}", e),
+                        });
+                    }
+                }
+            }
+            "github" => {
+                if let Ok(token) = crate::keychain::get_secret(&format!("github-access-token-{}", agent_id)) {
+                    let res = client.get("https://api.github.com/user")
+                        .header("User-Agent", "Canopy-Agent")
+                        .bearer_auth(token)
+                        .send()
+                        .await;
+                    match res {
+                        Ok(r) if r.status().is_success() => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "GitHub".to_string(),
+                                is_ok: true,
+                                message: "Authenticated successfully.".to_string(),
+                            });
+                        }
+                        _ => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "GitHub".to_string(),
+                                is_ok: false,
+                                message: "GitHub token invalid. Reconfigure in Connections tab.".to_string(),
+                            });
+                        }
+                    }
+                } else {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "GitHub".to_string(),
+                        is_ok: false,
+                        message: "Missing GitHub token.".to_string(),
+                    });
+                }
+            }
+            "telegram" => {
+                if let Ok(token) = crate::keychain::get_secret(&format!("agent_{}_telegram_bot_token", agent_id)) {
+                    let res = client.get(&format!("https://api.telegram.org/bot{}/getMe", token)).send().await;
+                    match res {
+                        Ok(r) if r.status().is_success() => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Telegram".to_string(),
+                                is_ok: true,
+                                message: "Bot is active.".to_string(),
+                            });
+                        }
+                        _ => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Telegram".to_string(),
+                                is_ok: false,
+                                message: "Invalid Telegram token.".to_string(),
+                            });
+                        }
+                    }
+                } else {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "Telegram".to_string(),
+                        is_ok: false,
+                        message: "Missing Telegram token.".to_string(),
+                    });
+                }
+            }
+            "discord" => {
+                if let Ok(token) = crate::keychain::get_secret(&format!("agent_{}_discord_bot_token", agent_id)) {
+                    let res = client.get("https://discord.com/api/v10/users/@me")
+                        .header("Authorization", format!("Bot {}", token))
+                        .send().await;
+                    match res {
+                        Ok(r) if r.status().is_success() => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Discord".to_string(),
+                                is_ok: true,
+                                message: "Bot authenticated.".to_string(),
+                            });
+                        }
+                        _ => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Discord".to_string(),
+                                is_ok: false,
+                                message: "Invalid Discord token.".to_string(),
+                            });
+                        }
+                    }
+                } else {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "Discord".to_string(),
+                        is_ok: false,
+                        message: "Missing Discord token.".to_string(),
+                    });
+                }
+            }
+            "whatsapp" => {
+                if crate::keychain::get_secret(&format!("agent_{}_whatsapp_api_token", agent_id)).is_ok() {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "WhatsApp".to_string(),
+                        is_ok: true,
+                        message: "Credentials configured in keychain.".to_string(),
+                    });
+                } else {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "WhatsApp".to_string(),
+                        is_ok: false,
+                        message: "Missing WhatsApp credentials.".to_string(),
+                    });
+                }
+            }
+            "twilio" => {
+                if let (Ok(sid), Ok(token)) = (
+                    crate::keychain::get_secret(&format!("agent_{}_twilio_account_sid", agent_id)),
+                    crate::keychain::get_secret(&format!("agent_{}_twilio_auth_token", agent_id))
+                ) {
+                    let res = client.get(&format!("https://api.twilio.com/2010-04-01/Accounts/{}.json", sid))
+                        .basic_auth(&sid, Some(&token))
+                        .send().await;
+                    match res {
+                        Ok(r) if r.status().is_success() => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Twilio".to_string(),
+                                is_ok: true,
+                                message: "Account verified.".to_string(),
+                            });
+                        }
+                        _ => {
+                            diagnostics.push(ConnectionDiagnostic {
+                                service: "Twilio".to_string(),
+                                is_ok: false,
+                                message: "Invalid Twilio credentials.".to_string(),
+                            });
+                        }
+                    }
+                } else {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "Twilio".to_string(),
+                        is_ok: false,
+                        message: "Missing Twilio credentials.".to_string(),
+                    });
+                }
+            }
+            other => {
+                if !other.starts_with("web_") {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: other.to_string(),
+                        is_ok: true,
+                        message: "Integration enabled.".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    // JIT Bug Reporting: Automatically log any detected failures into the bug tracker 
+    // exactly when they are needed (e.g., prior to a message run or via the UI).
+    for diag in &diagnostics {
+        if !diag.is_ok {
+            let bug = crate::models::AgentBugReport {
+                id: uuid::Uuid::new_v4().to_string(),
+                agent_id: agent_id.to_string(),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                service: diag.service.clone(),
+                error_message: diag.message.clone(),
+                resolved: false,
+            };
+            let _ = db.insert_agent_bug_report(&bug);
+            tracing::warn!("JIT diagnostic logged bug for agent {}: {}", agent_id, bug.error_message);
+        }
+    }
+
+    Ok(diagnostics)
 }

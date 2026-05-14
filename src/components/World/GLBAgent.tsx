@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
 import accessoriesData from "../../../../shared/accessories.json";
 import { AttachedAccessory } from "./AttachedAccessory";
+import { getAssetUrl } from "../../utils/assets";
 
 // Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous
 let globalAnimationStagger = 0;
@@ -29,7 +30,7 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
   const MOVE_THRESHOLD = 0.05;
 
   // Load the universal rigged body
-  const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb?v=2");
+  const { scene, animations } = useGLTF(getAssetUrl("/models/lobsters/BaseLobsterRigged.glb?v=2"));
 
   // Clone incredibly efficiently so each agent gets its own distinct animated skeleton and colored materials
   const clonedScene = useMemo(() => {
@@ -292,11 +293,30 @@ export function SingleGLB({ url, scale = 1 }: { url: string, scale?: number }) {
 }
 
 export function GLBModel({ url }: { url: string }) {
-  const { scene } = useGLTF(url);
+  const { scene } = useGLTF(getAssetUrl(url));
 
   const clonedScene = React.useMemo(() => {
     // Clone the scene so we can instance the exact same GLB repeatedly
     const clone = scene.clone();
+
+    clone.traverse((node: any) => {
+      if (node.isMesh && node.material) {
+        const materials = Array.isArray(node.material) ? node.material : [node.material];
+        materials.forEach((mat: any) => {
+          if (mat.map) {
+            // Fix white "cracking" on dark models: disable mipmaps to prevent UV border bleed
+            mat.map.generateMipmaps = false;
+            mat.map.minFilter = THREE.LinearFilter;
+            mat.map.needsUpdate = true;
+          }
+          // Meshy generators sometimes leave alpha transparency on, causing transparent seams
+          mat.transparent = false;
+          mat.alphaTest = 0;
+          mat.depthWrite = true;
+          mat.needsUpdate = true;
+        });
+      }
+    });
 
     // Meshy generators crop and scale unpredictably based on the source image.
     // We compute the exact bounding box of the geometry and mathematically force 

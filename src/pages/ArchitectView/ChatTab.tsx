@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { 
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, ChevronDown,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip
 } from "lucide-react";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
@@ -24,19 +24,35 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     setMessage(agent.draftMessage || "");
   }, [agent.id]);
 
-  // Persist draft to global store
+  // Persist draft to global store (debounced to avoid re-rendering entire app on keystroke)
   useEffect(() => {
-    if (agent.draftMessage !== message) {
-      useWorldStore.setState(state => ({
-        agents: state.agents.map(a => a.id === agent.id ? { ...a, draftMessage: message } : a)
-      }));
-    }
+    const handler = setTimeout(() => {
+      if (agent.draftMessage !== message) {
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => a.id === agent.id ? { ...a, draftMessage: message } : a)
+        }));
+      }
+    }, 500);
+    return () => clearTimeout(handler);
   }, [message, agent.id]);
   const [chatLog, setChatLog] = useState<ChatMessage[]>(agent.chatLog);
   const [loading, setLoading] = useState(false);
   const [needsRepair, setNeedsRepair] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [attachments, setAttachments] = useState<{name: string, dataUrl: string}[]>([]);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const isAtBottomRef = useRef(true);
+
+  const handleScroll = useCallback(() => {
+    if (chatContainerRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
+      const atBottom = scrollHeight - scrollTop - clientHeight < 50;
+      isAtBottomRef.current = atBottom;
+      setIsAtBottom(atBottom);
+    }
+  }, []);
   
   // Inline Auth Modal State
   const [authDomain, setAuthDomain] = useState<string | null>(null);
@@ -62,8 +78,8 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   }, [authDomain]);
 
   useEffect(() => {
-    // Scroll to bottom whenever chatLog changes
-    if (chatContainerRef.current) {
+    // Only scroll to bottom if the user hasn't scrolled up to read
+    if (chatContainerRef.current && isAtBottomRef.current) {
       chatContainerRef.current.scrollTo({
         top: chatContainerRef.current.scrollHeight,
         behavior: "smooth"
@@ -231,23 +247,41 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   };
 
   const handleSendMessage = async () => {
-    if (!message.trim()) return;
+    if (!message.trim() && attachments.length === 0) return;
+
+    let finalMessage = message.trim();
+    if (attachments.length > 0) {
+      const fileNames = attachments.map(a => a.name).join(", ");
+      finalMessage += `\n\n[System Context: I have uploaded the following files to your workspace: ${fileNames}. Please analyze them if requested.]`;
+    }
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
       sender: "user",
       text: message,
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      attachments: attachments.length > 0 ? [...attachments] : undefined,
     };
 
     setChatLog(prev => [...prev, userMsg]);
     setMessage("");
+    setAttachments([]);
     setLoading(true);
 
     try {
+      if (userMsg.attachments) {
+        for (const file of userMsg.attachments) {
+           if (file.dataUrl.startsWith("data:")) {
+               await invoke("upload_workspace_file", { agentId: agent.id, filename: file.name, base64Data: file.dataUrl });
+           } else {
+               await invoke("copy_file_to_workspace", { agentId: agent.id, sourcePath: file.dataUrl, targetFilename: file.name });
+           }
+        }
+      }
+
       const response: any = await invoke("send_message", {
         agentId: agent.id,
-        message: message,
+        message: finalMessage,
       });
 
       const responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
@@ -326,10 +360,11 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       )}
 
       {/* Chat log */}
-      <div ref={chatContainerRef} style={{
-        flex: 1, ...glass(0.35), borderRadius: 16, padding: 20, overflow: "auto",
-        display: "flex", flexDirection: "column", gap: 12,
-      }}>
+      <div style={{ position: "relative", flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div ref={chatContainerRef} onScroll={handleScroll} style={{
+          flex: 1, ...glass(0.35), borderRadius: 16, padding: 20, overflow: "auto",
+          display: "flex", flexDirection: "column", gap: 12,
+        }}>
         {chatLog.length === 0 ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-muted)" }}>
             Start a conversation...
@@ -356,6 +391,21 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 borderBottomRightRadius: msg.sender === "user" ? 4 : 14,
                 borderBottomLeftRadius: msg.sender === "agent" ? 4 : 14,
               }}>
+                {msg.attachments && msg.attachments.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+                    {msg.attachments.map((a, i) => (
+                      <div key={i} style={{ width: 80, height: 80, borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)" }}>
+                        {a.dataUrl.startsWith("data:image") ? (
+                           <img src={a.dataUrl} alt={a.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        ) : (
+                           <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.1)", fontSize: 10, padding: 4, wordBreak: "break-all", textAlign: "center", lineHeight: 1.2 }}>
+                              {a.name}
+                           </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {(() => {
                   const textTrimmed = msg.text.trim();
                   let isSystemDump = false;
@@ -454,7 +504,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                            fragments.forEach(f => {
                                if (f.type !== 'text') { temp1.push(f); return; }
                                const parts = f.content.split(credentialRegex);
-                               parts.forEach((p, i) => {
+                               parts.forEach((p: string, i: number) => {
                                    if (i % 2 === 1) temp1.push({ type: 'cred', content: p.trim() });
                                    else if (p) temp1.push({ type: 'text', content: p });
                                });
@@ -465,7 +515,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                            temp1.forEach(f => {
                                if (f.type !== 'text') { temp2.push(f); return; }
                                const parts = f.content.split(interventionRegex);
-                               parts.forEach((p, i) => {
+                               parts.forEach((p: string, i: number) => {
                                    if (i % 2 === 1) temp2.push({ type: 'interv', content: p.trim() });
                                    else if (p) temp2.push({ type: 'text', content: p });
                                });
@@ -570,6 +620,44 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             }} />
             <span style={{ fontSize: 13, color: "var(--text-sub)", fontStyle: "italic" }}>{agent.name} is thinking...</span>
           </div>
+        )}
+        </div>
+
+        {!isAtBottom && (
+          <button
+            onClick={() => {
+              if (chatContainerRef.current) {
+                chatContainerRef.current.scrollTo({
+                  top: chatContainerRef.current.scrollHeight,
+                  behavior: "smooth"
+                });
+                isAtBottomRef.current = true;
+                setIsAtBottom(true);
+              }
+            }}
+            style={{
+              position: "absolute",
+              bottom: 20,
+              right: 20,
+              background: "#3c6663",
+              color: "#fff",
+              border: "none",
+              borderRadius: "50%",
+              width: 36,
+              height: 36,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              cursor: "pointer",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.25)",
+              zIndex: 10,
+              transition: "transform 0.15s ease",
+            }}
+            onMouseOver={(e) => e.currentTarget.style.transform = "scale(1.05)"}
+            onMouseOut={(e) => e.currentTarget.style.transform = "scale(1)"}
+          >
+            <ChevronDown size={20} />
+          </button>
         )}
       </div>
 
@@ -725,18 +813,90 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         );
       })()}
 
+      {/* Attachments Preview */}
+      {attachments.length > 0 && (
+        <div style={{ display: "flex", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 4 }}>
+          {attachments.map((file, i) => (
+            <div key={i} style={{ position: "relative", width: 60, height: 60, borderRadius: 8, border: "1px solid var(--border-subtle)", overflow: "hidden", flexShrink: 0 }}>
+              {file.dataUrl.startsWith("data:image") ? (
+                <img src={file.dataUrl} alt={file.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+              ) : (
+                <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--surface-base)", fontSize: 10, color: "var(--text-sub)", wordBreak: "break-all", padding: 4, textAlign: "center" }}>
+                  {file.name}
+                </div>
+              )}
+              <button 
+                onClick={() => setAttachments(prev => prev.filter((_, index) => index !== i))}
+                style={{ position: "absolute", top: 2, right: 2, background: "rgba(0,0,0,0.6)", color: "white", border: "none", borderRadius: "50%", width: 16, height: 16, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", padding: 0 }}
+              >
+                <X size={10} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Input */}
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+      <div style={{ display: "flex", gap: 8, marginTop: attachments.length > 0 ? 8 : 12, alignItems: "flex-end" }}>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={loading || !gatewayReady || agent.paused}
+          title="Attach File or Screenshot"
+          style={{
+            padding: "14px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.08)",
+            background: "var(--glass-light)",
+            color: "var(--text-main)",
+            cursor: (loading || !gatewayReady || agent.paused) ? "default" : "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            opacity: (loading || !gatewayReady || agent.paused) ? 0.6 : 1,
+            height: "46px"
+          }}
+        >
+          <Paperclip size={18} />
+        </button>
+        <input 
+          type="file" 
+          ref={fileInputRef} 
+          style={{ display: "none" }} 
+          multiple
+          onChange={e => {
+            const files = Array.from(e.target.files || []);
+            files.forEach(file => {
+              const reader = new FileReader();
+              reader.onload = (event) => {
+                 setAttachments(prev => [...prev, { name: file.name, dataUrl: event.target?.result as string }]);
+              };
+              reader.readAsDataURL(file);
+            });
+            if (fileInputRef.current) fileInputRef.current.value = '';
+          }}
+        />
         <textarea
           value={message}
           onChange={e => setMessage(e.target.value)}
           onKeyDown={e => { 
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if (message.trim() && !loading && gatewayReady && !agent.paused) handleSendMessage(); 
+              if ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) handleSendMessage(); 
             }
           }}
-          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : `Talk to ${agent.name}... (Shift+Enter for new line)`}
+          onPaste={e => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (let i = 0; i < items.length; i++) {
+              if (items[i].type.indexOf("image") !== -1) {
+                const file = items[i].getAsFile();
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (event) => {
+                     setAttachments(prev => [...prev, { name: `screenshot-${Date.now()}.png`, dataUrl: event.target?.result as string }]);
+                  };
+                  reader.readAsDataURL(file);
+                }
+              }
+            }
+          }}
+          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
           disabled={loading || !gatewayReady || agent.paused}
           rows={1}
           style={{
@@ -750,15 +910,16 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         />
         <button
           onClick={handleSendMessage}
-          disabled={!message.trim() || loading || !gatewayReady || agent.paused}
+          disabled={(!message.trim() && attachments.length === 0) || loading || !gatewayReady || agent.paused}
           title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? "Agents are waking up, please wait..." : undefined}
           style={{
             padding: "14px 20px", borderRadius: 14, border: "none",
-            background: (message.trim() && !loading && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
-            color: (message.trim() && !loading && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
-            fontSize: 13, fontWeight: 600, cursor: (message.trim() && !loading && gatewayReady && !agent.paused) ? "pointer" : "default",
+            background: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
+            color: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
+            fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "pointer" : "default",
             fontFamily: "inherit",
             transition: "all 0.15s ease",
+            height: "46px"
           }}
         >{agent.paused ? "⏸" : !gatewayReady ? "⏳" : "Send"}</button>
       </div>

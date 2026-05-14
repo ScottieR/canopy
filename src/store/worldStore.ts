@@ -83,6 +83,7 @@ export interface ChatMessage {
   sender: "user" | "agent";
   text: string;
   time: string;
+  attachments?: { name: string; dataUrl: string }[];
 }
 
 export interface AgentData extends Agent {

@@ -13,6 +13,7 @@ import { OrbitControls, TransformControls, Environment } from "@react-three/drei
 import { TerrariumBase } from "../../components/World/WorldScene";
 import { GLBAgent, GLBModel } from "../../components/World/GLBAgent";
 import { Toggle, ServiceRow, glass, ACCESSORIES, PASTEL_COLORS, SafeBillboard, HABITATS } from "../../App";
+import { getAssetUrl } from "../../utils/assets";
 
 export function IdentityTab({ agent }: { agent: AgentData }) {
   const { setAgents } = useWorldStore();
@@ -260,7 +261,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                 let isActive = stagedVisuals?.decor?.includes(acc);
                 return (
                   <div key={acc} style={{ position: "relative" }}>
-                    <img src={acc}
+                    <img src={getAssetUrl(acc)}
                       onClick={() => {
                         const current = stagedVisuals?.decor || [];
                         if (isActive) {
@@ -303,7 +304,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
               {sortedAccessories.map(acc => {
                 let isActive = stagedVisuals?.accessories?.includes(acc);
                 return (
-                  <img key={acc} src={acc}
+                  <img key={acc} src={getAssetUrl(acc)}
                     onClick={() => {
                       const current = stagedVisuals?.accessories || [];
                       handleUpdateStaged({ accessories: isActive ? current.filter(x => x !== acc) : [...current, acc] });
@@ -480,7 +481,7 @@ function DecorObject({ agentId, path, glbPath, isSelected, onSelect, transform, 
             <meshBasicMaterial color="#FFAB91" wireframe />
           </mesh>
         }>
-          <GLBModel url={glbPath} />
+          <GLBModel url={getAssetUrl(glbPath)} />
         </React.Suspense>
       </DecorErrorBoundary>
     </group>

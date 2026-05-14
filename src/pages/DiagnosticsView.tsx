@@ -23,6 +23,26 @@ function DiagnosticsView() {
   const [repairMsg, setRepairMsg] = useState("");
   const [logs, setLogs] = useState<string[]>([]);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const [agentDiagnostics, setAgentDiagnostics] = useState<{agentName: string, diagnostics: any[]}[]>([]);
+  const [loadingConnections, setLoadingConnections] = useState(false);
+
+  const runConnectionDiagnostics = async () => {
+    setLoadingConnections(true);
+    try {
+      const agents: any[] = await invoke("list_agents");
+      const results = [];
+      for (const agent of agents) {
+        if (agent.integrations && agent.integrations.length > 0) {
+          const diags: any[] = await invoke("ping_agent_connections", { agentId: agent.id });
+          results.push({ agentName: agent.name, diagnostics: diags });
+        }
+      }
+      setAgentDiagnostics(results);
+    } catch (e) {
+      console.error(e);
+    }
+    setLoadingConnections(false);
+  };
 
   useEffect(() => {
     if (logsEndRef.current) {
@@ -55,6 +75,7 @@ function DiagnosticsView() {
 
   useEffect(() => {
     runAudit();
+    runConnectionDiagnostics();
   }, []);
 
   const handleRepair = async () => {
@@ -128,6 +149,77 @@ function DiagnosticsView() {
               </pre>
             </div>
           )}
+
+          <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+              <Terminal size={16} /> Machine Browser Controls
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>
+              Forcefully terminate all active Chrome browser sessions managed by OpenClaw. Use this as a panic button if the browser proxy becomes stuck or unresponsive.
+            </div>
+            <button 
+              onClick={async () => {
+                try {
+                  await invoke("reset_machine_browsers");
+                  setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Browsers successfully reset.`]);
+                } catch (e) {
+                  setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Error resetting browsers: ${e}`]);
+                }
+              }} 
+              style={{ background: "#aa371c", color: "white", border: "none", padding: "8px 16px", borderRadius: 8, cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}
+            >
+              <Zap size={16} /> Force Reset Browsers
+            </button>
+          </div>
+
+          <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)", marginTop: 16 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Activity size={16} /> Agent Connection Health
+              </div>
+              <button 
+                onClick={runConnectionDiagnostics} 
+                disabled={loadingConnections}
+                style={{ background: "transparent", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, padding: "4px 8px", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
+              >
+                <RefreshCw size={12} className={loadingConnections ? "spin" : ""} /> Refresh
+              </button>
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>
+              Verifies the live connection status for each agent's configured 3rd-party integrations using their saved credentials.
+            </div>
+
+            {loadingConnections ? (
+              <div style={{ padding: 20, textAlign: "center", color: "var(--text-sub)", fontSize: 13 }}>Pinging services...</div>
+            ) : agentDiagnostics.length === 0 ? (
+              <div style={{ padding: 20, textAlign: "center", color: "var(--text-sub)", fontSize: 13 }}>No active connections found for any agents.</div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                {agentDiagnostics.map((ad, idx) => (
+                  <div key={idx} style={{ background: "rgba(0,0,0,0.02)", padding: 16, borderRadius: 8 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>{ad.agentName}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      {ad.diagnostics.map((diag: any, dIdx: number) => (
+                        <div key={dIdx} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "8px 12px", background: "white", borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)" }}>
+                          <div style={{ marginTop: 2 }}>
+                            {diag.is_ok ? <CheckCircle2 size={16} color="#4A9E96" /> : <X size={16} color="#E57373" />}
+                          </div>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13, color: diag.is_ok ? "var(--text-main)" : "#aa371c" }}>
+                              {diag.service}
+                            </div>
+                            <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>
+                              {diag.message}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

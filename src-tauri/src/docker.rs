@@ -358,15 +358,62 @@ fn preflight_sanitize_auth_profiles(data_dir: &PathBuf) {
 fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     let config_path = data_dir.join("openclaw-state").join("openclaw.json");
 
-    // Always start from a clean slate — never read the existing file's operational state.
-    // However, we MUST preserve the `meta` field if it exists, otherwise OpenClaw detects
-    // a `missing-meta-vs-last-good` anomaly and goes into a recovery loop.
+    // Start mostly clean, but carry forward the few fields that are legitimately
+    // dynamic per-user state — anything that's already a snapshot of keychain-backed
+    // credentials we wrote in a previous session and want the gateway to boot up
+    // with directly, instead of forcing a mid-boot restart from boot_sync_agents.
+    //
+    // What we copy and why:
+    //   • meta — OpenClaw fires a "missing-meta-vs-last-good" anomaly and enters
+    //     a recovery loop if this field is dropped.
+    //   • channels.{slack,gmail,googleCalendar,googleDrive} — per-agent account
+    //     maps written by sync_gateway_channels_internal from keychain on a
+    //     previous run. Wiping these meant the container booted with the
+    //     channel DISABLED until boot_sync_agents rewrote and restarted it,
+    //     which surfaced as "Slack bot token missing for account X" runtime
+    //     errors. The defensive scrub a few lines below still removes the
+    //     dangerous single-tenant `botToken`/`appToken` fields (they're the
+    //     cross-agent leak vector — see slack.rs::get_bot_token for the
+    //     matching guard).
+    //   • bindings — agent ↔ account routing. Must travel with the account
+    //     maps; orphaned bindings or orphaned accounts both break dispatch.
+    //   • plugins.entries.{slack,google}.enabled — mirrors the plugin-on/off
+    //     state that goes with the accounts. Without this the channels are
+    //     populated but the plugin is off.
+    //
+    // What we deliberately do NOT carry forward (handled by overrides below):
+    //   • agents.defaults.model — overwritten with the current keychain-key-
+    //     derived default, so any stale/deprecated model string in the file
+    //     gets blown away regardless.
+    //   • gateway.* — fully overwritten from constants.
+    //   • agents.list — cleared further down to keep the ".openclaw-applied"
+    //     comparison deterministic; restored after preflight by start_gateway.
     let mut cfg: JsonValue = serde_json::json!({});
 
     if let Ok(content) = std::fs::read_to_string(&config_path) {
         if let Ok(existing_cfg) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(meta) = existing_cfg.get("meta") {
                 cfg["meta"] = meta.clone();
+            }
+
+            // Per-agent channel state. Built atomically by
+            // sync_gateway_channels_internal from keychain — never hand-edited
+            // — so carrying it forward is safe and is what makes Slack work on
+            // boot for users with existing per-agent connections.
+            for ch in ["slack", "gmail", "googleCalendar", "googleDrive"] {
+                if let Some(ch_cfg) = existing_cfg.pointer(&format!("/channels/{}", ch)) {
+                    cfg["channels"][ch] = ch_cfg.clone();
+                }
+            }
+            if let Some(bindings) = existing_cfg.get("bindings") {
+                cfg["bindings"] = bindings.clone();
+            }
+            for plugin in ["slack", "google"] {
+                if let Some(enabled) = existing_cfg.pointer(
+                    &format!("/plugins/entries/{}/enabled", plugin)
+                ) {
+                    cfg["plugins"]["entries"][plugin]["enabled"] = enabled.clone();
+                }
             }
         }
     }
@@ -391,16 +438,48 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     cfg["gateway"]["port"] = serde_json::json!(18789);
 
     // ── Slack channel — strictly per-agent isolation ────────────────────────────
-    // NEVER inject a global slack-bot-token or slack-app-token here. Doing so would
-    // create a significant security bug where multiple agents fall back to a single
-    // shared Slack connection if isolated configs fail. 
-    // Slack is enabled dynamically by `boot_sync_agents` via `channels.slack.accounts`.
+    //
+    // The only Slack fields that are dangerous to carry forward are the GLOBAL
+    // single-tenant `botToken` / `appToken`. Those create the cross-agent
+    // contamination problem: any agent missing its own per-agent token would
+    // silently fall back to whatever was in the global slot. They're never
+    // written by the per-agent path; if we see them in the file at all it's
+    // leftover from the legacy `start_slack_listener` path and must be removed.
+    //
+    // The per-agent `channels.slack.accounts.{agent_id}` map and its sibling
+    // bindings were preserved above from the existing file (when present). They
+    // came from keychain via sync_gateway_channels_internal and let the
+    // gateway boot up with Slack already working, without needing an
+    // expensive mid-boot restart.
+    //
+    // If we have accounts, enable the plugin so it picks them up. If we have
+    // none, force enabled=false so OpenClaw doesn't try to start Socket Mode
+    // with nothing to connect.
     {
-        tracing::info!("preflight: Enforcing per-agent Slack isolation — ensuring no global Slack tokens are set");
-        cfg["channels"]["slack"]["enabled"] = serde_json::json!(false);
         if let Some(slack) = cfg["channels"]["slack"].as_object_mut() {
             slack.remove("botToken");
             slack.remove("appToken");
+            // groupPolicy must always be "open" — see audit_openclaw::repair_openclaw_config.
+            // If a previous file had "allowlist" or similar this flips it back.
+            slack.insert("groupPolicy".to_string(), serde_json::json!("open"));
+            slack.insert("mode".to_string(), serde_json::json!("socket"));
+
+            let has_accounts = slack
+                .get("accounts")
+                .and_then(|v| v.as_object())
+                .map(|m| !m.is_empty())
+                .unwrap_or(false);
+            slack.insert("enabled".to_string(), serde_json::json!(has_accounts));
+
+            if has_accounts {
+                tracing::info!(
+                    "preflight: preserved {} per-agent Slack account(s) — gateway will boot with Slack ENABLED",
+                    slack.get("accounts").and_then(|v| v.as_object()).map(|m| m.len()).unwrap_or(0)
+                );
+                cfg["plugins"]["entries"]["slack"]["enabled"] = serde_json::json!(true);
+            } else {
+                tracing::info!("preflight: no per-agent Slack accounts in existing config — gateway will boot with Slack DISABLED");
+            }
         }
     }
 

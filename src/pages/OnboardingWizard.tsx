@@ -18,6 +18,7 @@ import { LoadingScreen } from "../components/LoadingScreen";
 import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle, LobsterIcon } from "../App";
+import { getAssetUrl } from "../utils/assets";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
@@ -101,6 +102,7 @@ export function OnboardingWizard() {
   const [fullDiskAccessGranted, setFullDiskAccessGranted] = useState<boolean | null>(null);
   const [imessageThreads, setIMessageThreads] = useState<any[]>([]);
   const [selectedIMessageThreads, setSelectedIMessageThreads] = useState<string[]>([]);
+  const [selectedSlackChannels, setSelectedSlackChannels] = useState<string[]>([]);
   const [imessageAccessLevel, setImessageAccessLevel] = useState<"read-only" | "read-send">("read-only");
 
   const [googleTokens, setGoogleTokens] = useState<any>(null);
@@ -153,7 +155,7 @@ export function OnboardingWizard() {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
         const nameMap: any = { slack: 'Slack', discord: 'Discord', telegram: 'Telegram', github: 'GitHub' };
         new WebviewWindow('companion_' + key + '_' + Date.now(), {
-          url: `/index.html?companion=${key}&agentName=${encodeURIComponent(agentName || 'Agent')}`,
+          url: `/index.html?companion=${key}&agentName=${encodeURIComponent(agentName || 'Agent')}&isNew=true`,
           title: `Setup ${nameMap[key]}`,
           width: 420,
           height: 760,
@@ -194,10 +196,13 @@ export function OnboardingWizard() {
         const { listen: tauriListen } = await import('@tauri-apps/api/event');
         const listen = (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) ? tauriListen : async () => () => {};
         const unlisten1 = await listen('companion-finished', async (e: any) => {
-          const { type, key } = e.payload || {};
+          const { type, key, channels, appToken, botToken } = e.payload || {};
           if (type === "slack") {
             setWsSlackConnected(true);
             setPlugins(prev => ({ ...prev, slack: true }));
+            if (channels) setSelectedSlackChannels(channels);
+            if (appToken) setSlackAppToken(appToken);
+            if (botToken) setSlackBotToken(botToken);
           } else if (key) {
             setApiKey(key);
             if (type === "gemini") setLlmProvider("Google Gemini");
@@ -571,6 +576,13 @@ export function OnboardingWizard() {
             agentId: newAgentData.id,
             chatIdentifiers: selectedIMessageThreads
           });
+        }
+
+        if (plugins.slack && selectedSlackChannels.length > 0) {
+          await invoke("update_allowed_slack_channels", {
+            agentId: newAgentData.id,
+            channelIds: selectedSlackChannels
+          }).catch(e => console.warn("Failed to set allowed slack channels", e));
         }
 
         if (plugins.folders && selectedFolderPath) {
@@ -950,7 +962,7 @@ export function OnboardingWizard() {
                       width: "100%", aspectRatio: role.image ? "auto" : "auto",
                     }}>
                       {role.image ? (
-                        <img src={role.image} alt={role.key} style={{ width: "100%", height: "auto", display: "block", objectFit: "cover" }} />
+                        <img src={getAssetUrl(role.image)} alt={role.key} style={{ width: "100%", height: "auto", display: "block", objectFit: "cover" }} />
                       ) : (
                         <>
                           {/* Isometric ground shadow beneath lobster */}
@@ -1124,7 +1136,7 @@ export function OnboardingWizard() {
                 display: "flex", gap: 16, alignItems: "flex-start", backdropFilter: "blur(4px)",
               }}>
                 {agentTypeInfo[selectedRole].image ? (
-                  <img src={agentTypeInfo[selectedRole].image} alt={selectedRole} style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover" }} />
+                  <img src={getAssetUrl(agentTypeInfo[selectedRole].image)} alt={selectedRole} style={{ width: 48, height: 48, borderRadius: 8, objectFit: "cover" }} />
                 ) : (
                   <LobsterIcon size={48} shellColor={agentTypeInfo[selectedRole].robeColor} accentColor={agentTypeInfo[selectedRole].accentColor} />
                 )}
@@ -1584,53 +1596,21 @@ export function OnboardingWizard() {
                   </div>
                   <button onClick={async () => {
                     try {
-                      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-
-                      const windowLabel = 'slackCompanion_' + Date.now();
-                      const companionWindow = new WebviewWindow(windowLabel, {
-                        url: `/index.html?companion=slack&agentId=${optimisticId}&agentName=${encodeURIComponent(agentName || "Agent")}`,
-                        title: 'Setup Guide',
-                        width: 420,
-                        height: 760,
-                        x: window.screen.availWidth - 440,
-                        y: 50,
-                        alwaysOnTop: true,
-                        decorations: true,
-                      });
-
-                      const launchBrowser = async () => {
-                        const manifest = {
-                          display_information: { name: agentName || "Sloane", description: selectedRole ? `Your ${selectedRole} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
-                          features: {
-                            app_home: { home_tab_enabled: false, messages_tab_enabled: true, messages_tab_read_only_enabled: false },
-                            bot_user: { display_name: agentName || "Sloane", always_online: true }
-                          },
-                          oauth_config: {
-                            scopes: { bot: ["chat:write", "channels:history", "channels:read", "groups:history", "im:history", "im:read", "im:write", "mpim:history", "mpim:read", "mpim:write", "users:read", "app_mentions:read", "reactions:read", "reactions:write", "commands"] },
-                            pkce_enabled: false
-                          },
-                          settings: {
-                            event_subscriptions: { bot_events: ["app_mention", "message.channels", "message.groups", "message.im", "message.mpim", "reaction_added", "reaction_removed"] },
-                            interactivity: { is_enabled: true },
-                            org_deploy_enabled: false,
-                            socket_mode_enabled: true,
-                            token_rotation_enabled: false,
-                            is_mcp_enabled: false
-                          }
-                        };
-                        const url = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(manifest))}`;
-                        const { open } = await import('@tauri-apps/plugin-shell');
-                        await open(url);
-                      };
-
-                      companionWindow.once('tauri://created', launchBrowser);
-                      companionWindow.once('tauri://error', (e) => {
-                        console.error("Window creation error", e);
-                        launchBrowser();
-                      });
+                      if (typeof invoke === 'function') {
+                        const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                        new WebviewWindow('companion_slack_' + Date.now(), {
+                          url: `/index.html?companion=slack&agentId=${optimisticId}&agentName=${encodeURIComponent(agentName || "Agent")}&isNew=true`,
+                          title: 'Setup Slack',
+                          width: 420,
+                          height: 760,
+                          x: window.screen.availWidth - 440,
+                          y: 50,
+                          alwaysOnTop: true,
+                          decorations: true,
+                        });
+                      }
                     } catch (e) {
-                      console.error("Failed to spawn companion", e);
-                      // Fallback
+                      console.error("Failed to spawn companion, falling back to browser tab only", e);
                       const manifest = {
                         display_information: { name: agentName || "Sloane", description: selectedRole ? `Your ${selectedRole} Canopy Agent` : "Your Canopy Agent", background_color: "#3c6663" },
                         features: {
@@ -2091,7 +2071,7 @@ export function OnboardingWizard() {
                       background: `radial-gradient(ellipse at center, ${shellColor}30 0%, transparent 70%)`,
                     }} />
                     {role?.image ? (
-                      <img src={role.image} alt={selectedRole || 'Agent'} style={{ width: 100, height: 100, objectFit: "cover", zIndex: 1, borderRadius: 12 }} />
+                      <img src={getAssetUrl(role.image)} alt={selectedRole || 'Agent'} style={{ width: 100, height: 100, objectFit: "cover", zIndex: 1, borderRadius: 12 }} />
                     ) : (
                       <LobsterIcon size={100} shellColor={shellColor} accentColor={accentColor} />
                     )}

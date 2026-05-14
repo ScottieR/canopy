@@ -33,6 +33,12 @@ type PermissionPrompt = {
     justification: string;
 };
 
+type ConnectionPrompt = {
+    agent_id: string;
+    service: string;
+    rationale: string;
+};
+
 const TOAST_TIMEOUT_MS = 25_000;
 
 export function AgentRequestNotifier({
@@ -46,6 +52,7 @@ export function AgentRequestNotifier({
 }) {
     const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
     const [pendingPermission, setPendingPermission] = useState<PermissionPrompt | null>(null);
+    const [pendingConnection, setPendingConnection] = useState<ConnectionPrompt | null>(null);
 
     const nameFor = useCallback((agentId: string) => {
         return agents?.find(a => a.id === agentId)?.name ?? agentId;
@@ -126,6 +133,40 @@ export function AgentRequestNotifier({
         };
     }, []);
 
+    // Subscribe to connection-request events.
+    useEffect(() => {
+        let unlistenFn: (() => void) | undefined;
+        let isMounted = true;
+
+        async function setup() {
+            try {
+                const { listen } = await import("@tauri-apps/api/event");
+                if (!isMounted) return;
+                
+                const unlisten = await listen<ConnectionPrompt>("RequestConnection", (event) => {
+                    setPendingConnection(prev => prev ?? event.payload);
+                });
+
+                if (isMounted) {
+                    unlistenFn = unlisten;
+                } else {
+                    try { unlisten(); } catch (e) {}
+                }
+            } catch (e) {
+                console.warn("Connection listener setup failed", e);
+            }
+        }
+        setup();
+
+        return () => {
+            isMounted = false;
+            if (unlistenFn) {
+                try { unlistenFn(); } catch (e) {}
+                unlistenFn = undefined;
+            }
+        };
+    }, []);
+
     const handleShowBrowser = useCallback(async (toast: AttentionToast) => {
         try {
             await invoke("show_browser", { agentId: toast.agent_id });
@@ -153,6 +194,20 @@ export function AgentRequestNotifier({
         }
         setPendingPermission(null);
     }, [pendingPermission]);
+
+    const handleConnectionDecision = useCallback(async (decision: "connect" | "deny") => {
+        if (!pendingConnection) return;
+        if (decision === "connect") {
+            try {
+                const { useWorldStore } = await import("../../store/worldStore");
+                useWorldStore.getState().setSelectedAgent(pendingConnection.agent_id);
+                useWorldStore.getState().setActiveView("architect");
+            } catch (e) {
+                console.error("Failed to navigate to architect view", e);
+            }
+        }
+        setPendingConnection(null);
+    }, [pendingConnection]);
 
     return (
         <>
@@ -243,6 +298,15 @@ export function AgentRequestNotifier({
                     prompt={pendingPermission}
                     agentName={nameFor(pendingPermission.agent_id)}
                     onDecide={handlePermissionDecision}
+                />
+            )}
+
+            {/* Modal for blocking connection requests. */}
+            {pendingConnection && (
+                <ConnectionModal
+                    prompt={pendingConnection}
+                    agentName={nameFor(pendingConnection.agent_id)}
+                    onDecide={handleConnectionDecision}
                 />
             )}
         </>
@@ -345,6 +409,78 @@ function btnStyle(bg: string): React.CSSProperties {
         fontWeight: 600,
         cursor: "pointer",
     };
+}
+
+function ConnectionModal({
+    prompt,
+    agentName,
+    onDecide,
+}: {
+    prompt: ConnectionPrompt;
+    agentName: string;
+    onDecide: (decision: "connect" | "deny") => void;
+}) {
+    return (
+        <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+                position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                zIndex: 9500,
+            }}
+        >
+            <div style={{
+                background: "#1a1f1a", color: "#e8efe8",
+                border: "1px solid #2d3a2d", borderRadius: 12,
+                padding: 24, width: 480, maxWidth: "calc(100vw - 32px)",
+                boxShadow: "0 12px 48px rgba(0,0,0,0.5)",
+            }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
+                    <div style={{
+                        background: "#3a2a1a", borderRadius: "50%",
+                        width: 36, height: 36, flexShrink: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                        <KeyRound size={18} color="#64C8C0" />
+                    </div>
+                    <div>
+                        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
+                            {agentName} requests connection to {prompt.service}
+                        </h2>
+                        <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#c8d0c8" }}>
+                            The agent needs this service to continue their work.
+                        </p>
+                    </div>
+                </div>
+
+                <div style={{
+                    background: "#0f130f", border: "1px solid #2a352a",
+                    borderRadius: 8, padding: 12, marginBottom: 18,
+                }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#8a9a8a", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                        Their reason
+                    </div>
+                    <div style={{ fontSize: 13, color: "#d0d8d0", lineHeight: 1.5 }}>
+                        {prompt.rationale || "(no rationale provided)"}
+                    </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                    <button onClick={() => onDecide("connect")} style={btnStyle("#3c6663")}>
+                        Configure Connection securely
+                    </button>
+                    <button onClick={() => onDecide("deny")} style={btnStyle("#5a3030")}>
+                        Deny
+                    </button>
+                </div>
+
+                <div style={{ fontSize: 11, color: "#8a9a8a", lineHeight: 1.4, textAlign: "center", marginTop: 12 }}>
+                    <strong>Secure Modal</strong>: The agent will not have access to any tokens you provide.
+                </div>
+            </div>
+        </div>
+    );
 }
 
 export default AgentRequestNotifier;

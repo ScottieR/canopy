@@ -3,7 +3,7 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity as ActivityIcon, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
@@ -17,6 +17,7 @@ import { SafeBillboard } from "../../App";
 import { ProgressBar } from "../../App";
 import { ChatTab } from "./ChatTab";
 import { Toggle, ServiceRow, glass } from "../../App";
+import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
@@ -396,15 +397,21 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
             </div>
             <div>
               <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Tokens Used</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>
-                {(() => {
-                  const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
-                  if (totalTokens === 0) return agent.tokensUsed || "0k";
-                  if (totalTokens > 1000000) return (totalTokens / 1000000).toFixed(1) + "M";
-                  if (totalTokens > 1000) return (totalTokens / 1000).toFixed(1) + "k";
-                  return totalTokens;
-                })()}
-              </div>
+              {(() => {
+                const totalTokensIn = agent.stats?.total_tokens_in || 0;
+                const totalTokensOut = agent.stats?.total_tokens_out || 0;
+                const totalTokens = totalTokensIn + totalTokensOut;
+                return (
+                  <>
+                    <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>
+                      {totalTokens > 0 ? (totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : totalTokens) : "0"}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>
+                      <span style={{ color: "#4A9E96" }}>{totalTokensIn > 1000 ? `${(totalTokensIn / 1000).toFixed(1)}k` : totalTokensIn} in</span> / <span style={{ color: "#D4A04A" }}>{totalTokensOut > 1000 ? `${(totalTokensOut / 1000).toFixed(1)}k` : totalTokensOut} out</span>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
           <ProgressBar value={parseFloat(agent.weeklyCompute)} max={0.1} color="#4A9E96" />
@@ -528,70 +535,7 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
         {/* Activity Infographic */}
         <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
           <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Activity Patterns</div>
-          {(() => {
-            const hours = new Array(24).fill(null).map(() => ({ interactions: 0, tools: 0, system: 0, total: 0 }));
-
-            if (recentLogs && recentLogs.length > 0) {
-              recentLogs.forEach((log: any) => {
-                const h = new Date(log.timestamp).getHours();
-                let type: "interactions" | "tools" | "system" = "system";
-                if (log.action === "chatted") type = "interactions";
-                else if (log.action === "tool_call" || log.bridge_type) type = "tools";
-
-                hours[h][type] += 1;
-                hours[h].total += 1;
-              });
-            } else {
-              for (let i = 0; i < 24; i++) {
-                hours[i].system = Math.floor(Math.random() * 2);
-                hours[i].total = hours[i].system;
-              }
-              hours[9] = { interactions: 1, tools: 2, system: 0, total: 3 };
-              hours[14] = { interactions: 2, tools: 1, system: 1, total: 4 };
-              hours[20] = { interactions: 0, tools: 0, system: 2, total: 2 };
-            }
-            const max = Math.max(...hours.map(h => h.total), 4);
-
-            return (
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", width: "100%" }}>
-                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#4A9E96" }} />Chats</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "#D4A04A" }} />Tools</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "var(--text-sub)", fontWeight: 600 }}><div style={{ width: 10, height: 10, borderRadius: 3, background: "var(--text-muted)" }} />System</div>
-                </div>
-                <div style={{ flex: 1, display: "flex", alignItems: "flex-end", gap: 4, minHeight: 120, paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)" }}>
-                  {hours.map((val, i) => {
-                    const pctInteractions = val.total > 0 ? (val.interactions / val.total) * 100 : 0;
-                    const pctTools = val.total > 0 ? (val.tools / val.total) * 100 : 0;
-                    const pctSystem = val.total > 0 ? (val.system / val.total) * 100 : 0;
-
-                    const heightPct = Math.max((val.total / max) * 100, 4);
-
-                    return (
-                      <div key={i} style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", height: "100%" }} title={`${val.interactions} Chats, ${val.tools} Tool Execs, ${val.system} System at ${i}:00`}>
-                        <div style={{ width: "100%", height: `${heightPct}%`, display: "flex", flexDirection: "column-reverse", borderRadius: "3px 3px 0 0", overflow: "hidden", transition: "height 0.5s ease-out" }}>
-                          {val.total > 0 ? (
-                            <>
-                              {val.system > 0 && <div style={{ width: "100%", height: `${pctSystem}%`, background: "var(--text-muted)", opacity: 0.6 }} />}
-                              {val.tools > 0 && <div style={{ width: "100%", height: `${pctTools}%`, background: "#D4A04A", opacity: 0.8 }} />}
-                              {val.interactions > 0 && <div style={{ width: "100%", height: `${pctInteractions}%`, background: "#4A9E96", opacity: 0.9 }} />}
-                            </>
-                          ) : (
-                            <div style={{ width: "100%", height: "100%", background: "var(--glass-light)", opacity: 0.3 }} />
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8, fontSize: 10, color: "var(--text-muted)", fontWeight: 600 }}>
-                  <span>12 AM</span>
-                  <span>12 PM</span>
-                  <span>11 PM</span>
-                </div>
-              </div>
-            );
-          })()}
+          <AgentActivityHeatmap agentId={agent.id} />
           <button
             onClick={() => onNavigate && onNavigate("activity")}
             style={{ width: "100%", padding: "12px", borderRadius: 8, background: "#3c6663", color: "white", fontWeight: 600, border: "none", cursor: "pointer", fontSize: 13, marginTop: 16 }}>

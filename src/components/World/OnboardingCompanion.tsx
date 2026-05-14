@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useMemo } from "react";
 import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
+import { getAssetUrl } from "../../utils/assets";
 interface CompanionProps {
   position?: [number, number, number];
   scale?: number;
@@ -13,7 +14,7 @@ export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animation
   const groupRef = useRef<THREE.Group>(null);
 
   // Load the rigged GLB model from the assets directory
-  const { scene, animations } = useGLTF("/models/lobsters/BaseLobsterRigged.glb?v=2");
+  const { scene, animations } = useGLTF(getAssetUrl("/models/lobsters/BaseLobsterRigged.glb?v=2"));
 
   // Extract animations bound to this specific scene/group
   const { actions, names } = useAnimations(animations, groupRef);
@@ -71,4 +72,4 @@ export function OnboardingCompanion({ position = [0, 0, 0], scale = 1, animation
   );
 }
 
-useGLTF.preload("/models/lobsters/BaseLobsterRigged.glb");
+useGLTF.preload(getAssetUrl("/models/lobsters/BaseLobsterRigged.glb"));

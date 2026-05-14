@@ -26,6 +26,26 @@ impl BrowserManager {
         }
     }
 
+    pub async fn kill_leftover_processes(&self, agent_id: &str) {
+        let pattern = format!("agent-browsers/{}", agent_id);
+        
+        tracing::info!("Cleaning up leftover Chrome processes for agent {}", agent_id);
+        
+        // Graceful SIGTERM
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-f", &pattern])
+            .output()
+            .await;
+            
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        
+        // Forceful SIGKILL fallback
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-9", "-f", &pattern])
+            .output()
+            .await;
+    }
+
     pub async fn start_browser(&self, app_handle: tauri::AppHandle, agent_id: &str) -> Result<BrowserStatus> {
         let mut active = self.active_browsers.lock().await;
         
@@ -33,6 +53,9 @@ impl BrowserManager {
         if let Some((mut child, _)) = active.remove(agent_id) {
             let _ = child.kill().await;
         }
+
+        // Pre-flight Health Check: Kill leftovers from crashed sessions
+        self.kill_leftover_processes(agent_id).await;
 
         let data_dir = dirs::data_dir()
             .context("Could not find data directory")?
@@ -130,6 +153,9 @@ impl BrowserManager {
             .spawn()
             .context("Failed to spawn Chrome process")?;
 
+        let pid = child.id().unwrap_or(0);
+        tracing::info!("Started Chrome for agent {} with PID {}", agent_id, pid);
+
         let stderr = child.stderr.take().unwrap();
         let mut reader = tokio::io::BufReader::new(stderr);
         use tokio::io::AsyncBufReadExt;
@@ -193,8 +219,16 @@ impl BrowserManager {
     pub async fn stop_browser(&self, agent_id: &str) -> Result<()> {
         let mut active = self.active_browsers.lock().await;
         if let Some((mut child, _)) = active.remove(agent_id) {
-            child.kill().await.context("Failed to kill Chrome process")?;
+            let pid = child.id().unwrap_or(0);
+            match child.kill().await {
+                Ok(_) => tracing::info!("Successfully terminated Chrome process (PID {}) for agent {}", pid, agent_id),
+                Err(e) => tracing::error!("Failed to gracefully kill Chrome process (PID {}) for agent {}: {}", pid, agent_id, e),
+            }
         }
+        
+        // Improved Process Cleanup: ensure child processes are fully reaped
+        self.kill_leftover_processes(agent_id).await;
+        
         Ok(())
     }
 
@@ -243,6 +277,63 @@ pub async fn get_browser_status(
     agent_id: String,
 ) -> Result<Option<BrowserStatus>, String> {
     state.get_status(&agent_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn ping_agent_browser(
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+) -> Result<bool, String> {
+    let status = state.get_status(&agent_id).await.map_err(|e| e.to_string())?;
+    
+    if let Some(status) = status {
+        if !status.is_running {
+            return Ok(false);
+        }
+        
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .map_err(|e| e.to_string())?;
+            
+        let res = client.get(&format!("http://localhost:{}/json/version", status.port))
+            .send()
+            .await;
+            
+        match res {
+            Ok(response) => Ok(response.status().is_success()),
+            Err(_) => Ok(false)
+        }
+    } else {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+pub async fn reset_machine_browsers(
+    state: tauri::State<'_, BrowserManager>,
+) -> Result<(), String> {
+    let mut active = state.active_browsers.lock().await;
+    active.clear();
+    
+    tracing::info!("Force-resetting all machine browser processes...");
+    
+    // Graceful SIGTERM
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-f", "agent-browsers/agent-"])
+        .output()
+        .await;
+        
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    
+    // Forceful SIGKILL
+    let _ = tokio::process::Command::new("pkill")
+        .args(["-9", "-f", "agent-browsers/agent-"])
+        .output()
+        .await;
+        
+    tracing::info!("All browser processes successfully reset.");
+    Ok(())
 }
 
 pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) -> Result<u16, String> {

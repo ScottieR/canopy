@@ -32,6 +32,10 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
   const [allowlistSaving, setAllowlistSaving] = useState(false);
   const allowlistActive = allowedDomains.length > 0;
 
+  const [webCredentials, setWebCredentials] = useState<Array<{ domain: string; username: string }>>([]);
+  const [webCredSearch, setWebCredSearch] = useState("");
+  const [browserHistory, setBrowserHistory] = useState<Array<{ timestamp: string; action: string; detail: string }>>([]);
+
   const browserStatus = agent.browser_status;
   const isRunning = browserStatus?.is_running || false;
 
@@ -59,6 +63,14 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
     invoke<string[]>("get_agent_allowed_domains", { agentId: agent.id })
       .then(d => setAllowedDomains(d || []))
       .catch(() => setAllowedDomains([]));
+
+    invoke<Array<{ domain: string; username: string }>>("get_web_credentials_cmd")
+      .then(creds => setWebCredentials(creds || []))
+      .catch(console.error);
+
+    invoke<Array<{ timestamp: string; action: string; detail: string }>>("get_agent_browser_history", { agentId: agent.id })
+      .then(history => setBrowserHistory(history || []))
+      .catch(console.error);
   }, [agent.id]);
 
   // Save the allowlist back to Rust. The Rust side restarts the agent's Chrome if it's
@@ -353,6 +365,131 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
         ) : (
           <div style={{ fontSize: 11, color: "var(--text-sub)", fontStyle: "italic" }}>
             No domains restricted — agent can navigate anywhere on the public internet (except local network, which is always blocked).
+          </div>
+        )}
+      </div>
+
+      {/* Web Credentials Section */}
+      <div style={{ ...glass(0.4), padding: 20, borderRadius: 16, border: "1px solid var(--border-subtle)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <Lock size={16} style={{ color: "#3c6663" }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Web Credentials</span>
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-sub)", margin: 0, lineHeight: 1.5 }}>
+              Enable which website accounts this agent is allowed to log into.
+            </p>
+          </div>
+        </div>
+
+        {webCredentials.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 8, borderBottom: "1px solid var(--border-subtle)" }}>
+              <input 
+                type="text" 
+                placeholder="Search domain or username..." 
+                value={webCredSearch}
+                onChange={(e) => setWebCredSearch(e.target.value)}
+                style={{ width: "200px", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", fontSize: 12, background: "var(--surface-base)", color: "var(--text-main)", outline: "none" }}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button 
+                  onClick={async () => {
+                     const toRemove = webCredentials.map(c => `web_${c.domain}_${c.username}`);
+                     let newIntegrations = [...agent.integrations];
+                     toRemove.forEach(rm => {
+                       if (!newIntegrations.includes(rm)) newIntegrations.push(rm);
+                     });
+                     await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+                     useWorldStore.getState().setAgents(
+                       useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+                     );
+                  }}
+                  style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 4, border: "1px solid var(--border-subtle)", background: "var(--surface-raised)", cursor: "pointer", color: "var(--text-main)" }}
+                >
+                  Enable All
+                </button>
+                <button 
+                  onClick={async () => {
+                     const toRemove = webCredentials.map(c => `web_${c.domain}_${c.username}`);
+                     let newIntegrations = agent.integrations.filter(i => !toRemove.includes(i));
+                     await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+                     useWorldStore.getState().setAgents(
+                       useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+                     );
+                  }}
+                  style={{ padding: "4px 10px", fontSize: 11, fontWeight: 600, borderRadius: 4, border: "1px solid var(--border-subtle)", background: "transparent", cursor: "pointer", color: "var(--text-main)" }}
+                >
+                  Disable All
+                </button>
+              </div>
+            </div>
+            {webCredentials
+              .filter(cred => cred.domain.toLowerCase().includes(webCredSearch.toLowerCase()) || cred.username.toLowerCase().includes(webCredSearch.toLowerCase()))
+              .map(cred => {
+              const integrationKey = `web_${cred.domain}_${cred.username}`;
+              const hasAccess = agent.integrations.includes(integrationKey);
+              return (
+                <div key={integrationKey} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0,0,0,0.04)", paddingBottom: 8 }}>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{cred.domain}</div>
+                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 2 }}>{cred.username}</div>
+                  </div>
+                  <Toggle enabled={hasAccess} onChange={async () => {
+                     let newIntegrations = [...agent.integrations];
+                     if (hasAccess) newIntegrations = newIntegrations.filter(i => i !== integrationKey);
+                     else newIntegrations.push(integrationKey);
+                     
+                     await invoke("update_agent_integrations", { agentId: agent.id, integrations: newIntegrations });
+                     useWorldStore.getState().setAgents(
+                       useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
+                     );
+                  }} />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic", textAlign: "center", padding: "10px 0" }}>
+            No web credentials stored.
+          </div>
+        )}
+      </div>
+
+      {/* Browser History Section */}
+      <div style={{ ...glass(0.4), padding: 20, borderRadius: 16, border: "1px solid var(--border-subtle)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <Activity size={16} style={{ color: "#3c6663" }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Recent Browsing History</span>
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-sub)", margin: 0, lineHeight: 1.5 }}>
+              A log of the web pages this agent has requested to navigate to.
+            </p>
+          </div>
+        </div>
+
+        {browserHistory.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 300, overflowY: "auto", paddingRight: 8 }}>
+            {browserHistory.map((item, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8, border: "1px solid var(--border-subtle)" }}>
+                <Globe size={14} style={{ color: "var(--text-sub)", marginTop: 2 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", wordBreak: "break-all" }}>
+                    {item.detail.replace(/browser\(action=['"]navigate['"], url=['"]/, "").replace(/['"]\)/, "")}
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--text-sub)", marginTop: 4 }}>
+                    {new Date(item.timestamp).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 12, color: "var(--text-sub)", fontStyle: "italic", textAlign: "center", padding: "20px 0" }}>
+            No recent browsing history.
           </div>
         )}
       </div>
