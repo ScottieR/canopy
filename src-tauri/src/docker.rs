@@ -592,6 +592,55 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
     cfg["plugins"]["entries"]["device-pair"]["enabled"]   = serde_json::json!(false);
     cfg["plugins"]["entries"]["phone-control"]["enabled"] = serde_json::json!(false);
 
+    // ── Browser bridge — attach to the host-side Chrome via the JIT proxy ────
+    //
+    // Why this matters: OpenClaw's `browser` tool, by default, tries to LAUNCH
+    // `/usr/bin/chromium` INSIDE the container in headed mode. There is no display
+    // server in Docker's bridge network, so the launch hangs and every browser tool
+    // call times out with "Restart the OpenClaw gateway."
+    //
+    // Setting `browser.attachOnly = true` tells OpenClaw not to launch its own
+    // browser. Setting `browser.cdpUrl` tells it where to connect instead — pointed
+    // at our host-side JIT proxy on a fixed port. The JIT proxy:
+    //   • rewrites the `Host:` header to `127.0.0.1:<chrome_port>` so Chrome's
+    //     DNS-rebinding defence doesn't reject the upgrade,
+    //   • spawns a real Chrome on the host (via Canopy's BrowserManager) on first
+    //     connection — real Chrome on macOS preserves the anti-bot fingerprint that
+    //     in-container headless Chromium would lose.
+    //
+    // Architecture: ONE shared Chrome instance for the whole gateway. Each agent
+    // session gets its own Playwright BrowserContext, which OpenClaw creates per
+    // chat — so cookies, storage, and login state stay isolated between agents
+    // even though the Chrome process is shared. Profile-per-process isolation was
+    // overkill; BrowserContext-per-agent gives us the security property we need
+    // with one moving part instead of N.
+    //
+    // The port (19800) is fixed (not per-agent-hashed) because `browser.cdpUrl` is
+    // a single global value, not a per-agent override. If we ever need per-agent
+    // ports we'd need OpenClaw to grow `agents.list[i].browser.cdpUrl` first.
+    cfg["browser"]["attachOnly"] = serde_json::json!(true);
+    cfg["browser"]["cdpUrl"]     = serde_json::json!(format!(
+        "http://host.docker.internal:{}",
+        crate::browser_manager::SHARED_BRIDGE_PORT
+    ));
+    // Force OpenClaw's browser tool to default to the `openclaw` profile (our
+    // bridge-attached Chrome) instead of letting the LLM pick.
+    //
+    // Why this matters: the browser tool's doc string ships with this line —
+    //   "Use only when existing logins/cookies matter and the user is present"
+    // — which biases the LLM toward calling the tool with `profile="user"`
+    // whenever a task touches anything that *sounds* like a logged-in session.
+    // `profile="user"` attempts an in-container attach to Chrome's default
+    // user-data-dir (`/home/node/.config/google-chrome`) which doesn't exist in
+    // our setup, so every such call fails with "Chrome MCP existing-session
+    // attach… DevToolsActivePort not found".
+    //
+    // `browser.defaultProfile` is read by browser-doctor.js and applied when
+    // the agent omits the `profile` parameter. Setting it to "openclaw" means
+    // every default-shaped tool call routes through the bridge we built, no
+    // per-prompt nudging required.
+    cfg["browser"]["defaultProfile"] = serde_json::json!("openclaw");
+
     // ── Clear the registered agents list ─────────────────────────────────────
     // This produces a stable, deterministic config that start_gateway() can compare
     // against the ".openclaw-applied" marker to decide whether a container restart

@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { 
-  Terminal, Server, Globe, RefreshCw, CheckCircle2, X, AlertTriangle, Cpu, Play
+import {
+  Terminal, Server, Globe, RefreshCw, CheckCircle2, X, AlertTriangle, Cpu, Play, MessageCircle
 } from "lucide-react";
 import { AgentData } from "../../store/worldStore";
 
-export function DiagnosticsTab({ agent }: { agent: AgentData }) {
+export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavigate?: (tab: string) => void }) {
   const [runningRouting, setRunningRouting] = useState(false);
   const [routingResult, setRoutingResult] = useState<boolean | null>(null);
   const [routingError, setRoutingError] = useState<string>("");
@@ -18,6 +18,14 @@ export function DiagnosticsTab({ agent }: { agent: AgentData }) {
   
   const [repairing, setRepairing] = useState(false);
   const [repairMsg, setRepairMsg] = useState("");
+
+  // Browser-restart UX: the previous version called only stop_machine_browser
+  // and then re-tested 2s later. That always reports "not running" because
+  // stop_machine_browser doesn't restart anything. The button looked broken.
+  // We now show a multi-step progress message and call start_machine_browser
+  // (which is idempotent: kills any existing + starts fresh + ensures JIT proxy).
+  const [restartingBrowser, setRestartingBrowser] = useState(false);
+  const [restartBrowserMsg, setRestartBrowserMsg] = useState("");
 
   const runRoutingTest = async () => {
     setRunningRouting(true);
@@ -92,12 +100,61 @@ export function DiagnosticsTab({ agent }: { agent: AgentData }) {
     setRepairing(false);
   };
 
-  const handleRestartBrowser = async () => {
+  // Ask the agent itself to introspect its connections. In practice the agent
+  // is often more accurate than our system-side checks — it sees the actual
+  // env vars, auth-profile files, and the errors it gets when it tries to use
+  // them. The structured prompt forces it to actually attempt a trivial call
+  // per integration rather than just reciting what's "configured".
+  const handleAskAgent = async () => {
+    const prompt = [
+      "Run a self-diagnostic and report back, no preamble. For EACH integration you have configured (Slack, Gmail/Google, GitHub, browser, etc.):",
+      "",
+      "1. List the credentials/tokens you can see (env vars, auth-profiles.json — describe what's there, NEVER paste actual token values).",
+      "2. Attempt one cheap test call (Slack: auth.test; Gmail: list 1 message; GitHub: /user; browser: navigate to about:blank). Report the exact response or error.",
+      "3. State plainly: working / partially working / broken, and why.",
+      "",
+      "Finish with a one-line summary of which integrations are actually usable right now.",
+    ].join("\n");
+
     try {
-      await invoke("stop_machine_browser", { agentId: agent.id });
-      setTimeout(runBrowserTest, 2000);
+      await invoke("send_message", { agentId: agent.id, message: prompt });
     } catch (e) {
-      console.error("Failed to stop browser", e);
+      console.error("Failed to send diagnostic prompt to agent:", e);
+    }
+    // Switch to the chat tab so the user sees the reply stream in.
+    if (onNavigate) onNavigate("chat");
+  };
+
+  const handleRestartBrowser = async () => {
+    setRestartingBrowser(true);
+    setRestartBrowserMsg("Stopping any existing Chrome process...");
+    try {
+      // Step 1: stop. Safe to call even if nothing is running — kill_leftover_processes
+      // cleans up SIGTERM/SIGKILL pairs.
+      await invoke("stop_machine_browser", { agentId: agent.id }).catch(() => {});
+
+      // Step 2: actually start a fresh process. start_machine_browser is
+      // idempotent on the Rust side (start_browser kills any existing entry
+      // for this agent, runs kill_leftover_processes, then spawns Chrome).
+      // Without this call the previous "restart" was a stop-only no-op and
+      // the button appeared broken.
+      setRestartBrowserMsg("Starting a fresh browser for this agent...");
+      await invoke("start_machine_browser", { agentId: agent.id });
+
+      // Step 3: give Chrome ~3s to bind the CDP port and accept connections
+      // before we re-probe. start_machine_browser returns once the spawn call
+      // succeeds, but the CDP /json/version endpoint takes a moment to come up.
+      setRestartBrowserMsg("Waiting for CDP endpoint to come up...");
+      await new Promise(r => setTimeout(r, 3000));
+
+      setRestartBrowserMsg("Verifying...");
+      await runBrowserTest();
+      setRestartBrowserMsg("");
+    } catch (e: any) {
+      console.error("Failed to restart browser", e);
+      setRestartBrowserMsg("Restart failed: " + (e?.toString?.() || e));
+    } finally {
+      setRestartingBrowser(false);
     }
   };
 
@@ -119,7 +176,27 @@ export function DiagnosticsTab({ agent }: { agent: AgentData }) {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-        
+
+        {/* Ask the agent itself — often more accurate than our system-side checks.
+            The agent sees its actual env vars and what happens when it tries to
+            use them, whereas system checks can miss runtime/wiring issues. */}
+        <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 20, border: "1px solid rgba(0,0,0,0.06)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+          <div>
+            <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+              <MessageCircle size={18} /> Ask {agent.name} About Connections
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>
+              Send {agent.name} a structured self-diagnostic prompt. They'll attempt a real test call for each integration and report what actually works. Often catches things the system checks miss.
+            </div>
+          </div>
+          <button
+            onClick={handleAskAgent}
+            style={{ background: "#3c6663", color: "white", padding: "8px 16px", borderRadius: 8, border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
+          >
+            <MessageCircle size={14} /> Ask {agent.name}
+          </button>
+        </div>
+
         {/* Routing / Core Health */}
         <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
@@ -185,12 +262,18 @@ export function DiagnosticsTab({ agent }: { agent: AgentData }) {
                 <div style={{ fontSize: 12, color: "#991B1B", marginBottom: 16 }}>
                   The browser container is either stopped or the process has hung.
                 </div>
-                <button 
+                <button
                   onClick={handleRestartBrowser}
-                  style={{ background: "#B91C1C", color: "white", padding: "6px 12px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+                  disabled={restartingBrowser}
+                  style={{ background: "#B91C1C", color: "white", padding: "6px 12px", borderRadius: 6, border: "none", fontSize: 12, fontWeight: 600, cursor: restartingBrowser ? "default" : "pointer", opacity: restartingBrowser ? 0.7 : 1 }}
                 >
-                  Restart Browser Process
+                  {restartingBrowser ? "Restarting..." : "Restart Browser Process"}
                 </button>
+                {restartBrowserMsg && (
+                  <div style={{ fontSize: 12, color: "#B91C1C", marginTop: 8 }}>
+                    {restartBrowserMsg}
+                  </div>
+                )}
               </div>
             )}
           </div>

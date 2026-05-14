@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { Monitor } from "lucide-react";
 
 export function BrowserPopout({ agentId }: { agentId: string }) {
@@ -8,13 +9,29 @@ export function BrowserPopout({ agentId }: { agentId: string }) {
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
     let isMounted = true;
+    let streamStarted = false;
 
     async function setupBrowserStream() {
       if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return;
       try {
+        // Tell the backend that there's now a UI subscriber for visual frames.
+        // The backend refcounts subscribers and only runs the CDP screencast
+        // while at least one popout/tab is mounted. See `start_browser_stream`
+        // in browser_manager.rs.
+        try {
+          await invoke("start_browser_stream", { agentId });
+          streamStarted = true;
+        } catch (e) {
+          console.warn("start_browser_stream failed (browser may not be running):", e);
+        }
+
         const unlisten = await listen<any>("browser_stream_frame", (e) => {
-          if (e.payload.agent_id === agentId) {
-            setFrameData(e.payload.frame);
+          try {
+            if (e?.payload?.agent_id === agentId && typeof e.payload.frame === "string") {
+              setFrameData(e.payload.frame);
+            }
+          } catch (err) {
+            console.warn("browser_stream_frame handler error:", err);
           }
         });
 
@@ -34,6 +51,11 @@ export function BrowserPopout({ agentId }: { agentId: string }) {
       if (unlistenFn) {
         try { unlistenFn(); } catch (e) {}
         unlistenFn = undefined;
+      }
+      if (streamStarted) {
+        invoke("stop_browser_stream", { agentId }).catch((e) => {
+          console.warn("stop_browser_stream failed:", e);
+        });
       }
     };
   }, [agentId]);

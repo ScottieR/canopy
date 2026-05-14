@@ -640,6 +640,81 @@ pub struct ConnectionDiagnostic {
     pub message: String,
 }
 
+/// Returns `(gateway_state_is_healthy, human_readable_reason)`.
+///
+/// Verifies that the live `openclaw.json` actually has this agent's Slack account
+/// wired into the running gateway. The previous diagnostic only checked the
+/// Slack `auth.test` API — that's a TOKEN check, not a GATEWAY check. A valid
+/// token + an empty `channels.slack.accounts` would still get the agent stuck
+/// at runtime with "Slack bot token missing for account 'agent-X'", and the
+/// old diagnostic reported "healthy" while the user's chat was broken.
+fn check_slack_gateway_state(
+    gateway_cfg: Option<&serde_json::Value>,
+    agent_id: &str,
+) -> (bool, String) {
+    let cfg = match gateway_cfg {
+        Some(c) => c,
+        None => return (false, "Couldn't read the gateway's openclaw.json — is the canopy-gateway container running?".to_string()),
+    };
+
+    let enabled = cfg.pointer("/channels/slack/enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !enabled {
+        return (false, "Slack is disabled in the gateway config (channels.slack.enabled=false).".to_string());
+    }
+
+    let plugin_enabled = cfg
+        .pointer("/plugins/entries/slack/enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !plugin_enabled {
+        return (false, "Slack plugin is disabled in the gateway (plugins.entries.slack.enabled=false).".to_string());
+    }
+
+    let account = cfg.pointer(&format!("/channels/slack/accounts/{}", agent_id));
+    let bot_token_present = account
+        .and_then(|a| a.get("botToken"))
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let app_token_present = account
+        .and_then(|a| a.get("appToken"))
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    if !bot_token_present || !app_token_present {
+        return (
+            false,
+            format!(
+                "No per-agent Slack account found in the gateway for '{}' (botToken_present={}, appToken_present={}). The keychain might have the tokens, but they haven't been pushed to the gateway — try \"Auto-Repair Configuration\".",
+                agent_id, bot_token_present, app_token_present
+            ),
+        );
+    }
+
+    // Confirm there's a binding routing inbound Slack messages to this agent.
+    let has_binding = cfg
+        .pointer("/bindings")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter().any(|b| {
+                b.get("agentId").and_then(|a| a.as_str()) == Some(agent_id)
+                    && b.pointer("/match/channel").and_then(|c| c.as_str()) == Some("slack")
+            })
+        })
+        .unwrap_or(false);
+    if !has_binding {
+        return (
+            false,
+            format!(
+                "Slack account present but no binding route — inbound Slack messages won't reach this agent. Re-run sync_gateway_channels (or use Auto-Repair)."
+            ),
+        );
+    }
+
+    (true, String::new())
+}
+
 #[tauri::command]
 pub async fn ping_agent_connections(db: tauri::State<'_, crate::db::Database>, agent_id: String) -> Result<Vec<ConnectionDiagnostic>, String> {
     ping_agent_connections_internal(&db, &agent_id).await
@@ -653,32 +728,76 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
     let mut diagnostics = Vec::new();
     let client = reqwest::Client::new();
 
+    // Read the current openclaw.json once and reuse it across all integration
+    // checks. We need it to verify the GATEWAY-SIDE state (is this agent's
+    // account actually wired into the running gateway?), not just whether the
+    // token is valid against the third-party API. A valid token + an unloaded
+    // gateway plugin was Poppy's exact failure mode — the old check reported
+    // "healthy" while runtime was failing.
+    let gateway_cfg: Option<serde_json::Value> = match tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        crate::openclaw::get_docker_command()
+            .args(["exec", "-u", "node", "canopy-gateway", "cat", "/home/node/.openclaw/openclaw.json"])
+            .output(),
+    ).await {
+        Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).ok(),
+        _ => None,
+    };
+
     for integration in agent.integrations {
         match integration.as_str() {
             "slack" => {
-                match crate::slack::check_slack_connection(Some(agent_id.to_string())).await {
-                    Ok(status) => {
-                        if status.connected {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Slack".to_string(),
-                                is_ok: true,
-                                message: format!("Connected to Workspace: {}", status.workspace_name.unwrap_or_default()),
-                            });
-                        } else {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Slack".to_string(),
-                                is_ok: false,
-                                message: "Slack token invalid or missing. Please reconnect in the Connections tab.".to_string(),
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        diagnostics.push(ConnectionDiagnostic {
-                            service: "Slack".to_string(),
-                            is_ok: false,
-                            message: format!("Slack check failed: {}", e),
-                        });
-                    }
+                // Step 1: is the Slack TOKEN currently valid (auth.test)?
+                let token_ok = match crate::slack::check_slack_connection(Some(agent_id.to_string())).await {
+                    Ok(s) => (s.connected, s.workspace_name),
+                    Err(_) => (false, None),
+                };
+
+                // Step 2: does the running gateway actually have Slack wired up
+                // for THIS agent? We check four things in openclaw.json:
+                //   - channels.slack.enabled == true
+                //   - channels.slack.accounts[agent_id].botToken is non-empty
+                //   - plugins.entries.slack.enabled == true
+                //   - bindings has a slack route for this agent
+                // Any miss = gateway-side misconfig regardless of token validity.
+                let (gw_ok, gw_reason) = check_slack_gateway_state(gateway_cfg.as_ref(), agent_id);
+
+                if token_ok.0 && gw_ok {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "Slack".to_string(),
+                        is_ok: true,
+                        message: format!(
+                            "Token valid (workspace: {}) and gateway is routing for this agent.",
+                            token_ok.1.unwrap_or_else(|| "unknown".into())
+                        ),
+                    });
+                } else if !token_ok.0 && !gw_ok {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "Slack".to_string(),
+                        is_ok: false,
+                        message: format!(
+                            "Token invalid AND gateway isn't routing for this agent. {} Reconnect Slack in the Connections tab.",
+                            gw_reason
+                        ),
+                    });
+                } else if !token_ok.0 {
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "Slack".to_string(),
+                        is_ok: false,
+                        message: "Slack token failed auth.test — the Slack app may have been deleted, the bot uninstalled from the workspace, or the token rotated. Reconnect in the Connections tab.".to_string(),
+                    });
+                } else {
+                    // Token is fine, but gateway-side is wrong — most common
+                    // case for "looks healthy but isn't". This is the gap the
+                    // old diagnostic missed and the user explicitly called out.
+                    diagnostics.push(ConnectionDiagnostic {
+                        service: "Slack".to_string(),
+                        is_ok: false,
+                        message: format!(
+                            "Token is valid but the gateway isn't routing Slack for this agent. {} Try \"Auto-Repair Configuration\" above, or reconnect Slack in the Connections tab.",
+                            gw_reason
+                        ),
+                    });
                 }
             }
             "github" => {

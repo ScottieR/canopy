@@ -73,6 +73,25 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
       .catch(console.error);
   }, [agent.id]);
 
+  // Subscribe to the visual stream whenever this tab is mounted *and* the agent's
+  // browser is running. The Rust side refcounts subscribers and only runs the
+  // CDP screencast while at least one subscriber is active — this prevents the
+  // constant background visual stream that was implicated in white-screen
+  // crashes when the app sat idle. The popout window holds its own refcount.
+  useEffect(() => {
+    if (!isRunning) return;
+    let started = false;
+    invoke("start_browser_stream", { agentId: agent.id })
+      .then(() => { started = true; })
+      .catch((e) => console.warn("start_browser_stream failed:", e));
+    return () => {
+      if (started) {
+        invoke("stop_browser_stream", { agentId: agent.id })
+          .catch((e) => console.warn("stop_browser_stream failed:", e));
+      }
+    };
+  }, [agent.id, isRunning]);
+
   // Save the allowlist back to Rust. The Rust side restarts the agent's Chrome if it's
   // running so the new PAC script takes effect (you can't change PAC on a live Chrome).
   const persistAllowlist = useCallback(async (next: string[]) => {
