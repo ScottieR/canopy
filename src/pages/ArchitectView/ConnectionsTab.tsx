@@ -12,6 +12,14 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, MultiPicker, glass } from "../../App";
 import { PasswordInput } from "../../components/shared/PasswordInput";
 import { ConfirmDisconnectModal } from "../../components/shared/ConfirmDisconnectModal";
+import {
+  ACCESS_TIERS,
+  AccessTier,
+  applyAccessTier,
+  detectCurrentTier,
+  PERMISSION_RISK_BAND,
+  summarizeTierChange,
+} from "./accessTiers";
 
 // ─── Per-agent disconnect modal config ────────────────────────────────────────
 //
@@ -40,7 +48,7 @@ const AGENT_DISCONNECT_CONFIG: Record<AgentDisconnectKey, {
   },
 };
 
-export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
+export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: AgentData, onOpenTerminal?: (cmd: string) => void }) {
   const fallbackIntegrations = useMemo(() => [], []);
   const fallbackPermissions = useMemo(() => [], []);
   const agent = { 
@@ -60,6 +68,7 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
   const [iMsgConnected, setIMsgConnected] = useState(false);
   const [allowedDirs, setAllowedDirs] = useState<string[]>([]);
   const [foldersExpanded, setFoldersExpanded] = useState(false);
+  const [pluginSetupTarget, setPluginSetupTarget] = useState<string | null>(null);
 
   // Fetch allowed directories for the agent
   useEffect(() => {
@@ -603,20 +612,143 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
-      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Connections & Permissions</h1>
-      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 28, flexShrink: 0 }}>Configure how {agent.name} interacts with the outside world.</p>
+      <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Skills & Access</h1>
+      <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24, flexShrink: 0 }}>What {agent.name} can reach and what they're allowed to do.</p>
+
+      {/* ── Isolation ───────────────────────────────────────────────────────
+          Lifted from the old Permissions tab. Lives at the top because it
+          frames everything below — the agent's container scope is more
+          fundamental than any individual capability.                       */}
+      <div style={{
+        ...glass(0.5), padding: "12px 18px", borderRadius: 12, marginBottom: 16,
+        display: "flex", alignItems: "center", gap: 12,
+        borderLeft: `3px solid ${agent.isolated ? "#6B6BAE" : "var(--text-muted)"}`,
+      }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={agent.isolated ? "#6B6BAE" : "var(--text-muted)"} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        </svg>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>
+            {agent.isolated ? "Isolated workspace" : "Shared workspace"}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+            {agent.isolated
+              ? `${agent.name} runs in its own container. No shared memory with other agents, and folders you grant are scoped just to them.`
+              : `${agent.name} shares a workspace with your other agents. Switch to isolated for OS-level sandboxing — recommended for money or secrets.`}
+          </div>
+        </div>
+        <button
+          onClick={async () => {
+            const wasIsolated = agent.isolated;
+            try {
+              if (typeof invoke === 'function') {
+                await invoke("toggle_agent_isolation", { agentId: agent.id, isolated: !wasIsolated });
+                useWorldStore.getState().toggleIsolation(agent.id);
+              }
+            } catch (e) {
+              console.error("Failed to toggle isolation:", e);
+            }
+          }}
+          style={{
+            padding: "6px 14px", borderRadius: 8, border: "1px solid #6B6BAE",
+            background: agent.isolated ? "#6B6BAE" : "transparent",
+            color: agent.isolated ? "var(--surface-card)" : "#6B6BAE",
+            fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+            transition: "all 0.2s", whiteSpace: "nowrap",
+          }}
+        >{agent.isolated ? "Make shared" : "Isolate"}</button>
+      </div>
+
+      {/* ── Access Level ────────────────────────────────────────────────────
+          The single tier preset for the whole agent. Replaces the previous
+          Capabilities-only tier selector and the Permissions tab's profile
+          cards. Source of truth: src/pages/ArchitectView/accessTiers.ts     */}
+      {(() => {
+        const currentTier = detectCurrentTier(agent.permissions);
+        const handleApply = (tier: AccessTier) => {
+          // Confirmation modal only fires when escalating TO unrestricted.
+          // Stepping down (e.g. Balanced → Guarded) just applies — losing
+          // capabilities is never the dangerous direction.
+          const isEscalation = tier.highRisk && currentTier?.id !== "unrestricted";
+          const apply = () => applyAccessTier(agent, tier);
+          executeOrConfirmHighRisk(!!isEscalation, tier.label, apply);
+        };
+        return (
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>
+              Access Level
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+              {ACCESS_TIERS.map(tier => {
+                const selected = currentTier?.id === tier.id;
+                const change = summarizeTierChange(agent.permissions, tier);
+                // Tooltip lists exactly what flipping to this tier would change.
+                const tooltipParts = [tier.rationale];
+                if (change.turningOn.length > 0) tooltipParts.push(`Turns on: ${change.turningOn.join(", ")}`);
+                if (change.turningOff.length > 0) tooltipParts.push(`Turns off: ${change.turningOff.join(", ")}`);
+                if (change.turningOn.length === 0 && change.turningOff.length === 0) tooltipParts.push("(No changes — already at this level.)");
+                return (
+                  <button
+                    key={tier.id}
+                    type="button"
+                    onClick={() => handleApply(tier)}
+                    title={tooltipParts.join("\n\n")}
+                    style={{
+                      padding: "12px 14px", borderRadius: 10, cursor: "pointer", textAlign: "left",
+                      background: selected ? `${tier.color}15` : "var(--surface-card)",
+                      border: selected ? `2px solid ${tier.color}` : "1px solid var(--border-subtle)",
+                      boxShadow: selected ? `0 2px 8px ${tier.color}20` : "none",
+                      fontFamily: "inherit", transition: "all 0.15s ease",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{tier.label}</span>
+                      {tier.recommended && !selected && (
+                        <span style={{ fontSize: 9, background: tier.color, color: "white", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: "0.02em" }}>RECOMMENDED</span>
+                      )}
+                      {tier.highRisk && (
+                        <span style={{ fontSize: 9, background: `${tier.color}20`, color: tier.color, padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: "0.02em" }}>HIGH RISK</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>{tier.summary}</div>
+                  </button>
+                );
+              })}
+            </div>
+            {!currentTier && (
+              <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-sub)", fontStyle: "italic" }}>
+                Custom — your current settings don't match a preset. Pick one above to reset, or fine-tune individual capabilities below.
+              </div>
+            )}
+            {/* Dangerous-combination warning, lifted from the old Permissions tab. */}
+            {agent.permissions.find(p => p.id === "file_write")?.enabled && agent.permissions.find(p => p.id === "browser")?.enabled && (
+              <div style={{ marginTop: 14, padding: 14, background: "rgba(212,160,74,0.08)", border: "1px solid rgba(212,160,74,0.3)", borderRadius: 10, display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D4A04A" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
+                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#D4A04A", marginBottom: 4 }}>Risky combination</div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                    Web browsing + file writes means {agent.name} could download something from the web and save it locally. Only use this combination if {agent.name} specifically needs to.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Advanced Provider Configuration */}
       <div style={{ ...glass(0.5), borderRadius: 16, overflow: "hidden", padding: 24, marginBottom: 24, flexShrink: 0 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>Cognitive Engines (LLM)</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-main)", marginBottom: 4 }}>AI Model</div>
             <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
-              Override the global API vault for explicitly isolating this agent. Keep empty to use standard globals.
+              Use a different model just for this agent. Leave on the default to share your global key.
             </div>
           </div>
           <div style={{ textAlign: "right", background: "rgba(33,131,128,0.1)", padding: "12px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Core Model Override</div>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Model Choice</div>
             <select
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
@@ -781,7 +913,7 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
         />
 
         <div id="slack-pairing-section" style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Pair with OpenClaw</div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Pair your agent</div>
           <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 8, lineHeight: 1.5 }}>
             Now go to Slack and send your bot a direct message with any text (like <code style={{ background: "var(--border-subtle)", padding: "1px 5px", borderRadius: 3 }}>hello</code>), then return and enter the code it replies with here.
           </div>
@@ -1401,64 +1533,73 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
         </ServiceRow>
       )}
 
-      {/* Capabilities & Skills */}
-      <ServiceRow
-        icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6B6BAE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>}
-        name="Capabilities & Skills"
-        subtitle="Manage agent autonomy, capabilities, and OpenClaw skills."
-        connected={true}
-        enabled={agent.permissions.some(p => ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id) && p.enabled)}
-        statusBadge={
-          agent.permissions.some(p => ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id) && p.enabled)
-            ? <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
-            : <span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Disabled</span>
-        }
-        onToggle={async (enabled: boolean) => {
-           const action = async () => {
-             const { invoke } = await import('@tauri-apps/api/core');
-             const toggle = useWorldStore.getState().togglePermission;
-             
-             ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].forEach(pid => {
-                const p = agent.permissions.find(x => x.id === pid);
-                if (p && p.enabled !== enabled) toggle(agent.id, pid);
-             });
+      {/* Capabilities — moved to the bottom of the tab as a "Fine-tune" disclosure.
+          The top-level Access Level tier preset handles the common case; this section
+          is for power users who want per-permission control. Covers ALL permissions
+          on the agent, not just the 9 from the old "Capabilities" group. */}
+      {(() => {
+        // Use the shared risk-band map so we stay in sync with accessTiers.ts.
+        const CAP_RISK_BAND = PERMISSION_RISK_BAND;
 
-             setTimeout(async () => {
-               const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
-               if (!currentAgent) return;
-               const capabilitiesObj: any = {};
-               currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-               try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
-             }, 100);
-           };
-           executeOrConfirmHighRisk(enabled, "Capabilities & Skills", action);
-        }}
-      >
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {agent.permissions.filter(p => ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id)).map((p, i, arr) => (
-            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none", paddingBottom: i < arr.length - 1 ? 12 : 0 }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{p.label}</div>
-                <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
-              </div>
-              <Toggle enabled={p.enabled} onChange={async () => {
-                const action = async () => {
-                  const { invoke } = await import('@tauri-apps/api/core');
-                  useWorldStore.getState().togglePermission(agent.id, p.id);
-                  setTimeout(async () => {
-                    const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
-                    if (!currentAgent) return;
-                    const capabilitiesObj: any = {};
-                    currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                    try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
-                  }, 100);
-                };
-                executeOrConfirmHighRisk(!p.enabled && ["ext_network", "autonomous", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(p.id), p.label, action);
-              }} />
+        // ── PAYMENT/FINANCIAL permissions are surfaced separately in the
+        // "Payments & Spending" ServiceRow below, so we hide them here to avoid
+        // duplicate toggles. Everything else the agent has is shown.
+        const HIDDEN_FROM_FINE_TUNE = new Set(["payments", "spend_auto"]);
+        const finetunePerms = agent.permissions.filter(p => !HIDDEN_FROM_FINE_TUNE.has(p.id));
+
+        return (
+          <ServiceRow
+            icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6B6BAE" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>}
+            name="Fine-tune capabilities"
+            subtitle="Toggle each capability individually. Most people don't need this — the Access Level preset above covers the common cases."
+            connected={true}
+            statusBadge={<span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Advanced</span>}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {finetunePerms.map((p, i, arr) => {
+                const band = CAP_RISK_BAND[p.id] || "medium";
+                const bandColor = band === "high" ? "#C62828" : band === "medium" ? "#D4A04A" : "#218380";
+                const bandLabel = band === "high" ? "High risk" : band === "medium" ? "Medium risk" : "Low risk";
+                return (
+                  <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none", paddingBottom: i < arr.length - 1 ? 12 : 0 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{p.label}</div>
+                        <span title={`${bandLabel} — ${band === "high" ? "can take real-world actions on your behalf" : band === "medium" ? "can reach beyond the agent's sandbox" : "stays inside the agent's sandbox"}`} style={{
+                          fontSize: 9,
+                          background: `${bandColor}15`,
+                          color: bandColor,
+                          padding: "1px 5px",
+                          borderRadius: 4,
+                          fontWeight: 700,
+                          letterSpacing: "0.02em",
+                          cursor: "help",
+                        }}>{bandLabel.toUpperCase()}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
+                    </div>
+                    <Toggle enabled={p.enabled} onChange={async () => {
+                      const action = async () => {
+                        const { invoke } = await import('@tauri-apps/api/core');
+                        useWorldStore.getState().togglePermission(agent.id, p.id);
+                        setTimeout(async () => {
+                          const currentAgent = useWorldStore.getState().agents.find(a => a.id === agent.id);
+                          if (!currentAgent) return;
+                          const capabilitiesObj: any = {};
+                          currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
+                          try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                        }, 100);
+                      };
+                      // Only confirm when turning ON a high-risk capability.
+                      executeOrConfirmHighRisk(!p.enabled && band === "high", p.label, action);
+                    }} />
+                  </div>
+                );
+              })}
             </div>
-          ))}
-        </div>
-      </ServiceRow>
+          </ServiceRow>
+        );
+      })()}
 
       {/* Payments & Financials */}
       <ServiceRow
@@ -1813,8 +1954,10 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
                 </span>
               )}
             </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>OpenClaw Plugin Directory</div>
-            <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>Enable raw native plugins for this agent.</div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>Community plugins</div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>
+              Third-party plugins built by other users. <strong style={{ color: "#E57373" }}>Anything you install here runs code we haven't verified — install only what you trust.</strong>
+            </div>
           </div>
           <input 
             type="text" 
@@ -1843,11 +1986,50 @@ export function ConnectionsTab({ agent: _agent }: { agent: AgentData }) {
                 toggleIntegration(c.id, enabled);
               }}
               onSetup={() => {
-                alert(`To configure ${c.name}, follow the instructions in the OpenClaw documentation or run \`openclaw skills config ${c.name}\` in the terminal.`);
+                setPluginSetupTarget(c.name);
               }}
             />
           ))}
       </div>
+
+      {/* Plugin Warning Modal */}
+      {pluginSetupTarget && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.6)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "var(--surface-base)", padding: 24, borderRadius: 12, width: 400, border: "1px solid var(--border-subtle)", boxShadow: "0 8px 32px rgba(0,0,0,0.2)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, color: "#E57373" }}>
+              <ShieldCheck size={24} />
+              <div style={{ fontSize: 16, fontWeight: 700 }}>Security Warning</div>
+            </div>
+            <p style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 16 }}>
+              You are about to configure <strong>{pluginSetupTarget}</strong>. Native OpenClaw plugins are created by other users of unverified trust. Installing or configuring them executes third-party code and could lead to security vulnerabilities.
+            </p>
+            <p style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 24 }}>
+              Proceed at your own risk.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
+              <button 
+                onClick={() => setPluginSetupTarget(null)}
+                style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "transparent", color: "var(--text-main)", cursor: "pointer", fontSize: 13, fontWeight: 600 }}
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={() => {
+                  if (onOpenTerminal) {
+                    onOpenTerminal(`openclaw skills config ${pluginSetupTarget}`);
+                  } else {
+                    alert(`To configure ${pluginSetupTarget}, follow the instructions in the OpenClaw documentation or run \`openclaw skills config ${pluginSetupTarget}\` in the terminal.`);
+                  }
+                  setPluginSetupTarget(null);
+                }}
+                style={{ padding: "8px 16px", borderRadius: 8, border: "none", background: "#E57373", color: "#FFF", cursor: "pointer", fontSize: 13, fontWeight: 600 }}
+              >
+                I Understand, Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Per-agent disconnect-confirmation modal. Used by both the per-agent Slack
           disconnect button (above) and the GitHub Disconnect button (in the dynamic

@@ -59,9 +59,9 @@ function SpendTab({ agent }: { agent: AgentData }) {
     <div style={{ paddingBottom: 64 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24 }}>
         <div>
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Purchase Execution Log</h1>
+          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Spending</h1>
           <p style={{ fontSize: 14, color: "var(--text-sub)", margin: 0 }}>
-            History of {agent.name}'s simulated and executed real-world transactions.
+            Everything {agent.name} has spent — both real transactions and dry runs.
           </p>
         </div>
         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", background: "var(--glass-light)", padding: "8px 16px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.05)" }}>

@@ -105,14 +105,45 @@ function OrganicLobsterBody({ robeMat, headColor }: { robeMat: THREE.Material, h
   );
 }
 
-export function LobsterIcon({ size = 48, className = "", role, agentImage }: { size?: number, shellColor?: string, accentColor?: string, className?: string, role?: string, agentImage?: string | null }) {
+// `reactState` drives small CSS micro-animations on the avatar so the lobster
+// feels alive in chat headers and message bubbles. Keyframes are defined once,
+// globally, near the other @keyframes blocks in this file (search for
+// `lobster-breathe`). Passing `reactState="off"` (or omitting it) keeps the
+// avatar static — small-tile usage on the world view should stay still.
+export function LobsterIcon({
+  size = 48, className = "", role, agentImage,
+  reactState = "off",
+}: {
+  size?: number; shellColor?: string; accentColor?: string;
+  className?: string; role?: string; agentImage?: string | null;
+  reactState?: "off" | "idle" | "thinking" | "error" | "happy";
+}) {
   const info = role ? (AGENT_TYPE_INFO as any)[role] : null;
   const imageSrc = agentImage || (info?.image) || "/agents/Custom.png";
+  // Map state → animation. `idle` is a gentle ~4s breathe; `thinking` is a
+  // faster shimmer + slight rotate that reads as "antennae twitching"; `error`
+  // dims and tilts down; `happy` is a quick scale pop.
+  const animation =
+    reactState === "idle"     ? "lobster-breathe 4.2s ease-in-out infinite" :
+    reactState === "thinking" ? "lobster-think 1.6s ease-in-out infinite" :
+    reactState === "error"    ? "lobster-error 0.4s ease-out forwards" :
+    reactState === "happy"    ? "lobster-happy 0.6s ease-out" :
+    "none";
+  const filter =
+    reactState === "thinking" ? "brightness(1.08) saturate(1.05)" :
+    reactState === "error"    ? "saturate(0.6) brightness(0.92)" :
+    undefined;
   return (
     <img
       src={getAssetUrl(imageSrc)}
       alt="Lobster Agent"
-      style={{ width: size, height: size, objectFit: "cover", borderRadius: "50%" }}
+      style={{
+        width: size, height: size, objectFit: "cover", borderRadius: "50%",
+        animation, filter,
+        // origin matters for the rotate components of `lobster-think` and `lobster-error`
+        transformOrigin: "center 70%",
+        transition: "filter 0.3s ease",
+      }}
       className={className}
     />
   );
@@ -1399,6 +1430,25 @@ export default function App() {
         @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
         @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        /* Lobster avatar micro-reactions — driven by LobsterIcon's reactState prop. */
+        @keyframes lobster-breathe {
+          0%, 100% { transform: scale(1) translateY(0); }
+          50%      { transform: scale(1.025) translateY(-1px); }
+        }
+        @keyframes lobster-think {
+          0%, 100% { transform: rotate(-1.5deg) scale(1.01); }
+          50%      { transform: rotate(1.5deg) scale(1.02); }
+        }
+        @keyframes lobster-error {
+          0%   { transform: rotate(0deg); }
+          100% { transform: rotate(8deg) translateY(2px); }
+        }
+        @keyframes lobster-happy {
+          0%   { transform: scale(1); }
+          40%  { transform: scale(1.10) rotate(-3deg); }
+          70%  { transform: scale(1.04) rotate(2deg); }
+          100% { transform: scale(1); }
+        }
         /* temp pulse override just to be safe */ /* @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         ::-webkit-scrollbar { width: 6px; }

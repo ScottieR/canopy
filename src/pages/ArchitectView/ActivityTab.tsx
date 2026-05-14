@@ -1,21 +1,30 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { 
-  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+import {
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
-import { Toggle, ServiceRow, glass } from "../../App";
-import { ChatTab } from "./ChatTab";
+import { Toggle, ServiceRow, glass, ProgressBar } from "../../App";
+import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
+import { detectCurrentTier } from "./accessTiers";
 
 export // ─── Activity Tab ────────────────────────────────────────────────────────────
 
-function ActivityTab({ agent }: { agent: AgentData }) {
+function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (tab: string) => void }) {
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
+  const gatewayReady = useWorldStore(s => s.gatewayReady);
+
+  // Tier label matches Skills & Access (driven by accessTiers.ts — single source of truth).
+  const currentTier = useMemo(() => detectCurrentTier(agent.permissions), [agent.permissions]);
+  const tierLabel = currentTier?.label || "Custom";
+  const tierColor = currentTier?.color || "var(--text-muted)";
+  // Map tier to a 0–2 position on the green→amber→red gradient track.
+  const tierPosition = currentTier?.id === "unrestricted" ? 2 : currentTier?.id === "balanced" ? 1 : 0;
 
   const groupedLogs = useMemo(() => {
     if (!recentLogs || recentLogs.length === 0) return [];
@@ -96,15 +105,113 @@ function ActivityTab({ agent }: { agent: AgentData }) {
   }, [agent.id]);
 
   return (
-    <div style={{ display: "flex", gap: 24, height: "100%", width: "100%", overflow: "hidden", minHeight: 0 }}>
-      {/* Left side: Chat (2/3 width) */}
-      <div style={{ flex: 2, display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-        <ChatTab agent={agent} compact={false} />
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, width: "100%" }}>
+      {/* H1 + subtitle — frames this tab as the agent's dashboard, not its workbench. */}
+      <div>
+        <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 6px 0" }}>Activity</h1>
+        <p style={{ fontSize: 13, color: "var(--text-sub)", margin: 0 }}>
+          What {agent.name} has been up to — usage, cost, and a record of every action.
+        </p>
       </div>
 
-      {/* Right side: Activity Feed (1/3 width) */}
-      <div style={{ flex: 1, ...glass(0.5), padding: "20px 24px", borderRadius: 16, display: "flex", flexDirection: "column", height: "100%", minWidth: 0 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Activity Feed</div>
+      {/* ── Stats strip — moved here from Home so Home can stay focused on chat. ── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        {/* Current State */}
+        <div style={{ ...glass(0.5), padding: 16, borderRadius: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Current State</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{
+              width: 10, height: 10, borderRadius: "50%",
+              background: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
+              boxShadow: agent.paused ? "none" : !gatewayReady ? "0 0 8px rgba(244,168,58,0.5)" : agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
+              animation: (!agent.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
+            }} />
+            <span style={{ fontSize: 18, fontWeight: 600, color: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : "var(--text-main)", textTransform: "capitalize" }}>
+              {agent.paused ? "Paused" : !gatewayReady ? "Waking up" : agent.status === "error" ? "Offline" : agent.currentAction || "Idle"}
+            </span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontSize: 11, color: "var(--text-sub)" }}>
+            <span>Uptime</span>
+            <span style={{ fontWeight: 500, color: "var(--text-main)" }}>{agent.uptime}</span>
+          </div>
+        </div>
+
+        {/* Resource Consumption */}
+        <div style={{ ...glass(0.5), padding: 16, borderRadius: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Resource Use</div>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Weekly Compute</div>
+              <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-main)" }}>{agent.weeklyCompute}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Tokens</div>
+              {(() => {
+                const totalTokensIn = agent.stats?.total_tokens_in || 0;
+                const totalTokensOut = agent.stats?.total_tokens_out || 0;
+                const totalTokens = totalTokensIn + totalTokensOut;
+                return (
+                  <>
+                    <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text-main)" }}>
+                      {totalTokens > 0 ? (totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : totalTokens) : "0"}
+                    </div>
+                    <div style={{ fontSize: 10, color: "var(--text-sub)", marginTop: 2 }}>
+                      <span style={{ color: "#4A9E96" }}>{totalTokensIn > 1000 ? `${(totalTokensIn / 1000).toFixed(1)}k` : totalTokensIn} in</span> / <span style={{ color: "#D4A04A" }}>{totalTokensOut > 1000 ? `${(totalTokensOut / 1000).toFixed(1)}k` : totalTokensOut} out</span>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+          <ProgressBar value={parseFloat(agent.weeklyCompute)} max={0.1} color="#4A9E96" />
+        </div>
+
+        {/* Cost */}
+        <div style={{ ...glass(0.5), padding: 16, borderRadius: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Cost (Active)</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: "var(--text-main)" }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
+          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 8 }}>of ${agent.spendLimit} limit</div>
+          <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color={(agent.stats?.total_cost_usd || agent.monthlySpend || 0) > agent.spendLimit * 0.8 ? "#D4A04A" : "#4A9E96"} />
+        </div>
+      </div>
+
+      {/* ── Access Level + Activity Patterns side-by-side ────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 12, alignItems: "stretch" }}>
+        {/* Access Level — compact gauge. Edit jumps to Skills & Access. */}
+        <div style={{ ...glass(0.5), padding: 20, borderRadius: 14, display: "flex", flexDirection: "column", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase" }}>Access Level</div>
+              <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-main)", marginTop: 6 }}>{tierLabel}</div>
+            </div>
+            <button onClick={() => onNavigate?.("connections")} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-sub)" }}>Edit</button>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <Lock size={14} color={tierColor as string} strokeWidth={2.5} />
+            <div style={{ position: "relative", flex: 1, height: 6, background: "linear-gradient(to right, #22c55e, #f59e0b, #ef4444)", borderRadius: 3 }}>
+              <div style={{ position: "absolute", top: -3, left: `${tierPosition * 50}%`, width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #333", transform: "translateX(-50%)", transition: "left 0.3s" }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>
+            {agent.permissions.filter(p => p.enabled).length} of {agent.permissions.length} capabilities on · {(agent.integrations || []).length} services connected
+          </div>
+        </div>
+
+        {/* Activity Patterns heatmap */}
+        <div style={{ ...glass(0.5), padding: 20, borderRadius: 14, display: "flex", flexDirection: "column" }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 12 }}>Activity Patterns</div>
+          <AgentActivityHeatmap agentId={agent.id} />
+        </div>
+      </div>
+
+      {/* ── Activity Feed — full width, the main reading surface on this tab ── */}
+      <div style={{ ...glass(0.5), padding: "20px 24px", borderRadius: 16, display: "flex", flexDirection: "column", minHeight: 320 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase" }}>Activity Feed</div>
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            Chats are grouped into sessions. Click to expand.
+          </div>
+        </div>
         <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, paddingRight: 8 }}>
           {groupedLogs && groupedLogs.length > 0 ? (
              groupedLogs.map((group, i) => {

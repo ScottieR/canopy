@@ -723,11 +723,11 @@ export function OnboardingWizard() {
               </div>
 
               <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", marginBottom: 16, fontFamily: "'Noto Serif', Georgia, serif" }}>
-                Missing Local Engine
+                One quick setup step
               </h1>
 
               <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.6 }}>
-                Canopy needs OrbStack installed locally to orchestrate your private agents. Without it, your agents won't actually be able to retain memory.
+                Canopy runs your agents on your Mac so your data never leaves it. We need to install a small helper to make that work — it takes about a minute.
               </p>
 
               <button
@@ -755,7 +755,7 @@ export function OnboardingWizard() {
                   transition: "all 0.2s ease"
                 }}
               >
-                {engineError?.includes("start gateway") || engineError?.includes("allocated") ? "Retry Connection" : "Install Embedded Engine"}
+                {engineError?.includes("start gateway") || engineError?.includes("allocated") ? "Retry" : "Install helper"}
               </button>
 
               {engineError && (
@@ -1361,6 +1361,31 @@ export function OnboardingWizard() {
                   />
                 </div>
               )}
+
+              {/* Required-field guidance */}
+              {(() => {
+                const hasKey = apiKey.trim().length > 0;
+                if (hasKey) {
+                  return (
+                    <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#218380", fontWeight: 600 }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                      Key detected. We'll save it securely to your Mac's Keychain.
+                    </div>
+                  );
+                }
+                if (!llmProvider) {
+                  return (
+                    <div style={{ marginTop: 14, fontSize: 12, color: "var(--text-sub)" }}>
+                      Pick a provider above to continue.
+                    </div>
+                  );
+                }
+                return (
+                  <div style={{ marginTop: 14, fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                    {agentName || "Your agent"} needs an API key to think. Use <strong>Scan</strong> if you've set up {llmProvider} before, or <strong>Set up new</strong> to walk through it now.
+                  </div>
+                );
+              })()}
             </div>
 
           </div>
@@ -1369,11 +1394,25 @@ export function OnboardingWizard() {
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
-            <button onClick={() => setStep(4)} style={{
-              padding: "12px 28px", borderRadius: 12, border: "none",
-              background: "#3c6663", color: "var(--surface-card)",
-              fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-            }}>Next</button>
+            {(() => {
+              const canAdvance = !!llmProvider && apiKey.trim().length > 0;
+              return (
+                <button
+                  onClick={() => { if (canAdvance) setStep(4); }}
+                  disabled={!canAdvance}
+                  title={canAdvance ? "" : "Add an API key to continue — your agent can't think without one."}
+                  style={{
+                    padding: "12px 28px", borderRadius: 12, border: "none",
+                    background: canAdvance ? "#3c6663" : "var(--border-subtle)",
+                    color: canAdvance ? "var(--surface-card)" : "var(--text-muted)",
+                    fontSize: 14, fontWeight: 600,
+                    cursor: canAdvance ? "pointer" : "not-allowed",
+                    fontFamily: "inherit",
+                    opacity: canAdvance ? 1 : 0.85,
+                  }}
+                >Next</button>
+              );
+            })()}
           </div>
         </div>
       )}

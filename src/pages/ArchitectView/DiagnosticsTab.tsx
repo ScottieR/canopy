@@ -39,7 +39,7 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
       const success: boolean = await invoke("ping_agent_routing", { agentId: agent.id });
       setRoutingResult(success);
       if (!success) {
-        setRoutingError("Agent failed to respond or OpenClaw routing is broken.");
+        setRoutingError(`${agent.name} didn't respond. Try auto-repair below — if that doesn't help, hard-reset from the agent's Home tab.`);
       }
     } catch (e) {
       setRoutingResult(false);
@@ -202,9 +202,9 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
             <div>
               <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                <Server size={18} /> OpenClaw Message Routing
+                <Server size={18} /> Can the agent respond?
               </div>
-              <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Verifies that the OpenClaw gateway can actively route messages and receive model completions for this agent.</div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Sends a test message to {agent.name} and checks it comes back with a reply.</div>
             </div>
             {runningRouting ? (
               <RefreshCw size={18} className="spin" color="var(--text-sub)" />

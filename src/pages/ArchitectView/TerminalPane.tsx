@@ -10,9 +10,9 @@ import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMes
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass } from "../../App";
 
-export function TerminalPane({ agent, onClose }: { agent: AgentData; onClose: () => void }) {
+export function TerminalPane({ agent, onClose, initialCommand = "" }: { agent: AgentData; onClose: () => void; initialCommand?: string }) {
   const [history, setHistory] = useState<{ command: string; output: string; timestamp: string }[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialCommand);
   const [running, setRunning] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
 

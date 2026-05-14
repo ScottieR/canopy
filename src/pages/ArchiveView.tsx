@@ -66,10 +66,10 @@ function ArchiveView() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 32 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
-            <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: 0 }}>System Archive</h1>
+            <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: 0 }}>Archive</h1>
             <div style={{ background: "#4A9E9620", color: "#4A9E96", padding: "4px 10px", borderRadius: 12, fontSize: 13, fontWeight: 700 }}>LIVE</div>
           </div>
-          <p style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>Global flight data recorder mapping all agent decisions, actions, and anomalous traces.</p>
+          <p style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>Everything your agents have done — decisions, actions, and anything flagged for review.</p>
         </div>
       </div>
 
@@ -79,8 +79,8 @@ function ArchiveView() {
           {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
         <select value={bridgeFilter} onChange={e => setBridgeFilter(e.target.value)} style={{ padding: "8px 16px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 13, fontWeight: 600, color: "var(--text-main)", outline: "none", cursor: "pointer" }}>
-          <option value="all">All Bridges</option>
-          <option value="core">Core Platform</option>
+          <option value="all">All Connections</option>
+          <option value="core">Canopy</option>
           <option value="slack">Slack</option>
           <option value="imessage">iMessage</option>
           <option value="payments">Virtual Cards</option>
@@ -95,23 +95,23 @@ function ArchiveView() {
       </div>
 
       {loading ? (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-sub)" }}>Loading flight logs...</div>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-sub)" }}>Loading activity…</div>
       ) : (
         <div style={{ flex: 1, overflowY: "auto", ...glass(0.6), borderRadius: 16, border: "1px solid rgba(0,0,0,0.06)" }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead style={{ position: "sticky", top: 0, background: "var(--glass-heavy)", backdropFilter: "blur(8px)", zIndex: 1, borderBottom: "1px solid rgba(0,0,0,0.06)" }}>
               <tr style={{ textAlign: "left" }}>
                 <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 140 }}>Time</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 180 }}>Principal Agent</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 160 }}>Bridge Target</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Action Trajectory</th>
-                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "right" }}>Trace Hash</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 180 }}>Agent</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", width: 160 }}>Service</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Action</th>
+                <th style={{ padding: "16px 24px", fontSize: 12, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", letterSpacing: "0.05em", textAlign: "right" }}>ID</th>
               </tr>
             </thead>
             <tbody>
               {filteredLogs.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "var(--text-sub)", fontSize: 14 }}>No actions found matching these security filters.</td>
+                  <td colSpan={5} style={{ padding: 40, textAlign: "center", color: "var(--text-sub)", fontSize: 14 }}>Nothing matches these filters yet.</td>
                 </tr>
               ) : filteredLogs.map((log) => {
                 const mappedAgent = agents.find(a => a.id === log.agent_id);

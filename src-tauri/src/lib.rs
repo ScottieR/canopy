@@ -224,6 +224,7 @@ pub fn run() {
             openclaw::get_connectors_config,
             openclaw::get_library_books,
             openclaw::get_openclaw_status_json,
+            openclaw::list_workspace_files,
             openclaw::read_workspace_file,
             openclaw::write_workspace_file,
             openclaw::upload_workspace_file,
