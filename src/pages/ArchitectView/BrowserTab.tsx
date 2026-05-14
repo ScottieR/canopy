@@ -172,8 +172,8 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
                 </button>
               </>
             ) : (
-              <span style={{ fontSize: 12, color: "var(--text-sub)", fontWeight: 600, padding: "6px 12px", background: "var(--surface-base)", borderRadius: 8 }}>
-                JIT Proxy Idle
+              <span style={{ fontSize: 12, color: "var(--text-sub)", fontWeight: 600, padding: "6px 12px", background: "var(--surface-base)", borderRadius: 8 }} title="The browser starts up the moment the agent needs it. Nothing is running right now.">
+                Browser idle
               </span>
             )}
           </div>
@@ -296,15 +296,15 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
             <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
           </div>
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "var(--surface-base)", borderRadius: 8 }} title="Sites that block automated browsers won't see the agent as a bot. Real Chrome on your host, not a headless engine.">
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <Zap size={14} style={{ color: "var(--text-sub)" }} />
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Bot-Blocker Bypass</div>
-                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Real Chrome on host (not headless Chromium)</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Real-Chrome Mode</div>
+                <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Browses as your real browser — sites won't flag it as a bot.</div>
               </div>
             </div>
-            <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>Active</span>
+            <span style={{ fontSize: 10, background: "#dcfce7", color: "#166534", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>On</span>
           </div>
         </div>
       </div>

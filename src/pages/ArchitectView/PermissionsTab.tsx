@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { 
-  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
-  ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
+import {
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, AlertTriangle
 } from "lucide-react";
@@ -148,52 +147,62 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
       )}
 
       <div style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>Risk Profiles</h2>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>Access Level</h2>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-          {/* Locked Down */}
-          <div 
+          {/* Guarded — formerly Locked Down. Hover-over explains which permissions stay off and why. */}
+          <button
+            type="button"
             onClick={() => applyProfile('locked')}
-            style={{ 
+            title="Best for agents handling money, secrets, or sensitive data. They can think and reason but can't reach the web, browse, write files, or take autonomous actions."
+            style={{
               padding: 16, borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
-              background: currentProfile === 'locked' ? "rgba(46, 204, 113, 0.15)" : "var(--surface-card)",
-              border: currentProfile === 'locked' ? "2px solid #2ecc71" : "2px solid transparent",
-              boxShadow: currentProfile === 'locked' ? "0 4px 12px rgba(46, 204, 113, 0.1)" : "none"
+              background: currentProfile === 'locked' ? "rgba(33,131,128,0.12)" : "var(--surface-card)",
+              border: currentProfile === 'locked' ? "2px solid #218380" : "2px solid transparent",
+              boxShadow: currentProfile === 'locked' ? "0 4px 12px rgba(33,131,128,0.1)" : "none",
+              textAlign: "left", fontFamily: "inherit",
             }}
           >
-            <div style={{ fontSize: 24, marginBottom: 8 }}>🛡️</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Locked Down</div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Safest. Read-only access, no outbound network, no file writes.</div>
-          </div>
-          
-          {/* Balanced */}
-          <div 
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Guarded</div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Safest. Read and reason only — no web, no browser, no file writes.</div>
+          </button>
+
+          {/* Balanced — recommended default. */}
+          <button
+            type="button"
             onClick={() => applyProfile('balanced')}
-            style={{ 
+            title="The right default for most agents. Web search, browsing, vision, and code execution are on; autonomous actions and traffic interception stay off."
+            style={{
               padding: 16, borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
-              background: currentProfile === 'balanced' ? "rgba(52, 152, 219, 0.15)" : "var(--surface-card)",
-              border: currentProfile === 'balanced' ? "2px solid #3498db" : "2px solid transparent",
-              boxShadow: currentProfile === 'balanced' ? "0 4px 12px rgba(52, 152, 219, 0.1)" : "none"
+              background: currentProfile === 'balanced' ? "rgba(60,102,99,0.12)" : "var(--surface-card)",
+              border: currentProfile === 'balanced' ? "2px solid #3c6663" : "2px solid transparent",
+              boxShadow: currentProfile === 'balanced' ? "0 4px 12px rgba(60,102,99,0.1)" : "none",
+              textAlign: "left", fontFamily: "inherit",
             }}
           >
-            <div style={{ fontSize: 24, marginBottom: 8 }}>⚖️</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Balanced <span style={{ fontSize: 10, background: "#3498db", color: "white", padding: "2px 6px", borderRadius: 4, marginLeft: 4 }}>Recommended</span></div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Useful but safe. Web search, vision, code execution. No file writes or autonomous actions.</div>
-          </div>
-          
-          {/* YOLO */}
-          <div 
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+              Balanced <span style={{ fontSize: 9, background: "#3c6663", color: "white", padding: "2px 6px", borderRadius: 4, marginLeft: 4, fontWeight: 700, letterSpacing: "0.02em" }}>RECOMMENDED</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Useful but safe. Web search, vision, code execution. No file writes, no autonomous actions.</div>
+          </button>
+
+          {/* Unrestricted — formerly YOLO. */}
+          <button
+            type="button"
             onClick={() => applyProfile('yolo')}
-            style={{ 
+            title="Only for agents you've fully vetted. They can take autonomous actions on your behalf, intercept network traffic, write files, and request payments."
+            style={{
               padding: 16, borderRadius: 12, cursor: "pointer", transition: "all 0.2s",
-              background: currentProfile === 'yolo' ? "rgba(231, 76, 60, 0.15)" : "var(--surface-card)",
-              border: currentProfile === 'yolo' ? "2px solid #e74c3c" : "2px solid transparent",
-              boxShadow: currentProfile === 'yolo' ? "0 4px 12px rgba(231, 76, 60, 0.1)" : "none"
+              background: currentProfile === 'yolo' ? "rgba(198,40,40,0.10)" : "var(--surface-card)",
+              border: currentProfile === 'yolo' ? "2px solid #C62828" : "2px solid transparent",
+              boxShadow: currentProfile === 'yolo' ? "0 4px 12px rgba(198,40,40,0.1)" : "none",
+              textAlign: "left", fontFamily: "inherit",
             }}
           >
-            <div style={{ fontSize: 24, marginBottom: 8 }}>🔥</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>YOLO</div>
-            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Full access. Autonomous file writes, payments, proxy interception, and messaging.</div>
-          </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+              Unrestricted <span style={{ fontSize: 9, background: "rgba(198,40,40,0.15)", color: "#C62828", padding: "2px 6px", borderRadius: 4, marginLeft: 4, fontWeight: 700, letterSpacing: "0.02em" }}>HIGH RISK</span>
+            </div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.4 }}>Full access. Autonomous file writes, payments, traffic interception, and messaging.</div>
+          </button>
         </div>
       </div>
 
@@ -202,8 +211,8 @@ function PermissionsTab({ agent }: { agent: AgentData }) {
           padding: "12px 16px", background: "rgba(0,0,0,0.02)", borderTopLeftRadius: 14, borderTopRightRadius: 14,
           borderBottom: `2px solid var(--text-main)`, display: "flex", flexDirection: "column"
         }}>
-          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-main)", marginBottom: 4 }}>OpenClaw Permissions</div>
-          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Configure the core capabilities of the OpenClaw agent.</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-main)", marginBottom: 4 }}>Fine-tune individual capabilities</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Toggle each capability on or off. Changes take effect immediately.</div>
         </div>
         <div style={{ ...glass(0.5), borderBottomLeftRadius: 14, borderBottomRightRadius: 14, overflow: "hidden" }}>
           {agent.permissions.map((p, i, arr) => {

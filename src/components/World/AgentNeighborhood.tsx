@@ -19,15 +19,23 @@ const hasSavedDecorPosition = (t: any) =>
 export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
   const isWorking = agent?.status === "active" || agent?.status === "thinking";
 
-  // Filter for Decor or Both (based on per-agent behavior setting)
+  // Decor items are saved by IdentityTab to `visual_identity.decor` (a dedicated
+  // array), which is the canonical source. We also keep a backward-compat path
+  // for any agents whose data was written under the older single-`accessories`
+  // model with an `accessoryBehaviors` map — those entries get merged in and
+  // de-duplicated so they keep rendering after the schema change.
   const decorItems = useMemo(() => {
-    const list = agent?.visual_identity?.accessories || agent?.accessories || [];
-    const behaviors = agent?.visual_identity?.accessoryBehaviors || {};
-    return list.filter((path: string) => {
+    const dedicated: string[] = agent?.visual_identity?.decor || [];
+
+    const legacyList: string[] = agent?.visual_identity?.accessories || agent?.accessories || [];
+    const legacyBehaviors = agent?.visual_identity?.accessoryBehaviors || {};
+    const legacyDecor = legacyList.filter((path: string) => {
       const accInfo = (accessoriesData.items as any)[path];
-      const behavior = behaviors[path] || accInfo?.type || 'accessory';
+      const behavior = legacyBehaviors[path] || accInfo?.type;
       return behavior === 'decor';
     });
+
+    return Array.from(new Set([...dedicated, ...legacyDecor]));
   }, [agent]);
 
   // Seeded random helper so decor stays in the same random spot across renders if no transform is saved

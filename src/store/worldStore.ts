@@ -84,6 +84,17 @@ export interface ChatMessage {
   text: string;
   time: string;
   attachments?: { name: string; dataUrl: string }[];
+  ts?: number;
+}
+
+// A saved conversation thread for an agent. Titles are auto-derived from the
+// first user message (~40 chars) unless the user renames the thread.
+export interface Conversation {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;       // unix ms
+  lastActiveAt: number;    // unix ms — for sort order
 }
 
 export interface AgentData extends Agent {
@@ -106,6 +117,17 @@ export interface AgentData extends Agent {
   recentSpend: Array<{ date: string; amount: number; merchant: string; category: string; status: "approved" | "pending" | "flagged" }>;
   chatLog: ChatMessage[];
   draftMessage?: string;
+  // Conversation threads — frontend-side named snapshots of past chats.
+  // `chatLog` above is the *live* conversation. When the user starts a new
+  // thread, the current chatLog is saved into `conversations[]` (titled from
+  // its first user message) and chatLog resets. Switching threads swaps
+  // chatLog with a saved conversation's messages.
+  // NOTE: The agent's underlying SQLite memory is still a single pool —
+  // threads are visual partitioning, not contextual isolation. Real isolation
+  // requires a per-conversation backend, which is a focused next session.
+  conversations?: Conversation[];
+  activeConversationId?: string | null;
+  chatClearedAt?: number;
   memories: Array<{ type: string; text: string; when: string; confidence: number }>;
   browser_status?: BrowserStatus | null;
   personalityPrompt: string;
@@ -149,6 +171,16 @@ export interface WorldState {
   toggleIsolation: (agentId: string) => void;
   updateAgentVisuals: (id: string, visuals: any) => void;
   updateAgentBrowserStatus: (id: string, status: BrowserStatus | null) => void;
+  // ── Conversation threads ──────────────────────────────────────────────
+  // saveCurrentThread snapshots agent.chatLog into a new Conversation if
+  // there's anything worth saving, then clears chatLog. Returns the new
+  // conv id (or null if nothing was saved). Used by "New conversation".
+  saveCurrentThread: (agentId: string) => string | null;
+  // switchConversation saves the current thread first (idempotent — no-op if
+  // empty), then loads the target conversation's messages into chatLog.
+  switchConversation: (agentId: string, convId: string) => void;
+  renameConversation: (agentId: string, convId: string, title: string) => void;
+  deleteConversation: (agentId: string, convId: string) => void;
 }
 
 export const ZONES = {
@@ -300,6 +332,158 @@ export const useWorldStore = create<WorldState>((set) => ({
   })),
   updateAgentBrowserStatus: (id, status) => set((state) => ({
     agents: state.agents.map((a) => a.id === id ? { ...a, browser_status: status } : a)
+  })),
+
+  // ── Conversation thread management ─────────────────────────────────────
+  // Frontend-only V1: threads are named snapshots of past chats. The agent's
+  // backend memory is still pooled — switching threads is visual, not a true
+  // context reset. Documented in the AgentData type above.
+
+  saveCurrentThread: (agentId) => {
+    // Always resets the chat to a fresh state. Returns the id of the
+    // saved/updated conversation, or null when there was nothing to save
+    // (empty chat with no active conv) but a reset was still performed.
+    //
+    // Three cases the caller doesn't have to think about:
+    //   (A) Active conv exists → mirror chatLog into it, then reset chat.
+    //   (B) No active conv but chatLog has messages → snapshot into a new
+    //       conversation, then reset chat.
+    //   (C) No active conv, chatLog empty → just a no-op reset (cheap).
+    let savedId: string | null = null;
+    set((state) => {
+      const agent = state.agents.find(a => a.id === agentId);
+      if (!agent) return state;
+
+      let conversations = [...(agent.conversations || [])];
+
+      if (agent.activeConversationId) {
+        // Case A — flush in-progress edits back into the active thread so
+        // they're preserved when the user switches back later.
+        const existing = conversations.find(c => c.id === agent.activeConversationId);
+        if (existing) {
+          conversations = conversations.map(c => c.id === agent.activeConversationId
+            ? { ...c, messages: [...(agent.chatLog || [])], lastActiveAt: Date.now() }
+            : c);
+        } else {
+          // Fallback: If it was active but missing from the array, push it anew.
+          const firstUser = (agent.chatLog || []).find(m => m.sender === "user");
+          const rawTitle = firstUser?.text.trim() || `Chat from ${new Date().toLocaleString()}`;
+          const title = rawTitle.length > 40 ? rawTitle.slice(0, 40).trimEnd() + "…" : rawTitle;
+          const now = Date.now();
+          conversations.push({
+            id: agent.activeConversationId,
+            title,
+            messages: [...(agent.chatLog || [])],
+            createdAt: now,
+            lastActiveAt: now,
+          });
+        }
+        savedId = agent.activeConversationId;
+      } else if (agent.chatLog && agent.chatLog.length > 0) {
+        // Case B — snapshot an unsaved chat into a new conversation. Title
+        // from the first user message, capped at 40 chars; falls back to a
+        // timestamp-based default if the user only ever heard from the agent.
+        const firstUser = agent.chatLog.find(m => m.sender === "user");
+        const rawTitle = firstUser?.text.trim() || `Chat from ${new Date().toLocaleString()}`;
+        const title = rawTitle.length > 40 ? rawTitle.slice(0, 40).trimEnd() + "…" : rawTitle;
+        const now = Date.now();
+        const newConv: Conversation = {
+          id: `conv_${now}_${Math.random().toString(36).slice(2, 8)}`,
+          title,
+          messages: [...agent.chatLog],
+          createdAt: now,
+          lastActiveAt: now,
+        };
+        conversations.push(newConv);
+        savedId = newConv.id;
+      }
+      // Case C falls through — nothing to save, but we still reset below.
+
+      return {
+        agents: state.agents.map(a => a.id === agentId ? {
+          ...a,
+          conversations,
+          chatLog: [],
+          draftMessage: "",
+          activeConversationId: null,
+          chatClearedAt: Date.now(),
+        } : a),
+      };
+    });
+    // Tell ChatTab to clear its local chatLog state. Without this, ChatTab's
+    // useState seed-from-mount keeps the old messages on screen even though
+    // the store's chatLog is now empty.
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("canopy:chat-reset", { detail: { agentId } }));
+    }
+    return savedId;
+  },
+
+  switchConversation: (agentId, convId) => set((state) => {
+    const agent = state.agents.find(a => a.id === agentId);
+    if (!agent) return state;
+    const target = (agent.conversations || []).find(c => c.id === convId);
+    if (!target) return state;
+
+    // Snapshot the current chatLog into its own conversation before swapping,
+    // so the user doesn't lose work when jumping between threads. Skip if
+    // the current chatLog is empty (nothing to save) OR if we're already
+    // looking at this conversation (re-clicking the active thread is a no-op).
+    let conversations = [...(agent.conversations || [])];
+    if (agent.activeConversationId !== convId && agent.chatLog && agent.chatLog.length > 0) {
+      const firstUser = agent.chatLog.find(m => m.sender === "user");
+      const rawTitle = firstUser?.text.trim() || `Chat from ${new Date().toLocaleString()}`;
+      const autoTitle = rawTitle.length > 40 ? rawTitle.slice(0, 40).trimEnd() + "…" : rawTitle;
+      // If the current chat is the in-progress version of an existing thread
+      // (i.e. activeConversationId is set), update that thread's messages
+      // rather than creating a duplicate.
+      if (agent.activeConversationId) {
+        conversations = conversations.map(c => c.id === agent.activeConversationId
+          ? { ...c, messages: [...agent.chatLog], lastActiveAt: Date.now() }
+          : c);
+      } else {
+        const now = Date.now();
+        conversations.push({
+          id: `conv_${now}_${Math.random().toString(36).slice(2, 8)}`,
+          title: autoTitle,
+          messages: [...agent.chatLog],
+          createdAt: now,
+          lastActiveAt: now,
+        });
+      }
+    }
+
+    // Now load the target's messages into chatLog and mark it active.
+    conversations = conversations.map(c => c.id === convId
+      ? { ...c, lastActiveAt: Date.now() }
+      : c);
+
+    return {
+      agents: state.agents.map(a => a.id === agentId ? {
+        ...a,
+        conversations,
+        chatLog: [...target.messages],
+        draftMessage: "",
+        activeConversationId: convId,
+        chatClearedAt: undefined,
+      } : a),
+    };
+  }),
+
+  renameConversation: (agentId, convId, title) => set((state) => ({
+    agents: state.agents.map(a => a.id === agentId ? {
+      ...a,
+      conversations: (a.conversations || []).map(c => c.id === convId ? { ...c, title } : c),
+    } : a),
+  })),
+
+  deleteConversation: (agentId, convId) => set((state) => ({
+    agents: state.agents.map(a => a.id === agentId ? {
+      ...a,
+      conversations: (a.conversations || []).filter(c => c.id !== convId),
+      // If we deleted the active conversation, clear the active marker.
+      activeConversationId: a.activeConversationId === convId ? null : a.activeConversationId,
+    } : a),
   })),
 }));
 

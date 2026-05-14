@@ -480,6 +480,97 @@ pub async fn get_openclaw_status_json() -> Result<String, String> {
     Ok(serde_json::to_string(&output).unwrap())
 }
 
+/// One row returned by `list_workspace_files`. Kept intentionally flat so the
+/// frontend doesn't have to know workspace layout — name + size + mtime is all
+/// the files-drawer panel needs to render a list with sort/preview.
+#[derive(serde::Serialize)]
+pub struct WorkspaceFileEntry {
+    pub name: String,
+    pub size_bytes: u64,
+    /// Unix epoch seconds, UTC. Frontend formats relative to "now".
+    pub modified_unix: i64,
+}
+
+/// Files written by the agent runtime itself — *not* work artifacts. These
+/// pollute the workspace drawer (IDENTITY/USER/SOUL/TOOLS/LIBRARY are already
+/// editable in the Instructions tab; PERMISSIONS lives on the Permissions
+/// gauge; HEARTBEAT/DIAGNOSTICS/AGENTS/PREFERENCES are internal). We filter
+/// them out of `list_workspace_files` entirely. If a new framework file
+/// appears, it'll show in the drawer until this list is updated — that's the
+/// safer failure mode than accidentally hiding a user's `NOTES.md`.
+const FRAMEWORK_FILES: &[&str] = &[
+    // Personality / identity (Instructions tab)
+    "IDENTITY.md", "USER.md", "SOUL.md", "TOOLS.md", "LIBRARY.md",
+    // Capability / permissions (Skills & Access tab)
+    "PERMISSIONS.md",
+    // Runtime health (Diagnostics tab / internal)
+    "HEARTBEAT.md", "DIAGNOSTICS.md",
+    // OpenClaw-written infrastructure
+    "AGENTS.md", "PREFERENCES.md",
+];
+
+/// List files in this agent's workspace directory (one level deep, files only).
+/// Returns user-facing work artifacts only — files the agent has created and
+/// files the user has uploaded to work on together. Framework / configuration
+/// files (see FRAMEWORK_FILES above) are filtered out: those have dedicated
+/// homes elsewhere in the UI and would just be noise here.
+#[tauri::command]
+pub async fn list_workspace_files(agent_id: String) -> Result<Vec<WorkspaceFileEntry>, String> {
+    let workspace = dirs::data_dir()
+        .ok_or("No data dir")?
+        .join("Canopy")
+        .join("openclaw-state")
+        .join("workspace")
+        .join(&agent_id);
+
+    // Workspace may not exist yet (brand-new agent, never sent a message). The
+    // drawer should treat that as "empty" not "error" — return an empty list.
+    if !workspace.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut entries: Vec<WorkspaceFileEntry> = Vec::new();
+    let read = std::fs::read_dir(&workspace).map_err(|e| e.to_string())?;
+    for entry in read.flatten() {
+        let path = entry.path();
+        // Files only — directories (e.g. session/, .git/, etc.) are runtime,
+        // not artifacts.
+        if !path.is_file() { continue; }
+
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        // Skip dotfiles. They're almost always config / cache the agent wrote.
+        if name.starts_with('.') { continue; }
+        // Skip the framework set — see comment on FRAMEWORK_FILES.
+        if FRAMEWORK_FILES.contains(&name.as_str()) { continue; }
+
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        let modified_unix = metadata
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        entries.push(WorkspaceFileEntry {
+            name: name.clone(),
+            size_bytes: metadata.len(),
+            modified_unix,
+        });
+    }
+
+    // Most-recently-modified first — what the user usually wants to see at the
+    // top after the agent's just produced something.
+    entries.sort_by(|a, b| b.modified_unix.cmp(&a.modified_unix));
+    Ok(entries)
+}
+
 #[tauri::command]
 pub async fn read_workspace_file(agent_id: String, filename: String) -> Result<String, String> {
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {

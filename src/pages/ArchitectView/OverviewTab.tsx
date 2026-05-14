@@ -18,6 +18,8 @@ import { ProgressBar } from "../../App";
 import { ChatTab } from "./ChatTab";
 import { Toggle, ServiceRow, glass } from "../../App";
 import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
+import { WorkspaceFilesDrawer } from "./WorkspaceFilesDrawer";
+import { ThreadsRail } from "./ThreadsRail";
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
@@ -41,6 +43,37 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
   const [webLoginsExpanded, setWebLoginsExpanded] = useState(false);
 
   const [slackNeedsPairing, setSlackNeedsPairing] = useState(false);
+
+  // Workspace files popover open/closed. Triggered from the Files pill in
+  // the quick-actions row. Outside-click closes via a useEffect below.
+  const [filesOpen, setFilesOpen] = useState(false);
+  const filesPopoverRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!filesOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (filesPopoverRef.current && !filesPopoverRef.current.contains(e.target as Node)) {
+        setFilesOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [filesOpen]);
+
+  // Voice toggle — V1 uses the browser Web Speech API (single-turn: agent reply
+  // text → spoken). Persisted in sessionStorage so the choice survives agent
+  // switches within a session. ChatTab subscribes to `canopy:voice-toggle` to
+  // know when to speak; we also pre-seed the same storage key for the
+  // initial-mount read in ChatTab.
+  const [voiceOn, setVoiceOn] = useState<boolean>(() => sessionStorage.getItem("canopy:voice-on") === "1");
+  const flipVoice = useCallback((next: boolean) => {
+    setVoiceOn(next);
+    sessionStorage.setItem("canopy:voice-on", next ? "1" : "0");
+    window.dispatchEvent(new CustomEvent("canopy:voice-toggle", { detail: { enabled: next } }));
+    // Stop any utterance mid-speech when toggling off.
+    if (!next && typeof window.speechSynthesis !== "undefined") {
+      window.speechSynthesis.cancel();
+    }
+  }, []);
 
   useEffect(() => {
     if (agent.integrations.includes("slack")) {
@@ -130,7 +163,7 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
   };
 
   return (
-    <div>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       {slackNeedsPairing && !agent.paused && (
         <div style={{ background: "rgba(236, 178, 46, 0.1)", border: "1px solid rgba(236, 178, 46, 0.3)", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
@@ -196,14 +229,14 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
               <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Agent Environment Offline</div>
-              <div style={{ fontSize: 13, color: "var(--text-sub)" }}>The OpenClaw setup failed or the local Docker container unexpectedly stopped.</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>Agent is offline</div>
+              <div style={{ fontSize: 13, color: "var(--text-sub)" }}>{agent.name}'s workspace stopped unexpectedly. Try repair first — if that doesn't work, a hard reset rebuilds everything from scratch.</div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 onClick={handleHardReset}
                 disabled={hardResetting}
-                title="Restart OrbStack VM and rebuild the gateway container from scratch"
+                title="Rebuild this agent's workspace from scratch. Use only if repair fails."
                 style={{ padding: "10px 16px", borderRadius: 10, background: "transparent", color: "#E57373", fontSize: 12, fontWeight: 600, border: "1px solid #E57373", cursor: hardResetting ? "not-allowed" : "pointer", opacity: hardResetting ? 0.6 : 1, transition: "all 0.2s ease", whiteSpace: "nowrap" }}>
                 {hardResetting ? "Resetting..." : "Hard Reset"}
               </button>
@@ -282,265 +315,318 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
         </div>
       )}
 
-      {/* Header */}
-      <div style={{ marginBottom: 32, display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: 24, borderRadius: 20, border: "1px solid var(--border-subtle)", boxShadow: "0 4px 20px rgba(0,0,0,0.03)" }}>
-        <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
-          <div style={{ width: 72, height: 72, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", background: `${agent.robeColor || "#CCC"}15`, boxShadow: `0 0 0 1px ${agent.robeColor || "#CCC"}40`, flexShrink: 0 }}>
-            <LobsterIcon size={72} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
-          </div>
-          <div>
-            {isEditingDetails ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <input value={tempName} onChange={e => setTempName(e.target.value)} style={{ fontSize: 24, fontWeight: 700, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-main)" }} />
-                <input value={tempRole} onChange={e => setTempRole(e.target.value)} style={{ fontSize: 14, padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-base)", outline: "none", color: "var(--text-sub)" }} />
-                <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-                  <button onClick={saveDetails} style={{ padding: "6px 16px", background: "#4A9E96", color: "white", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Save</button>
-                  <button onClick={() => { setIsEditingDetails(false); setTempName(agent.name); setTempRole(agent.role); }} style={{ padding: "6px 16px", background: "transparent", color: "var(--text-sub)", border: "1px solid var(--border-subtle)", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Cancel</button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                  <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", letterSpacing: "-0.01em", margin: 0, lineHeight: 1.1 }}>
-                    {agent.name}
-                  </h1>
-                  <div style={{ fontSize: 16, color: "var(--text-sub)", fontWeight: 500 }}>{agent.title}</div>
-                </div>
-                <p style={{ fontSize: 14, color: "var(--text-sub)", marginTop: 6, maxWidth: 600, lineHeight: 1.5 }}>
-                  {agent.description}
-                </p>
-              </>
-            )}
-          </div>
-        </div>
-        <button onClick={() => setIsEditingDetails(true)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 12, cursor: "pointer", color: "var(--text-sub)", fontSize: 13, fontWeight: 600 }}>
-          <Edit2 size={16} />
-          Edit Agent
-        </button>
-      </div>
-
-      {/* Side-by-side: 3D View and Chat */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24, minHeight: 400 }}>
-        {/* 3D Lobster View */}
-        <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, position: "relative", overflow: "hidden" }}>
-          <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 60 }}>
-            <Environment preset="city" />
-            <ambientLight intensity={0.5} />
-            <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
-            <OrbitControls enablePan={false} enableZoom={false} />
-            <group position={[0, -0.6, 0]}>
-              <GLBAgent
-                fileUrl={["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined}
-                accessories={agent.visual_identity?.accessories || []}
-                agentStatus={agent.status}
-                scale={1.0}
-                robeColor={agent.color || agent.robeColor}
-                forceAnimation="Breathe"
-              />
-              {/* Billboard fallback only for accessories with no 3D model.
-                  /accessories/ and /models/assets/ paths are attached to bones
-                  via GLBAgent → AttachedAccessory; rendering them again as
-                  stickers would duplicate the visual above the lobster. */}
-              <React.Suspense fallback={null}>
-                {(agent.visual_identity?.accessories || []).map((path, i) => {
-                  if (path.includes("/models/assets/") || path.includes("/accessories/")) return null;
-                  return (
-                    <SafeBillboard
-                      key={i}
-                      url={path}
-                      position={[
-                        0.5 * Math.cos(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
-                        0.2 + 0.3 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1)),
-                        0.5 * Math.sin(i * Math.PI * 2 / (agent.visual_identity?.accessories?.length || 1))
-                      ]}
-                    />
-                  );
-                })}
-              </React.Suspense>
-            </group>
-          </Canvas>
-        </div>
-
-        {/* Chat Box */}
-        <div style={{ background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, display: "flex", flexDirection: "column", height: 400, overflow: "hidden" }}>
-          <ChatTab agent={agent} compact={true} />
-        </div>
-      </div>
-
-      {/* Status + Stats row */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 24 }}>
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Current State</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{
-              width: 10, height: 10, borderRadius: "50%",
-              background: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
-              boxShadow: agent.paused ? "none" : !gatewayReady ? "0 0 8px rgba(244,168,58,0.5)" : agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
-              animation: (!agent.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
-            }} />
-            <span style={{ fontSize: 20, fontWeight: 600, color: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : "var(--text-main)", textTransform: "capitalize" }}>
-              {agent.paused ? "Paused" : !gatewayReady ? "Waking Up" : agent.status === "error" ? "Offline" : agent.currentAction}
-            </span>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 12, fontSize: 11, color: "var(--text-sub)" }}>
-            <span>Uptime</span>
-            <span style={{ fontWeight: 500, color: "var(--text-main)" }}>{agent.uptime}</span>
-          </div>
-        </div>
-
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Resource Consumption</div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Weekly Compute</div>
-              <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>{agent.weeklyCompute}</div>
+      {/* ── High-risk banner ────────────────────────────────────────────────
+          Slim sticky banner that appears when this agent is at Unrestricted
+          tier AND autonomous is on — i.e. they can act on your behalf without
+          asking. Quiet amber, never red, with a one-click way to pause or
+          step down to Balanced. */}
+      {(() => {
+        const isUnrestricted = agent.permissions.find(p => p.id === "autonomous")?.enabled
+          && agent.permissions.find(p => p.id === "ext_network")?.enabled
+          && agent.permissions.find(p => p.id === "file_write")?.enabled;
+        if (!isUnrestricted || agent.paused) return null;
+        const stepDownToBalanced = async () => {
+          // Inline the Balanced preset's deltas without importing from accessTiers
+          // here (keeps the dependency surface small in this file).
+          const toBalanced: Record<string, boolean> = {
+            autonomous: false, proxy: false, file_write: false,
+            payments: false, spend_auto: false, imessage: false, photos: false, scheduled: false,
+          };
+          const { invoke } = await import('@tauri-apps/api/core');
+          const toggle = useWorldStore.getState().togglePermission;
+          Object.entries(toBalanced).forEach(([id, desired]) => {
+            const p = agent.permissions.find(x => x.id === id);
+            if (p && p.enabled !== desired) toggle(agent.id, id);
+          });
+          setTimeout(async () => {
+            const current = useWorldStore.getState().agents.find(a => a.id === agent.id);
+            if (!current) return;
+            const caps: Record<string, boolean> = {};
+            current.permissions.forEach(p => (caps[p.id] = p.enabled));
+            try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: caps }); }
+            catch (e) { console.error("Failed to step down access:", e); }
+          }, 100);
+        };
+        return (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12,
+            background: "rgba(212,160,74,0.08)", border: "1px solid rgba(212,160,74,0.3)",
+            borderRadius: 12, padding: "10px 16px", marginBottom: 16, flexShrink: 0,
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#D4A04A" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+              <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+            </svg>
+            <div style={{ flex: 1, fontSize: 12, color: "var(--text-main)", lineHeight: 1.4 }}>
+              <strong>{agent.name} can act on your behalf without asking.</strong>{" "}
+              <span style={{ color: "var(--text-sub)" }}>You're at Unrestricted access with autonomy on. Step down when you're done.</span>
             </div>
-            <div>
-              <div style={{ fontSize: 10, color: "var(--text-sub)" }}>Tokens Used</div>
-              {(() => {
-                const totalTokensIn = agent.stats?.total_tokens_in || 0;
-                const totalTokensOut = agent.stats?.total_tokens_out || 0;
-                const totalTokens = totalTokensIn + totalTokensOut;
-                return (
-                  <>
-                    <div style={{ fontSize: 20, fontWeight: 600, color: "var(--text-main)" }}>
-                      {totalTokens > 0 ? (totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : totalTokens) : "0"}
-                    </div>
-                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>
-                      <span style={{ color: "#4A9E96" }}>{totalTokensIn > 1000 ? `${(totalTokensIn / 1000).toFixed(1)}k` : totalTokensIn} in</span> / <span style={{ color: "#D4A04A" }}>{totalTokensOut > 1000 ? `${(totalTokensOut / 1000).toFixed(1)}k` : totalTokensOut} out</span>
-                    </div>
-                  </>
+            <button
+              onClick={async () => {
+                useWorldStore.getState().setAgents(
+                  useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, paused: true, status: "sleeping" as any } : a)
                 );
-              })()}
-            </div>
+                try { await invoke("set_agent_paused", { agentId: agent.id, paused: true }); }
+                catch (e) { console.error("Pause failed:", e); }
+              }}
+              style={{
+                padding: "5px 11px", borderRadius: 6, border: "1px solid var(--border-subtle)",
+                background: "var(--surface-card)", color: "var(--text-main)",
+                fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >Pause</button>
+            <button
+              onClick={stepDownToBalanced}
+              style={{
+                padding: "5px 11px", borderRadius: 6, border: "none",
+                background: "#3c6663", color: "white",
+                fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+              }}
+            >Switch to Balanced</button>
           </div>
-          <ProgressBar value={parseFloat(agent.weeklyCompute)} max={0.1} color="#4A9E96" />
-        </div>
+        );
+      })()}
 
-        <div style={{ ...glass(0.5), padding: 20, borderRadius: 16 }}>
-          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Cost (Active)</div>
-          <div style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)" }}>${(agent.stats?.total_cost_usd || agent.monthlySpend || 0).toFixed(2)}</div>
-          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 8 }}>of ${agent.spendLimit} limit</div>
-          <ProgressBar value={agent.stats?.total_cost_usd || agent.monthlySpend || 0} max={agent.spendLimit} color={(agent.stats?.total_cost_usd || agent.monthlySpend || 0) > agent.spendLimit * 0.8 ? "#D4A04A" : "#4A9E96"} />
+      {/* ── Minimal single-line agent header ────────────────────────────────
+          Avatar, name + role, a status dot + pill, and an overflow ⋯ menu
+          for Edit Agent. The full description and edit form live behind the
+          overflow to keep this row scannable. */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 12, marginBottom: 16,
+        padding: "10px 14px", background: "var(--surface-card)",
+        border: "1px solid var(--border-subtle)", borderRadius: 14, flexShrink: 0,
+      }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: "50%", flexShrink: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: `${agent.robeColor || "#CCC"}15`,
+          boxShadow: `0 0 0 1px ${agent.robeColor || "#CCC"}40`,
+        }}>
+          {/* Avatar micro-reactions: thinking shimmers, error tilts, otherwise breathes. */}
+          <LobsterIcon
+            size={36}
+            role={agent.role}
+            agentImage={agent.image}
+            shellColor={agent.robeColor}
+            accentColor={agent.accentColor}
+            reactState={agent.paused ? "off" : agent.status === "thinking" ? "thinking" : agent.status === "error" ? "error" : "idle"}
+          />
         </div>
+        {isEditingDetails ? (
+          <div style={{ display: "flex", flex: 1, alignItems: "center", gap: 8 }}>
+            <input value={tempName} onChange={e => setTempName(e.target.value)} placeholder="Name" style={{ fontSize: 14, fontWeight: 700, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", outline: "none", color: "var(--text-main)", width: 160 }} />
+            <input value={tempRole} onChange={e => setTempRole(e.target.value)} placeholder="Role" style={{ fontSize: 13, padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", outline: "none", color: "var(--text-sub)", width: 160 }} />
+            <button onClick={saveDetails} style={{ padding: "6px 14px", background: "#3c6663", color: "white", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600 }}>Save</button>
+            <button onClick={() => { setIsEditingDetails(false); setTempName(agent.name); setTempRole(agent.role); }} style={{ padding: "6px 12px", background: "transparent", color: "var(--text-sub)", border: "1px solid var(--border-subtle)", borderRadius: 8, cursor: "pointer", fontSize: 12 }}>Cancel</button>
+          </div>
+        ) : (
+          <>
+            <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "baseline", gap: 8 }}>
+              <span style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", whiteSpace: "nowrap" }}>{agent.name}</span>
+              <span style={{ fontSize: 12, color: "var(--text-sub)", textTransform: "capitalize", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{agent.role}{agent.title ? ` · ${agent.title}` : ""}</span>
+            </div>
+            {/* Threads now live in the ThreadsRail on the left of the chat —
+                no need for a header switcher. */}
+            {/* Status dot + pill */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{
+                width: 8, height: 8, borderRadius: "50%",
+                background: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#4A9E96",
+                boxShadow: !agent.paused && agent.status === "active" ? "0 0 6px rgba(74,158,150,0.5)" : "none",
+                animation: (!agent.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
+              }} />
+              <span style={{ fontSize: 11, color: "var(--text-sub)", fontWeight: 500, textTransform: "capitalize" }}>
+                {agent.paused ? "Paused" : !gatewayReady ? "Waking up…" : agent.status === "thinking" ? "Thinking…" : agent.status === "error" ? "Offline" : "Idle"}
+              </span>
+            </div>
+            <button
+              onClick={() => setIsEditingDetails(true)}
+              title="Edit name and role"
+              style={{
+                padding: "6px 8px", background: "transparent", border: "1px solid var(--border-subtle)",
+                borderRadius: 8, cursor: "pointer", color: "var(--text-sub)", display: "flex", alignItems: "center",
+              }}
+            >
+              <Edit2 size={14} />
+            </button>
+          </>
+        )}
       </div>
 
-      {/* Access Level + Recent History */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: 16, marginBottom: 32, alignItems: "flex-start" }}>
-        {/* Access Level */}
-        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", position: "relative" }}>
-          {(() => {
-            const hasYolo = agent.permissions.some(p => ["autonomous", "spend_auto"].includes(p.id) && p.enabled);
-            const hasSecure = agent.permissions.some(p => ["ext_network", "file_write", "payments", "imessage", "photos"].includes(p.id) && p.enabled);
-            const enabledPerms = agent.permissions.filter(p => p.enabled);
+      {/* ── Quick actions row ───────────────────────────────────────────────
+          Sit just above the chat panel — small affordances for the things a
+          user most often wants to do next with this agent. Mini-apps is a
+          forward-looking slot for the generative-UI work coming in Phase 2.
+          Voice is a single-turn V1 (browser Web Speech API); the "Go live"
+          sub-option is the path to bidirectional Gemini Live audio. */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+        <button
+          onClick={() => onNavigate?.("browser")}
+          title={`Open ${agent.name}'s browser side-by-side so you can co-browse.`}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+            background: "var(--surface-card)", border: "1px solid var(--border-subtle)",
+            borderRadius: 12, fontSize: 13, fontWeight: 600, color: "var(--text-main)",
+            cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s ease",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><circle cx="8" cy="9" r="1"/><circle cx="12" cy="9" r="1"/><circle cx="16" cy="9" r="1"/></svg>
+          Browse with me
+        </button>
+        <button
+          onClick={() => {
+            // Fire a chat send through the bridge event ChatTab listens for.
+            window.dispatchEvent(new CustomEvent("canopy:send-chat", { detail: { agentId: agent.id, text: `Introduce yourself and tell me three concrete things you can help me with right now.` } }));
+          }}
+          title="Have the agent introduce themselves and pitch three things they can do."
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+            background: "var(--surface-card)", border: "1px solid var(--border-subtle)",
+            borderRadius: 12, fontSize: 13, fontWeight: 600, color: "var(--text-main)",
+            cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s ease",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          What can you do?
+        </button>
+        <button
+          disabled
+          title="Coming soon — your agent will be able to spin up small apps and tools tailored to what you're working on. This is where they'll live."
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+            background: "var(--surface-card)", border: "1px dashed var(--border-subtle)",
+            borderRadius: 12, fontSize: 13, fontWeight: 600, color: "var(--text-muted)",
+            cursor: "not-allowed", fontFamily: "inherit",
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          Mini-apps
+          <span style={{ fontSize: 9, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: "0.02em" }}>SOON</span>
+        </button>
 
-            let stateLabel = "Locked Down";
-            let temperatureLevel = 0;
-            let iconColor = "#22c55e";
-
-            if (hasYolo) {
-              stateLabel = "YOLO Mode (High Risk ⚠️)";
-              temperatureLevel = 2;
-              iconColor = "#ef4444";
-            } else if (hasSecure) {
-              stateLabel = "Secure";
-              temperatureLevel = 1;
-              iconColor = "#f59e0b";
-            }
-
-            return (
-              <>
-                <div style={{ position: "absolute", top: 16, right: 16 }}>
-                  <button onClick={() => onNavigate?.("permissions")} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--text-sub)" }}>Edit</button>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", marginBottom: 16, width: "100%", maxWidth: 180 }}>
-                  <div style={{ width: 32, height: 32, borderRadius: "50%", background: "var(--surface-base)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 8 }}>
-                    <Lock size={16} color={iconColor} strokeWidth={2.5} />
-                  </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>{stateLabel}</div>
-                  <div style={{ position: "relative", width: "100%", height: 6, background: "linear-gradient(to right, #22c55e, #f59e0b, #ef4444)", borderRadius: 3 }}>
-                    <div style={{ position: "absolute", top: -3, left: `${temperatureLevel * 50}%`, width: 12, height: 12, borderRadius: "50%", background: "#fff", border: "2px solid #333", transform: "translateX(-50%)", transition: "left 0.3s" }} />
-                  </div>
-                </div>
-
-                <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-sub)", alignSelf: "flex-start", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.04em" }}>Enabled Permissions & Connectors</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%", flex: 1, overflowY: "auto", paddingRight: 4 }}>
-                  {enabledPerms.length === 0 && (!agent.integrations || agent.integrations.length === 0) && <div style={{ fontSize: 12, color: "var(--text-muted)" }}>No permissions enabled.</div>}
-                  {enabledPerms.map(p => {
-                    const desc = p.description || "Core permission";
-                    const isRecommended = DEFAULT_PERMISSIONS.find(dp => dp.id === p.id)?.enabled !== false;
-                    return (
-                      <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, color: "var(--text-main)", textAlign: "left" }}>
-                        <div><span style={{ color: "var(--text-sub)", marginRight: 6, fontWeight: 600 }}>Core:</span> {p.label}</div>
-                        <div title={desc} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
-                          {isRecommended ? <CheckCircle2 size={14} color="#4A9E96" /> : <AlertTriangle size={14} color="#D4A04A" />}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {(() => {
-                    if (!agent.integrations) return null;
-
-                    const normalIntegrations = agent.integrations.filter(intg => !intg.startsWith('web_'));
-                    const webIntegrations = agent.integrations.filter(intg => intg.startsWith('web_'));
-
-                    return (
-                      <>
-                        {normalIntegrations.map(intg => {
-                          const names: Record<string, string> = { "slack": "Slack", "github": "GitHub", "gmail": "Gmail", "cal": "Google Calendar", "telegram": "Telegram", "discord": "Discord", "drive": "Google Drive", "passwords": "Web Vault" };
-                          const label = names[intg] || intg;
-                          return (
-                            <div key={intg} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, color: "var(--text-main)", textAlign: "left" }}>
-                              <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> {label}</div>
-                              <div title={`Active connector: ${label}`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
-                                <CheckCircle2 size={14} color="#4A9E96" />
-                              </div>
-                            </div>
-                          );
-                        })}
-                        {webIntegrations.length > 0 && (
-                          <div style={{ display: "flex", flexDirection: "column", background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 6, overflow: "hidden" }}>
-                            <div
-                              onClick={() => setWebLoginsExpanded(!webLoginsExpanded)}
-                              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", cursor: "pointer", fontSize: 12, color: "var(--text-main)", textAlign: "left", userSelect: "none" }}
-                            >
-                              <div><span style={{ color: "#4A9E96", marginRight: 6, fontWeight: 600 }}>Bridge:</span> Web Vault Logins ({webIntegrations.length})</div>
-                              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <div title={`Provides seamless login access to ${webIntegrations.length} sites`} style={{ cursor: "help", display: "flex", alignItems: "center" }}>
-                                  <CheckCircle2 size={14} color="#4A9E96" />
-                                </div>
-                                {webLoginsExpanded ? <ChevronUp size={14} color="var(--text-sub)" /> : <ChevronDown size={14} color="var(--text-sub)" />}
-                              </div>
-                            </div>
-                            {webLoginsExpanded && (
-                              <div style={{ padding: "0 12px 8px 12px", display: "flex", flexDirection: "column", gap: 4, maxHeight: 150, overflowY: "auto" }}>
-                                {webIntegrations.map(intg => (
-                                  <div key={intg} style={{ fontSize: 11, color: "var(--text-sub)", padding: "4px 8px", background: "rgba(0,0,0,0.03)", borderRadius: 4 }}>
-                                    {intg.replace('web_', '')}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </>
-                    );
-                  })()}
-                </div>
-              </>
-            );
-          })()}
+        {/* Files — opens a popover with the agent's workspace files. Sits
+            next to Mini-apps because they're adjacent concepts (artifacts vs
+            apps), but the popover and the future mini-apps panel stay
+            visually + conceptually distinct. */}
+        <div ref={filesPopoverRef} style={{ position: "relative" }}>
+          <button
+            onClick={() => setFilesOpen(o => !o)}
+            title={`Files ${agent.name} has created or that you've uploaded.`}
+            style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+              background: filesOpen ? "rgba(60,102,99,0.10)" : "var(--surface-card)",
+              border: filesOpen ? "1px solid #3c6663" : "1px solid var(--border-subtle)",
+              borderRadius: 12, fontSize: 13, fontWeight: 600,
+              color: filesOpen ? "#218380" : "var(--text-main)",
+              cursor: "pointer", fontFamily: "inherit",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Files
+          </button>
+          <WorkspaceFilesDrawer agent={agent} open={filesOpen} onClose={() => setFilesOpen(false)} />
         </div>
 
-        {/* Activity Infographic */}
-        <div style={{ ...glass(0.5), padding: 24, borderRadius: 16, display: "flex", flexDirection: "column" }}>
-          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 16 }}>Activity Patterns</div>
-          <AgentActivityHeatmap agentId={agent.id} />
-          <button
-            onClick={() => onNavigate && onNavigate("activity")}
-            style={{ width: "100%", padding: "12px", borderRadius: 8, background: "#3c6663", color: "white", fontWeight: 600, border: "none", cursor: "pointer", fontSize: 13, marginTop: 16 }}>
-            View Activity Feed
-          </button>
+        {/* Voice toggle — when on, agent replies are spoken via the browser's
+            Web Speech API. The tooltip surfaces the live-mode roadmap so the
+            user knows what's coming. Pushed to the right via marginLeft auto. */}
+        <button
+          onClick={() => flipVoice(!voiceOn)}
+          title={
+            voiceOn
+              ? `Voice on — ${agent.name}'s replies will be spoken aloud. Live duplex mode (Gemini Live) coming soon.`
+              : `Voice off — turn on to hear ${agent.name}'s replies. Live duplex mode (Gemini Live) coming soon.`
+          }
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+            background: voiceOn ? "rgba(33,131,128,0.10)" : "var(--surface-card)",
+            border: voiceOn ? "1px solid #218380" : "1px solid var(--border-subtle)",
+            borderRadius: 12, fontSize: 13, fontWeight: 600,
+            color: voiceOn ? "#218380" : "var(--text-main)",
+            cursor: "pointer", fontFamily: "inherit", marginLeft: "auto",
+            transition: "all 0.15s ease",
+          }}
+        >
+          {voiceOn ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+          )}
+          Voice {voiceOn ? "on" : "off"}
+          <span style={{ fontSize: 9, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: "0.02em" }}>
+            LIVE SOON
+          </span>
+        </button>
+        {/* "New conversation" used to live here — moved into the ThreadsRail
+            as a more prominent "+ New chat" button at the top of the rail. */}
+      </div>
+
+      {/* ── Empty-state intro card ──────────────────────────────────────────
+          Rendered above the chat when there's no conversation yet. Suggestion
+          pills dispatch the same canopy:send-chat event the quick-actions row
+          uses. Disappears the moment the agent has at least one exchange. */}
+      {(!agent.chatLog || agent.chatLog.length === 0) && (
+        <div style={{
+          ...glass(0.5), padding: "20px 24px", borderRadius: 16, marginBottom: 16,
+          display: "flex", alignItems: "center", gap: 16,
+          borderLeft: `3px solid ${agent.robeColor || "#3c6663"}`,
+        }}>
+          <div style={{
+            width: 56, height: 56, borderRadius: "50%", flexShrink: 0,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: `${agent.robeColor || "#CCC"}15`,
+            boxShadow: `0 0 0 1px ${agent.robeColor || "#CCC"}40`,
+          }}>
+            <LobsterIcon
+              size={48}
+              role={agent.role}
+              agentImage={agent.image}
+              shellColor={agent.robeColor}
+              accentColor={agent.accentColor}
+              reactState="idle"
+            />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+              Hi, I'm {agent.name}.
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 10, lineHeight: 1.5 }}>
+              Pick a starter below, or just type what you need.
+            </div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              {[
+                "What kind of things should I bring to you?",
+                "Help me think through what I'm working on today.",
+                "Show me what you're best at.",
+              ].map(text => (
+                <button
+                  key={text}
+                  onClick={() => window.dispatchEvent(new CustomEvent("canopy:send-chat", { detail: { agentId: agent.id, text } }))}
+                  style={{
+                    padding: "6px 12px", borderRadius: 999,
+                    background: "var(--surface-card)", border: "1px solid var(--border-subtle)",
+                    fontSize: 12, fontWeight: 500, color: "var(--text-main)",
+                    cursor: "pointer", fontFamily: "inherit",
+                    transition: "all 0.15s ease",
+                  }}
+                >{text}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Workbench row — chat (primary) + threads rail (left)
+          Threads are now first-class: open by default, ~260px. Files moved
+          to the popover in the quick-actions row. */}
+      <div style={{ display: "flex", gap: 10, flex: 1, minHeight: 480, minWidth: 0 }}>
+        <ThreadsRail agent={agent} />
+        <div style={{
+          background: "var(--surface-card)", border: "1px solid var(--border-subtle)",
+          borderRadius: 16, display: "flex", flexDirection: "column",
+          flex: 1, minHeight: 480, minWidth: 0, overflow: "hidden",
+        }}>
+          <ChatTab agent={agent} compact={false} />
         </div>
       </div>
     </div>

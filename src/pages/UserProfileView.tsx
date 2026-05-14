@@ -58,8 +58,8 @@ function UserProfileView() {
   return (
     <div style={{ maxWidth: 700, margin: "40px auto", padding: "0 24px", paddingBottom: 100 }}>
       <div style={{ marginBottom: 32 }}>
-        <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Principal Context</h1>
-        <p style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>Define your global identity. This context is inherited by every agent in the Canopy to understand who they work for.</p>
+        <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>About me</h1>
+        <p style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>What you tell us here is shared with every agent in your Canopy, so they understand who they're working for.</p>
       </div>
 
       <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>

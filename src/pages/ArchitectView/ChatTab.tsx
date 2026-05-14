@@ -28,6 +28,11 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   const { agents, setAgents, setArchitectTab } = useWorldStore();
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [message, setMessage] = useState(agent.draftMessage || "");
+  // chatLog is declared up here (rather than further down where it used to
+  // live) so the thread-reseed and voice-playback useEffects below can
+  // reference it. Order matters — those effects use chatLog/setChatLog in
+  // their dep arrays and bodies, and a use-before-declare crashes the build.
+  const [chatLog, setChatLog] = useState<ChatMessage[]>(capLog(agent.chatLog));
 
   // Load draft when switching agents
   useEffect(() => {
@@ -45,8 +50,138 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     }, 500);
     return () => clearTimeout(handler);
   }, [message, agent.id]);
-  const [chatLog, setChatLog] = useState<ChatMessage[]>(capLog(agent.chatLog));
+
+  // Re-seed chatLog when the active conversation changes — the threads UI
+  // mutates agent.chatLog in the store, and we need the local component
+  // state to follow. Without this, switching threads in the rail would
+  // leave the old conversation's messages on screen.
+  // We use a ref of the last seen ID so we only re-seed on actual switches,
+  // not on the routine setAgents calls that fire after every message.
+  const lastSeenConvIdRef = useRef<string | null | undefined>(agent.activeConversationId);
+  useEffect(() => {
+    if (lastSeenConvIdRef.current !== agent.activeConversationId) {
+      lastSeenConvIdRef.current = agent.activeConversationId;
+      setChatLog(capLog(agent.chatLog || []));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.activeConversationId, agent.chatLog]);
+
+  // Hard chat reset — fired by saveCurrentThread (the "+ New chat" action).
+  // The conv-id watcher above doesn't catch this case because activeConvId
+  // can stay null on both sides of the reset, so we use a dedicated event.
+  // (We don't bother nulling voice's `lastSpokenIdRef` here — an empty chatLog
+  // has nothing to speak, and new message ids are timestamp-based so the next
+  // reply won't collide with a stale id.)
+  useEffect(() => {
+    const onChatReset = (e: Event) => {
+      const detail = (e as CustomEvent<{ agentId: string }>).detail;
+      if (!detail || detail.agentId !== agent.id) return;
+      setChatLog([]);
+      setMessage("");
+    };
+    window.addEventListener("canopy:chat-reset", onChatReset as EventListener);
+    return () => window.removeEventListener("canopy:chat-reset", onChatReset as EventListener);
+  }, [agent.id]);
+
+  // Listen for cross-component send dispatches — used by Home's empty-state
+  // suggestion pills and the "What can you do?" quick action so they can send
+  // a message through this agent's ChatTab without needing an imperative ref.
+  // Filters by agentId so a multi-agent app never cross-fires.
+  useEffect(() => {
+    const onSendChat = (e: Event) => {
+      const detail = (e as CustomEvent<{ agentId: string; text: string }>).detail;
+      if (!detail || detail.agentId !== agent.id || !detail.text) return;
+      // Defer one tick so any caller-side state updates (e.g. clearing the
+      // empty state) have a chance to commit before send starts.
+      setTimeout(() => handleSendMessage(detail.text), 0);
+    };
+    window.addEventListener("canopy:send-chat", onSendChat as EventListener);
+    return () => window.removeEventListener("canopy:send-chat", onSendChat as EventListener);
+    // Intentionally re-binding when agent.id changes so the closure over
+    // handleSendMessage always sees the current agent's state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent.id]);
+
+  // Voice playback — single-turn V1 using the browser Web Speech API. We track
+  // the live preference in a ref so the most-recent-agent-message effect below
+  // doesn't have to re-bind every time the toggle flips. State source of truth
+  // is the same sessionStorage key the Home quick-actions button writes to.
+  const voiceOnRef = useRef<boolean>(sessionStorage.getItem("canopy:voice-on") === "1");
+  useEffect(() => {
+    const onToggle = (e: Event) => {
+      const detail = (e as CustomEvent<{ enabled: boolean }>).detail;
+      voiceOnRef.current = !!detail?.enabled;
+      // If the user just toggled OFF mid-utterance, cut speech immediately.
+      if (!voiceOnRef.current && typeof window.speechSynthesis !== "undefined") {
+        window.speechSynthesis.cancel();
+      }
+    };
+    window.addEventListener("canopy:voice-toggle", onToggle as EventListener);
+    return () => window.removeEventListener("canopy:voice-toggle", onToggle as EventListener);
+  }, []);
+
+  // When a new agent message lands and voice is on, speak it. We track the
+  // last spoken message id so re-renders (scroll, draft updates, etc.) don't
+  // re-speak the same reply.
+  const lastSpokenIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!voiceOnRef.current) return;
+    if (typeof window.speechSynthesis === "undefined") return;
+    // Find the most recent agent message. Don't speak ones already spoken.
+    const lastAgentMsg = [...chatLog].reverse().find(m => m.sender === "agent");
+    if (!lastAgentMsg || lastAgentMsg.id === lastSpokenIdRef.current) return;
+    // Filter out the noisy system pings/diagnostic replies the visual filter
+    // already hides — speaking PONG is jarring.
+    const t = lastAgentMsg.text.trim();
+    if (!t || t === "PONG" || t === "PONG." || t.includes("CANOPY_DIAG_PING")) return;
+    if (t.includes("HEARTBEAT_OK") || t.includes('"lastMorningQuote"')) return;
+
+    lastSpokenIdRef.current = lastAgentMsg.id;
+    try {
+      // Strip markdown that would otherwise be read aloud literally (e.g.
+      // "asterisk asterisk bold asterisk asterisk"). Cheap pass — keeps
+      // sentence punctuation and contractions intact.
+      const spoken = t
+        .replace(/`{1,3}[\s\S]*?`{1,3}/g, " (code block) ")
+        .replace(/\*\*([^*]+)\*\*/g, "$1")
+        .replace(/\*([^*]+)\*/g, "$1")
+        .replace(/_([^_]+)_/g, "$1")
+        .replace(/^#{1,6}\s+/gm, "")
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+        .replace(/\n+/g, ". ");
+      window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(spoken);
+      utter.rate = 1.05;
+      utter.pitch = 1.0;
+      window.speechSynthesis.speak(utter);
+    } catch (e) {
+      console.warn("Voice playback failed:", e);
+    }
+  }, [chatLog]);
+
+  // Stop speaking when the user navigates away from this agent or unmounts.
+  useEffect(() => {
+    return () => {
+      if (typeof window.speechSynthesis !== "undefined") {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [agent.id]);
   const [loading, setLoading] = useState(false);
+  // Hover-revealed reaction shortcuts (👍 / retry / edit) on agent messages.
+  // Tracking by ID rather than index keeps the reactions stable across re-renders.
+  const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
+  const [likedMsgIds, setLikedMsgIds] = useState<Set<string>>(new Set());
+  // Helper: find the user message that prompted a given agent message, so retry
+  // and edit-prompt actions know what text to re-use.
+  const findPriorUserMessage = useCallback((agentMsgId: string): ChatMessage | null => {
+    const idx = chatLog.findIndex(m => m.id === agentMsgId);
+    if (idx <= 0) return null;
+    for (let i = idx - 1; i >= 0; i--) {
+      if (chatLog[i].sender === "user") return chatLog[i];
+    }
+    return null;
+  }, [chatLog]);
   const [needsRepair, setNeedsRepair] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
@@ -95,17 +230,36 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         behavior: "smooth"
       });
     }
-    // Keep global state in sync so errors remain when switching tabs
+    // Keep global state in sync so errors remain when switching tabs.
+    // Also mirror chatLog into the active conversation (if any) so switching
+    // threads in the dropdown doesn't lose messages added since the switch.
     useWorldStore.setState(state => ({
-      agents: state.agents.map(a => a.id === agent.id ? { ...a, chatLog } : a)
+      agents: state.agents.map(a => {
+        if (a.id !== agent.id) return a;
+        let conversations = a.conversations;
+        if (a.activeConversationId && conversations) {
+          conversations = conversations.map(c =>
+            c.id === a.activeConversationId
+              ? { ...c, messages: chatLog, lastActiveAt: Date.now() }
+              : c
+          );
+        }
+        return { ...a, chatLog, conversations };
+      })
     }));
   }, [chatLog, agent.id]);
+
+  const agentRef = useRef(agent);
+  useEffect(() => {
+    agentRef.current = agent;
+  }, [agent]);
 
   useEffect(() => {
     if (typeof invoke === 'function') {
       const fetchHistory = async () => {
         try {
-          const resp: any = await invoke("get_conversation_history", { agentId: agent.id, limit: 100 });
+          const currentAgent = agentRef.current;
+          const resp: any = await invoke("get_conversation_history", { agentId: currentAgent.id, limit: 100 });
           let localMessages: any[] = [];
           
           if (Array.isArray(resp) && resp.length > 0) {
@@ -119,39 +273,95 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
           }
 
           // Sort chronologically (oldest to newest for chat layout)
-          const allMessages = [...localMessages].sort((a, b) => a.ts - b.ts);
+          let allMessages = [...localMessages].sort((a, b) => a.ts - b.ts);
+          if (currentAgent.chatClearedAt) {
+            allMessages = allMessages.filter((m: any) => m.ts >= currentAgent.chatClearedAt!);
+          }
+
+          // 1. Identify truly new messages
+          const knownIds = new Set<string>();
+          currentAgent.chatLog.forEach(m => knownIds.add(m.id));
+          currentAgent.conversations?.forEach(c => c.messages.forEach(m => knownIds.add(m.id)));
           
-          // Retain locally generated messages that aren't in the canonical backend.
-          //
-          // Previously this only kept "⚠️ **System..." messages, which silently deleted
-          // every other local-only message on refresh — including agent "thinking" /
-          // intermediate-status messages, locally-appended retries, and anything else
-          // the backend doesn't persist. Now we keep all local messages and only drop
-          // the ones the backend clearly already has.
-          //
-          // Two dedup checks against the backend list:
-          //   1. ID match  — backend persisted this exact message (cheap path).
-          //   2. Same sender + same text — synthetic local IDs (Date.now()) won't match
-          //      backend UUIDs, so we also collapse content-equivalent duplicates that
-          //      would otherwise show up twice when the backend catches up.
-          //
-          // Anything else (true local-only, like thinking) survives.
-          const localOnly = agent.chatLog.filter(msg => {
-            if (allMessages.some((m: any) => m.id === msg.id)) return false;
-            if (allMessages.some((m: any) => m.sender === msg.sender && m.text === msg.text)) return false;
-            return true;
+          let newBackendMessages = allMessages.filter(m => !knownIds.has(m.id));
+          
+          // Deduplicate newBackendMessages against local synthetic messages
+          newBackendMessages = newBackendMessages.filter(newMsg => {
+              return !currentAgent.chatLog.some(localMsg => {
+                  if (localMsg.sender !== newMsg.sender) return false;
+                  if (localMsg.text === newMsg.text) return true;
+                  const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
+                  const strippedNew = newMsg.text.replace(tsRegex, '');
+                  const strippedLocal = localMsg.text.replace(tsRegex, '');
+                  return strippedNew === strippedLocal || newMsg.text.endsWith(localMsg.text);
+              });
           });
-          
-          if (allMessages.length > 0 || localOnly.length > 0) {
-            const newLog = capLog([...allMessages, ...localOnly].sort((a, b) => a.ts - b.ts));
-            setChatLog(prev => {
-              const lastPrev = prev[prev.length - 1];
-              const lastNew = newLog[newLog.length - 1];
-              if (prev.length === newLog.length && lastPrev?.id === lastNew?.id) {
-                return prev; // Prevent unnecessary re-renders and scroll yanking
+
+          // 2. Route new messages
+          if (newBackendMessages.length > 0) {
+             const lastCurrentMsg = currentAgent.chatLog[currentAgent.chatLog.length - 1];
+             const timeSinceLastMsg = lastCurrentMsg && lastCurrentMsg.ts ? newBackendMessages[0].ts - lastCurrentMsg.ts : 0;
+             
+             const isNewSession = currentAgent.chatLog.length > 0 && timeSinceLastMsg > 10 * 60 * 1000;
+                 
+             if (isNewSession) {
+                 useWorldStore.setState(state => {
+                     const a = state.agents.find(x => x.id === currentAgent.id);
+                     if (!a) return state;
+                     const conversations = [...(a.conversations || [])];
+                     const now = Date.now();
+                     const titleText = newBackendMessages.find(m => m.sender === "user")?.text.trim() || newBackendMessages[0].text.trim() || "New Activity";
+                     const title = titleText.length > 40 ? titleText.slice(0, 40).trimEnd() + "…" : titleText;
+                     
+                     conversations.push({
+                         id: `conv_${now}_${Math.random().toString(36).slice(2, 8)}`,
+                         title: title,
+                         messages: newBackendMessages,
+                         createdAt: now,
+                         lastActiveAt: now,
+                     });
+                     
+                     return {
+                         agents: state.agents.map(x => x.id === currentAgent.id ? { ...x, conversations } : x)
+                     };
+                 });
+                 allMessages = allMessages.filter(m => !newBackendMessages.some(n => n.id === m.id));
+             }
+          }
+
+          // 3. Update active chatLog
+          const isLatestView = !currentAgent.activeConversationId || 
+              (currentAgent.conversations && currentAgent.activeConversationId === [...currentAgent.conversations].sort((a,b) => b.lastActiveAt - a.lastActiveAt)[0]?.id);
+              
+          if (isLatestView) {
+              const localOnly = currentAgent.chatLog.filter(msg => {
+                if (allMessages.some((m: any) => m.id === msg.id)) return false;
+                if (allMessages.some((m: any) => {
+                  if (m.sender !== msg.sender) return false;
+                  if (m.text === msg.text) return true;
+                  const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
+                  const strippedM = m.text.replace(tsRegex, '');
+                  const strippedMsg = msg.text.replace(tsRegex, '');
+                  return strippedM === strippedMsg || m.text.endsWith(msg.text);
+                })) return false;
+                return true;
+              });
+              
+              if (allMessages.length > 0 || localOnly.length > 0) {
+                const newLog = capLog([...allMessages, ...localOnly].sort((a, b) => (a.ts || 0) - (b.ts || 0)));
+                setChatLog(prev => {
+                  const lastPrev = prev[prev.length - 1];
+                  const lastNew = newLog[newLog.length - 1];
+                  if (prev.length === newLog.length && lastPrev?.id === lastNew?.id) return prev;
+                  return newLog;
+                });
               }
-              return newLog;
-            });
+          } else {
+              const remainingNewMessages = newBackendMessages.filter(m => allMessages.some(a => a.id === m.id));
+              if (remainingNewMessages.length > 0) {
+                  const newLog = capLog([...currentAgent.chatLog, ...remainingNewMessages].sort((a,b) => (a.ts||0) - (b.ts||0)));
+                  setChatLog(newLog);
+              }
           }
 
         } catch (err) {
@@ -274,11 +484,15 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     }
   };
 
-  const handleSendMessage = async () => {
-    if (!message.trim() && attachments.length === 0) return;
+  const handleSendMessage = async (overrideText?: string) => {
+    if (loading) return;
+    const baseText = (overrideText ?? message).trim();
+    if (!baseText && attachments.length === 0) return;
 
-    let finalMessage = message.trim();
-    if (attachments.length > 0) {
+    abortRef.current = false;
+
+    let finalMessage = baseText;
+    if (!overrideText && attachments.length > 0) {
       const fileNames = attachments.map(a => a.name).join(", ");
       finalMessage += `\n\n[System Context: I have uploaded the following files to your workspace: ${fileNames}. Please analyze them if requested.]`;
     }
@@ -286,14 +500,17 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
       sender: "user",
-      text: message,
+      text: baseText,
       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      attachments: attachments.length > 0 ? [...attachments] : undefined,
+      ts: Date.now(),
+      attachments: !overrideText && attachments.length > 0 ? [...attachments] : undefined,
     };
 
     setChatLog(prev => capLog([...prev, userMsg]));
-    setMessage("");
-    setAttachments([]);
+    if (!overrideText) {
+      setMessage("");
+      setAttachments([]);
+    }
     setLoading(true);
 
     try {
@@ -312,6 +529,12 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         message: finalMessage,
       });
 
+      if (abortRef.current) {
+        if (!overrideText) setMessage(baseText);
+        setChatLog(prev => prev.filter(m => m.id !== userMsg.id));
+        return;
+      }
+
       const responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
 
       const agentMsg: ChatMessage = {
@@ -325,16 +548,6 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     } catch (error) {
       let friendlyError = String(error);
 
-      // ── Transient gateway-restart errors ─────────────────────────────────
-      // 1012 is WebSocket "Service Restart". OpenClaw raises this when the
-      // canopy-gateway container restarts in the middle of an agent's request
-      // — e.g. right after a Slack reconnect that called sync_gateway_channels,
-      // or during boot_sync_agents's one-time post-boot reapply restart.
-      //
-      // The system isn't actually broken; the agent's WS connection got
-      // dropped briefly. OpenClaw falls back to embedded mode, but the user
-      // sees a scary error. Retry once after a short wait for the gateway to
-      // come back, and only surface a friendly message if that also fails.
       const isGatewayRestart =
         friendlyError.includes("1012") ||
         friendlyError.includes("service restart") ||
@@ -343,14 +556,18 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
       if (isGatewayRestart) {
         try {
-          // Give the gateway ~6s to come back up (typical docker restart cycle
-          // is 3-5s for canopy-gateway). Then re-send the original message
-          // ONCE. If this succeeds, the user never sees the error at all.
           await new Promise(r => setTimeout(r, 6000));
           const retryResponse: any = await invoke("send_message", {
             agentId: agent.id,
             message: finalMessage,
           });
+          
+          if (abortRef.current) {
+            if (!overrideText) setMessage(baseText);
+            setChatLog(prev => prev.filter(m => m.id !== userMsg.id));
+            return;
+          }
+
           const retryText = typeof retryResponse === 'object'
             ? retryResponse?.response || retryResponse?.content || JSON.stringify(retryResponse)
             : String(retryResponse);
@@ -361,7 +578,6 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           };
           setChatLog(prev => capLog([...prev, retryMsg]));
-          // Bail out of the error path entirely — retry succeeded.
           return;
         } catch (retryErr) {
           friendlyError =
@@ -370,9 +586,6 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             "If this keeps happening, run the Diagnostics tab.";
         }
       } else if (friendlyError.includes("stopped container") || friendlyError.includes("OOM")) {
-        // Only auto-heal on actual container-stopped / OOM errors — NOT on Gateway Timeout.
-        // A Gateway Timeout means the agent is slow (container under load) — restarting
-        // the OrbStack VM makes it worse, not better. Let the user retry manually.
         setIsHealing(true);
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke("hard_reset_infrastructure").catch(ex => console.error("Hard reset failed:", ex));
@@ -380,9 +593,6 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         setIsHealing(false);
         friendlyError = "The gateway was restarted and agents re-initialized. Please try sending your message again!";
       } else if (friendlyError.includes("taking a long time") || friendlyError.includes("Gateway Timeout")) {
-        // Timeout — agent may not be registered yet (dir missing → agents add timed out on a previous boot).
-        // Fire boot_sync_agents in the background so the NEXT send attempt succeeds.
-        // We don't await it so the error message shows immediately. No VM restart — safe.
         const { invoke: inv } = await import('@tauri-apps/api/core');
         inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
         friendlyError = "The agent is taking a while to respond. Registration is being refreshed — please try again in 30 seconds.";
@@ -414,7 +624,6 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       
       setChatLog(prev => capLog([...prev, errorMsg]));
       
-      // Update global state using functional mapper to avoid stale 'agents' array
       useWorldStore.setState(state => ({
         agents: state.agents.map(a => a.id === agent.id ? { ...a, chatLog: [...a.chatLog, errorMsg] } : a)
       }));
@@ -423,12 +632,40 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     }
   };
 
+  const activeConv = agent.conversations?.find(c => c.id === agent.activeConversationId);
+  const firstUserMsg = chatLog.find(m => m.sender === "user");
+
+  let topic = activeConv?.title;
+  let startedAt = activeConv?.createdAt;
+
+  if (!topic && firstUserMsg) {
+    const rawTitle = firstUserMsg.text.trim();
+    topic = rawTitle.length > 40 ? rawTitle.slice(0, 40).trimEnd() + "…" : rawTitle;
+    startedAt = firstUserMsg.ts || Date.now();
+  }
+
+  const formatStartedTime = (ms: number) => {
+    if (!ms) return "";
+    const delta = Math.floor((Date.now() - ms) / 1000);
+    if (delta < 60) return "just now";
+    if (delta < 3600) return `${Math.floor(delta / 60)} minutes ago`;
+    if (delta < 86400) return `${Math.floor(delta / 3600)} hours ago`;
+    if (delta < 86400 * 2) return "yesterday";
+    if (delta < 86400 * 7) return `${Math.floor(delta / 86400)} days ago`;
+    return new Date(ms).toLocaleDateString();
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
       {!compact && (
-        <div style={{ marginBottom: 20 }}>
-          <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0" }}>Chat</h1>
-          <p style={{ fontSize: 14, color: "var(--text-sub)" }}>Communicate directly with {agent.name}.</p>
+        <div style={{ marginBottom: 12, padding: "0 10px", marginTop: 4 }}>
+          <div style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>
+            {topic ? (
+              <>Chat with <strong>{agent.name}</strong> about <strong>{topic}</strong>{startedAt ? ` started ${formatStartedTime(startedAt)}` : ''}</>
+            ) : (
+              <>Chat with <strong>{agent.name}</strong></>
+            )}
+          </div>
         </div>
       )}
 
@@ -448,20 +685,20 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
              if (t.includes("Read HEARTBEAT.md if it exists")) return false;
              if (t === "HEARTBEAT_OK" || t === "HEARTBEAT OK") return false;
              if (t.includes('"lastMorningQuote"')) return false;
-             // Hide Diagnostics-tab routing pings AND the agent's PONG reply. The ping
-             // carries the sentinel "[CANOPY_DIAG_PING]"; the reply is usually just
-             // "PONG" (the agent follows the prompt's instruction to reply with that
-             // single word). Filter both. Also hides any legacy variant from before
-             // we added the sentinel — the older message text was a fixed string.
              if (t.includes("CANOPY_DIAG_PING")) return false;
-             if (t.includes("System diagnostic ping. Please reply")) return false; // legacy
+             if (t.includes("System diagnostic ping. Please reply")) return false;
              if (t === "PONG" || t === "PONG.") return false;
              return true;
           }).map(msg => (
-            <div key={msg.id} style={{
-              display: "flex", flexDirection: "column",
-              alignItems: msg.sender === "user" ? "flex-end" : "flex-start",
-            }}>
+            <div
+              key={msg.id}
+              onMouseEnter={() => msg.sender === "agent" && setHoveredMsgId(msg.id)}
+              onMouseLeave={() => setHoveredMsgId(prev => prev === msg.id ? null : prev)}
+              style={{
+                display: "flex", flexDirection: "column",
+                alignItems: msg.sender === "user" ? "flex-end" : "flex-start",
+              }}
+            >
               <div style={{
                 maxWidth: "70%", padding: "12px 16px", borderRadius: 14,
                 background: msg.sender === "user"
@@ -521,19 +758,14 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
                   let text = msg.text.replace(/<think>/gi, "[THOUGHT_PROCESS]").replace(/<\/think>/gi, "[/THOUGHT_PROCESS]");
 
-                  // Remove injected context tags and timestamps from BOTH user and agent messages
-                  // Matches formats like [2026-05-13 17:55:47 UTC] or [2026-05-13T17:55:47Z]
-                  text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/gi, "");
-                  text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\][^\.\n]+\.\s*/gi, "");
-                  // Also strip plain brackets without trailing colons/periods
-                  text = text.replace(/\[\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*/gi, "");
+                  text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/gi, "");
+                  text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\][^\.\n]+\.\s*/gi, "");
+                  text = text.replace(/\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*/gi, "");
 
                   if (msg.sender === "user") {
-                      // 1. Remove queue headers
                       text = text.replace(/\[Queued messages while agent was busy\][\s\S]*?---\n?/i, "");
                       text = text.replace(/Queued #\d+\s*\(from[^)]+\)\s*/gi, "");
 
-                      // 2. Deduplicate exact adjacent text blocks
                       const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b);
                       const deduped = blocks.filter((item, pos, arr) => pos === 0 || item !== arr[pos - 1]);
                       text = deduped.join("\n\n");
@@ -541,146 +773,51 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                   }
 
                   const elements: React.ReactNode[] = [];
-
-                  // Extract thoughts
-                  const thoughtRegex = /\[THOUGHT_PROCESS\]([\s\S]*?)\[\/THOUGHT_PROCESS\]/g;
-                  let lastIndex = 0;
-                  let match;
-
-                  while ((match = thoughtRegex.exec(text)) !== null) {
-                    if (match.index > lastIndex) {
-                       const before = text.substring(lastIndex, match.index);
-                       if (before.trim()) elements.push(
-                         <div key={`text-${lastIndex}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
-                           <MDEditor.Markdown source={before} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
-                         </div>
-                       );
-                    }
-                    
-                    const thoughtText = match[1].trim();
-                    elements.push(
-                      <details key={`thought-${match.index}`} style={{ margin: "8px 0", padding: "8px 12px", background: "rgba(0,0,0,0.05)", borderRadius: 8, fontSize: 12, color: "var(--text-sub)", border: "1px solid rgba(0,0,0,0.05)" }}>
-                        <summary style={{ cursor: "pointer", fontWeight: 600, outline: "none", opacity: 0.8 }}>Thought Process</summary>
-                        <div style={{ marginTop: 8, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{thoughtText}</div>
-                      </details>
-                    );
-                    
-                    lastIndex = thoughtRegex.lastIndex;
-                  }
-
-                  if (lastIndex < text.length) {
-                     const remaining = text.substring(lastIndex);
-                     if (remaining.trim()) {
-                        const credentialRegex = /\[REQUEST_CREDENTIAL:\s*(.+?)\]/g;
-                        const interventionRegex = /\[REQUEST_BROWSER_INTERVENTION:\s*(.+?)\]/g;
-
-                        if (!remaining.includes("[REQUEST_CREDENTIAL:") && !remaining.includes("[REQUEST_BROWSER_INTERVENTION:")) {
-                           elements.push(
-                             <div key={`text-${lastIndex}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
-                               <MDEditor.Markdown source={remaining} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
-                             </div>
-                           );
-                        } else {
-                           let fragments = [{ type: 'text', content: remaining }];
-                           
-                           // First pass: Credentials
-                           let temp1: any[] = [];
-                           fragments.forEach(f => {
-                               if (f.type !== 'text') { temp1.push(f); return; }
-                               const parts = f.content.split(credentialRegex);
-                               parts.forEach((p: string, i: number) => {
-                                   if (i % 2 === 1) temp1.push({ type: 'cred', content: p.trim() });
-                                   else if (p) temp1.push({ type: 'text', content: p });
-                               });
-                           });
-                           
-                           // Second pass: Interventions
-                           let temp2: any[] = [];
-                           temp1.forEach(f => {
-                               if (f.type !== 'text') { temp2.push(f); return; }
-                               const parts = f.content.split(interventionRegex);
-                               parts.forEach((p: string, i: number) => {
-                                   if (i % 2 === 1) temp2.push({ type: 'interv', content: p.trim() });
-                                   else if (p) temp2.push({ type: 'text', content: p });
-                               });
-                           });
-                           
-                           // Render
-                           temp2.forEach((f, i) => {
-                               if (f.type === 'text') {
-                                   elements.push(
-                                       <div key={`frag-${i}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
-                                           <MDEditor.Markdown source={f.content} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
-                                       </div>
-                                   );
-                               } else if (f.type === 'cred') {
-                                   const domain = f.content;
-                                   elements.push(
-                                      <div key={`cred-${i}`} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "var(--background)", border: "1px solid var(--border-subtle)", borderRadius: 8, color: "var(--text-main)" }}>
-                                        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                                          <Lock size={14} /> Login Required
-                                        </div>
-                                        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 10 }}>
-                                          {agent.name} is requesting credentials to access <strong>{domain}</strong>.
-                                        </div>
-                                        <button 
-                                          onClick={() => setAuthDomain(domain)} 
-                                          style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", width: "100%" }}
-                                        >
-                                          Authorize in WebVault
-                                        </button>
-                                      </div>
-                                   );
-                               } else if (f.type === 'interv') {
-                                   const reason = f.content;
-                                   elements.push(
-                                       <div key={`interv-${i}`} style={{ marginTop: 8, marginBottom: 8, padding: 12, background: "rgba(212, 160, 74, 0.1)", border: "1px solid rgba(212, 160, 74, 0.3)", borderRadius: 8, color: "#D4A04A" }}>
-                                           <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                                               ⚠️ Agent Needs Help!
-                                           </div>
-                                           <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 10, color: "var(--text-main)" }}>
-                                               {agent.name} is stuck: <strong>{reason}</strong>
-                                           </div>
-                                           <div style={{ display: "flex", gap: 8 }}>
-                                               <button 
-                                                   onClick={async () => {
-                                                       try {
-                                                           await invoke("show_browser", { agentId: agent.id });
-                                                       } catch (e) {
-                                                           console.error(e);
-                                                       }
-                                                   }}
-                                                   style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", flex: 1 }}
-                                               >
-                                                   Bring Browser to Front
-                                               </button>
-                                               <button 
-                                                   onClick={async () => {
-                                                       try {
-                                                           await invoke("hide_browser", { agentId: agent.id });
-                                                           const sysMsg: ChatMessage = {
-                                                               id: Date.now().toString(),
-                                                               sender: "user",
-                                                               text: `I have completed the manual intervention in the browser. You may proceed.`,
-                                                               time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-                                                           };
-                                                           setChatLog(prev => capLog([...prev, sysMsg]));
-                                                           invoke("send_message", { agentId: agent.id, message: sysMsg.text });
-                                                       } catch (e) {
-                                                           console.error(e);
-                                                       }
-                                                   }}
-                                                   style={{ padding: "6px 12px", background: "transparent", color: "var(--text-main)", border: "1px solid var(--border-subtle)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
-                                               >
-                                                   Hide & Proceed
-                                               </button>
-                                           </div>
-                                       </div>
-                                   );
-                               }
-                           });
-                        }
-                     }
+                  const thoughtStartRegex = /\[THOUGHT_PROCESS\]/i;
+                  const thoughtEndRegex = /\[\/THOUGHT_PROCESS\]/i;
+                  
+                  let remainingText = text;
+                  while (remainingText.length > 0) {
+                      const startIndex = remainingText.search(thoughtStartRegex);
+                      if (startIndex === -1) {
+                          if (remainingText.trim()) {
+                              elements.push(
+                                <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                                  <MDEditor.Markdown source={remainingText} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                                </div>
+                              );
+                          }
+                          break;
+                      }
+                      
+                      const before = remainingText.substring(0, startIndex);
+                      if (before.trim()) {
+                          elements.push(
+                            <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                              <MDEditor.Markdown source={before} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                            </div>
+                          );
+                      }
+                      
+                      remainingText = remainingText.substring(startIndex + "[THOUGHT_PROCESS]".length);
+                      const endIndex = remainingText.search(thoughtEndRegex);
+                      let thoughtText = "";
+                      if (endIndex === -1) {
+                          thoughtText = remainingText.trim();
+                          remainingText = "";
+                      } else {
+                          thoughtText = remainingText.substring(0, endIndex).trim();
+                          remainingText = remainingText.substring(endIndex + "[/THOUGHT_PROCESS]".length);
+                      }
+                      
+                      if (thoughtText) {
+                          elements.push(
+                              <details key={`thought-${elements.length}`} style={{ margin: "8px 0", padding: "8px 12px", background: "rgba(0,0,0,0.05)", borderRadius: 8, fontSize: 12, color: "var(--text-sub)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                                <summary style={{ cursor: "pointer", fontWeight: 600, outline: "none", opacity: 0.8 }}>Thought Process</summary>
+                                <div style={{ marginTop: 8, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{thoughtText}</div>
+                              </details>
+                          );
+                      }
                   }
                   
                   return <>{elements}</>;
@@ -690,8 +827,80 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 fontSize: 10, color: "var(--text-muted)", marginTop: 4,
                 paddingLeft: msg.sender === "agent" ? 4 : 0,
                 paddingRight: msg.sender === "user" ? 4 : 0,
+                display: "flex", alignItems: "center", gap: 8,
               }}>
-                {msg.sender === "agent" ? agent.name : "You"} · {msg.time}
+                <span>{msg.sender === "agent" ? agent.name : "You"} · {msg.time}</span>
+
+                {msg.sender === "agent" && (() => {
+                  const visible = hoveredMsgId === msg.id || likedMsgIds.has(msg.id);
+                  const liked = likedMsgIds.has(msg.id);
+                  const priorUser = findPriorUserMessage(msg.id);
+                  return (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      opacity: visible ? 1 : 0,
+                      pointerEvents: visible ? "auto" : "none",
+                      transition: "opacity 0.15s ease",
+                    }}>
+                      <button
+                        onClick={() => setLikedMsgIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+                          return next;
+                        })}
+                        title={liked ? "Liked" : "Mark as good"}
+                        style={{
+                          padding: 3, border: "none", background: "transparent",
+                          cursor: "pointer", borderRadius: 4,
+                          display: "flex", alignItems: "center",
+                          color: liked ? "#218380" : "var(--text-muted)",
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill={liked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/>
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!priorUser || loading) return;
+                          handleSendMessage(priorUser.text);
+                        }}
+                        disabled={!priorUser || loading}
+                        title={priorUser ? "Retry — send the same prompt again for a fresh reply" : "Nothing to retry"}
+                        style={{
+                          padding: 3, border: "none", background: "transparent",
+                          cursor: !priorUser || loading ? "not-allowed" : "pointer",
+                          borderRadius: 4, display: "flex", alignItems: "center",
+                          color: "var(--text-muted)",
+                          opacity: !priorUser || loading ? 0.4 : 1,
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (!priorUser) return;
+                          setMessage(priorUser.text);
+                        }}
+                        disabled={!priorUser}
+                        title={priorUser ? "Edit my prompt and re-send" : "No prompt to edit"}
+                        style={{
+                          padding: 3, border: "none", background: "transparent",
+                          cursor: !priorUser ? "not-allowed" : "pointer",
+                          borderRadius: 4, display: "flex", alignItems: "center",
+                          color: "var(--text-muted)",
+                          opacity: !priorUser ? 0.4 : 1,
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                        </svg>
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           ))
@@ -745,7 +954,6 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         )}
       </div>
 
-      {/* Repair banner — shown when agent returns "access not configured" */}
       {needsRepair && (
         <div style={{
           marginTop: 10, padding: "12px 16px",
@@ -897,9 +1105,8 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         );
       })()}
 
-      {/* Attachments Preview */}
       {attachments.length > 0 && (
-        <div style={{ display: "flex", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 4 }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, overflowX: "auto", paddingBottom: 4, paddingLeft: 10, paddingRight: 10 }}>
           {attachments.map((file, i) => (
             <div key={i} style={{ position: "relative", width: 60, height: 60, borderRadius: 8, border: "1px solid var(--border-subtle)", overflow: "hidden", flexShrink: 0 }}>
               {file.dataUrl.startsWith("data:image") ? (
@@ -920,8 +1127,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         </div>
       )}
 
-      {/* Input */}
-      <div style={{ display: "flex", gap: 8, marginTop: attachments.length > 0 ? 8 : 12, alignItems: "flex-end" }}>
+      <div style={{ display: "flex", gap: 8, marginTop: attachments.length > 0 ? 8 : 16, alignItems: "flex-end", padding: "0 10px 10px 10px" }}>
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={loading || !gatewayReady || agent.paused}
@@ -992,20 +1198,37 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             resize: "vertical", minHeight: "46px", maxHeight: "200px", boxSizing: "border-box"
           }}
         />
-        <button
-          onClick={handleSendMessage}
-          disabled={(!message.trim() && attachments.length === 0) || loading || !gatewayReady || agent.paused}
-          title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? "Agents are waking up, please wait..." : undefined}
-          style={{
-            padding: "14px 20px", borderRadius: 14, border: "none",
-            background: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
-            color: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
-            fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "pointer" : "default",
-            fontFamily: "inherit",
-            transition: "all 0.15s ease",
-            height: "46px"
-          }}
-        >{agent.paused ? "⏸" : !gatewayReady ? "⏳" : "Send"}</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {loading ? (
+            <button
+              onClick={handleStop}
+              style={{
+                padding: "14px 20px", borderRadius: 14, border: "none",
+                background: "var(--error-color, #e05252)",
+                color: "#fff",
+                fontSize: 13, fontWeight: 600, cursor: "pointer",
+                fontFamily: "inherit",
+                transition: "all 0.15s ease",
+                height: "46px"
+              }}
+            >Stop</button>
+          ) : (
+            <button
+              onClick={() => handleSendMessage()}
+              disabled={(!message.trim() && attachments.length === 0) || loading || !gatewayReady || agent.paused}
+              title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? "Agents are waking up, please wait..." : undefined}
+              style={{
+                padding: "14px 20px", borderRadius: 14, border: "none",
+                background: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
+                color: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
+                fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "pointer" : "default",
+                fontFamily: "inherit",
+                transition: "all 0.15s ease",
+                height: "46px"
+              }}
+            >{agent.paused ? "⏸" : !gatewayReady ? "⏳" : "Send"}</button>
+          )}
+        </div>
       </div>
 
       <style>{`

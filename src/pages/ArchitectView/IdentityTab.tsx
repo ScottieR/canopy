@@ -226,9 +226,9 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
         {/* Lower row: Interactive Selectors */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, height: 260 }}>
           
-          {/* Selector 0: Pigment (Robe Color) */}
+          {/* Selector 0: Color (Shell tint) */}
           <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>PIGMENT</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>COLOR</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, overflowY: "auto", flex: 1, paddingRight: 4, paddingBottom: 16 }}>
               {PASTEL_COLORS.map(color => (
                 <div key={color}

@@ -15,7 +15,8 @@ import { TerminalPane } from './TerminalPane';
 import { OverviewTab } from './OverviewTab';
 import { IdentityTab } from './IdentityTab';
 import { PersonalityTab } from './PersonalityTab';
-import { PermissionsTab } from './PermissionsTab';
+// PermissionsTab was merged into ConnectionsTab (Skills & Access). Kept in the tree
+// for now as a reference but no longer imported or rendered.
 
 import { SpendTab } from './SpendTab';
 import { ActivityTab } from './ActivityTab';
@@ -43,6 +44,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
   const [openclawStatusOutput, setOpenclawStatusOutput] = useState<string>("");
   const [showDiagnosticsPane, setShowDiagnosticsPane] = useState(false);
   const [showTerminalPane, setShowTerminalPane] = useState(false);
+  const [terminalCommand, setTerminalCommand] = useState<string>("");
   const [isAgentMenuOpen, setIsAgentMenuOpen] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
   const [showUpdateTip, setShowUpdateTip] = useState(false);
@@ -68,6 +70,13 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
       scrollContainerRef.current.scrollTop = scrollPositions.current[architectTab] || 0;
     }
   }, [architectTab]);
+
+  // Redirect: the old standalone Permissions tab was merged into Skills & Access.
+  // Any persisted state, deep-link, or in-app navigation that still points at
+  // "permissions" should land on "connections" instead, not a blank pane.
+  useEffect(() => {
+    if (architectTab === "permissions") setArchitectTab("connections");
+  }, [architectTab, setArchitectTab]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     scrollPositions.current[architectTab] = e.currentTarget.scrollTop;
@@ -114,19 +123,19 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           errors.push(`Missing API Keys for: ${res.missing_keys.join(', ')}. Please configure them in setup.`);
         }
         if (res.active_default_model !== res.expected_model) {
-          errors.push(`Model Mismatch: OpenClaw fallback model is stuck on ${res.active_default_model} but it should be ${res.expected_model} based on your active API keys.`);
+          errors.push(`Model mismatch: the agent is using ${res.active_default_model}, but it should be ${res.expected_model} based on your API keys. Auto-repair will fix this.`);
         }
         if (res.port_mismatch) {
           errors.push("Port configuration mismatch detected on gateway proxy.");
         }
         if (!res.container_running) {
-          errors.push("The OpenClaw gateway container is entirely offline. Ensure Docker is running.");
+          errors.push("The local engine is offline. Open OrbStack to bring it back up — Canopy will reconnect automatically.");
         }
         setDiagErrors(errors);
         setDiagSuccess("");
         if (btn) btn.innerText = "Errors Found";
       } else if (statusStr && statusStr.toLowerCase().includes("error")) {
-        setDiagErrors(["OpenClaw Status check reported trailing service errors. Please view the diagnostic logs below!"]);
+        setDiagErrors(["The agent reported some warnings — open the advanced log below for details."]);
         setDiagSuccess("");
         if (btn) btn.innerText = "Check Logs";
       } else {
@@ -153,15 +162,17 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
   };
 
 
+  // Tabs are ordered by the user's mental model: who they are → how they think → what they can do → what they've done.
+  // IDs stay stable so persisted state and any deep-links don't break — only labels and order change.
   const tabs = [
-    { id: "overview", label: "Overview", icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
-    { id: "activity", label: "Activity", icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
-    { id: "identity", label: "3D Identity", icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
-    { id: "browser", label: "Browser", icon: <path d="M22 12H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" /> }, // Generic monitor/browser icon path
-    { id: "personality", label: "Brain", icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
-    { id: "connections", label: "Connections", icon: <path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" /> },
-    { id: "spend", label: "Spend", icon: <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" /> },
-    { id: "diagnostics", label: "Diagnostics", icon: <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path> },
+    { id: "overview",    label: "Home",            icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
+    { id: "identity",    label: "Appearance",      icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
+    { id: "personality", label: "Instructions",    icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
+    { id: "connections", label: "Skills & Access", icon: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /> },
+    { id: "browser",     label: "Web Browser",     icon: <path d="M22 12H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" /> },
+    { id: "activity",    label: "Activity",        icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
+    { id: "spend",       label: "Spending",        icon: <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" /> },
+    { id: "diagnostics", label: "Diagnostics",     icon: <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path> },
   ];
 
   const SvgIcon = ({ children, size = 20 }: { children: React.ReactNode; size?: number }) => (
@@ -185,9 +196,9 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#218380" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>
               </div>
             </div>
-            <h2 style={{ fontSize: 22, fontWeight: 700, color: "var(--text-main)", marginBottom: 16 }}>Auto-Healing Engine...</h2>
+            <h2 style={{ fontSize: 22, fontWeight: 700, color: "var(--text-main)", marginBottom: 16 }}>Restarting your agent…</h2>
             <p style={{ fontSize: 15, color: "var(--text-sub)", lineHeight: 1.6 }}>
-              It looks like your underlying agent infrastructure got overloaded. We are safely flushing the environment buffers and waking the engines back up. This usually takes just a few seconds.
+              Something got stuck, so we're cleanly restarting the workspace. This usually takes about 10 seconds.
             </p>
           </div>
         </div>
@@ -217,7 +228,14 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
         {/* Agent Identity */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
           <div style={{ width: 36, height: 36, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", background: `${agent.robeColor || "#CCC"}15`, boxShadow: `0 0 0 1px ${agent.robeColor || "#CCC"}40` }}>
-            <LobsterIcon size={32} role={agent.role} agentImage={agent.image} shellColor={agent.robeColor} accentColor={agent.accentColor} />
+            <LobsterIcon
+              size={32}
+              role={agent.role}
+              agentImage={agent.image}
+              shellColor={agent.robeColor}
+              accentColor={agent.accentColor}
+              reactState={agent.paused ? "off" : agent.status === "thinking" ? "thinking" : agent.status === "error" ? "error" : "idle"}
+            />
           </div>
           <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -349,7 +367,10 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
                 {agent.paused ? "▶ Resume Agent" : "⏸ Pause Agent"}
               </button>
               <button
-                onClick={() => setShowTerminalPane(true)}
+                onClick={() => {
+                  setTerminalCommand("");
+                  setShowTerminalPane(true);
+                }}
                 style={{ width: "100%", padding: "8px 12px", background: "var(--surface-base)", color: "var(--text-main)", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 6, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
               >
                 <Terminal size={14} /> Open Agent Terminal
@@ -389,7 +410,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
 
       {/* ── Main Content ── */}
       {showTerminalPane ? (
-        <TerminalPane agent={agent} onClose={() => setShowTerminalPane(false)} />
+        <TerminalPane agent={agent} onClose={() => setShowTerminalPane(false)} initialCommand={terminalCommand} />
       ) : showDiagnosticsPane ? (
         <div style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column", position: "relative", background: "var(--surface-base)" }}>
           <button
@@ -400,7 +421,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           </button>
 
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, paddingRight: 32 }}>
-            <h1 style={{ fontSize: 24, fontWeight: 800, color: "var(--text-main)", margin: 0 }}>System Diagnostics</h1>
+            <h1 style={{ fontSize: 24, fontWeight: 800, color: "var(--text-main)", margin: 0 }}>Diagnostics</h1>
             {openclawStatusOutput && (
               <button
                 onClick={runDiagnostics}
@@ -411,7 +432,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
               </button>
             )}
           </div>
-          <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24 }}>Real-time audit of your OpenClaw agent status</p>
+          <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24 }}>Real-time check of {agent.name}'s health and configuration.</p>
 
           {!openclawStatusOutput && diagErrors.length === 0 && !diagSuccess && (
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: "40px 0", color: "var(--text-sub)" }}>
@@ -482,10 +503,16 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           {architectTab === "overview" && <OverviewTab key={agent.id} agent={agent} onUpdate={() => setShowUpdateTip(true)} onNavigate={setArchitectTab} />}
           {architectTab === "identity" && <IdentityTab key={agent.id} agent={agent} />}
           {architectTab === "personality" && <PersonalityTab key={agent.id} agent={agent} />}
-          {architectTab === "connections" && <ConnectionsTab key={agent.id} agent={agent} />}
+          {architectTab === "connections" && <ConnectionsTab key={agent.id} agent={agent} onOpenTerminal={(cmd) => {
+            if (cmd) setTerminalCommand(cmd);
+            setShowTerminalPane(true);
+          }} />}
+          {/* The legacy "permissions" tab was merged into Skills & Access. Anything
+              still routing to `permissions` (e.g. saved deep-links) falls through
+              to Skills & Access via the redirect effect below. */}
           {architectTab === "browser" && <BrowserTab key={agent.id} agent={agent} />}
           {architectTab === "spend" && <SpendTab key={agent.id} agent={agent} />}
-          {architectTab === "activity" && <ActivityTab key={agent.id} agent={agent} />}
+          {architectTab === "activity" && <ActivityTab key={agent.id} agent={agent} onNavigate={setArchitectTab} />}
           {architectTab === "diagnostics" && <DiagnosticsTab key={agent.id} agent={agent} onNavigate={setArchitectTab} />}
         </div>
       )}
