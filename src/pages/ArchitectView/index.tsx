@@ -486,7 +486,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           {architectTab === "browser" && <BrowserTab key={agent.id} agent={agent} />}
           {architectTab === "spend" && <SpendTab key={agent.id} agent={agent} />}
           {architectTab === "activity" && <ActivityTab key={agent.id} agent={agent} />}
-          {architectTab === "diagnostics" && <DiagnosticsTab key={agent.id} agent={agent} />}
+          {architectTab === "diagnostics" && <DiagnosticsTab key={agent.id} agent={agent} onNavigate={setArchitectTab} />}
         </div>
       )}
     </div>

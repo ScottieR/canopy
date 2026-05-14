@@ -12,6 +12,16 @@ import MDEditor from "@uiw/react-md-editor";
 import { invoke } from "@tauri-apps/api/core";
 import { PasswordInput } from "../../components/shared/PasswordInput";
 
+// Cap on per-agent in-memory chat history. Beyond this we drop the *oldest* messages.
+// Unbounded growth of `chatLog` was implicated in white-screen-while-idle crashes —
+// the React tree would slow to a crawl and eventually OOM the webview on long sessions.
+// The full conversation history still lives in the gateway DB; this only trims what
+// the React component keeps in memory and re-renders.
+const CHAT_LOG_CAP = 500;
+function capLog(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.length > CHAT_LOG_CAP ? msgs.slice(-CHAT_LOG_CAP) : msgs;
+}
+
 export // ─── Chat / Communion Component ──────────────────────────────────────────────
 
 function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boolean }) {
@@ -35,7 +45,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     }, 500);
     return () => clearTimeout(handler);
   }, [message, agent.id]);
-  const [chatLog, setChatLog] = useState<ChatMessage[]>(agent.chatLog);
+  const [chatLog, setChatLog] = useState<ChatMessage[]>(capLog(agent.chatLog));
   const [loading, setLoading] = useState(false);
   const [needsRepair, setNeedsRepair] = useState(false);
   const [isHealing, setIsHealing] = useState(false);
@@ -111,11 +121,29 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
           // Sort chronologically (oldest to newest for chat layout)
           const allMessages = [...localMessages].sort((a, b) => a.ts - b.ts);
           
-          // Retain any locally generated UI messages (like system errors) that aren't in the canonical backend
-          const localOnly = agent.chatLog.filter(msg => !allMessages.some((m: any) => m.id === msg.id) && msg.text.includes("⚠️ **System"));
+          // Retain locally generated messages that aren't in the canonical backend.
+          //
+          // Previously this only kept "⚠️ **System..." messages, which silently deleted
+          // every other local-only message on refresh — including agent "thinking" /
+          // intermediate-status messages, locally-appended retries, and anything else
+          // the backend doesn't persist. Now we keep all local messages and only drop
+          // the ones the backend clearly already has.
+          //
+          // Two dedup checks against the backend list:
+          //   1. ID match  — backend persisted this exact message (cheap path).
+          //   2. Same sender + same text — synthetic local IDs (Date.now()) won't match
+          //      backend UUIDs, so we also collapse content-equivalent duplicates that
+          //      would otherwise show up twice when the backend catches up.
+          //
+          // Anything else (true local-only, like thinking) survives.
+          const localOnly = agent.chatLog.filter(msg => {
+            if (allMessages.some((m: any) => m.id === msg.id)) return false;
+            if (allMessages.some((m: any) => m.sender === msg.sender && m.text === msg.text)) return false;
+            return true;
+          });
           
           if (allMessages.length > 0 || localOnly.length > 0) {
-            const newLog = [...allMessages, ...localOnly].sort((a, b) => a.ts - b.ts);
+            const newLog = capLog([...allMessages, ...localOnly].sort((a, b) => a.ts - b.ts));
             setChatLog(prev => {
               const lastPrev = prev[prev.length - 1];
               const lastNew = newLog[newLog.length - 1];
@@ -177,7 +205,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         text: `I have securely added the credentials for ${authDomain} to your WebVault. Please try your task again.`,
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
-      setChatLog(prev => [...prev, sysMsg]);
+      setChatLog(prev => capLog([...prev, sysMsg]));
       
       invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
       
@@ -231,7 +259,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         text: `I have granted you access to the existing credentials for ${authDomain}. Please try your task again.`,
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
-      setChatLog(prev => [...prev, sysMsg]);
+      setChatLog(prev => capLog([...prev, sysMsg]));
       invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
       
       setAuthDomain(null);
@@ -263,7 +291,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       attachments: attachments.length > 0 ? [...attachments] : undefined,
     };
 
-    setChatLog(prev => [...prev, userMsg]);
+    setChatLog(prev => capLog([...prev, userMsg]));
     setMessage("");
     setAttachments([]);
     setLoading(true);
@@ -293,10 +321,55 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
 
-      setChatLog(prev => [...prev, agentMsg]);
+      setChatLog(prev => capLog([...prev, agentMsg]));
     } catch (error) {
       let friendlyError = String(error);
-      if (friendlyError.includes("stopped container") || friendlyError.includes("OOM")) {
+
+      // ── Transient gateway-restart errors ─────────────────────────────────
+      // 1012 is WebSocket "Service Restart". OpenClaw raises this when the
+      // canopy-gateway container restarts in the middle of an agent's request
+      // — e.g. right after a Slack reconnect that called sync_gateway_channels,
+      // or during boot_sync_agents's one-time post-boot reapply restart.
+      //
+      // The system isn't actually broken; the agent's WS connection got
+      // dropped briefly. OpenClaw falls back to embedded mode, but the user
+      // sees a scary error. Retry once after a short wait for the gateway to
+      // come back, and only surface a friendly message if that also fails.
+      const isGatewayRestart =
+        friendlyError.includes("1012") ||
+        friendlyError.includes("service restart") ||
+        friendlyError.includes("gateway closed") ||
+        friendlyError.includes("Gateway agent failed");
+
+      if (isGatewayRestart) {
+        try {
+          // Give the gateway ~6s to come back up (typical docker restart cycle
+          // is 3-5s for canopy-gateway). Then re-send the original message
+          // ONCE. If this succeeds, the user never sees the error at all.
+          await new Promise(r => setTimeout(r, 6000));
+          const retryResponse: any = await invoke("send_message", {
+            agentId: agent.id,
+            message: finalMessage,
+          });
+          const retryText = typeof retryResponse === 'object'
+            ? retryResponse?.response || retryResponse?.content || JSON.stringify(retryResponse)
+            : String(retryResponse);
+          const retryMsg: ChatMessage = {
+            id: (Date.now() + 1).toString(),
+            sender: "agent",
+            text: retryText,
+            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          };
+          setChatLog(prev => capLog([...prev, retryMsg]));
+          // Bail out of the error path entirely — retry succeeded.
+          return;
+        } catch (retryErr) {
+          friendlyError =
+            "The gateway briefly restarted (likely to apply a settings change) and the retry didn't go through either. " +
+            "Try sending your message again — the gateway should be back up now. " +
+            "If this keeps happening, run the Diagnostics tab.";
+        }
+      } else if (friendlyError.includes("stopped container") || friendlyError.includes("OOM")) {
         // Only auto-heal on actual container-stopped / OOM errors — NOT on Gateway Timeout.
         // A Gateway Timeout means the agent is slow (container under load) — restarting
         // the OrbStack VM makes it worse, not better. Let the user retry manually.
@@ -339,7 +412,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       
-      setChatLog(prev => [...prev, errorMsg]);
+      setChatLog(prev => capLog([...prev, errorMsg]));
       
       // Update global state using functional mapper to avoid stale 'agents' array
       useWorldStore.setState(state => ({
@@ -375,6 +448,14 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
              if (t.includes("Read HEARTBEAT.md if it exists")) return false;
              if (t === "HEARTBEAT_OK" || t === "HEARTBEAT OK") return false;
              if (t.includes('"lastMorningQuote"')) return false;
+             // Hide Diagnostics-tab routing pings AND the agent's PONG reply. The ping
+             // carries the sentinel "[CANOPY_DIAG_PING]"; the reply is usually just
+             // "PONG" (the agent follows the prompt's instruction to reply with that
+             // single word). Filter both. Also hides any legacy variant from before
+             // we added the sentinel — the older message text was a fixed string.
+             if (t.includes("CANOPY_DIAG_PING")) return false;
+             if (t.includes("System diagnostic ping. Please reply")) return false; // legacy
+             if (t === "PONG" || t === "PONG.") return false;
              return true;
           }).map(msg => (
             <div key={msg.id} style={{
@@ -440,16 +521,19 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
                   let text = msg.text.replace(/<think>/gi, "[THOUGHT_PROCESS]").replace(/<\/think>/gi, "[/THOUGHT_PROCESS]");
 
+                  // Remove injected context tags and timestamps from BOTH user and agent messages
+                  // Matches formats like [2026-05-13 17:55:47 UTC] or [2026-05-13T17:55:47Z]
+                  text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/gi, "");
+                  text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\][^\.\n]+\.\s*/gi, "");
+                  // Also strip plain brackets without trailing colons/periods
+                  text = text.replace(/\[\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*/gi, "");
+
                   if (msg.sender === "user") {
                       // 1. Remove queue headers
                       text = text.replace(/\[Queued messages while agent was busy\][\s\S]*?---\n?/i, "");
                       text = text.replace(/Queued #\d+\s*\(from[^)]+\)\s*/gi, "");
 
-                      // 2. Remove OpenClaw injected context tags
-                      text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+UTC\][^:\n]+:\s*/gi, "");
-                      text = text.replace(/(?:System:\s*)?\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+UTC\][^\.\n]+\.\s*/gi, "");
-
-                      // 3. Deduplicate exact adjacent text blocks
+                      // 2. Deduplicate exact adjacent text blocks
                       const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b);
                       const deduped = blocks.filter((item, pos, arr) => pos === 0 || item !== arr[pos - 1]);
                       text = deduped.join("\n\n");
@@ -580,7 +664,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                                                                text: `I have completed the manual intervention in the browser. You may proceed.`,
                                                                time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
                                                            };
-                                                           setChatLog(prev => [...prev, sysMsg]);
+                                                           setChatLog(prev => capLog([...prev, sysMsg]));
                                                            invoke("send_message", { agentId: agent.id, message: sysMsg.text });
                                                        } catch (e) {
                                                            console.error(e);
@@ -784,7 +868,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                       text: `I am denying the request for credentials to ${authDomain}. Please try to find a different approach or skip this step.`,
                       time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
                     };
-                    setChatLog(prev => [...prev, sysMsg]);
+                    setChatLog(prev => capLog([...prev, sysMsg]));
                     invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
                     setAuthDomain(null); setAuthError(""); setForceNewCred(false); setSelectedCreds([]);
                   }}

@@ -2798,6 +2798,10 @@ pub async fn ping_agent_routing(agent_id: String) -> Result<bool, String> {
         return Err("Invalid agent ID format".to_string());
     }
 
+    // Sentinel string lets ChatTab filter both the ping AND the agent's PONG reply out
+    // of the visible chat. Without this, every routing test pollutes the user's chat
+    // history with technical noise. Keep the sentinel stable — the ChatTab regex
+    // (`CANOPY_DIAG_PING`) depends on it.
     let cmd_future = get_docker_command()
         .args([
             "exec",
@@ -2809,7 +2813,7 @@ pub async fn ping_agent_routing(agent_id: String) -> Result<bool, String> {
             "--agent",
             &agent_id,
             "--message",
-            "System diagnostic ping. Please reply 'PONG'.",
+            "[CANOPY_DIAG_PING] Internal routing check — reply only with the single word PONG. This message is hidden from the user.",
             "--json"
         ])
         .output();

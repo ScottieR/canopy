@@ -94,6 +94,18 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 jit_server::start_jit_server(jit_handle).await;
             });
+
+            // Start the shared browser bridge that OpenClaw connects to as its
+            // `browser.cdpUrl`. Idempotent — second call (e.g. after a hot reload
+            // in dev) is a no-op because the listener bind fails fast on EADDRINUSE.
+            // See `preflight_write_openclaw_json` in docker.rs for the matching
+            // `browser.attachOnly` + `browser.cdpUrl` config that points OpenClaw here.
+            let browser_bridge_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = browser_manager::ensure_shared_browser_bridge(browser_bridge_handle).await {
+                    tracing::warn!("Shared browser bridge failed to start: {}", e);
+                }
+            });
             
             // Start Activity Sniffer Daemon
             activity_sniffer::start_sniffer_daemon(handle.clone());
@@ -225,6 +237,8 @@ pub fn run() {
             browser_manager::hide_browser,
             browser_manager::get_agent_allowed_domains,
             browser_manager::update_agent_allowed_domains,
+            browser_manager::start_browser_stream,
+            browser_manager::stop_browser_stream,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,

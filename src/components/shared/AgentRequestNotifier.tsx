@@ -69,14 +69,24 @@ export function AgentRequestNotifier({
                 if (!isMounted) return;
                 
                 const unlisten = await listen<AttentionToast>("agent_attention_requested", (event) => {
-                    const payload = event.payload;
-                    setAttentionToasts(prev => {
-                        const filtered = prev.filter(t => t.agent_id !== payload.agent_id);
-                        return [payload, ...filtered].slice(0, 3);
-                    });
-                    setTimeout(() => {
-                        setAttentionToasts(prev => prev.filter(t => t.request_id !== payload.request_id));
-                    }, TOAST_TIMEOUT_MS);
+                    // Defensive: a malformed payload from the Rust side should not crash
+                    // the React tree (we saw white-screen incidents while the app sat idle).
+                    try {
+                        const payload = event?.payload;
+                        if (!payload || typeof payload.request_id !== "string" || typeof payload.agent_id !== "string") {
+                            console.warn("agent_attention_requested: malformed payload, ignoring", payload);
+                            return;
+                        }
+                        setAttentionToasts(prev => {
+                            const filtered = prev.filter(t => t.agent_id !== payload.agent_id);
+                            return [payload, ...filtered].slice(0, 3);
+                        });
+                        setTimeout(() => {
+                            setAttentionToasts(prev => prev.filter(t => t.request_id !== payload.request_id));
+                        }, TOAST_TIMEOUT_MS);
+                    } catch (err) {
+                        console.warn("agent_attention_requested handler error:", err);
+                    }
                 });
 
                 if (isMounted) {
@@ -110,7 +120,16 @@ export function AgentRequestNotifier({
                 if (!isMounted) return;
                 
                 const unlisten = await listen<PermissionPrompt>("agent_permission_requested", (event) => {
-                    setPendingPermission(prev => prev ?? event.payload);
+                    try {
+                        const payload = event?.payload;
+                        if (!payload || typeof payload.request_id !== "string" || typeof payload.agent_id !== "string" || typeof payload.permission_id !== "string") {
+                            console.warn("agent_permission_requested: malformed payload, ignoring", payload);
+                            return;
+                        }
+                        setPendingPermission(prev => prev ?? payload);
+                    } catch (err) {
+                        console.warn("agent_permission_requested handler error:", err);
+                    }
                 });
 
                 if (isMounted) {
@@ -144,7 +163,16 @@ export function AgentRequestNotifier({
                 if (!isMounted) return;
                 
                 const unlisten = await listen<ConnectionPrompt>("RequestConnection", (event) => {
-                    setPendingConnection(prev => prev ?? event.payload);
+                    try {
+                        const payload = event?.payload;
+                        if (!payload || typeof payload.agent_id !== "string" || typeof payload.service !== "string") {
+                            console.warn("RequestConnection: malformed payload, ignoring", payload);
+                            return;
+                        }
+                        setPendingConnection(prev => prev ?? payload);
+                    } catch (err) {
+                        console.warn("RequestConnection handler error:", err);
+                    }
                 });
 
                 if (isMounted) {

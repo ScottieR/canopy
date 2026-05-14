@@ -17,12 +17,23 @@ pub struct BrowserStatus {
 
 pub struct BrowserManager {
     active_browsers: Arc<Mutex<HashMap<String, (Child, BrowserStatus)>>>,
+    /// Per-agent visual-stream state — a refcount of how many UI consumers are
+    /// currently subscribed (BrowserTab, BrowserPopout, etc.) plus the JoinHandle
+    /// for the stream task. The stream task runs while count > 0 and is aborted
+    /// when the count drops to 0.
+    ///
+    /// Refcounting prevents the previous behaviour where the 2 FPS screenshot loop
+    /// ran for Chrome's entire lifetime regardless of whether any UI was watching,
+    /// piling `browser_stream_frame` Tauri events into the webview event queue —
+    /// our prime suspect for the "white screen after idle" crash.
+    stream_handles: Arc<Mutex<HashMap<String, (u32, tauri::async_runtime::JoinHandle<()>)>>>,
 }
 
 impl BrowserManager {
     pub fn new() -> Self {
         Self {
             active_browsers: Arc::new(Mutex::new(HashMap::new())),
+            stream_handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -181,9 +192,20 @@ impl BrowserManager {
             }
         };
         
-        if tokio::time::timeout(std::time::Duration::from_secs(5), find_url).await.is_err() {
+        // Wait up to 15 seconds for Chrome to print "DevTools listening on ws://" to
+        // stderr. Previously this was 5s — too tight for the first spawn against a cold
+        // profile dir, where Gatekeeper assessment, Spotlight indexing, and macOS
+        // defaults seeding can push Chrome's startup past 5 seconds. A failure here is
+        // expensive: the JIT bridge's connection handler bails silently, the client
+        // sees an immediate "Empty reply", and the user has no idea why. 15s costs
+        // nothing on warm spawns (Chrome usually prints in ~1s) and prevents the
+        // spurious failure mode on cold ones.
+        if tokio::time::timeout(std::time::Duration::from_secs(15), find_url).await.is_err() {
             let _ = child.kill().await;
-            return Err(anyhow::anyhow!("Timeout waiting for Chrome DevTools URL"));
+            return Err(anyhow::anyhow!(
+                "Chrome didn't print DevTools URL within 15s — user-data-dir may be locked at {}",
+                profile_path
+            ));
         }
         
         if cdp_endpoint.is_empty() {
@@ -206,17 +228,80 @@ impl BrowserManager {
 
         active.insert(agent_id.to_string(), (child, status.clone()));
 
-        // Start Visual Streaming loop
-        let agent_id_clone = agent_id.to_string();
-        let cdp_url = cdp_endpoint.clone();
-        tauri::async_runtime::spawn(async move {
-            stream_browser_visuals(app_handle, agent_id_clone, cdp_url).await;
-        });
+        // NOTE: Visual streaming is NO LONGER auto-started here. Previously this
+        // function kicked off a 2 FPS screenshot loop that ran for Chrome's entire
+        // lifetime, regardless of whether any UI was actually watching — piling
+        // `browser_stream_frame` Tauri events into the webview event queue and
+        // gradually exhausting renderer memory ("white screen after idle" crash).
+        //
+        // The visual stream is now opt-in via `start_browser_stream`, which the
+        // BrowserTab calls on mount and tears down on unmount. Other paths that
+        // need Chrome (the JIT bridge, the shared bridge, agent tools) don't need
+        // visuals and shouldn't pay the cost of capturing them.
+        let _ = app_handle; // keep the AppHandle parameter for future use
 
         Ok(status)
     }
 
+    /// Increment the subscriber refcount for an agent's visual stream. Starts the
+    /// 2 FPS loop on first subscriber. Idempotent on each call — N start calls need
+    /// N matching stop calls to actually tear down. Called by UI consumers
+    /// (BrowserTab, BrowserPopout) on mount.
+    pub async fn start_browser_stream(&self, app_handle: tauri::AppHandle, agent_id: &str) -> Result<()> {
+        let mut handles = self.stream_handles.lock().await;
+        if let Some((count, _)) = handles.get_mut(agent_id) {
+            *count += 1;
+            return Ok(());
+        }
+        // First subscriber — spawn the stream task if Chrome is up.
+        let cdp_url = {
+            let active = self.active_browsers.lock().await;
+            match active.get(agent_id) {
+                Some((_, status)) => status.cdp_endpoint.clone(),
+                None => return Ok(()), // browser not running yet — caller will retry on next browser spawn
+            }
+        };
+        let agent_id_owned = agent_id.to_string();
+        let handle = tauri::async_runtime::spawn(async move {
+            stream_browser_visuals(app_handle, agent_id_owned, cdp_url).await;
+        });
+        handles.insert(agent_id.to_string(), (1, handle));
+        Ok(())
+    }
+
+    /// Decrement the subscriber refcount. Aborts the stream task once the count
+    /// hits zero. Idempotent — extra stops are no-ops.
+    pub async fn stop_browser_stream(&self, agent_id: &str) {
+        let mut handles = self.stream_handles.lock().await;
+        let should_abort = match handles.get_mut(agent_id) {
+            Some((count, _)) => {
+                if *count > 1 {
+                    *count -= 1;
+                    false
+                } else {
+                    true
+                }
+            }
+            None => false,
+        };
+        if should_abort {
+            if let Some((_, h)) = handles.remove(agent_id) {
+                h.abort();
+            }
+        }
+    }
+
     pub async fn stop_browser(&self, agent_id: &str) -> Result<()> {
+        // Abort any visual-stream task first so it can't try to send screenshots
+        // to a Chrome that's about to die. Force-removes regardless of refcount —
+        // if Chrome's dying, there's nothing to stream anyway.
+        {
+            let mut handles = self.stream_handles.lock().await;
+            if let Some((_count, h)) = handles.remove(agent_id) {
+                h.abort();
+            }
+        }
+
         let mut active = self.active_browsers.lock().await;
         if let Some((mut child, _)) = active.remove(agent_id) {
             let pid = child.id().unwrap_or(0);
@@ -225,10 +310,10 @@ impl BrowserManager {
                 Err(e) => tracing::error!("Failed to gracefully kill Chrome process (PID {}) for agent {}: {}", pid, agent_id, e),
             }
         }
-        
+
         // Improved Process Cleanup: ensure child processes are fully reaped
         self.kill_leftover_processes(agent_id).await;
-        
+
         Ok(())
     }
 
@@ -250,16 +335,32 @@ pub async fn start_machine_browser(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<BrowserStatus, String> {
-    let status = state.start_browser(app_handle, &agent_id).await.map_err(|e| e.to_string())?;
-    
-    // Inject the secure CDP endpoint returned by Chrome
-    let ws_endpoint = status.cdp_endpoint.replace("127.0.0.1", "host.docker.internal");
+    let status = state.start_browser(app_handle.clone(), &agent_id).await.map_err(|e| e.to_string())?;
+
+    // Point the agent at the JIT proxy port (NOT the raw Chrome CDP URL). Two reasons:
+    //
+    //  1. Chrome's DevTools server rejects any Host header that isn't `localhost` or an
+    //     IP address (DNS-rebinding protection). The container's connection naturally
+    //     sends `Host: host.docker.internal:<port>`, which Chrome refuses with
+    //     "Host header is specified and is not an IP address or localhost". The JIT
+    //     proxy rewrites the Host header to `127.0.0.1:<chrome_port>` before forwarding.
+    //
+    //  2. Chrome's WebSocket URL includes a per-session GUID (`/devtools/browser/<guid>`)
+    //     that changes every restart. The JIT proxy looks up the current GUID at
+    //     connection time, so the agent's stored env var stays stable across Chrome
+    //     respawns. Pointing at the raw URL would leave the agent with a dead GUID
+    //     the moment Chrome restarts.
+    //
+    // Same env URL shape used by `sync_agent_skills` when the user toggles the browser
+    // capability — single source of truth for "where does the agent connect".
+    let proxy_port = enable_jit_proxy(app_handle, agent_id.clone()).await.map_err(|e| e.to_string())?;
+    let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
     let _ = crate::openclaw::get_docker_command()
         .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
                "openclaw", "agents", "edit", &agent_id,
                "--env", &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint)])
         .output().await;
-        
+
     Ok(status)
 }
 
@@ -277,6 +378,28 @@ pub async fn get_browser_status(
     agent_id: String,
 ) -> Result<Option<BrowserStatus>, String> {
     state.get_status(&agent_id).await.map_err(|e| e.to_string())
+}
+
+/// Called by BrowserTab on mount. Begins the 2 FPS visual-stream loop for this
+/// agent, but only if Chrome is already running. Safe to call multiple times.
+#[tauri::command]
+pub async fn start_browser_stream(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+) -> Result<(), String> {
+    state.start_browser_stream(app_handle, &agent_id).await.map_err(|e| e.to_string())
+}
+
+/// Called by BrowserTab on unmount. Stops the visual-stream loop for this agent.
+/// Idempotent — safe to call even if no stream is running.
+#[tauri::command]
+pub async fn stop_browser_stream(
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+) -> Result<(), String> {
+    state.stop_browser_stream(&agent_id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -336,6 +459,282 @@ pub async fn reset_machine_browsers(
     Ok(())
 }
 
+/// Per-agent-id "only one resolve at a time" lock for the shared bridge.
+///
+/// The bridge's resolve_endpoint() does a `get_status` followed by `start_browser`
+/// if needed. Without serialization, two near-simultaneous bridge connections can
+/// both observe `get_status == None`, both call `start_browser`, and the second one
+/// kills the Chrome the first one just spawned (because `start_browser` removes any
+/// existing entry at the top before spawning). Whichever task lost the race then
+/// gets `Connection refused` when it tries to use its now-dead Chrome.
+///
+/// Acquiring this lock once across get-then-start guarantees only one resolve runs
+/// at a time for the shared browser. Actual CDP traffic still flows fully in parallel
+/// — the lock is held only during the (fast) status check and (slow but one-time)
+/// spawn, not during the WebSocket lifetime.
+///
+/// One key per agent id; the shared bridge always uses "shared-browser". Keeping it
+/// per-agent leaves the door open for future per-agent Chromes without a refactor.
+fn resolve_lock_for(agent_id: &str) -> &'static tokio::sync::Mutex<()> {
+    use std::sync::Mutex as StdMutex;
+    use std::sync::OnceLock;
+    static LOCKS: OnceLock<StdMutex<std::collections::HashMap<String, &'static tokio::sync::Mutex<()>>>> =
+        OnceLock::new();
+    let locks = LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+    let mut map = locks.lock().expect("resolve_lock_for: LOCKS poisoned");
+    if let Some(m) = map.get(agent_id) { return m; }
+    // Leak a fresh Mutex so we can return a `&'static`. The set of agent ids is bounded
+    // (current users, ever) so the leak is bounded too.
+    let leaked: &'static tokio::sync::Mutex<()> = Box::leak(Box::new(tokio::sync::Mutex::new(())));
+    map.insert(agent_id.to_string(), leaked);
+    leaked
+}
+
+/// Fixed port for the gateway's shared browser bridge.
+///
+/// OpenClaw's `browser.cdpUrl` config is a single global value, so all agents reach
+/// Chrome through this one port. The shared bridge is started once at gateway boot
+/// (see `ensure_shared_browser_bridge`) and lives for the lifetime of the Tauri app.
+///
+/// Chosen in the same numeric neighbourhood as other Canopy internal ports
+/// (gateway: 18799, JIT: 18802) so they're easy to spot together when troubleshooting.
+pub const SHARED_BRIDGE_PORT: u16 = 19800;
+
+/// Start the gateway-wide browser bridge that OpenClaw connects to as its `cdpUrl`.
+///
+/// Idempotent — if the port is already bound, returns immediately. Mirror of
+/// `enable_jit_proxy`'s loop but routes ALL connections to a single shared Chrome
+/// (one agent_id "shared-browser") so OpenClaw can use a single global cdpUrl.
+/// Per-agent data isolation still works because OpenClaw creates a separate
+/// Playwright BrowserContext for each agent session.
+pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let listener = match TcpListener::bind(("127.0.0.1", SHARED_BRIDGE_PORT)).await {
+        Ok(l) => l,
+        Err(_) => return Ok(()), // already bound — bridge is running
+    };
+
+    let active_connections = Arc::new(AtomicUsize::new(0));
+    let app_handle_clone = app_handle.clone();
+    const SHARED_AGENT_ID: &str = "shared-browser";
+
+    tauri::async_runtime::spawn(async move {
+        tracing::info!("Shared browser bridge listening on port {}", SHARED_BRIDGE_PORT);
+        loop {
+            if let Ok((mut client_stream, peer_addr)) = listener.accept().await {
+                // Trace every accepted TCP connection so we can answer "did OpenClaw
+                // actually try to connect?" without inferring from Chrome-lifecycle
+                // events. Cheap — only fires once per request.
+                tracing::info!("Shared bridge: accepted connection from {}", peer_addr);
+                let app_handle_inner = app_handle_clone.clone();
+                let conn_counter = active_connections.clone();
+
+                tauri::async_runtime::spawn(async move {
+                    conn_counter.fetch_add(1, Ordering::SeqCst);
+                    use tauri::Manager;
+                    let browser_manager = app_handle_inner.state::<BrowserManager>();
+
+                    // Resolve a live Chrome endpoint we can actually connect to.
+                    //
+                    // First try the cached endpoint. If `TcpStream::connect` returns
+                    // ConnectionRefused, the cached Chrome has died (killed externally,
+                    // crashed, OOM'd, or the user ran `pkill`) but our in-memory
+                    // BrowserManager state still claims it's alive. Drop the stale
+                    // entry, spawn a fresh Chrome, and try once more. Any failure mode
+                    // beyond that we log and bail — we'd rather fail loudly than thrash
+                    // spawn-retry-loop.
+                    //
+                    // This is the difference between a self-healing bridge and one
+                    // that silently times out every other request.
+                    async fn resolve_endpoint(
+                        bm: &BrowserManager,
+                        app: &tauri::AppHandle,
+                    ) -> Option<(String, u16, String)> {
+                        let cdp = match bm.get_status(SHARED_AGENT_ID).await {
+                            Ok(Some(status)) => {
+                                tracing::info!("Shared bridge: reusing live Chrome at {}", status.cdp_endpoint);
+                                status.cdp_endpoint
+                            }
+                            _ => match bm.start_browser(app.clone(), SHARED_AGENT_ID).await {
+                                Ok(status) => {
+                                    tracing::info!("Shared bridge: spawned fresh Chrome at {}", status.cdp_endpoint);
+                                    status.cdp_endpoint
+                                }
+                                Err(e) => {
+                                    tracing::error!("Shared bridge: Chrome spawn failed: {}", e);
+                                    return None;
+                                }
+                            }
+                        };
+                        let url = url::Url::parse(&cdp).ok()?;
+                        let host = url.host_str().unwrap_or("127.0.0.1").to_string();
+                        let port = url.port().unwrap_or(0);
+                        let path = url.path().to_string();
+                        Some((host, port, path))
+                    }
+
+                    // Serialise the resolve so two near-simultaneous connections can't
+                    // both observe `get_status == None` and race a Chrome spawn (which
+                    // would kill each other's instance — see resolve_lock_for docs).
+                    let _resolve_guard = resolve_lock_for(SHARED_AGENT_ID).lock().await;
+                    let Some((mut chrome_host, mut chrome_port, mut chrome_path)) =
+                        resolve_endpoint(&*browser_manager, &app_handle_inner).await
+                    else {
+                        drop(_resolve_guard);
+                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    };
+                    // Release the resolve lock BEFORE the network connect — once the
+                    // status is committed to the BrowserManager map, other callers can
+                    // safely observe it. Holding the lock through `TcpStream::connect`
+                    // would serialise every CDP request, killing throughput.
+                    drop(_resolve_guard);
+
+                    let mut chrome_stream = match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                        Ok(s) => s,
+                        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                            tracing::warn!(
+                                "Shared bridge: cached Chrome at {}:{} is dead ({}); respawning",
+                                chrome_host, chrome_port, e
+                            );
+                            // Recovery also goes through the resolve lock — otherwise N
+                            // concurrent failed connects each trigger a stop+start race.
+                            let _recover_guard = resolve_lock_for(SHARED_AGENT_ID).lock().await;
+                            // Drop the stale BrowserManager entry. stop_browser is
+                            // idempotent — it just removes from the map if present.
+                            let _ = browser_manager.stop_browser(SHARED_AGENT_ID).await;
+                            let Some((h, p, pth)) =
+                                resolve_endpoint(&*browser_manager, &app_handle_inner).await
+                            else {
+                                drop(_recover_guard);
+                                conn_counter.fetch_sub(1, Ordering::SeqCst);
+                                return;
+                            };
+                            drop(_recover_guard);
+                            chrome_host = h;
+                            chrome_port = p;
+                            chrome_path = pth;
+                            match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Shared bridge: fresh Chrome at {}:{} ALSO unreachable: {}",
+                                        chrome_host, chrome_port, e
+                                    );
+                                    conn_counter.fetch_sub(1, Ordering::SeqCst);
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                "Shared bridge: TcpStream::connect to Chrome at {}:{} failed: {}",
+                                chrome_host, chrome_port, e
+                            );
+                            conn_counter.fetch_sub(1, Ordering::SeqCst);
+                            return;
+                        }
+                    };
+
+                    // Past this point chrome_stream is live and chrome_path is current.
+                    tracing::debug!("Shared bridge: connected to Chrome CDP at {}:{}", chrome_host, chrome_port);
+                    let mut buf = Vec::with_capacity(8192);
+                    let mut chunk = [0u8; 4096];
+                    let mut header_end: Option<usize> = None;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while header_end.is_none() && std::time::Instant::now() < deadline {
+                        let n = match client_stream.read(&mut chunk).await {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(_) => break,
+                        };
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(pos) = find_header_terminator(&buf) {
+                            header_end = Some(pos);
+                        }
+                        if buf.len() > 64 * 1024 { break; }
+                    }
+
+                    let Some(end) = header_end else {
+                        tracing::warn!(
+                            "Shared bridge: incomplete HTTP headers from client (buffered {} bytes in {}ms)",
+                            buf.len(),
+                            deadline.saturating_duration_since(std::time::Instant::now()).as_millis()
+                        );
+                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    };
+
+                    let (headers, body) = buf.split_at(end + 4);
+                    let headers_str = String::from_utf8_lossy(headers).to_string();
+                    let first_line = headers_str.lines().next().unwrap_or("").to_string();
+                    tracing::info!("Shared bridge: forwarding request `{}` to Chrome", first_line);
+                    let rewritten = rewrite_cdp_request_headers(&headers_str, chrome_port, &chrome_path);
+
+                    if let Err(e) = chrome_stream.write_all(rewritten.as_bytes()).await {
+                        tracing::warn!("Shared bridge: failed to write headers to Chrome: {}", e);
+                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    }
+                    if !body.is_empty() {
+                        let _ = chrome_stream.write_all(body).await;
+                    }
+
+                    // Read Chrome's response so we can decide what to do with it:
+                    //
+                    //   • HTTP 101 (WebSocket upgrade)  → headers carry no URLs we care
+                    //     about; flush headers, then tunnel bidirectionally for the
+                    //     WebSocket frames.
+                    //   • HTTP /json/version & /json/list  → JSON body leaks Chrome's
+                    //     internal `127.0.0.1:<chrome_port>` in `webSocketDebuggerUrl`,
+                    //     which the container can't reach. Buffer the body, rewrite
+                    //     those references to point at the bridge instead, recompute
+                    //     Content-Length, send the corrected response.
+                    //   • Anything else  → flush whatever we got and tunnel; no
+                    //     rewriting needed (no URL leak).
+                    //
+                    // OpenClaw's `attachOnly: true` preflight relies on /json/version
+                    // returning a reachable `webSocketDebuggerUrl`. Without this
+                    // rewriting, Playwright reads the leaked URL, tries to connect
+                    // directly to `127.0.0.1:<chrome_port>` from inside the container,
+                    // and OpenClaw reports "Remote CDP for profile 'openclaw' is not
+                    // reachable" — which is exactly what the user just saw.
+                    let bridge_origin = format!("host.docker.internal:{}", SHARED_BRIDGE_PORT);
+                    let chrome_origin = format!("127.0.0.1:{}", chrome_port);
+
+                    if let Err(e) = relay_chrome_response_to_client(
+                        &mut chrome_stream,
+                        &mut client_stream,
+                        &chrome_origin,
+                        &bridge_origin,
+                    ).await {
+                        tracing::warn!("Shared bridge: response relay failed: {}", e);
+                    }
+
+                    // Idle-shutdown: the shared Chrome can be kept alive longer than the
+                    // per-agent JIT proxy used to — agents reconnect frequently across a
+                    // long session, so a tight 10s window would thrash. 60s strikes a
+                    // balance between memory savings and avoiding cold-start latency.
+                    let remaining = conn_counter.fetch_sub(1, Ordering::SeqCst) - 1;
+                    if remaining == 0 {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+                        if conn_counter.load(Ordering::SeqCst) == 0 {
+                            tracing::info!("Shared bridge: idle 60s — stopping shared Chrome");
+                            let _ = browser_manager.stop_browser(SHARED_AGENT_ID).await;
+                        }
+                    }
+                });
+            }
+        }
+    });
+
+    Ok(())
+}
+
 pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) -> Result<u16, String> {
     use tokio::net::{TcpListener, TcpStream};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -356,7 +755,7 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
     let active_connections = Arc::new(AtomicUsize::new(0));
     let agent_id_clone = agent_id.clone();
     let app_handle_clone = app_handle.clone();
-    
+
     tauri::async_runtime::spawn(async move {
         tracing::info!("JIT Proxy listening on port {} for {}", proxy_port, agent_id_clone);
         loop {
@@ -364,12 +763,12 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
                 let agent_id_inner = agent_id_clone.clone();
                 let app_handle_inner = app_handle_clone.clone();
                 let conn_counter = active_connections.clone();
-                
+
                 tauri::async_runtime::spawn(async move {
                     conn_counter.fetch_add(1, Ordering::SeqCst);
                     use tauri::Manager;
                     let browser_manager = app_handle_inner.state::<BrowserManager>();
-                    
+
                     let cdp_endpoint = match browser_manager.get_status(&agent_id_inner).await {
                         Ok(Some(status)) => status.cdp_endpoint,
                         _ => {
@@ -385,20 +784,74 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
                     };
 
                     let chrome_url = url::Url::parse(&cdp_endpoint).unwrap();
-                    let chrome_host = chrome_url.host_str().unwrap();
-                    let chrome_port = chrome_url.port().unwrap();
-                    let chrome_path = chrome_url.path();
+                    let chrome_host = chrome_url.host_str().unwrap_or("127.0.0.1").to_string();
+                    let chrome_port = chrome_url.port().unwrap_or(0);
+                    let chrome_path = chrome_url.path().to_string();
 
-                    if let Ok(mut chrome_stream) = TcpStream::connect((chrome_host, chrome_port)).await {
-                        let mut buf = [0u8; 4096];
-                        if let Ok(n) = client_stream.read(&mut buf).await {
-                            if n > 0 {
-                                let req = String::from_utf8_lossy(&buf[..n]);
-                                let modified_req = req.replace("GET / HTTP/1.1", &format!("GET {} HTTP/1.1", chrome_path));
-                                let _ = chrome_stream.write_all(modified_req.as_bytes()).await;
-                                let _ = tokio::io::copy_bidirectional(&mut client_stream, &mut chrome_stream).await;
+                    if let Ok(mut chrome_stream) = TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                        // Read the full HTTP request headers (up to "\r\n\r\n").
+                        //
+                        // Chrome DevTools enforces TWO protections we have to satisfy:
+                        //   1. The `Host:` header must be `localhost` or an IP address —
+                        //      a hostname like `host.docker.internal:PORT` causes the
+                        //      "Host header is specified and is not an IP address or
+                        //      localhost" rejection (Chrome's DNS-rebinding protection).
+                        //   2. The path must match an existing target — for the
+                        //      WebSocket browser endpoint that means `/devtools/browser/<guid>`.
+                        //
+                        // Strategy: read headers, replace `Host: …` with `Host: 127.0.0.1:<chrome_port>`,
+                        // and if the client requested `GET /` (Playwright with a no-path
+                        // CDP URL does this), rewrite the path to Chrome's actual browser
+                        // path so the upgrade lands on a real target. Everything else
+                        // (path, body) flows through unchanged.
+                        let mut buf = Vec::with_capacity(8192);
+                        let mut chunk = [0u8; 4096];
+                        let mut header_end: Option<usize> = None;
+                        let header_read_deadline = std::time::Instant::now()
+                            + std::time::Duration::from_secs(5);
+                        while header_end.is_none() && std::time::Instant::now() < header_read_deadline {
+                            let n = match client_stream.read(&mut chunk).await {
+                                Ok(0) => break,
+                                Ok(n) => n,
+                                Err(_) => break,
+                            };
+                            buf.extend_from_slice(&chunk[..n]);
+                            if let Some(pos) = find_header_terminator(&buf) {
+                                header_end = Some(pos);
+                            }
+                            if buf.len() > 64 * 1024 {
+                                // Defensive: don't unbounded-buffer if the client never sends \r\n\r\n.
+                                break;
                             }
                         }
+
+                        let Some(end) = header_end else {
+                            tracing::warn!("JIT Proxy: incomplete HTTP headers from client for {}", agent_id_inner);
+                            conn_counter.fetch_sub(1, Ordering::SeqCst);
+                            return;
+                        };
+
+                        let (headers, body) = buf.split_at(end + 4);
+                        let headers_str = String::from_utf8_lossy(headers).to_string();
+                        let rewritten_headers = rewrite_cdp_request_headers(
+                            &headers_str,
+                            chrome_port,
+                            &chrome_path,
+                        );
+
+                        // Write the rewritten headers, then any body bytes we
+                        // already over-read while looking for "\r\n\r\n".
+                        if chrome_stream.write_all(rewritten_headers.as_bytes()).await.is_err() {
+                            conn_counter.fetch_sub(1, Ordering::SeqCst);
+                            return;
+                        }
+                        if !body.is_empty() {
+                            let _ = chrome_stream.write_all(body).await;
+                        }
+
+                        // Tunnel the rest bidirectionally — this carries WebSocket frames
+                        // after the upgrade succeeds.
+                        let _ = tokio::io::copy_bidirectional(&mut client_stream, &mut chrome_stream).await;
                     }
 
                     let remaining = conn_counter.fetch_sub(1, Ordering::SeqCst) - 1;
@@ -415,6 +868,376 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
     });
 
     Ok(proxy_port)
+}
+
+/// Find the index of the byte BEFORE the `\r\n\r\n` end-of-headers terminator.
+/// Returns None if not found.
+fn find_header_terminator(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+/// Rewrite an outbound HTTP request from the JIT proxy to Chrome's CDP socket.
+///
+/// Two transformations:
+///   1. `Host:` header → `Host: 127.0.0.1:<chrome_port>`. Chrome's DevTools server
+///      rejects any other Host value as a DNS-rebinding defence — without this rewrite
+///      the agent's container-side Playwright connection times out with
+///      "Host header is specified and is not an IP address or localhost".
+///   2. A bare `GET / HTTP/...` path becomes `GET <chrome_path> HTTP/...` so the
+///      upgrade hits Chrome's actual `/devtools/browser/<guid>` endpoint. Any other
+///      path is forwarded unchanged so `/json/version`, `/json/list`, and
+///      `/devtools/...` all work too.
+///
+/// Pure function — broken out so we can unit-test the header surgery without spinning
+/// up a real socket.
+fn rewrite_cdp_request_headers(headers: &str, chrome_port: u16, chrome_path: &str) -> String {
+    let target_host = format!("127.0.0.1:{}", chrome_port);
+    let mut out = String::with_capacity(headers.len() + 64);
+    let mut first_line = true;
+    let mut host_replaced = false;
+
+    // The input ends with `\r\n\r\n` (HTTP header terminator). Splitting on `\r\n`
+    // yields trailing empty strings; if we naively `line + "\r\n"` every iteration we
+    // end up with `\r\n\r\n\r\n`. Chrome's DevTools HTTP parser treats the extra
+    // CRLF as malformed body framing and slams the connection shut with no response —
+    // which is exactly the "Empty reply from server" we kept seeing despite the
+    // forward log claiming success.
+    //
+    // Strip all trailing CRLFs from the input so we control the terminator ourselves.
+    let trimmed = headers.trim_end_matches("\r\n");
+
+    for line in trimmed.split("\r\n") {
+        if first_line {
+            first_line = false;
+            // Rewrite "GET / HTTP/1.1" → "GET <chrome_path> HTTP/1.1" but leave any
+            // explicit path the client sent in place.
+            if let Some(rewritten) = rewrite_request_line(line, chrome_path) {
+                out.push_str(&rewritten);
+            } else {
+                out.push_str(line);
+            }
+            out.push_str("\r\n");
+            continue;
+        }
+
+        // Case-insensitive Host: header check.
+        let line_trimmed = line.trim_start();
+        if line_trimmed.len() >= 5 && line_trimmed[..5].eq_ignore_ascii_case("host:") {
+            out.push_str("Host: ");
+            out.push_str(&target_host);
+            out.push_str("\r\n");
+            host_replaced = true;
+            continue;
+        }
+
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+
+    // If the client omitted a Host header entirely, inject ours so Chrome accepts.
+    if !host_replaced {
+        out.push_str("Host: ");
+        out.push_str(&target_host);
+        out.push_str("\r\n");
+    }
+
+    // Append the single header terminator — exactly one extra CRLF, no more.
+    out.push_str("\r\n");
+
+    out
+}
+
+/// Relay Chrome's response back to the client, rewriting any leaked Chrome-internal
+/// address (`127.0.0.1:<chrome_port>`) to the bridge address (`host.docker.internal:<SHARED_BRIDGE_PORT>`).
+///
+/// Three response shapes to handle:
+///
+///   1. **HTTP 101 Switching Protocols** — the WebSocket upgrade. Headers don't carry
+///      addressable URLs we care about. Flush the response headers verbatim and then
+///      tunnel both directions for the frame traffic.
+///
+///   2. **HTTP 200 with a JSON body** (`/json/version`, `/json/list`, etc) — Chrome
+///      embeds `webSocketDebuggerUrl: ws://127.0.0.1:<chrome_port>/...` in the body.
+///      Buffer the full body, do a literal string replace of `chrome_origin` →
+///      `bridge_origin`, recompute `Content-Length`, send the corrected response.
+///      This is the path OpenClaw's `attachOnly` preflight depends on.
+///
+///   3. **Anything else** — flush whatever we already buffered and stream the rest
+///      with `copy_bidirectional`. Most code paths through Chrome's DevTools server
+///      don't hit this branch.
+async fn relay_chrome_response_to_client(
+    chrome_stream: &mut tokio::net::TcpStream,
+    client_stream: &mut tokio::net::TcpStream,
+    chrome_origin: &str,
+    bridge_origin: &str,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // Read until end-of-headers. Same 5-second deadline as the request side.
+    let mut resp = Vec::with_capacity(8192);
+    let mut chunk = [0u8; 4096];
+    let mut header_end: Option<usize> = None;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while header_end.is_none() && std::time::Instant::now() < deadline {
+        let n = match chrome_stream.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => return Err(e),
+        };
+        resp.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = find_header_terminator(&resp) {
+            header_end = Some(pos);
+            break;
+        }
+        if resp.len() > 256 * 1024 { break; }
+    }
+
+    let Some(end) = header_end else {
+        // No headers received — Chrome closed before sending anything.
+        return Ok(());
+    };
+
+    let (headers_bytes, already_body) = resp.split_at(end + 4);
+    let headers_str = String::from_utf8_lossy(headers_bytes).to_string();
+
+    // Detect WebSocket upgrade — first line will be "HTTP/1.1 101 Switching Protocols".
+    let status_line = headers_str.lines().next().unwrap_or("");
+    let is_upgrade = status_line.contains(" 101 ");
+
+    if is_upgrade {
+        // Headers carry no leaked URL — forward verbatim, then tunnel WebSocket frames.
+        client_stream.write_all(headers_bytes).await?;
+        if !already_body.is_empty() {
+            client_stream.write_all(already_body).await?;
+        }
+        let _ = tokio::io::copy_bidirectional(client_stream, chrome_stream).await;
+        return Ok(());
+    }
+
+    // Parse Content-Length if present so we know how much body to expect.
+    let content_length = parse_content_length(&headers_str);
+
+    // Buffer the full body. With Content-Length we read exactly that many bytes
+    // (already_body might already contain part of it). Without Content-Length the
+    // server signals EOF by closing — read to EOF.
+    let mut body = Vec::from(already_body);
+    match content_length {
+        Some(total) => {
+            while body.len() < total {
+                let to_read = (total - body.len()).min(chunk.len());
+                let n = chrome_stream.read(&mut chunk[..to_read]).await?;
+                if n == 0 { break; }
+                body.extend_from_slice(&chunk[..n]);
+            }
+        }
+        None => {
+            // No Content-Length — drain until EOF.
+            loop {
+                let n = chrome_stream.read(&mut chunk).await?;
+                if n == 0 { break; }
+                body.extend_from_slice(&chunk[..n]);
+            }
+        }
+    }
+
+    // Rewrite the leaked Chrome origin in the body. This is a literal string replace —
+    // safe because the chrome_port is unique per Chrome spawn and `127.0.0.1:NNNNN`
+    // is unlikely to appear elsewhere in the response.
+    let body_str = String::from_utf8_lossy(&body).to_string();
+    let rewritten_body = body_str.replace(chrome_origin, bridge_origin);
+    let body_bytes = rewritten_body.into_bytes();
+
+    // Rebuild the response with a fixed Content-Length matching the new body. We also
+    // drop any `Transfer-Encoding: chunked` header (Chrome's /json/* never uses it,
+    // but defensive). All other headers passthrough.
+    let new_headers = rebuild_response_headers(&headers_str, body_bytes.len());
+
+    client_stream.write_all(new_headers.as_bytes()).await?;
+    client_stream.write_all(&body_bytes).await?;
+    Ok(())
+}
+
+/// Extract `Content-Length` value from an HTTP header block, if present.
+fn parse_content_length(headers: &str) -> Option<usize> {
+    for line in headers.split("\r\n") {
+        let trimmed = line.trim_start();
+        if trimmed.len() >= 15 && trimmed[..15].eq_ignore_ascii_case("content-length:") {
+            return trimmed[15..].trim().parse::<usize>().ok();
+        }
+    }
+    None
+}
+
+/// Reproduce a response header block with `Content-Length` set to `new_length` and
+/// any `Transfer-Encoding` header removed (since we always emit a fixed-length body).
+fn rebuild_response_headers(headers: &str, new_length: usize) -> String {
+    let trimmed = headers.trim_end_matches("\r\n");
+    let mut out = String::with_capacity(trimmed.len() + 32);
+    let mut first_line = true;
+    let mut content_length_emitted = false;
+
+    for line in trimmed.split("\r\n") {
+        if first_line {
+            first_line = false;
+            out.push_str(line);
+            out.push_str("\r\n");
+            continue;
+        }
+        let lc = line.trim_start();
+        if lc.len() >= 15 && lc[..15].eq_ignore_ascii_case("content-length:") {
+            out.push_str(&format!("Content-Length: {}\r\n", new_length));
+            content_length_emitted = true;
+            continue;
+        }
+        if lc.len() >= 18 && lc[..18].eq_ignore_ascii_case("transfer-encoding:") {
+            continue; // skip — we're sending fixed length
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+
+    // If the original response didn't carry Content-Length (rare for /json/*), inject one.
+    if !content_length_emitted {
+        out.push_str(&format!("Content-Length: {}\r\n", new_length));
+    }
+
+    out.push_str("\r\n");
+    out
+}
+
+/// If the request line is `GET / HTTP/...`, rewrite to `GET <chrome_path> HTTP/...`.
+/// Returns None if the line isn't the bare-root form (caller forwards as-is).
+fn rewrite_request_line(line: &str, chrome_path: &str) -> Option<String> {
+    let mut parts = line.split(' ');
+    let method = parts.next()?;
+    let path = parts.next()?;
+    let version = parts.next()?;
+    if path == "/" && !chrome_path.is_empty() && chrome_path != "/" {
+        Some(format!("{} {} {}", method, chrome_path, version))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod jit_proxy_tests {
+    use super::{rewrite_cdp_request_headers, rewrite_request_line};
+
+    #[test]
+    fn host_header_is_rewritten_to_loopback() {
+        let req = "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\nUpgrade: websocket\r\n\r\n";
+        let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc-123");
+        assert!(out.contains("Host: 127.0.0.1:54198\r\n"), "rewrite missing: {}", out);
+        // Original Host line must be gone.
+        assert!(!out.contains("host.docker.internal"), "stale Host survived: {}", out);
+    }
+
+    #[test]
+    fn root_path_is_rewritten_to_chrome_browser_path() {
+        let req = "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\n\r\n";
+        let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc-123");
+        assert!(out.starts_with("GET /devtools/browser/abc-123 HTTP/1.1\r\n"), "got: {}", out);
+    }
+
+    #[test]
+    fn explicit_path_is_preserved() {
+        let req = "GET /json/version HTTP/1.1\r\nHost: x.example:80\r\n\r\n";
+        let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc");
+        assert!(out.starts_with("GET /json/version HTTP/1.1\r\n"), "got: {}", out);
+    }
+
+    #[test]
+    fn missing_host_header_gets_injected() {
+        let req = "GET /json/version HTTP/1.1\r\nUpgrade: websocket\r\n\r\n";
+        let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc");
+        assert!(out.contains("Host: 127.0.0.1:54198\r\n"), "Host not injected: {}", out);
+    }
+
+    #[test]
+    fn rewrite_request_line_only_rewrites_root() {
+        assert_eq!(
+            rewrite_request_line("GET / HTTP/1.1", "/devtools/browser/x").as_deref(),
+            Some("GET /devtools/browser/x HTTP/1.1")
+        );
+        assert_eq!(rewrite_request_line("GET /json/version HTTP/1.1", "/devtools/browser/x"), None);
+        assert_eq!(rewrite_request_line("POST / HTTP/1.1", "/"), None); // no useful rewrite if chrome_path is /
+    }
+
+    #[test]
+    fn output_ends_with_exactly_one_blank_line() {
+        // Regression test for the "Empty reply from server" bug: a previous version
+        // of this rewriter produced `\r\n\r\n\r\n` at the end, which Chrome's DevTools
+        // HTTP parser treats as malformed body framing — Chrome closes the connection
+        // with no response, the bridge propagates a zero-byte close to the client,
+        // and curl reports `(52) Empty reply from server`.
+        let req = "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\nUpgrade: websocket\r\n\r\n";
+        let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc-123");
+        assert!(out.ends_with("\r\n\r\n"), "missing terminator: {:?}", out);
+        assert!(!out.ends_with("\r\n\r\n\r\n"), "extra trailing CRLF: {:?}", out);
+        // Belt-and-suspenders: exactly one occurrence of the header terminator should
+        // appear in the output (anywhere — there's no body bytes, so it's only at the end).
+        let count = out.matches("\r\n\r\n").count();
+        assert_eq!(count, 1, "expected exactly one \\r\\n\\r\\n terminator, got {} in: {:?}", count, out);
+    }
+
+    #[test]
+    fn output_with_no_explicit_host_still_well_formed() {
+        let req = "GET /json/version HTTP/1.1\r\nUpgrade: websocket\r\n\r\n";
+        let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc");
+        assert!(out.ends_with("\r\n\r\n"), "missing terminator: {:?}", out);
+        assert!(!out.ends_with("\r\n\r\n\r\n"), "extra trailing CRLF: {:?}", out);
+        assert!(out.contains("Host: 127.0.0.1:54198\r\n"));
+    }
+
+    // ─── Response-rewriting helpers ───────────────────────────────────────────
+    use super::{parse_content_length, rebuild_response_headers};
+
+    #[test]
+    fn parse_content_length_handles_basic_case() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 421\r\n\r\n";
+        assert_eq!(parse_content_length(headers), Some(421));
+    }
+
+    #[test]
+    fn parse_content_length_is_case_insensitive() {
+        let headers = "HTTP/1.1 200 OK\r\ncontent-length: 99\r\n\r\n";
+        assert_eq!(parse_content_length(headers), Some(99));
+    }
+
+    #[test]
+    fn parse_content_length_absent_returns_none() {
+        let headers = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
+        assert_eq!(parse_content_length(headers), None);
+    }
+
+    #[test]
+    fn rebuild_response_headers_replaces_content_length() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 421\r\n\r\n";
+        let rebuilt = rebuild_response_headers(headers, 500);
+        assert!(rebuilt.contains("Content-Length: 500\r\n"));
+        assert!(!rebuilt.contains("Content-Length: 421"));
+        // Original status + Content-Type preserved.
+        assert!(rebuilt.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(rebuilt.contains("Content-Type: application/json\r\n"));
+        // Single terminator.
+        assert!(rebuilt.ends_with("\r\n\r\n"));
+        assert!(!rebuilt.ends_with("\r\n\r\n\r\n"));
+    }
+
+    #[test]
+    fn rebuild_response_headers_strips_transfer_encoding() {
+        let headers = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let rebuilt = rebuild_response_headers(headers, 100);
+        assert!(!rebuilt.to_lowercase().contains("transfer-encoding"));
+        assert!(rebuilt.contains("Content-Length: 100\r\n"));
+    }
+
+    #[test]
+    fn rebuild_response_headers_injects_content_length_when_missing() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n";
+        let rebuilt = rebuild_response_headers(headers, 42);
+        assert!(rebuilt.contains("Content-Length: 42\r\n"));
+    }
 }
 
 #[tauri::command]

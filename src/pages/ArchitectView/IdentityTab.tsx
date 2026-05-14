@@ -84,7 +84,8 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
 
   const visibleAccessories = React.useMemo(() => {
     if (!catalog || !catalog.items) return ACCESSORIES;
-    return ACCESSORIES.filter(path => {
+    const allPaths = new Set([...ACCESSORIES, ...Object.keys(catalog.items)]);
+    return Array.from(allPaths).filter(path => {
       if (catalog.items[path] && catalog.items[path].isVisible === false) return false;
       return true;
     });
