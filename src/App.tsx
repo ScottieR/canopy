@@ -27,6 +27,8 @@ import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Databas
 import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, useWorldStore, pickNextAction, UserProfile } from "./store/worldStore";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { OnboardingWizard } from "./pages/OnboardingWizard";
+import { LockScreen } from "./components/LockScreen";
+import { useIdleTimer } from "./utils/useIdleTimer";
 
 import { ArchitectView } from './pages/ArchitectView';
 import { ArchiveView } from './pages/ArchiveView';
@@ -1071,12 +1073,21 @@ export function CompanionGuide({ type }: { type: string }) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
-  const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme } = useWorldStore();
+  const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme, isAutoCloakEnabled, autoCloakTimeout, setIsCloaked } = useWorldStore();
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
   const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");
   const [pendingJitAuth, setPendingJitAuth] = useState<any>(null);
   const [jitDuration, setJitDuration] = useState("session");
+
+  // Auto-cloak implementation
+  useIdleTimer(
+    autoCloakTimeout,
+    () => {
+      if (isAutoCloakEnabled) setIsCloaked(true);
+    },
+    isAutoCloakEnabled
+  );
 
   useEffect(() => {
     let unlisten: any;
@@ -1388,6 +1399,7 @@ export default function App() {
       overflow: "hidden",
       display: "flex", flexDirection: "column",
     }}>
+      <LockScreen />
       <UpdateManager />
       {activeView !== "onboarding" && <TopNav />}
 

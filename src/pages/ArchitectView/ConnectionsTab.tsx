@@ -1593,8 +1593,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
 
         // ── PAYMENT/FINANCIAL permissions are surfaced separately in the
         // "Payments & Spending" ServiceRow below, so we hide them here to avoid
-        // duplicate toggles. Everything else the agent has is shown.
-        const HIDDEN_FROM_FINE_TUNE = new Set(["payments", "spend_auto"]);
+        // duplicate toggles. We also hide 'imessage' because it is managed as a primary integration.
+        const HIDDEN_FROM_FINE_TUNE = new Set(["payments", "spend_auto", "imessage"]);
         const finetunePerms = agent.permissions.filter(p => !HIDDEN_FROM_FINE_TUNE.has(p.id));
 
         return (

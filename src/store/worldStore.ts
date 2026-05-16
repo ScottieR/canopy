@@ -163,6 +163,12 @@ export interface WorldState {
   setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics") => void;
   setArchitectTab: (tab: string) => void;
   setGatewayReady: (ready: boolean) => void;
+  isAutoCloakEnabled: boolean;
+  autoCloakTimeout: number; // in minutes
+  isCloaked: boolean;
+  setAutoCloakEnabled: (enabled: boolean) => void;
+  setAutoCloakTimeout: (timeout: number) => void;
+  setIsCloaked: (cloaked: boolean) => void;
   togglePermission: (agentId: string, permissionId: string) => void;
   updateAgentPosition: (id: string, pos: [number, number, number]) => void;
   updateAgentTarget: (id: string, target: [number, number, number]) => void;
@@ -300,6 +306,9 @@ export const useWorldStore = create<WorldState>()(
   activeView: "loading",
   architectTab: "overview",
   gatewayReady: false,
+  isAutoCloakEnabled: false,
+  autoCloakTimeout: 15,
+  isCloaked: false,
   theme: "light",
   toggleTheme: () => set((state) => {
     const nextTheme = state.theme === "light" ? "dark" : "light";
@@ -311,6 +320,9 @@ export const useWorldStore = create<WorldState>()(
   setActiveView: (view) => set({ activeView: view }),
   setArchitectTab: (tab) => set({ architectTab: tab }),
   setGatewayReady: (ready) => set({ gatewayReady: ready }),
+  setAutoCloakEnabled: (enabled) => set({ isAutoCloakEnabled: enabled }),
+  setAutoCloakTimeout: (timeout) => set({ autoCloakTimeout: timeout }),
+  setIsCloaked: (cloaked) => set({ isCloaked: cloaked }),
   togglePermission: (agentId, permissionId) =>
     set((state) => ({
       agents: state.agents.map((a) =>
@@ -487,7 +499,11 @@ export const useWorldStore = create<WorldState>()(
 }),
 {
   name: "canopy-world-store",
-  partialize: (state) => ({ agents: state.agents }),
+  partialize: (state) => ({ 
+    agents: state.agents, 
+    isAutoCloakEnabled: state.isAutoCloakEnabled, 
+    autoCloakTimeout: state.autoCloakTimeout 
+  }),
 }
 ));
 
