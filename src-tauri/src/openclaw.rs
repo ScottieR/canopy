@@ -1381,9 +1381,18 @@ pub async fn send_message_internal(
     // NODE_OPTIONS=--v8-pool-size=1 prevents the Node.js process from trying to create
     // 4 worker threads at startup (which fails with uv_thread_create/EAGAIN under PID pressure).
     // The openclaw CLI is a thin IPC client — 1 background thread is sufficient.
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
+    let mut hasher = DefaultHasher::new();
+    agent_id.hash(&mut hasher);
+    let proxy_port = 10000 + (hasher.finish() % 1000) as u16;
+    let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
+    let cdp_env = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
+
     let mut docker_args = vec![
         "exec", "-u", "node",
         "-e", "NODE_OPTIONS=--v8-pool-size=1",
+        "-e", &cdp_env,
         "canopy-gateway",
         "openclaw", "agent",
         "--agent", agent_id,
@@ -1635,7 +1644,12 @@ pub async fn get_conversation_history(
             let _ = db.ensure_conversation(id, &agent_id);
             id.clone()
         },
-        None => return Ok(Vec::new())
+        None => {
+            match db.get_or_create_conversation(&agent_id) {
+                Ok(id) => id,
+                Err(_) => return Ok(Vec::new()),
+            }
+        }
     };
     
     if !conv_id.is_empty() {

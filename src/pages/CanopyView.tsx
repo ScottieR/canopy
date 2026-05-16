@@ -51,6 +51,41 @@ function CanopyView() {
     return { x: x * 2, y: 0, z: z * 2, rotationY: 0 };
   };
 
+  const worldBounds = useMemo(() => {
+    let minX = 0, maxX = 0, minZ = 0, maxZ = 0;
+    let hasAgents = false;
+
+    agents.forEach(agent => {
+      hasAgents = true;
+      const transform = (agent.visual_identity as any)?.habitatTransform || getAgentBasePoint(agent.id);
+      if (transform.x < minX) minX = transform.x;
+      if (transform.x > maxX) maxX = transform.x;
+      if (transform.z < minZ) minZ = transform.z;
+      if (transform.z > maxZ) maxZ = transform.z;
+    });
+    
+    if (!hasAgents) {
+      return { center: [0, 0, 0] as [number, number, number], minZoom: 150 };
+    }
+    
+    const centerX = (minX + maxX) / 2;
+    const centerZ = (minZ + maxZ) / 2;
+    
+    const width = maxX - minX;
+    const depth = maxZ - minZ;
+    const maxDimension = Math.max(width, depth); 
+    
+    let calcMinZoom = 150;
+    if (maxDimension > 6) {
+      calcMinZoom = 150 * (6 / maxDimension);
+    }
+    
+    return {
+      center: [centerX, 0, centerZ] as [number, number, number],
+      minZoom: Math.max(10, Math.floor(calcMinZoom))
+    };
+  }, [agents]);
+
   const handleNudge = (axis: "x" | "y" | "z" | "ry", amount: number) => {
     if (!selectedEditAgent) return;
     setEditTransforms(prev => {
@@ -107,8 +142,8 @@ function CanopyView() {
         gl={{ antialias: true, alpha: true }}
         onCreated={({ gl }: any) => { gl.toneMapping = THREE.LinearToneMapping; gl.toneMappingExposure = 1.0; }}
       >
-        <OrthographicCamera makeDefault position={[10, 10, 10]} zoom={150} near={0.1} far={100} />
-        <OrbitControls makeDefault={!isEditMode} enablePan={true} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate={!isEditMode} autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping minZoom={150} maxZoom={650} />
+        <OrthographicCamera makeDefault position={[worldBounds.center[0] + 10, 10, worldBounds.center[2] + 10]} zoom={150} near={0.1} far={100} />
+        <OrbitControls makeDefault={!isEditMode} enablePan={true} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate={!isEditMode} autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping minZoom={worldBounds.minZoom} maxZoom={650} target={worldBounds.center} />
         <CanopyScene 
           isEditMode={isEditMode}
           transformMode={transformMode}
