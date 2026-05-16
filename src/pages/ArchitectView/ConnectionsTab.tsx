@@ -1591,10 +1591,14 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         // Use the shared risk-band map so we stay in sync with accessTiers.ts.
         const CAP_RISK_BAND = PERMISSION_RISK_BAND;
 
-        // ── PAYMENT/FINANCIAL permissions are surfaced separately in the
         // "Payments & Spending" ServiceRow below, so we hide them here to avoid
         // duplicate toggles. We also hide 'imessage' because it is managed as a primary integration.
-        const HIDDEN_FROM_FINE_TUNE = new Set(["payments", "spend_auto", "imessage"]);
+        // The rest are hidden because they are currently UI stubs not yet wired into the OpenClaw backend.
+        const HIDDEN_FROM_FINE_TUNE = new Set([
+          "payments", "spend_auto", "imessage", 
+          "ext_network", "int_network", "autonomous", 
+          "scheduled", "memory_write", "photos"
+        ]);
         const finetunePerms = agent.permissions.filter(p => !HIDDEN_FROM_FINE_TUNE.has(p.id));
 
         return (
