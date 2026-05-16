@@ -81,6 +81,33 @@ function UserProfileView() {
         <Field label="Global Agent Directives" field="global_directives" value={profile.global_directives} rows={3} placeholder="e.g. 'Never read my personal inbox. Always provide a TL;DR summary at the top.'" />
       </div>
 
+      <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Security & Privacy</h3>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Auto-Cloak Canopy</div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>Automatically lock the app and hide message contents when you are away.</div>
+          </div>
+          <Toggle enabled={useWorldStore(s => s.isAutoCloakEnabled)} onChange={() => useWorldStore.getState().setAutoCloakEnabled(!useWorldStore.getState().isAutoCloakEnabled)} />
+        </div>
+        
+        {useWorldStore(s => s.isAutoCloakEnabled) && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Auto-lock after</div>
+            <select 
+              value={useWorldStore(s => s.autoCloakTimeout)}
+              onChange={(e) => useWorldStore.getState().setAutoCloakTimeout(Number(e.target.value))}
+              style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontFamily: "inherit", fontSize: 13, color: "var(--text-main)", outline: "none", cursor: "pointer" }}
+            >
+              <option value={1}>1 Minute</option>
+              <option value={5}>5 Minutes</option>
+              <option value={15}>15 Minutes</option>
+              <option value={60}>1 Hour</option>
+            </select>
+          </div>
+        )}
+      </div>
+
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <button onClick={handleSave} disabled={saving} style={{ padding: "12px 32px", borderRadius: 12, background: saving ? "#4A9E96" : "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, border: "none", cursor: saving ? "default" : "pointer", transition: "all 0.2s ease" }}>
           {saving ? "Saved ✓" : "Save Profile Configuration"}
