@@ -294,23 +294,22 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             allMessages = allMessages.filter((m: any) => m.ts >= currentAgent.chatClearedAt!);
           }
 
-          // 2. Merge local-only messages (optimistic updates) with the backend messages.
-          const nowMs = Date.now();
-          const localOnly = currentAgent.chatLog.filter(msg => {
-            if (allMessages.some((m: any) => m.id === msg.id)) return false;
-            if (allMessages.some((m: any) => {
-              if (m.sender !== msg.sender) return false;
-              if (m.text === msg.text) return true;
-              const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
-              const strippedM = m.text.replace(tsRegex, '');
-              const strippedMsg = msg.text.replace(tsRegex, '');
-              return strippedM === strippedMsg || m.text.endsWith(msg.text);
-            })) return false;
-            return true;
-          });
-          
-          const newLog = capLog([...allMessages, ...localOnly].sort((a, b) => (a.ts || 0) - (b.ts || 0)));
           setChatLog(prev => {
+            const nowMs = Date.now();
+            const localOnly = prev.filter(msg => {
+              if (allMessages.some((m: any) => m.id === msg.id)) return false;
+              if (allMessages.some((m: any) => {
+                if (m.sender !== msg.sender) return false;
+                if (m.text === msg.text) return true;
+                const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
+                const strippedM = m.text.replace(tsRegex, '');
+                const strippedMsg = msg.text.replace(tsRegex, '');
+                return strippedM === strippedMsg || m.text.endsWith(msg.text);
+              })) return false;
+              return true;
+            });
+            
+            const newLog = capLog([...allMessages, ...localOnly].sort((a, b) => (a.ts || 0) - (b.ts || 0)));
             const lastPrev = prev[prev.length - 1];
             const lastNew = newLog[newLog.length - 1];
             if (prev.length === newLog.length && lastPrev?.id === lastNew?.id) return prev;

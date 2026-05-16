@@ -53,7 +53,15 @@ function TopNav() {
       background: activeView === "canopy" ? "transparent" : "var(--glass-light)",
       borderBottom: activeView === "canopy" ? "none" : "1px solid rgba(0,0,0,0.06)",
       backdropFilter: activeView === "canopy" ? "none" : "blur(24px)",
-    }} data-tauri-drag-region>
+      WebkitAppRegion: "drag",
+    } as any} data-tauri-drag-region onPointerDown={async (e) => {
+      if (e.target === e.currentTarget) {
+        try {
+          const { getCurrentWindow } = await import('@tauri-apps/api/window');
+          await getCurrentWindow().startDragging();
+        } catch(err) {}
+      }
+    }}>
       {/* Logo */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }} onClick={() => setActiveView("canopy")}>
         <img src="/app-icon.png" alt="Canopy Logo" style={{ width: 28, height: 28, objectFit: "contain", pointerEvents: "none" }} />
