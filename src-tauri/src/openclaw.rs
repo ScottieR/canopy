@@ -3823,6 +3823,7 @@ fn compute_channels_hash(
     calendar: &serde_json::Map<String, serde_json::Value>,
     drive:    &serde_json::Map<String, serde_json::Value>,
     bindings: &[serde_json::Value],
+    imessage_enabled: bool,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -3832,6 +3833,7 @@ fn compute_channels_hash(
         "calendar": calendar,
         "drive":    drive,
         "bindings": bindings,
+        "imessage": imessage_enabled,
     });
     serde_json::to_string(&snapshot).unwrap_or_default().hash(&mut h);
     h.finish()
@@ -3850,6 +3852,7 @@ async fn file_channels_match(
     desired_calendar: &serde_json::Map<String, serde_json::Value>,
     desired_drive:    &serde_json::Map<String, serde_json::Value>,
     desired_bindings: &[serde_json::Value],
+    desired_imessage_enabled: bool,
 ) -> bool {
     let cat_out = match tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -3885,12 +3888,15 @@ async fn file_channels_match(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+        
+    let on_disk_bluebubbles_enabled = cfg.pointer("/channels/bluebubbles/enabled").and_then(|v| v.as_bool()).unwrap_or(false);
 
     &on_disk_slack    == desired_slack
         && &on_disk_gmail    == desired_gmail
         && &on_disk_calendar == desired_calendar
         && &on_disk_drive    == desired_drive
         && on_disk_bindings.as_slice() == desired_bindings
+        && on_disk_bluebubbles_enabled == desired_imessage_enabled
 }
 
 /// Rebuild the gateway's per-agent `channels.*.accounts` maps and `bindings` from
@@ -3913,8 +3919,13 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
     let mut calendar_accounts = serde_json::Map::new();
     let mut drive_accounts = serde_json::Map::new();
     let mut bindings = Vec::new();
+    let mut imessage_enabled = false;
     
     for agent in &active_agents {
+        if agent.integrations.contains(&"imessage".to_string()) {
+            imessage_enabled = true;
+        }
+
         // Slack
         let app_token = crate::keychain::get_secret(&format!("agent_{}_slack_app_token", agent.id));
         let bot_token = crate::keychain::get_secret(&format!("agent_{}_slack_bot_token", agent.id));
@@ -3972,7 +3983,7 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
     // connections. preflight_write_openclaw_json now preserves the per-agent
     // account maps, so a no-op call here is genuinely a no-op end-to-end.
     let new_hash = compute_channels_hash(
-        &slack_accounts, &gmail_accounts, &calendar_accounts, &drive_accounts, &bindings,
+        &slack_accounts, &gmail_accounts, &calendar_accounts, &drive_accounts, &bindings, imessage_enabled,
     );
     {
         let cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
@@ -3986,7 +3997,7 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
     //      be in sync (preflight preserved channels.slack.accounts).
     //   2. Concurrent edits via another tool that bypassed Canopy — unlikely
     //      but harmless to detect.
-    if file_channels_match(&slack_accounts, &gmail_accounts, &calendar_accounts, &drive_accounts, &bindings).await {
+    if file_channels_match(&slack_accounts, &gmail_accounts, &calendar_accounts, &drive_accounts, &bindings, imessage_enabled).await {
         // File already correct — populate the cache so subsequent calls take
         // the fast path, and return "no change" so callers skip restart.
         let mut cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
@@ -4026,6 +4037,12 @@ c.channels.slack.accounts={};
 c.plugins.entries.slack=c.plugins.entries.slack||{{}};
 if (c.channels.slack.enabled === true) c.plugins.entries.slack.enabled=true;
 
+// iMessage / BlueBubbles
+c.channels.bluebubbles=c.channels.bluebubbles||{{}};
+c.channels.bluebubbles.enabled={};
+c.plugins.entries.bluebubbles=c.plugins.entries.bluebubbles||{{}};
+if (c.channels.bluebubbles.enabled === true) c.plugins.entries.bluebubbles.enabled=true;
+
 // Remove any broken channel injections
 if (c.channels.gmail) delete c.channels.gmail;
 if (c.channels.googleCalendar) delete c.channels.googleCalendar;
@@ -4047,6 +4064,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 "#,
         if slack_accounts.is_empty() { "false" } else { "true" },
         serde_json::to_string(&slack_accounts).unwrap_or_else(|_| "{}".to_string()),
+        if imessage_enabled { "true" } else { "false" },
         if gmail_accounts.is_empty() && calendar_accounts.is_empty() && drive_accounts.is_empty() { "false" } else { "true" },
         serde_json::to_string(&bindings).unwrap_or_else(|_| "[]".to_string())
     );
@@ -4671,3 +4689,39 @@ pub async fn revoke_jit_credential(agent_id: &str, credential_id: &str) -> Resul
     
     Ok(())
 }
+
+#[tauri::command]
+pub async fn fetch_apple_health_data(agent_id: String, start_date: Option<String>, end_date: Option<String>) -> Result<serde_json::Value, String> {
+    tracing::info!("Fetching Apple Health data for agent {}", agent_id);
+
+    // Backend authorization logic: ensure the agent has a valid Apple Health token
+    let token_key = format!("agent_{}_APPLE_HEALTH_TOKEN", agent_id);
+    let token = crate::keychain::get_secret(&token_key).map_err(|_| "Agent not authorized for Apple Health".to_string())?;
+
+    if token.is_empty() {
+        return Err("Apple Health token is empty".to_string());
+    }
+
+    // Since Apple Health does not have a public HTTP API, we mock the data response
+    // based on the exported data or bridge format.
+    let data = serde_json::json!({
+        "status": "success",
+        "agentId": agent_id,
+        "dateRange": {
+            "start": start_date.unwrap_or_else(|| "2026-05-01".to_string()),
+            "end": end_date.unwrap_or_else(|| "2026-05-31".to_string())
+        },
+        "vitals": {
+            "restingHeartRate": 62,
+            "bloodOxygen": 98,
+            "sleepAverageHrs": 7.4
+        },
+        "workouts": [
+            { "type": "Running", "durationMins": 45, "caloriesActive": 420 },
+            { "type": "Yoga", "durationMins": 60, "caloriesActive": 210 }
+        ]
+    });
+
+    Ok(data)
+}
+

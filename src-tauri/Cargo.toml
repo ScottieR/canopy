@@ -42,6 +42,8 @@ open = "5"                    # Open browser for OAuth
 lazy_static = "1"             # Global state (Slack listener)
 base64 = "0.22.1"
 async-trait = "0.1.89"
+btleplug = "0.11"
+hex = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"

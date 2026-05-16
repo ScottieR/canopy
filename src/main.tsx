@@ -7,6 +7,7 @@ import { GithubCompanion } from "./components/Companion/GithubCompanion";
 import { DiscordCompanion } from "./components/Companion/DiscordCompanion";
 import { TelegramCompanion } from "./components/Companion/TelegramCompanion";
 import { ChatCompanion } from "./components/Companion/ChatCompanion";
+import { BluetoothCompanion } from "./components/Companion/BluetoothCompanion";
 import { BrowserPopout } from "./components/BrowserPopout";
 import "./styles/globals.css";
 
@@ -157,6 +158,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         <DiscordCompanion />
       ) : companionType === "telegram" ? (
         <TelegramCompanion />
+      ) : companionType === "bluetooth" ? (
+        <BluetoothCompanion />
       ) : companionType ? (
         <CompanionGuide type={companionType} />
       ) : (
