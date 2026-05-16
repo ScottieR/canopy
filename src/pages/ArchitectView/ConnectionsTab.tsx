@@ -595,6 +595,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     try {
       await invoke("update_allowed_slack_channels", { agentId: agent.id, channelIds: ids });
       setAllowedSlack(ids);
+      await invoke("sync_gateway_channels");
     } catch (e) { console.error(e); }
   };
 
@@ -602,6 +603,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     try {
       await invoke("update_allowed_imessage_threads", { agentId: agent.id, chatIdentifiers: ids });
       setAllowedThreads(ids);
+      await invoke("sync_gateway_channels");
     } catch (e) { console.error(e); }
   };
 
