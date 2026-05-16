@@ -213,7 +213,7 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "summarize", label: "Summarization", description: "Condense large documents or web pages", enabled: true, category: "skills" },
 ];
 
-export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; recommended_isolated?: boolean; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;
+export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; recommended_isolated?: boolean; recommended_tier?: "guarded" | "balanced" | "unrestricted"; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;
 
 export function getPermissionsForRole(roleId: string, isolated: boolean): Permission[] {
   return DEFAULT_PERMISSIONS.map(p => {

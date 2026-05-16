@@ -8,7 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { AgentData, Permission } from "../../store/worldStore";
-import { useWorldStore } from "../../store/worldStore";
+import { useWorldStore, AGENT_TYPE_INFO } from "../../store/worldStore";
 
 export type AccessTierId = "guarded" | "balanced" | "unrestricted";
 
@@ -201,4 +201,9 @@ export function summarizeTierChange(
     else turningOff.push(perm.label);
   });
   return { turningOn, turningOff };
+}
+
+export function getRecommendedTierForAgent(agentRole: string): AccessTier {
+  const recommendedTierId = AGENT_TYPE_INFO[agentRole]?.recommended_tier || "balanced";
+  return ACCESS_TIERS.find(t => t.id === recommendedTierId) || ACCESS_TIERS.find(t => t.id === "balanced")!;
 }

@@ -562,13 +562,28 @@ export const ServiceRow = ({
           <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 2 }}>{subtitle}</div>
         </div>
         {!connected ? (
-          <button onClick={() => onSetup ? onSetup() : setActiveView("integrations")} style={{
-            padding: "5px 12px", border: "1px solid var(--border-subtle)", borderRadius: 6,
-            background: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
-            color: "#3c6663", fontFamily: "inherit",
-          }}>
-            Set up →
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {children && (
+              <button onClick={() => setOpen(v => !v)} style={{
+                fontSize: 11, fontWeight: 600, color: "var(--text-sub)", background: "none",
+                border: "1px solid var(--border-subtle)", borderRadius: 6, padding: "5px 10px",
+                cursor: "pointer", fontFamily: "inherit",
+              }}>
+                {open ? "Close" : "Options"}
+              </button>
+            )}
+            <button onClick={() => {
+              if (onSetup) onSetup();
+              else if (children) setOpen(true);
+              else setActiveView("integrations");
+            }} style={{
+              padding: "5px 12px", border: "1px solid var(--border-subtle)", borderRadius: 6,
+              background: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
+              color: "#3c6663", fontFamily: "inherit",
+            }}>
+              Set up →
+            </button>
+          </div>
         ) : (
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             {children && (
@@ -596,7 +611,7 @@ export const ServiceRow = ({
           </div>
         )}
       </div>
-      {((connected && open) || (!connected && children)) && (
+      {((connected && open) || (!connected && children && open)) && (
         <div style={{ borderTop: "1px solid var(--border-subtle)", padding: "14px 16px" }}>
           {children}
         </div>
@@ -835,6 +850,72 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Click 'Generate token' at the bottom of the page." },
         { text: "Copy the generated token (starts with ghp_ or github_pat_) and paste it into the input field in the main app window." }
       ]
+    },
+    apple_health: {
+      title: "Apple Health Setup",
+      avatar: "/app-icon.png",
+      intro: "Let's give your agent access to your Apple Health data so it can read and analyze your workouts and vitals.",
+      steps: [
+        { text: "Since Apple Health data stays exclusively on your iPhone, you'll need the Canopy Mobile App to create a secure, ongoing background bridge." },
+        { text: "Open the Canopy Mobile App on your iPhone and go to the Sensors tab." },
+        { text: "Select this agent, toggle 'Apple Health Sync' on, and tap 'Generate Bridge Token'." },
+        { text: "Paste that secure token below to link the background sync.", input: { key: "APPLE_HEALTH_TOKEN", placeholder: "ah_..." } }
+      ]
+    },
+    live_location: {
+      title: "Live Location Setup",
+      avatar: "/app-icon.png",
+      intro: "Allow your agent to see when you leave or arrive at saved locations.",
+      steps: [
+        { text: "Location tracking is handled securely via the Canopy Mobile App." },
+        { text: "Open the Canopy Mobile App on your iPhone and go to the Sensors tab." },
+        { text: "Select this agent, toggle 'Live Location' on, and tap 'Generate Bridge Token'." },
+        { text: "Paste that secure token below to link the background sync.", input: { key: "LIVE_LOCATION_TOKEN", placeholder: "ll_..." } }
+      ]
+    },
+    shortcuts: {
+      title: "Apple Shortcuts Setup",
+      avatar: "/app-icon.png",
+      intro: "Let your agent trigger Siri Intents and run Apple Shortcuts on your phone.",
+      steps: [
+        { text: "Shortcuts are triggered securely via the Canopy Mobile App." },
+        { text: "Open the Canopy Mobile App on your iPhone and go to the Sensors tab." },
+        { text: "Select this agent, toggle 'Apple Shortcuts' on, and tap 'Generate Bridge Token'." },
+        { text: "Paste that secure token below to link the connection.", input: { key: "SHORTCUTS_TOKEN", placeholder: "sh_..." } }
+      ]
+    },
+    vision: {
+      title: "Vision & Photo Sync Setup",
+      avatar: "/app-icon.png",
+      intro: "Allow your agent to securely index your recent photos to understand your visual context.",
+      steps: [
+        { text: "Photo indexing is handled securely via the Canopy Mobile App." },
+        { text: "Open the Canopy Mobile App on your iPhone and go to the Sensors tab." },
+        { text: "Select this agent, toggle 'Vision & Photo Sync' on, and tap 'Generate Bridge Token'." },
+        { text: "Paste that secure token below to link the background sync.", input: { key: "VISION_TOKEN", placeholder: "vs_..." } }
+      ]
+    },
+    notifications: {
+      title: "Actionable Push Notifications",
+      avatar: "/app-icon.png",
+      intro: "Allow your agent to send you interactive push notifications for fast approvals.",
+      steps: [
+        { text: "Push notifications are routed securely via the Canopy Mobile App." },
+        { text: "Open the Canopy Mobile App on your iPhone and go to the Sensors tab." },
+        { text: "Select this agent, toggle 'Actionable Notifications' on, and tap 'Generate Bridge Token'." },
+        { text: "Paste that secure token below to link the connection.", input: { key: "NOTIFICATIONS_TOKEN", placeholder: "pn_..." } }
+      ]
+    },
+    homekit: {
+      title: "Smart Home / HomeKit",
+      avatar: "/app-icon.png",
+      intro: "Allow your agent to securely control lights and smart home devices via your iPhone.",
+      steps: [
+        { text: "HomeKit access requires the Canopy Mobile App acting as a local bridge." },
+        { text: "Open the Canopy Mobile App on your iPhone and go to the Sensors tab." },
+        { text: "Select this agent, toggle 'Smart Home / HomeKit' on, and tap 'Generate Bridge Token'." },
+        { text: "Paste that secure token below to link the connection.", input: { key: "HOMEKIT_TOKEN", placeholder: "hk_..." } }
+      ]
     }
   }[type] || null;
 
@@ -850,7 +931,7 @@ export function CompanionGuide({ type }: { type: string }) {
       setStatus("saving");
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive'))
+        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive' || type === 'apple_health' || type === 'live_location' || type === 'shortcuts' || type === 'vision' || type === 'notifications' || type === 'homekit'))
           ? `agent_${agentId}_${currentStepData.input.key.replace(/-/g, '_')}`
           : currentStepData.input.key;
         await invoke("store_secret_cmd", { key: secureKey, value: tokens[currentStepData.input.key].trim() });

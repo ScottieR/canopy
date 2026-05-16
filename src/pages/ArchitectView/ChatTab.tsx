@@ -21,6 +21,20 @@ const CHAT_LOG_CAP = 500;
 function capLog(msgs: ChatMessage[]): ChatMessage[] {
   return msgs.length > CHAT_LOG_CAP ? msgs.slice(-CHAT_LOG_CAP) : msgs;
 }
+const formatMessageTime = (dateInput: Date | string | number) => {
+  const date = new Date(dateInput);
+  const now = new Date();
+  const isToday = date.getDate() === now.getDate() && 
+                  date.getMonth() === now.getMonth() && 
+                  date.getFullYear() === now.getFullYear();
+                  
+  if (isToday) {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } else {
+    return date.toLocaleDateString([], { month: "short", day: "numeric" }) + ", " + 
+           date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+};
 
 export // ─── Chat / Communion Component ──────────────────────────────────────────────
 
@@ -283,7 +297,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
               id: r.id,
               sender: r.role === "user" ? "user" : "agent",
               text: r.content,
-              time: new Date(r.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+              time: formatMessageTime(r.timestamp),
               ts: new Date(r.timestamp).getTime()
             }));
           }
@@ -365,7 +379,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         id: Date.now().toString(),
         sender: "user",
         text: `I have securely added the credentials for ${authDomain} to your WebVault. Please try your task again.`,
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        time: formatMessageTime(new Date()),
       };
       setChatLog(prev => capLog([...prev, sysMsg]));
       
@@ -419,7 +433,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         id: Date.now().toString(),
         sender: "user",
         text: `I have granted you access to the existing credentials for ${authDomain}. Please try your task again.`,
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        time: formatMessageTime(new Date()),
       };
       setChatLog(prev => capLog([...prev, sysMsg]));
       invoke("send_message", { agentId: agent.id, message: sysMsg.text, sessionId: agent.activeConversationId || null }).catch(e => console.warn("Auto-reply failed:", e));
@@ -458,7 +472,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       id: Date.now().toString(),
       sender: "user",
       text: baseText,
-      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      time: formatMessageTime(new Date()),
       ts: Date.now(),
       attachments: !overrideText && attachments.length > 0 ? [...attachments] : undefined,
     };
@@ -520,7 +534,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         id: (Date.now() + 1).toString(),
         sender: "agent",
         text: responseText,
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        time: formatMessageTime(new Date()),
       };
 
       setChatLog(prev => capLog([...prev, agentMsg]));
@@ -555,7 +569,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             id: (Date.now() + 1).toString(),
             sender: "agent",
             text: retryText,
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            time: formatMessageTime(new Date()),
           };
           setChatLog(prev => capLog([...prev, retryMsg]));
           return;
@@ -599,7 +613,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         id: "err-" + Date.now().toString(),
         sender: "agent",
         text: `⚠️ **System Error**: ${friendlyError}\n\n*(Raw Error: ${String(error).substring(0, 80)}...)*`,
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        time: formatMessageTime(new Date()),
       };
       
       setChatLog(prev => capLog([...prev, errorMsg]));
@@ -1054,7 +1068,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                       id: Date.now().toString(),
                       sender: "user",
                       text: `I am denying the request for credentials to ${authDomain}. Please try to find a different approach or skip this step.`,
-                      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                      time: formatMessageTime(new Date()),
                     };
                     setChatLog(prev => capLog([...prev, sysMsg]));
                     invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));

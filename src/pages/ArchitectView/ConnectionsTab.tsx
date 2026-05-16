@@ -3,7 +3,7 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, ChevronDown,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Github, MessageCircle, Cloud, Link
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Github, MessageCircle, Cloud, Link, MapPin, Camera, Bell, Home, Bluetooth
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -19,6 +19,7 @@ import {
   detectCurrentTier,
   PERMISSION_RISK_BAND,
   summarizeTierChange,
+  getRecommendedTierForAgent
 } from "./accessTiers";
 
 // ─── Per-agent disconnect modal config ────────────────────────────────────────
@@ -102,7 +103,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     { id: "telegram", name: "Telegram", subtitle: "Connect a Telegram bot so this agent can chat in channels or DMs", icon: "send", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
     { id: "discord", name: "Discord", subtitle: "Connect a Discord bot to respond in channels and DMs.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
     { id: "figma", name: "Figma", subtitle: "A design agent can co-create and modify design files directly in Figma.", icon: "figma", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true, type: "oauth" },
-    { id: "twilio", name: "Twilio Voice & SMS", subtitle: "Connect a Twilio phone number so this agent can make and receive calls or texts.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: false }
+    { id: "twilio", name: "Twilio Voice & SMS", subtitle: "Connect a Twilio phone number so this agent can make and receive calls or texts.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: false },
+    { id: "apple_health", name: "Apple Health", subtitle: "Allow agent to read and analyze your Apple Health data", icon: "activity", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "live_location", name: "Live Location & Geofencing", subtitle: "Agent knows when you leave home or arrive at work", icon: "map-pin", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "shortcuts", name: "Apple Shortcuts", subtitle: "Allow the agent to trigger Siri Intents and Shortcuts", icon: "zap", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "vision", name: "Vision & Photo Sync", subtitle: "Agent silently indexes your recent camera roll for context", icon: "camera", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "notifications", name: "Actionable Push Notifications", subtitle: "Approve agent actions directly from your lock screen", icon: "bell", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
+    { id: "homekit", name: "Smart Home / HomeKit", subtitle: "Bridge HomeKit access so the agent can control lights", icon: "home", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true }
   ]);
   const [dynamicEnabled, setDynamicEnabled] = useState<Record<string, boolean>>({});
   const [dynamicStatuses, setDynamicStatuses] = useState<Record<string, boolean>>({});
@@ -464,6 +471,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       let key = c.id.toUpperCase() + "_TOKEN";
       if (c.id === 'calendar') key = `agent_${agent.id}_google_calendar_access_token`;
       if (c.id === 'drive') key = `agent_${agent.id}_google_drive_access_token`;
+      if (c.id === 'apple_health') key = `agent_${agent.id}_APPLE_HEALTH_TOKEN`;
+      if (c.id === 'live_location') key = `agent_${agent.id}_LIVE_LOCATION_TOKEN`;
+      if (c.id === 'shortcuts') key = `agent_${agent.id}_SHORTCUTS_TOKEN`;
+      if (c.id === 'vision') key = `agent_${agent.id}_VISION_TOKEN`;
+      if (c.id === 'notifications') key = `agent_${agent.id}_NOTIFICATIONS_TOKEN`;
+      if (c.id === 'homekit') key = `agent_${agent.id}_HOMEKIT_TOKEN`;
+      if (c.id === 'bluetooth') key = `agent_${agent.id}_BLUETOOTH_TOKEN`;
       try {
         const tok = await invoke("get_secret_cmd", { key });
         obj[c.id] = !!tok;
@@ -586,7 +600,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
 
   const saveIMsgAllowlist = async (ids: string[]) => {
     try {
-      await invoke("update_allowed_imessage_threads", { agentId: agent.id, threadIds: ids });
+      await invoke("update_allowed_imessage_threads", { agentId: agent.id, chatIdentifiers: ids });
       setAllowedThreads(ids);
     } catch (e) { console.error(e); }
   };
@@ -703,7 +717,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                       <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>{tier.label}</span>
-                      {tier.recommended && !selected && (
+                      {tier.id === getRecommendedTierForAgent(agent.role)?.id && !selected && (
                         <span style={{ fontSize: 9, background: tier.color, color: "white", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: "0.02em" }}>RECOMMENDED</span>
                       )}
                       {tier.highRisk && (
@@ -1073,6 +1087,30 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               Want to set up an agent with their own dedicated email? Create a new Gmail account and select it during the Google Sign-in flow instead of your personal account.
             </div>
           </div>
+          {!gmailConnected && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+              <button
+                onClick={async () => {
+                  try {
+                    const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                    const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['email'], readOnly: emailMode === "read" });
+                    if (res && res.access_token) {
+                      checkDynamicStatuses();
+                      await invoke("sync_gateway_channels");
+                    }
+                  } catch (e) { console.error(e); }
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 4,
+                  background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)",
+                  padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+                  color: "var(--text-main)", fontWeight: 500
+                }}
+              >
+                Connect Account
+              </button>
+            </div>
+          )}
         </div>
       </ServiceRow>
 
@@ -1090,16 +1128,6 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           setCalendarMode(v ? "read" : "none");
           await toggleIntegration("calendar_read", v, ["calendar_write", "calendar"]);
         }}
-        onSetup={async () => {
-          try {
-            const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-            const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['calendar'], readOnly: calendarMode === "read" });
-            if (res && res.access_token) {
-              checkDynamicStatuses();
-              await invoke("sync_gateway_channels");
-            }
-          } catch (e) { console.error(e); }
-        }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
@@ -1114,6 +1142,30 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               </span>
             </label>
           ))}
+          {!calConnected && (
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+              <button
+                onClick={async () => {
+                  try {
+                    const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                    const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['calendar'], readOnly: calendarMode === "read" });
+                    if (res && res.access_token) {
+                      checkDynamicStatuses();
+                      await invoke("sync_gateway_channels");
+                    }
+                  } catch (e) { console.error(e); }
+                }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 4,
+                  background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)",
+                  padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+                  color: "var(--text-main)", fontWeight: 500
+                }}
+              >
+                Connect Account
+              </button>
+            </div>
+          )}
         </div>
       </ServiceRow>
 
@@ -1132,16 +1184,6 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           } else if (driveAccessScope === "granular") {
             await toggleIntegration("drive_granular", true);
           }
-        }}
-        onSetup={async () => {
-          try {
-            const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-            const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['drive'], readOnly: driveMode === "read" });
-            if (res && res.access_token) {
-              checkDynamicStatuses();
-              await invoke("sync_gateway_channels");
-            }
-          } catch (e) { console.error(e); }
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -1177,41 +1219,39 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               <span style={{ fontSize: 11, lineHeight: "1.4" }}>
                 <strong>Note on Access:</strong> {driveAccessScope === "all" ? "Connecting Google Drive grants this agent full read/write access to your entire drive based on the toggle above. You can instruct the agent in its system prompt to restrict its operations to specific folders." : "Connecting Google Drive with Granular Access strictly limits the agent to only the specific files or folders you authorize using the Google Picker API."}
               </span>
-              {gDriveConnected && (
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
-                  <button
-                    onClick={async () => {
-                      if (driveAccessScope === "granular") {
-                        if (!import.meta.env.VITE_GOOGLE_API_KEY) {
-                           alert("Google Picker requires a Developer API Key in your environment variables (VITE_GOOGLE_API_KEY). Please add it to .env to use granular access.");
-                           return;
-                        }
-                        // Placeholder for loading Google Picker JS API
-                        alert("Google Picker API UI is not fully implemented yet. Please switch to 'All Files' or configure the API Key.");
-                        return;
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+                <button
+                  onClick={async () => {
+                    if (driveAccessScope === "granular") {
+                      if (!import.meta.env.VITE_GOOGLE_API_KEY) {
+                         alert("Google Picker requires a Developer API Key in your environment variables (VITE_GOOGLE_API_KEY). Please add it to .env to use granular access.");
+                         return;
                       }
+                      // Placeholder for loading Google Picker JS API
+                      alert("Google Picker API UI is not fully implemented yet. Please switch to 'All Files' or configure the API Key.");
+                      return;
+                    }
 
-                      try {
-                        const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                        const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['drive'], readOnly: driveMode === "read", granular_drive: driveAccessScope === "granular" });
-                        if (res && res.access_token) {
-                          checkDynamicStatuses();
-                          await invoke("sync_gateway_channels");
-                        }
-                      } catch (e) { console.error(e); }
-                    }}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 4,
-                      background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)",
-                      padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
-                      color: "var(--text-main)", fontWeight: 500
-                    }}
-                  >
-                    <HardDrive size={12} />
-                    {driveAccessScope === "granular" ? "Select Files via Picker" : "Update Connection Scope"}
-                  </button>
-                </div>
-              )}
+                    try {
+                      const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                      const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['drive'], readOnly: driveMode === "read", granular_drive: driveAccessScope === "granular" });
+                      if (res && res.access_token) {
+                        checkDynamicStatuses();
+                        await invoke("sync_gateway_channels");
+                      }
+                    } catch (e) { console.error(e); }
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 4,
+                    background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)",
+                    padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+                    color: "var(--text-main)", fontWeight: 500
+                  }}
+                >
+                  <HardDrive size={12} />
+                  {gDriveConnected ? (driveAccessScope === "granular" ? "Select Files via Picker" : "Update Connection Scope") : "Connect Account"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -1290,6 +1330,9 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           {(["read", "write"] as const).map(m => {
             const hasWrite = agent.permissions.find(p => p.id === "file_write")?.enabled;
             const isChecked = m === "write" ? hasWrite : !hasWrite;
+            const recommendedTier = getRecommendedTierForAgent(agent.role);
+            const isRecommended = (m === "read" && recommendedTier?.enabled["file_read"] && !recommendedTier?.enabled["file_write"]) ||
+                                  (m === "write" && recommendedTier?.enabled["file_write"]);
             return (
               <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 12 }}>
                 <input type="radio" name={`fs-mode-${agent.id}`} checked={isChecked} onChange={async () => {
@@ -1322,8 +1365,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                      }, 100);
                    }
                 }} style={{ accentColor: "#3c6663" }} />
-                <span style={{ color: "var(--text-main)", fontWeight: isChecked ? 600 : 400 }}>
+                <span style={{ color: "var(--text-main)", fontWeight: isChecked ? 600 : 400, display: "flex", alignItems: "center", gap: 8 }}>
                   {m === "read" ? "Read-only — can view logs, read documents, search workspace" : "Read & Write — can create, modify, and delete files"}
+                  {isRecommended && (
+                    <span style={{ fontSize: 9, color: "var(--brand-main)", fontWeight: 700, display: "flex", alignItems: "center", gap: 3 }} title={`Included in the ${recommendedTier?.label || 'Recommended'} preset`}>
+                      ★ RECOMMENDED
+                    </span>
+                  )}
                 </span>
               </label>
             );
@@ -1560,6 +1608,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                 const band = CAP_RISK_BAND[p.id] || "medium";
                 const bandColor = band === "high" ? "#C62828" : band === "medium" ? "#D4A04A" : "#218380";
                 const bandLabel = band === "high" ? "High risk" : band === "medium" ? "Medium risk" : "Low risk";
+                const recommendedTier = getRecommendedTierForAgent(agent.role);
+                const isRecommended = recommendedTier?.enabled[p.id] === true;
                 return (
                   <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: i < arr.length - 1 ? "1px solid rgba(0,0,0,0.04)" : "none", paddingBottom: i < arr.length - 1 ? 12 : 0 }}>
                     <div style={{ flex: 1 }}>
@@ -1575,6 +1625,11 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                           letterSpacing: "0.02em",
                           cursor: "help",
                         }}>{bandLabel.toUpperCase()}</span>
+                        {isRecommended && (
+                          <span style={{ fontSize: 9, color: "var(--brand-main)", fontWeight: 700, display: "flex", alignItems: "center", gap: 3 }} title={`Included in the ${recommendedTier?.label || 'Recommended'} preset`}>
+                            ★ RECOMMENDED
+                          </span>
+                        )}
                       </div>
                       <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>{p.description}</div>
                     </div>
@@ -1730,6 +1785,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         if (c.icon === 'send' || c.icon === 'message-circle') IconComponent = MessageCircle;
         if (c.icon === 'cloud') IconComponent = Cloud;
         if (c.icon === 'database') IconComponent = Database;
+        if (c.icon === 'activity') IconComponent = Activity;
+        if (c.icon === 'map-pin') IconComponent = MapPin;
+        if (c.icon === 'zap') IconComponent = Zap;
+        if (c.icon === 'camera') IconComponent = Camera;
+        if (c.icon === 'bell') IconComponent = Bell;
+        if (c.icon === 'home') IconComponent = Home;
+        if (c.icon === 'bluetooth') IconComponent = Bluetooth;
         if (c.icon === 'slack') IconComponent = ({size, color}: any) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none"><path d="M14.5 10c-.83 0-1.5-.67-1.5-1.5v-5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M20.5 10H19V8.5c0-.83.67-1.5 1.5-1.5s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z" fill="#E01E5A"/><path d="M9.5 14c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5S8 21.33 8 20.5v-5c0-.83.67-1.5 1.5-1.5z" fill="#2EB67D"/><path d="M3.5 14H5v1.5c0 .83-.67 1.5-1.5 1.5S2 16.33 2 15.5 2.67 14 3.5 14z" fill="#2EB67D"/><path d="M14 9.5c0-.83.67-1.5 1.5-1.5h5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M14 3.5C14 2.67 14.67 2 15.5 2S17 2.67 17 3.5V5h-1.5c-.83 0-1.5-.67-1.5-1.5z" fill="#ECB22E"/><path d="M10 14.5c0 .83-.67 1.5-1.5 1.5h-5c-.83 0-1.5-.67-1.5-1.5S2.67 13 3.5 13h5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/><path d="M10 20.5c0 .83-.67 1.5-1.5 1.5S7 21.33 7 20.5V19h1.5c.83 0 1.5.67 1.5 1.5z" fill="#36C5F0"/></svg>;
 
         return (

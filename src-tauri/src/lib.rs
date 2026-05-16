@@ -34,6 +34,7 @@ mod activity_sniffer;
 mod health_monitor;
 mod workspace_manager;
 mod dispatch;
+mod bluetooth;
 
 use tauri::Manager;
 
@@ -238,6 +239,7 @@ pub fn run() {
             openclaw::upload_workspace_file,
             openclaw::copy_file_to_workspace,
             openclaw::set_preferences_template,
+            openclaw::fetch_apple_health_data,
             workspace_manager::get_agent_allowed_directories,
             workspace_manager::update_agent_allowed_directories,
             // Machine Browser
@@ -344,6 +346,11 @@ pub fn run() {
             // Mobile Dispatch RPC
             dispatch::generate_pairing_token,
             dispatch::revoke_pairing_token,
+            // Bluetooth
+            bluetooth::scan_bluetooth_devices,
+            bluetooth::whitelist_bluetooth_device,
+            bluetooth::get_whitelisted_bluetooth_devices,
+            bluetooth::read_bluetooth_device_data,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Canopy")
