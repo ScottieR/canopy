@@ -513,7 +513,7 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    let listener = match TcpListener::bind(("127.0.0.1", SHARED_BRIDGE_PORT)).await {
+    let listener = match TcpListener::bind(("0.0.0.0", SHARED_BRIDGE_PORT)).await {
         Ok(l) => l,
         Err(_) => return Ok(()), // already bound — bridge is running
     };
@@ -747,7 +747,7 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
     agent_id.hash(&mut hasher);
     let proxy_port = 10000 + (hasher.finish() % 1000) as u16;
 
-    let listener = match TcpListener::bind(("127.0.0.1", proxy_port)).await {
+    let listener = match TcpListener::bind(("0.0.0.0", proxy_port)).await {
         Ok(l) => l,
         Err(_) => return Ok(proxy_port), // Already bound, proxy is running
     };

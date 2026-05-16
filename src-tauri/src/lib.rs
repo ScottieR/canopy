@@ -33,6 +33,7 @@ mod security_scanner;
 mod activity_sniffer;
 mod health_monitor;
 mod workspace_manager;
+mod dispatch;
 
 use tauri::Manager;
 
@@ -114,6 +115,13 @@ pub fn run() {
             // Start Health Monitor Daemon
             health_monitor::start_health_monitor_daemon(handle.clone());
             
+            // Start the dispatch WebSocket server for mobile clients
+            let dispatch_state = std::sync::Arc::new(dispatch::DispatchState::new());
+            handle.manage(dispatch_state.clone());
+            tauri::async_runtime::spawn(async move {
+                dispatch::start_websocket_server(dispatch_state, handle.clone()).await;
+            });
+
             // Sync pricing asynchronously from Admin Oracle
             tauri::async_runtime::spawn(async move {
                 tracing::info!("Attempting to fetch remote LLM pricing sync...");
@@ -333,6 +341,9 @@ pub fn run() {
             // Activity Sniffer
             activity_sniffer::get_network_security_alerts,
             activity_sniffer::resolve_network_security_alert,
+            // Mobile Dispatch RPC
+            dispatch::generate_pairing_token,
+            dispatch::revoke_pairing_token,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Canopy")

@@ -3,7 +3,7 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Monitor
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Monitor, Smartphone
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
@@ -23,6 +23,7 @@ import { ActivityTab } from './ActivityTab';
 import { ChatTab } from './ChatTab';
 import { BrowserTab } from './BrowserTab';
 import { DiagnosticsTab } from './DiagnosticsTab';
+import { MobilePairingModal } from '../../components/Companion/MobilePairingModal';
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // ONBOARDING WIZARD
@@ -38,6 +39,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
   }), [rawAgent]);
 
   const { agents, setSelectedAgent, setActiveView, architectTab, setArchitectTab, togglePermission } = useWorldStore();
+  const [showPairingModal, setShowPairingModal] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [diagErrors, setDiagErrors] = useState<string[]>([]);
   const [diagSuccess, setDiagSuccess] = useState<string>("");
@@ -324,6 +326,16 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
 
         <div style={{ flex: 1 }} />
 
+        <button onClick={() => setShowPairingModal(true)} style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+          padding: "10px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, cursor: "pointer",
+          background: "var(--surface-base)", color: "var(--text-main)", fontSize: 13, fontWeight: 600, fontFamily: "inherit",
+          marginBottom: 10,
+        }}>
+          <Smartphone size={16} />
+          Pair Mobile Device
+        </button>
+
         {/* Danger Zone */}
         <div style={{ padding: showDangerZone ? "10px 0" : "10px 0 0 0", borderTop: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", gap: 8, position: "relative" }}>
           <button
@@ -516,6 +528,8 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           {architectTab === "diagnostics" && <DiagnosticsTab key={agent.id} agent={agent} onNavigate={setArchitectTab} />}
         </div>
       )}
+      
+      <MobilePairingModal isOpen={showPairingModal} onClose={() => setShowPairingModal(false)} />
     </div>
   );
 }

@@ -1333,10 +1333,18 @@ pub async fn send_message_internal(
     app: &tauri::AppHandle,
     agent_id: &str,
     message: &str,
+    session_id: Option<String>,
 ) -> Result<Value, String> {
     // Step 1: Get or create conversation
-    let conv_id = db.get_or_create_conversation(agent_id)
-        .map_err(|e| format!("Failed to get conversation: {}", e))?;
+    let conv_id = match session_id {
+        Some(id) => {
+            db.ensure_conversation(&id, agent_id)
+                .map_err(|e| format!("Failed to ensure conversation: {}", e))?;
+            id
+        },
+        None => db.get_or_create_conversation(agent_id)
+            .map_err(|e| format!("Failed to get conversation: {}", e))?,
+    };
 
     // Step 2: Log user message to DB
     let _ = db.insert_message(&conv_id, "user", message);
@@ -1373,16 +1381,21 @@ pub async fn send_message_internal(
     // NODE_OPTIONS=--v8-pool-size=1 prevents the Node.js process from trying to create
     // 4 worker threads at startup (which fails with uv_thread_create/EAGAIN under PID pressure).
     // The openclaw CLI is a thin IPC client — 1 background thread is sufficient.
+    let mut docker_args = vec![
+        "exec", "-u", "node",
+        "-e", "NODE_OPTIONS=--v8-pool-size=1",
+        "canopy-gateway",
+        "openclaw", "agent",
+        "--agent", agent_id,
+        "--message", message,
+        "--json"
+    ];
+    
+    docker_args.push("--session-id");
+    docker_args.push(&conv_id);
+
     let cmd_future = get_docker_command()
-        .args([
-            "exec", "-u", "node",
-            "-e", "NODE_OPTIONS=--v8-pool-size=1",
-            "canopy-gateway",
-            "openclaw", "agent",
-            "--agent", agent_id,
-            "--message", message,
-            "--json"
-        ])
+        .args(docker_args)
         .output();
 
     // 180-second timeout — agents can take 20-90s to respond under memory pressure.
@@ -1553,6 +1566,7 @@ pub async fn send_message(
     app: tauri::AppHandle,
     agent_id: String,
     message: String,
+    session_id: Option<String>,
     state: State<'_, AppState>,
     db: State<'_, crate::db::Database>,
 ) -> CanopyResult<Value> {
@@ -1588,7 +1602,7 @@ pub async fn send_message(
     );
 
     // ─── SEND MESSAGE ───────────────────────────────────────────
-    let result = send_message_internal(&*db, &app, &agent_id, &message).await?;
+    let result = send_message_internal(&*db, &app, &agent_id, &message, session_id).await?;
 
     // ─── AUDIT LOGGING ───────────────────────────────────────────
     tracing::info!(
@@ -1605,6 +1619,7 @@ pub async fn send_message(
 pub async fn get_conversation_history(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
+    session_id: Option<String>,
     limit: Option<u32>,
 ) -> Result<Vec<crate::db::Message>, String> {
     // 1. Get the session directory
@@ -1615,21 +1630,24 @@ pub async fn get_conversation_history(
     let mut parsed_messages: Vec<crate::db::Message> = Vec::new();
 
     // 1. Always fetch from SQLite DB first
-    if let Ok(conv_id) = db.get_or_create_conversation(&agent_id) {
+    let conv_id = match &session_id {
+        Some(id) => {
+            let _ = db.ensure_conversation(id, &agent_id);
+            id.clone()
+        },
+        None => return Ok(Vec::new())
+    };
+    
+    if !conv_id.is_empty() {
         if let Ok(db_messages) = db.get_messages(&conv_id, limit.unwrap_or(50)) {
             parsed_messages.extend(db_messages);
         }
     }
 
     // 2. Fetch from OpenClaw session directory if it exists
-
-    // 2. Read all .jsonl files in the sessions directory
-    if let Ok(entries) = std::fs::read_dir(&sessions_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                if let Ok(file) = std::fs::File::open(&path) {
-                    let reader = std::io::BufReader::new(file);
+    let session_file_path = sessions_dir.join(format!("{}.jsonl", conv_id));
+    if let Ok(file) = std::fs::File::open(&session_file_path) {
+        let reader = std::io::BufReader::new(file);
                     use std::io::BufRead;
                     for line in reader.lines().flatten() {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line) {
@@ -1695,9 +1713,6 @@ pub async fn get_conversation_history(
                         }
                     }
                 }
-            }
-        }
-    }
 
     // Sort by timestamp descending
     parsed_messages.sort_by(|a, b| {

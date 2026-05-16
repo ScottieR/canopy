@@ -617,6 +617,33 @@ impl Database {
 
     // ─── Conversation & Message Operations ──────────────────────────────────
 
+    /// Ensure a specific conversation ID exists for an agent
+    pub fn ensure_conversation(&self, conv_id: &str, agent_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        // Check if exists
+        let mut stmt = conn.prepare("SELECT 1 FROM conversations WHERE id = ?1")?;
+        if stmt.query_row(params![conv_id], |_| Ok(())).optional()?.is_some() {
+            return Ok(());
+        }
+
+        // Create
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO conversations (id, agent_id, title, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                conv_id,
+                agent_id,
+                "New Conversation",
+                &now,
+                &now
+            ],
+        )?;
+
+        Ok(())
+    }
+
     /// Get or create a conversation for an agent
     pub fn get_or_create_conversation(&self, agent_id: &str) -> SqlResult<String> {
         let conn = self.conn.lock().unwrap();

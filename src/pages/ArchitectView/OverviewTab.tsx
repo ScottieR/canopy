@@ -460,7 +460,35 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
           sub-option is the path to bidirectional Gemini Live audio. */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
         <button
-          onClick={() => onNavigate?.("browser")}
+          onClick={async () => {
+            try {
+              const { invoke } = await import('@tauri-apps/api/core');
+              
+              try {
+                await invoke("show_browser", { agentId: agent.id });
+              } catch (err) {
+                console.log("Browser not running, starting it now...");
+                await invoke("start_machine_browser", { agentId: agent.id });
+                await new Promise(resolve => setTimeout(resolve, 500));
+                await invoke("show_browser", { agentId: agent.id });
+              }
+              
+              const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+              new WebviewWindow('chat_companion_' + agent.id + '_' + Date.now(), {
+                url: `/index.html?chatCompanion=${agent.id}`,
+                title: `${agent.name} Chat`,
+                width: 380,
+                height: 800,
+                x: window.screen.availWidth - 400,
+                y: 100,
+                decorations: true,
+                alwaysOnTop: true,
+              });
+            } catch (e) {
+              console.error("Failed to launch co-browsing:", e);
+              onNavigate?.("browser");
+            }
+          }}
           title={`Open ${agent.name}'s browser side-by-side so you can co-browse.`}
           style={{
             display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
