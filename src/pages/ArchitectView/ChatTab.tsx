@@ -189,6 +189,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
   const [attachments, setAttachments] = useState<{name: string, dataUrl: string}[]>([]);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(true);
+  const abortRef = useRef(false);
 
   const handleScroll = useCallback(() => {
     if (chatContainerRef.current) {
@@ -238,16 +239,31 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         if (a.id !== agent.id) return a;
         let conversations = a.conversations;
         if (a.activeConversationId && conversations) {
-          conversations = conversations.map(c =>
-            c.id === a.activeConversationId
-              ? { ...c, messages: chatLog, lastActiveAt: Date.now() }
-              : c
-          );
+          conversations = conversations.map(c => {
+            if (c.id !== a.activeConversationId) return c;
+            
+            const isNewContent = chatLog.length !== c.messages.length || 
+                                chatLog[chatLog.length - 1]?.id !== c.messages[c.messages.length - 1]?.id;
+            
+            return {
+              ...c, 
+              messages: chatLog, 
+              lastActiveAt: isNewContent ? Date.now() : c.lastActiveAt 
+            };
+          });
         }
         return { ...a, chatLog, conversations };
       })
     }));
   }, [chatLog, agent.id]);
+
+  // When switching threads externally, update the local chatLog immediately
+  useEffect(() => {
+    setChatLog(agent.chatLog || []);
+    // Ensure we start at the bottom of the newly loaded thread
+    isAtBottomRef.current = true;
+    setIsAtBottom(true);
+  }, [agent.activeConversationId]);
 
   const agentRef = useRef(agent);
   useEffect(() => {
@@ -259,7 +275,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       const fetchHistory = async () => {
         try {
           const currentAgent = agentRef.current;
-          const resp: any = await invoke("get_conversation_history", { agentId: currentAgent.id, limit: 100 });
+          const resp: any = await invoke("get_conversation_history", { agentId: currentAgent.id, limit: 100, sessionId: currentAgent.activeConversationId || null });
           let localMessages: any[] = [];
           
           if (Array.isArray(resp) && resp.length > 0) {
@@ -278,91 +294,28 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
             allMessages = allMessages.filter((m: any) => m.ts >= currentAgent.chatClearedAt!);
           }
 
-          // 1. Identify truly new messages
-          const knownIds = new Set<string>();
-          currentAgent.chatLog.forEach(m => knownIds.add(m.id));
-          currentAgent.conversations?.forEach(c => c.messages.forEach(m => knownIds.add(m.id)));
-          
-          let newBackendMessages = allMessages.filter(m => !knownIds.has(m.id));
-          
-          // Deduplicate newBackendMessages against local synthetic messages
-          newBackendMessages = newBackendMessages.filter(newMsg => {
-              return !currentAgent.chatLog.some(localMsg => {
-                  if (localMsg.sender !== newMsg.sender) return false;
-                  if (localMsg.text === newMsg.text) return true;
-                  const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
-                  const strippedNew = newMsg.text.replace(tsRegex, '');
-                  const strippedLocal = localMsg.text.replace(tsRegex, '');
-                  return strippedNew === strippedLocal || newMsg.text.endsWith(localMsg.text);
-              });
+          // 2. Merge local-only messages (optimistic updates) with the backend messages.
+          const nowMs = Date.now();
+          const localOnly = currentAgent.chatLog.filter(msg => {
+            if (allMessages.some((m: any) => m.id === msg.id)) return false;
+            if (allMessages.some((m: any) => {
+              if (m.sender !== msg.sender) return false;
+              if (m.text === msg.text) return true;
+              const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
+              const strippedM = m.text.replace(tsRegex, '');
+              const strippedMsg = msg.text.replace(tsRegex, '');
+              return strippedM === strippedMsg || m.text.endsWith(msg.text);
+            })) return false;
+            return true;
           });
-
-          // 2. Route new messages
-          if (newBackendMessages.length > 0) {
-             const lastCurrentMsg = currentAgent.chatLog[currentAgent.chatLog.length - 1];
-             const timeSinceLastMsg = lastCurrentMsg && lastCurrentMsg.ts ? newBackendMessages[0].ts - lastCurrentMsg.ts : 0;
-             
-             const isNewSession = currentAgent.chatLog.length > 0 && timeSinceLastMsg > 10 * 60 * 1000;
-                 
-             if (isNewSession) {
-                 useWorldStore.setState(state => {
-                     const a = state.agents.find(x => x.id === currentAgent.id);
-                     if (!a) return state;
-                     const conversations = [...(a.conversations || [])];
-                     const now = Date.now();
-                     const titleText = newBackendMessages.find(m => m.sender === "user")?.text.trim() || newBackendMessages[0].text.trim() || "New Activity";
-                     const title = titleText.length > 40 ? titleText.slice(0, 40).trimEnd() + "…" : titleText;
-                     
-                     conversations.push({
-                         id: `conv_${now}_${Math.random().toString(36).slice(2, 8)}`,
-                         title: title,
-                         messages: newBackendMessages,
-                         createdAt: now,
-                         lastActiveAt: now,
-                     });
-                     
-                     return {
-                         agents: state.agents.map(x => x.id === currentAgent.id ? { ...x, conversations } : x)
-                     };
-                 });
-                 allMessages = allMessages.filter(m => !newBackendMessages.some(n => n.id === m.id));
-             }
-          }
-
-          // 3. Update active chatLog
-          const isLatestView = !currentAgent.activeConversationId || 
-              (currentAgent.conversations && currentAgent.activeConversationId === [...currentAgent.conversations].sort((a,b) => b.lastActiveAt - a.lastActiveAt)[0]?.id);
-              
-          if (isLatestView) {
-              const localOnly = currentAgent.chatLog.filter(msg => {
-                if (allMessages.some((m: any) => m.id === msg.id)) return false;
-                if (allMessages.some((m: any) => {
-                  if (m.sender !== msg.sender) return false;
-                  if (m.text === msg.text) return true;
-                  const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
-                  const strippedM = m.text.replace(tsRegex, '');
-                  const strippedMsg = msg.text.replace(tsRegex, '');
-                  return strippedM === strippedMsg || m.text.endsWith(msg.text);
-                })) return false;
-                return true;
-              });
-              
-              if (allMessages.length > 0 || localOnly.length > 0) {
-                const newLog = capLog([...allMessages, ...localOnly].sort((a, b) => (a.ts || 0) - (b.ts || 0)));
-                setChatLog(prev => {
-                  const lastPrev = prev[prev.length - 1];
-                  const lastNew = newLog[newLog.length - 1];
-                  if (prev.length === newLog.length && lastPrev?.id === lastNew?.id) return prev;
-                  return newLog;
-                });
-              }
-          } else {
-              const remainingNewMessages = newBackendMessages.filter(m => allMessages.some(a => a.id === m.id));
-              if (remainingNewMessages.length > 0) {
-                  const newLog = capLog([...currentAgent.chatLog, ...remainingNewMessages].sort((a,b) => (a.ts||0) - (b.ts||0)));
-                  setChatLog(newLog);
-              }
-          }
+          
+          const newLog = capLog([...allMessages, ...localOnly].sort((a, b) => (a.ts || 0) - (b.ts || 0)));
+          setChatLog(prev => {
+            const lastPrev = prev[prev.length - 1];
+            const lastNew = newLog[newLog.length - 1];
+            if (prev.length === newLog.length && lastPrev?.id === lastNew?.id) return prev;
+            return newLog;
+          });
 
         } catch (err) {
           console.error("Failed to fetch chat history:", err);
@@ -417,7 +370,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
       };
       setChatLog(prev => capLog([...prev, sysMsg]));
       
-      invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
+      invoke("send_message", { agentId: agent.id, message: sysMsg.text, sessionId: agent.activeConversationId || null }).catch(e => console.warn("Auto-reply failed:", e));
       
       setAuthDomain(null);
       setAuthUsername("");
@@ -470,7 +423,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setChatLog(prev => capLog([...prev, sysMsg]));
-      invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
+      invoke("send_message", { agentId: agent.id, message: sysMsg.text, sessionId: agent.activeConversationId || null }).catch(e => console.warn("Auto-reply failed:", e));
       
       setAuthDomain(null);
       setAuthUsername("");
@@ -482,6 +435,11 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
     } finally {
       setIsAuthorizing(false);
     }
+  };
+
+  const handleStop = () => {
+    abortRef.current = true;
+    setLoading(false);
   };
 
   const handleSendMessage = async (overrideText?: string) => {
@@ -524,9 +482,31 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
         }
       }
 
+      let activeSessionId = agent.activeConversationId;
+      if (!activeSessionId) {
+        activeSessionId = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => {
+            if (a.id !== agent.id) return a;
+            return {
+              ...a,
+              activeConversationId: activeSessionId,
+              conversations: [...(a.conversations || []), {
+                id: activeSessionId!,
+                title: userMsg.text.length > 40 ? userMsg.text.slice(0, 40).trimEnd() + "…" : userMsg.text,
+                messages: [userMsg],
+                createdAt: Date.now(),
+                lastActiveAt: Date.now(),
+              }]
+            };
+          })
+        }));
+      }
+
       const response: any = await invoke("send_message", {
         agentId: agent.id,
         message: finalMessage,
+        sessionId: activeSessionId,
       });
 
       if (abortRef.current) {
@@ -560,6 +540,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
           const retryResponse: any = await invoke("send_message", {
             agentId: agent.id,
             message: finalMessage,
+            sessionId: agent.activeConversationId || null,
           });
           
           if (abortRef.current) {
@@ -1226,7 +1207,11 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
                 transition: "all 0.15s ease",
                 height: "46px"
               }}
-            >{agent.paused ? "⏸" : !gatewayReady ? "⏳" : "Send"}</button>
+            >{agent.paused ? "⏸" : !gatewayReady ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
+                <path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>
+              </svg>
+            ) : "Send"}</button>
           )}
         </div>
       </div>

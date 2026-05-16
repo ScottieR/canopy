@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { persist } from "zustand/middleware";
 import RAW_AGENT_TYPE_INFO from "../../shared/agents.json";
 
 export interface UserProfile {
@@ -290,8 +291,10 @@ export function injectPrincipalContext(basePrompt: string, profile: UserProfile 
   return basePrompt + principal;
 }
 
-export const useWorldStore = create<WorldState>((set) => ({
-  agents: [],
+export const useWorldStore = create<WorldState>()(
+  persist(
+    (set) => ({
+      agents: [],
   selectedAgent: null,
   hoveredAgent: null,
   activeView: "loading",
@@ -454,10 +457,6 @@ export const useWorldStore = create<WorldState>((set) => ({
     }
 
     // Now load the target's messages into chatLog and mark it active.
-    conversations = conversations.map(c => c.id === convId
-      ? { ...c, lastActiveAt: Date.now() }
-      : c);
-
     return {
       agents: state.agents.map(a => a.id === agentId ? {
         ...a,
@@ -485,7 +484,12 @@ export const useWorldStore = create<WorldState>((set) => ({
       activeConversationId: a.activeConversationId === convId ? null : a.activeConversationId,
     } : a),
   })),
-}));
+}),
+{
+  name: "canopy-world-store",
+  partialize: (state) => ({ agents: state.agents }),
+}
+));
 
 export function pickNextAction(agent: AgentData): { action: string; target: [number, number, number] } {
   const actions = [

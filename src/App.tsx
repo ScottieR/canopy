@@ -1163,7 +1163,15 @@ export default function App() {
               avatarPrompt: `A Monument Valley-style lobster with a ${roleInfo.robeColor} shell, round eyes, and swaying antennae.`,
             };
           });
-          setAgents(enrichedAgents as unknown as AgentData[]);
+          const currentAgents = useWorldStore.getState().agents;
+          const mergedAgents = (enrichedAgents as unknown as AgentData[]).map(ea => {
+             const ca = currentAgents.find(x => x.id === ea.id);
+             if (ca) {
+                 return { ...ea, conversations: ca.conversations || [], activeConversationId: ca.activeConversationId || null };
+             }
+             return ea;
+          });
+          setAgents(mergedAgents);
 
           const hash = window.location.hash.replace('#/', '').replace('#', '');
           const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault"];

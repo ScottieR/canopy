@@ -6,11 +6,13 @@ import { PasswordsCompanion } from "./components/Companion/PasswordsCompanion";
 import { GithubCompanion } from "./components/Companion/GithubCompanion";
 import { DiscordCompanion } from "./components/Companion/DiscordCompanion";
 import { TelegramCompanion } from "./components/Companion/TelegramCompanion";
+import { ChatCompanion } from "./components/Companion/ChatCompanion";
 import { BrowserPopout } from "./components/BrowserPopout";
 import "./styles/globals.css";
 
 const companionType = new URLSearchParams(window.location.search).get("companion");
 const browserAgentId = new URLSearchParams(window.location.search).get("browser");
+const chatCompanionAgentId = new URLSearchParams(window.location.search).get("chatCompanion");
 
 // ── Global external-link interceptor ──────────────────────────────────────────
 //
@@ -85,12 +87,12 @@ function installGlobalExternalLinkHandler() {
 // Install only for the main app window — companion windows (Slack/Github/etc.)
 // and the BrowserPopout already manage their own link behaviour and depend on
 // in-window navigation for OAuth-style flows.
-if (!companionType && !browserAgentId) {
+if (!companionType && !browserAgentId && !chatCompanionAgentId) {
   installGlobalExternalLinkHandler();
 }
 
 const WindowWrapper = ({ children }: { children: React.ReactNode }) => {
-  if (!companionType && !browserAgentId) return <>{children}</>;
+  if (!companionType && !browserAgentId && !chatCompanionAgentId) return <>{children}</>;
   
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -143,6 +145,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <WindowWrapper>
       {browserAgentId ? (
         <BrowserPopout agentId={browserAgentId} />
+      ) : chatCompanionAgentId ? (
+        <ChatCompanion />
       ) : companionType === "slack" ? (
         <SlackCompanion />
       ) : companionType === "passwords" ? (
