@@ -1596,8 +1596,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         // The rest are hidden because they are currently UI stubs not yet wired into the OpenClaw backend.
         const HIDDEN_FROM_FINE_TUNE = new Set([
           "payments", "spend_auto", "imessage", 
-          "ext_network", "int_network", "autonomous", 
-          "scheduled", "memory_write", "photos"
+          "ext_network", "int_network", 
+          "memory_write", "photos"
         ]);
         const finetunePerms = agent.permissions.filter(p => !HIDDEN_FROM_FINE_TUNE.has(p.id));
 

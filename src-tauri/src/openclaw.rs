@@ -850,6 +850,9 @@ pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::mode
     // openclaw.json with one more node -e call.
     let agent_id = agent.id.clone();
     let skills_json = serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string());
+    
+    let ask_val = if caps.autonomous { "off" } else { "always" };
+    let scheduled_bool = if caps.scheduled { "true" } else { "false" };
 
     let patch_script = format!(
         r#"const fs=require('fs');
@@ -860,17 +863,30 @@ c.agents.list=c.agents.list||[];
 const i=c.agents.list.findIndex(a=>a&&a.id==='{id}');
 if(i>=0){{
   c.agents.list[i].skills={skills};
+  
+  c.agents.list[i].exec = c.agents.list[i].exec || {{}};
+  c.agents.list[i].exec.ask = '{ask}';
+  
+  c.agents.list[i].heartbeat = c.agents.list[i].heartbeat || {{}};
+  if ({scheduled}) {{
+    c.agents.list[i].heartbeat.every = '30m';
+  }} else {{
+    delete c.agents.list[i].heartbeat.every;
+  }}
+  
   fs.writeFileSync(p,JSON.stringify(c,null,2));
-  console.log('skills patched for {id}');
+  console.log('capabilities patched for {id}');
 }} else {{
-  console.log('agent {id} not found in agents.list — skipping skills patch');
+  console.log('agent {id} not found in agents.list — skipping capabilities patch');
 }}
 "#,
         id = agent_id,
         skills = skills_json,
+        ask = ask_val,
+        scheduled = scheduled_bool,
     );
 
-    let cmd_str = format!("[node -e patch] agents.list[{}].skills = {}", agent_id, skills_json);
+    let cmd_str = format!("[node -e patch] capabilities for {}", agent_id);
     let output = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         get_docker_command()
