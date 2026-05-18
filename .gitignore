@@ -6,3 +6,4 @@ dist-preview/
 src-tauri/target/
 public/models/lobsters/FlatIvyBase.glb
 public/models/lobsters/IvyBase.glb
+.claude/
