@@ -59,6 +59,17 @@ pub async fn check_orbstack_installed() -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub async fn check_docker_installed() -> Result<bool, String> {
+    let output = tokio::process::Command::new("which")
+        .arg("docker")
+        .output()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(output.status.success())
+}
+
+#[tauri::command]
 pub async fn install_orbstack() -> Result<String, String> {
     // Download and install OrbStack via brew (most reliable for macOS)
     let output = tokio::process::Command::new("brew")
@@ -287,16 +298,20 @@ pub fn get_docker_compose_command() -> tokio::process::Command {
     if let Some(home) = dirs::home_dir() {
         let orb_compose = home.join(".orbstack/bin/docker-compose");
         if orb_compose.exists() {
-            return tokio::process::Command::new(orb_compose);
+            let mut cmd = tokio::process::Command::new(orb_compose);
+            cmd.kill_on_drop(true);
+            return cmd;
         }
     }
-    if std::path::Path::new("/usr/local/bin/docker-compose").exists() {
-        return tokio::process::Command::new("/usr/local/bin/docker-compose");
-    }
-    if std::path::Path::new("/opt/homebrew/bin/docker-compose").exists() {
-        return tokio::process::Command::new("/opt/homebrew/bin/docker-compose");
-    }
-    tokio::process::Command::new("docker-compose")
+    let mut cmd = if std::path::Path::new("/usr/local/bin/docker-compose").exists() {
+        tokio::process::Command::new("/usr/local/bin/docker-compose")
+    } else if std::path::Path::new("/opt/homebrew/bin/docker-compose").exists() {
+        tokio::process::Command::new("/opt/homebrew/bin/docker-compose")
+    } else {
+        tokio::process::Command::new("docker-compose")
+    };
+    cmd.kill_on_drop(true);
+    cmd
 }
 
 /// Scan every agent directory in the openclaw-state bind mount and replace any

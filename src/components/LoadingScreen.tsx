@@ -24,16 +24,20 @@ export function LoadingScreen({ status }: { status?: string }) {
   useEffect(() => {
     if (!showLog && !isSlowPhase) return;
     let cancelled = false;
-    const poll = async () => {
+    let isPolling = false;
+    const safePoll = async () => {
+      if (isPolling) return;
+      isPolling = true;
       try {
         const tail = await invoke<string>("get_gateway_log_tail", { lines: 20 });
         if (!cancelled && tail) {
           setLogLines(tail.split("\n").filter(Boolean).slice(-20));
         }
       } catch { /* non-fatal */ }
+      finally { isPolling = false; }
     };
-    poll();
-    const id = setInterval(poll, 3000);
+    safePoll();
+    const id = setInterval(safePoll, 3000);
     return () => { cancelled = true; clearInterval(id); };
   }, [showLog, isSlowPhase]);
 

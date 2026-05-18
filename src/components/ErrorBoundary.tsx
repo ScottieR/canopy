@@ -31,7 +31,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
     };
   }
 
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+  async componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     // Update state with error info
     this.setState({ errorInfo });
 
@@ -45,6 +45,24 @@ export class ErrorBoundary extends React.Component<Props, State> {
         componentStack: errorInfo.componentStack,
         timestamp: new Date().toISOString(),
       });
+    }
+
+    // Auto-log to file via Tauri for debugging
+    try {
+      if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
+        const { appDataDir, join } = await import('@tauri-apps/api/path');
+        const { appendTextFile, mkdir } = await import('@tauri-apps/plugin-fs');
+        
+        const baseDir = await appDataDir();
+        await mkdir(baseDir, { recursive: true }).catch(() => {});
+        const logPath = await join(baseDir, 'crash_logs.txt');
+        
+        const logEntry = `\n\n[${new Date().toISOString()}] CRASH REPORT:\nError: ${error.message}\nStack: ${error.stack}\nComponent Stack: ${errorInfo.componentStack}\n`;
+        await appendTextFile(logPath, logEntry);
+        console.log(`Crash saved to ${logPath}`);
+      }
+    } catch (fsErr) {
+      console.warn("Failed to write crash log to disk:", fsErr);
     }
   }
 

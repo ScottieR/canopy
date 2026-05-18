@@ -92,10 +92,11 @@ export const ACCESS_TIERS: AccessTier[] = [
   {
     id: "balanced",
     label: "Balanced",
-    summary: "Web search, browsing, and code execution. No autonomy, no writes, no payments.",
+    summary: "Full autonomous execution — web, browsing, code, and scheduled tasks. No writes, no payments.",
     rationale:
-      "Right default for most agents — productive enough to be useful, restricted enough to be safe. " +
-      "The agent can look things up, browse, and run code, but every real-world action still needs you.",
+      "The right default for most agents. They can research, browse, run code, and chain actions on your " +
+      "behalf without interrupting you at every step. File writes, payments, and external messaging still " +
+      "require explicit permission — those are the real risk controls.",
     color: "#3c6663",
     recommended: true,
     enabled: {
@@ -111,9 +112,12 @@ export const ACCESS_TIERS: AccessTier[] = [
       coding: true,
       gog: true,
       canvas: true,
-      // Still off: autonomy + writes + real-world action
-      autonomous: false,
-      scheduled: false,
+      // Autonomous execution + scheduling on by default — defense-in-depth
+      // comes from capability permissions (payments/file_write/imessage all off).
+      // Agents can chain reasoning loops; they just can't spend money or write files.
+      autonomous: true,
+      scheduled: true,
+      // Still off: real-world write/send/pay actions
       file_write: false,
       payments: false,
       spend_auto: false,

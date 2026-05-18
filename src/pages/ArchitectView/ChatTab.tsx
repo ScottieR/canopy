@@ -38,7 +38,7 @@ const formatMessageTime = (dateInput: Date | string | number) => {
 
 export // ─── Chat / Communion Component ──────────────────────────────────────────────
 
-function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boolean }) {
+function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentData; compact?: boolean; hideHeader?: boolean }) {
   const { agents, setAgents, setArchitectTab } = useWorldStore();
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [message, setMessage] = useState(agent.draftMessage || "");
@@ -286,12 +286,18 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
   useEffect(() => {
     if (typeof invoke === 'function') {
+      let isActive = true;
+      let isFetching = false;
       const fetchHistory = async () => {
+        if (!isActive || isFetching) return;
+        isFetching = true;
         try {
           const currentAgent = agentRef.current;
           const resp: any = await invoke("get_conversation_history", { agentId: currentAgent.id, limit: 100, sessionId: currentAgent.activeConversationId || null });
           let localMessages: any[] = [];
           
+          if (!isActive) return;
+
           if (Array.isArray(resp) && resp.length > 0) {
             localMessages = resp.map(r => ({
               id: r.id,
@@ -332,12 +338,17 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
         } catch (err) {
           console.error("Failed to fetch chat history:", err);
+        } finally {
+          isFetching = false;
         }
       };
       
       fetchHistory();
       const interval = setInterval(fetchHistory, 3000);
-      return () => clearInterval(interval);
+      return () => {
+        isActive = false;
+        clearInterval(interval);
+      };
     }
   }, [agent.id]);
 
@@ -651,7 +662,7 @@ function ChatTab({ agent, compact = false }: { agent: AgentData; compact?: boole
 
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-      {!compact && (
+      {!compact && !hideHeader && (
         <div style={{ marginBottom: 12, padding: "0 10px", marginTop: 4 }}>
           <div style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>
             {topic ? (

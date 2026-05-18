@@ -24,5 +24,5 @@ async fn test_auth_concurrent() {
         }
     });
 
-    futures::future::join_all(futures).await;
+    futures_util::future::join_all(futures).await;
 }

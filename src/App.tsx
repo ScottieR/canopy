@@ -35,10 +35,12 @@ import { ArchiveView } from './pages/ArchiveView';
 import { UserProfileView } from './pages/UserProfileView';
 import { DiagnosticsView } from './pages/DiagnosticsView';
 import { CanopyView } from './pages/CanopyView';
+import { ForumView } from './pages/ForumView';
 import { TopNav } from './components/shared/TopNav';
 import { ExportInterceptModal } from './components/ExportInterceptModal';
 import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
 import { getAssetUrl } from './utils/assets';
+import { LobsterIcon } from './components/World/LobsterIcon';
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -104,50 +106,6 @@ function OrganicLobsterBody({ robeMat, headColor }: { robeMat: THREE.Material, h
         <meshStandardMaterial color={headColor} flatShading />
       </mesh>
     </>
-  );
-}
-
-// `reactState` drives small CSS micro-animations on the avatar so the lobster
-// feels alive in chat headers and message bubbles. Keyframes are defined once,
-// globally, near the other @keyframes blocks in this file (search for
-// `lobster-breathe`). Passing `reactState="off"` (or omitting it) keeps the
-// avatar static — small-tile usage on the world view should stay still.
-export function LobsterIcon({
-  size = 48, className = "", role, agentImage,
-  reactState = "off",
-}: {
-  size?: number; shellColor?: string; accentColor?: string;
-  className?: string; role?: string; agentImage?: string | null;
-  reactState?: "off" | "idle" | "thinking" | "error" | "happy";
-}) {
-  const info = role ? (AGENT_TYPE_INFO as any)[role] : null;
-  const imageSrc = agentImage || (info?.image) || "/agents/Custom.png";
-  // Map state → animation. `idle` is a gentle ~4s breathe; `thinking` is a
-  // faster shimmer + slight rotate that reads as "antennae twitching"; `error`
-  // dims and tilts down; `happy` is a quick scale pop.
-  const animation =
-    reactState === "idle"     ? "lobster-breathe 4.2s ease-in-out infinite" :
-    reactState === "thinking" ? "lobster-think 1.6s ease-in-out infinite" :
-    reactState === "error"    ? "lobster-error 0.4s ease-out forwards" :
-    reactState === "happy"    ? "lobster-happy 0.6s ease-out" :
-    "none";
-  const filter =
-    reactState === "thinking" ? "brightness(1.08) saturate(1.05)" :
-    reactState === "error"    ? "saturate(0.6) brightness(0.92)" :
-    undefined;
-  return (
-    <img
-      src={getAssetUrl(imageSrc)}
-      alt="Lobster Agent"
-      style={{
-        width: size, height: size, objectFit: "cover", borderRadius: "50%",
-        animation, filter,
-        // origin matters for the rotate components of `lobster-think` and `lobster-error`
-        transformOrigin: "center 70%",
-        transition: "filter 0.3s ease",
-      }}
-      className={className}
-    />
   );
 }
 
@@ -448,6 +406,81 @@ export function CanopyScene({
   const setHoveredAgent = useWorldStore(s => s.setHoveredAgent);
   const hoveredAgent = useWorldStore(s => s.hoveredAgent);
   const setActiveView = useWorldStore(s => s.setActiveView);
+  
+  const setAgents = useWorldStore(s => s.setAgents);
+  const updateAgentAction = useWorldStore(s => s.updateAgentAction);
+  const invoke = (window as any)?.__TAURI__?.invoke || (() => Promise.resolve());
+
+  useEffect(() => {
+    // 1. Keep the Rust dispatch bridge synced with our frontend state
+    // We only care about syncing the "projects" and "inbox".
+    const state = useWorldStore.getState();
+    const projects = state.agents.flatMap(a => a.conversations || [])
+      .filter(c => c.type === "project")
+      .map(c => ({
+        id: c.id,
+        title: c.title,
+        agent_count: state.agents.filter(a => a.conversations?.some(ac => ac.id === c.id)).length,
+        last_active: c.lastActiveAt
+      }));
+    
+    invoke("sync_mobile_state", { 
+      payload: { 
+        projects: projects,
+        inbox: state.inbox
+      } 
+    }).catch(e => console.warn("Failed to sync mobile state:", e));
+  }, [agents, useWorldStore.getState().inbox]);
+
+  useEffect(() => {
+    // 2. Listen for mobile commands (e.g. Quick Capture)
+    let unlistenFn: (() => void) | undefined;
+    async function setupMobileListener() {
+      const { listen } = await import("@tauri-apps/api/event");
+      const unlisten = await listen<{ command: string }>("mobile_system_command", (event) => {
+        if (!event.payload || !event.payload.command) return;
+        
+        const cmd = event.payload.command;
+        if (cmd.startsWith("COMMAND: CAPTURE_NOTE:")) {
+          const text = cmd.replace("COMMAND: CAPTURE_NOTE:", "").trim();
+          useWorldStore.getState().addInboxItem({
+            type: "voice_note",
+            content: text,
+            suggestion: "Route to Triage Agent or default Project space."
+          });
+        } else if (cmd === "COMMAND: CREATE_PROJECT_SPACE_AUTO") {
+          // Find an orchestrator or default agent to create it under
+          const firstAgent = useWorldStore.getState().agents[0];
+          if (firstAgent) {
+            useWorldStore.getState().createProjectSpace(firstAgent.id);
+            useWorldStore.getState().setActiveView("canopy");
+          }
+        } else if (cmd.startsWith("COMMAND: DISMISS_INBOX_ITEM:")) {
+          const id = cmd.replace("COMMAND: DISMISS_INBOX_ITEM:", "").trim();
+          useWorldStore.getState().removeInboxItem(id);
+        } else if (cmd.startsWith("COMMAND: APPROVE_INBOX_ITEM:")) {
+          const id = cmd.replace("COMMAND: APPROVE_INBOX_ITEM:", "").trim();
+          const item = useWorldStore.getState().inbox.find(i => i.id === id);
+          if (item) {
+            useWorldStore.getState().removeInboxItem(id);
+            // In a real flow, we would route this to the suggested agent or project here!
+            // For now, we'll auto-create a project space if it's a voice note, or grant permission.
+            if (item.type === "voice_note") {
+              const firstAgent = useWorldStore.getState().agents[0];
+              if (firstAgent) {
+                useWorldStore.getState().createProjectSpace(firstAgent.id);
+              }
+            }
+          }
+        }
+      });
+      unlistenFn = unlisten;
+    }
+    setupMobileListener();
+    return () => {
+      if (unlistenFn) unlistenFn();
+    };
+  }, []);
 
   const handleAgentClick = (id: string) => {
     if (isEditMode) {
@@ -699,25 +732,6 @@ export const MultiPicker = ({
 // ─── Personality / Neural Path Tab ───────────────────────────────────────────
 
 // ─── 3D Identity Tab ─────────────────────────────────────────────────────────
-
-export const PASTEL_COLORS = [
-  "#FFAB91", "#FFD54F", "#FFF59D", "#DCE775", "#AED581", "#81C784",
-  "#4DB6AC", "#4DD0E1", "#4FC3F7", "#64B5F6", "#7986CB", "#9575CD",
-  "#BA68C8", "#F06292", "#E0E0E0", "#BCAAA4"
-];
-
-export const HABITATS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-
-// 150 items
-export const ACCESSORIES = [
-  "/models/assets/Clipboard.png",
-  "/models/assets/ExecutivePlant.png",
-  ...Array.from({ length: 6 }, (_, s) =>
-    Array.from({ length: 25 }, (_, i) =>
-      `/accessories/accessories_set_${s + 1}_item_${String(i + 1).padStart(2, '0')}.png`
-    )
-  ).flat()
-];
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOADING SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -725,6 +739,7 @@ export const ACCESSORIES = [
 // function LoadingScreen({ status }: { status?: string }) { Extracted
 
 export function CompanionGuide({ type }: { type: string }) {
+  const agentId = new URLSearchParams(window.location.search).get("agentId");
   const [step, setStep] = useState(0);
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
@@ -1107,7 +1122,7 @@ export default function App() {
   useEffect(() => {
     const handleHash = () => {
       const hash = window.location.hash.replace('#/', '').replace('#', '');
-      const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault"];
+      const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
       if (validViews.includes(hash)) {
         setActiveView(hash as any);
       }
@@ -1266,7 +1281,7 @@ export default function App() {
           setAgents(mergedAgents);
 
           const hash = window.location.hash.replace('#/', '').replace('#', '');
-          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault"];
+          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
           if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
             setActiveView(hash as any);
           } else {
@@ -1381,9 +1396,16 @@ export default function App() {
   };
 
   useEffect(() => {
+    let isPolling = false;
+    const poll = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      try { await runHealthPoll(); }
+      finally { isPolling = false; }
+    };
     // Immediate check so status is correct from the first render, not after 15s.
-    runHealthPoll();
-    const pollInterval = window.setInterval(runHealthPoll, 15000);
+    poll();
+    const pollInterval = window.setInterval(poll, 15000);
     return () => clearInterval(pollInterval);
   }, []);
 
@@ -1406,6 +1428,7 @@ export default function App() {
       {activeView === "loading" && <LoadingScreen status={loadStatus} />}
       {activeView === "onboarding" && <OnboardingWizard />}
       {activeView === "canopy" && <CanopyView />}
+      {activeView === "forum" && <ForumView />}
       {activeView === "architect" && agent && <ArchitectView agent={agent} />}
       {activeView === "archive" && (
         <div style={{ flex: 1, overflow: "hidden", display: "flex" }}>

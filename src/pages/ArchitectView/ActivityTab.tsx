@@ -11,6 +11,7 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass, ProgressBar } from "../../App";
 import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
 import { detectCurrentTier } from "./accessTiers";
+import { DecisionCard } from "../../components/DecisionQueue/DecisionCard";
 
 export // ─── Activity Tab ────────────────────────────────────────────────────────────
 
@@ -18,6 +19,11 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
   const gatewayReady = useWorldStore(s => s.gatewayReady);
+  const { pendingDecisions } = useWorldStore();
+  const agentDecisions = useMemo(
+    () => pendingDecisions.filter(d => d.agentId === agent.id),
+    [pendingDecisions, agent.id]
+  );
 
   // Tier label matches Skills & Access (driven by accessTiers.ts — single source of truth).
   const currentTier = useMemo(() => detectCurrentTier(agent.permissions), [agent.permissions]);
@@ -122,12 +128,12 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 10, height: 10, borderRadius: "50%",
-              background: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
-              boxShadow: agent.paused ? "none" : !gatewayReady ? "0 0 8px rgba(244,168,58,0.5)" : agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
-              animation: (!agent.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
+              background: agent.paused ? "var(--text-muted)" : (!gatewayReady || agent.status === "deploying") ? "#F4A83A" : agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
+              boxShadow: agent.paused ? "none" : (!gatewayReady || agent.status === "deploying") ? "0 0 8px rgba(244,168,58,0.5)" : agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
+              animation: (!agent.paused && (!gatewayReady || agent.status === "deploying")) ? "pulse 1.5s ease-in-out infinite" : "none",
             }} />
-            <span style={{ fontSize: 18, fontWeight: 600, color: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : "var(--text-main)", textTransform: "capitalize" }}>
-              {agent.paused ? "Paused" : !gatewayReady ? "Waking up" : agent.status === "error" ? "Offline" : agent.currentAction || "Idle"}
+            <span style={{ fontSize: 18, fontWeight: 600, color: agent.paused ? "var(--text-muted)" : (!gatewayReady || agent.status === "deploying") ? "#F4A83A" : "var(--text-main)", textTransform: "capitalize" }}>
+              {agent.paused ? "Paused" : (!gatewayReady || agent.status === "deploying") ? "Waking up" : agent.status === "error" ? "Offline" : agent.currentAction || "Idle"}
             </span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontSize: 11, color: "var(--text-sub)" }}>
@@ -204,10 +210,24 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
         </div>
       </div>
 
-      {/* ── Activity Feed — full width, the main reading surface on this tab ── */}
+      {/* ── Pending Decisions — shown only when this agent has items in the queue ── */}
+      {agentDecisions.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{
+            fontSize: 10, fontWeight: 700, letterSpacing: "0.08em",
+            textTransform: "uppercase", color: "#D4A04A",
+            paddingBottom: 4, borderBottom: "1px solid rgba(212,160,74,0.2)",
+          }}>
+            Needs your attention · {agentDecisions.length}
+          </div>
+          {agentDecisions.map(d => <DecisionCard key={d.id} decision={d} compact />)}
+        </div>
+      )}
+
+      {/* ── Work Log — full width, the main reading surface on this tab ── */}
       <div style={{ ...glass(0.5), padding: "20px 24px", borderRadius: 16, display: "flex", flexDirection: "column", minHeight: 320 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase" }}>Activity Feed</div>
+          <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase" }}>Work Log</div>
           <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
             Chats are grouped into sessions. Click to expand.
           </div>

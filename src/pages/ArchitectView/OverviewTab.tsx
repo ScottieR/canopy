@@ -11,7 +11,7 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Environment } from "@react-three/drei";
 import { Edit2 } from "lucide-react";
-import { LobsterIcon } from "../../App";
+import { LobsterIcon } from "../../components/World/LobsterIcon";
 import { GLBAgent } from "../../components/World/GLBAgent";
 import { SafeBillboard } from "../../App";
 import { ProgressBar } from "../../App";
@@ -20,6 +20,7 @@ import { Toggle, ServiceRow, glass } from "../../App";
 import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
 import { WorkspaceFilesDrawer } from "./WorkspaceFilesDrawer";
 import { ThreadsRail } from "./ThreadsRail";
+// ProjectSpaceView removed — multi-agent collaboration now lives in ForumView
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
@@ -43,6 +44,8 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
   const [webLoginsExpanded, setWebLoginsExpanded] = useState(false);
 
   const [slackNeedsPairing, setSlackNeedsPairing] = useState(false);
+  const [emailNeedsConnection, setEmailNeedsConnection] = useState(false);
+  const [calendarNeedsConnection, setCalendarNeedsConnection] = useState(false);
 
   // Workspace files popover open/closed. Triggered from the Files pill in
   // the quick-actions row. Outside-click closes via a useEffect below.
@@ -74,6 +77,33 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
       window.speechSynthesis.cancel();
     }
   }, []);
+
+  // Check email and calendar connection status
+  useEffect(() => {
+    const checkConnections = async () => {
+      if (agent.integrations.includes("email")) {
+        try {
+          const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_email_access_token` });
+          setEmailNeedsConnection(!tok || tok.length < 10);
+        } catch {
+          setEmailNeedsConnection(true);
+        }
+      } else {
+        setEmailNeedsConnection(false);
+      }
+      if (agent.integrations.includes("calendar")) {
+        try {
+          const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_calendar_access_token` });
+          setCalendarNeedsConnection(!tok || tok.length < 10);
+        } catch {
+          setCalendarNeedsConnection(true);
+        }
+      } else {
+        setCalendarNeedsConnection(false);
+      }
+    };
+    checkConnections();
+  }, [agent.integrations, agent.id]);
 
   useEffect(() => {
     if (agent.integrations.includes("slack")) {
@@ -196,6 +226,52 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
           </div>
         </div>
       )}
+      {/* Email connection warning */}
+      {emailNeedsConnection && !agent.paused && (
+        <div style={{ background: "rgba(74,158,150,0.06)", border: "1px solid rgba(74,158,150,0.25)", borderRadius: 16, padding: 20, marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(74,158,150,0.15)", display: "flex", alignItems: "center", justifyContent: "center", color: "#4A9E96", flexShrink: 0 }}>
+              <Mail size={18} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 3 }}>Email isn't connected</div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                {agent.name} may ask you to connect email to do their best work.
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate?.("connections")}
+              style={{ padding: "8px 14px", background: "#4A9E96", color: "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}
+            >
+              Connect Email →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Calendar connection warning */}
+      {calendarNeedsConnection && !agent.paused && (
+        <div style={{ background: "rgba(74,158,150,0.06)", border: "1px solid rgba(74,158,150,0.25)", borderRadius: 16, padding: 20, marginBottom: 16 }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <div style={{ width: 40, height: 40, borderRadius: "50%", background: "rgba(74,158,150,0.15)", display: "flex", alignItems: "center", justifyContent: "center", color: "#4A9E96", flexShrink: 0 }}>
+              <Calendar size={18} />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 3 }}>Calendar isn't connected</div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                {agent.name} may ask you to connect your calendar to do their best work.
+              </div>
+            </div>
+            <button
+              onClick={() => onNavigate?.("connections")}
+              style={{ padding: "8px 14px", background: "#4A9E96", color: "#fff", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}
+            >
+              Connect Calendar →
+            </button>
+          </div>
+        </div>
+      )}
+
       {agent.paused && (
         <div style={{ background: "var(--surface-base)", border: "1px solid var(--border-subtle)", borderRadius: 16, padding: 24, marginBottom: 32 }}>
           <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
@@ -430,12 +506,12 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <div style={{
                 width: 8, height: 8, borderRadius: "50%",
-                background: agent.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#4A9E96",
+                background: agent.paused ? "var(--text-muted)" : (!gatewayReady || agent.status === "deploying") ? "#F4A83A" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#4A9E96",
                 boxShadow: !agent.paused && agent.status === "active" ? "0 0 6px rgba(74,158,150,0.5)" : "none",
-                animation: (!agent.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
+                animation: (!agent.paused && (!gatewayReady || agent.status === "deploying")) ? "pulse 1.5s ease-in-out infinite" : "none",
               }} />
               <span style={{ fontSize: 11, color: "var(--text-sub)", fontWeight: 500, textTransform: "capitalize" }}>
-                {agent.paused ? "Paused" : !gatewayReady ? "Waking up…" : agent.status === "thinking" ? "Thinking…" : agent.status === "error" ? "Offline" : "Idle"}
+                {agent.paused ? "Paused" : (!gatewayReady || agent.status === "deploying") ? "Waking up…" : agent.status === "thinking" ? "Thinking…" : agent.status === "error" ? "Offline" : "Idle"}
               </span>
             </div>
             <button

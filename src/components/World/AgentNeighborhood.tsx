@@ -16,7 +16,7 @@ const ADMIN_TO_MAIN_DECOR_SCALE = 0.5;
 const hasSavedDecorPosition = (t: any) =>
   !!t && t.x !== undefined && t.y !== undefined && t.z !== undefined;
 
-export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void }) {
+export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut, hideAgent, hideDecor }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void, hideAgent?: boolean, hideDecor?: boolean }) {
   const isWorking = agent?.status === "active" || agent?.status === "thinking";
 
   // Decor items are saved by IdentityTab to `visual_identity.decor` (a dedicated
@@ -89,7 +89,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
       onPointerOut={onPointerOut}
     >
       {/* The Agent (which now includes its own generated Meshy habitat) */}
-      {agent && (
+      {agent && !hideAgent && (
         <GLBAgent 
           fileUrl={agent.visual_identity?.baseModelUrl || agent.fileUrl}
           role={agent.role}
@@ -112,7 +112,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
       )}
 
       {/* Render Decor items */}
-      {decorItems.map((path: string, i: number) => {
+      {!hideDecor && decorItems.map((path: string, i: number) => {
         const itemData = (accessoriesData.items as any)[path];
         const transforms = agent?.visual_identity?.decorTransforms?.[path];
 

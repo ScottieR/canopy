@@ -15,4 +15,7 @@ export default defineConfig({
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_DEBUG,
   },
+  test: {
+    exclude: ["node_modules", "dist", ".idea", ".git", ".cache", ".claude/**"],
+  },
 });

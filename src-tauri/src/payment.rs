@@ -270,6 +270,7 @@ mod tests {
             merchant: "Amazon".to_string(),
             amount_cents,
             category: category.to_string(),
+            is_recurring: false,
         }
     }
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { 
-  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+import {
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
@@ -12,20 +12,25 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { OrthographicCamera } from "@react-three/drei";
 import * as THREE from "three";
-import { CanopyScene, LobsterIcon } from "../App";
+import { CanopyScene } from "../App";
+import { LobsterIcon } from "../components/World/LobsterIcon";
 import { Toggle, ServiceRow, glass } from "../App";
+import { ForumBriefModal } from "./ForumView/ForumBriefModal";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
-// CANOPY VIEW (3D World with overlay)
-// ═══════════════════════════════════════════════════════════════════════════════
+  // CANOPY VIEW (3D World with overlay)
+  // ═══════════════════════════════════════════════════════════════════════════════
 
-function CanopyView() {
+  function CanopyView() {
   const agents = useWorldStore(s => s.agents);
   const selectedAgent = useWorldStore(s => s.selectedAgent);
   const hoveredAgent = useWorldStore(s => s.hoveredAgent);
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const { setSelectedAgent, setActiveView, updateAgentVisuals } = useWorldStore();
   const theme = useWorldStore(s => s.theme);
+
+  // Forum modal
+  const [forumModalOpen, setForumModalOpen] = useState(false);
 
   // Edit Mode State
   const [isEditMode, setIsEditMode] = useState(false);
@@ -41,7 +46,7 @@ function CanopyView() {
     const N = agents.length;
     let x = 0; let z = 0; let dx = 0; let dz = -1;
     let index = agents.findIndex(a => a.id === agentId);
-    if(index === -1) index = 0;
+    if (index === -1) index = 0;
     for (let i = 0; i < index; i++) {
       if (x === z || (x < 0 && x === -z) || (x > 0 && x === 1 - z)) {
         const temp = dx; dx = -dz; dz = temp;
@@ -63,23 +68,23 @@ function CanopyView() {
       if (transform.z < minZ) minZ = transform.z;
       if (transform.z > maxZ) maxZ = transform.z;
     });
-    
+
     if (!hasAgents) {
       return { center: [0, 0, 0] as [number, number, number], minZoom: 150 };
     }
-    
+
     const centerX = (minX + maxX) / 2;
     const centerZ = (minZ + maxZ) / 2;
-    
+
     const width = maxX - minX;
     const depth = maxZ - minZ;
-    const maxDimension = Math.max(width, depth); 
-    
-    let calcMinZoom = 150;
+    const maxDimension = Math.max(width, depth);
+
+    let calcMinZoom = 100;
     if (maxDimension > 6) {
-      calcMinZoom = 150 * (6 / maxDimension);
+      calcMinZoom = 100 * (6 / maxDimension);
     }
-    
+
     return {
       center: [centerX, 0, centerZ] as [number, number, number],
       minZoom: Math.max(10, Math.floor(calcMinZoom))
@@ -91,7 +96,7 @@ function CanopyView() {
     setEditTransforms(prev => {
       const existing = prev[selectedEditAgent] || (agents.find(a => a.id === selectedEditAgent)?.visual_identity as any)?.habitatTransform;
       const base = existing || getAgentBasePoint(selectedEditAgent);
-      
+
       return {
         ...prev,
         [selectedEditAgent]: {
@@ -129,14 +134,15 @@ function CanopyView() {
   // Soft iridescent gradients tailored to the reference imagery (saturated slightly more so it's highly visible on all monitors)
 
   const nudgeBtnStyle = {
-    background: "var(--surface-elevated)", color: "var(--text-main)", 
-    border: "1px solid var(--border-subtle)", borderRadius: 6, 
-    width: 28, height: 28, padding: 0, fontSize: 13, fontWeight: 700, 
+    background: "var(--surface-elevated)", color: "var(--text-main)",
+    border: "1px solid var(--border-subtle)", borderRadius: 6,
+    width: 28, height: 28, padding: 0, fontSize: 13, fontWeight: 700,
     cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center"
   };
 
   return (
     <div style={{ position: "relative", flex: 1 }}>
+      {forumModalOpen && <ForumBriefModal onClose={() => setForumModalOpen(false)} />}
       <Canvas
         style={{ position: "absolute", inset: 0 }}
         gl={{ antialias: true, alpha: true }}
@@ -144,7 +150,7 @@ function CanopyView() {
       >
         <OrthographicCamera makeDefault position={[worldBounds.center[0] + 10, 10, worldBounds.center[2] + 10]} zoom={150} near={0.1} far={100} />
         <OrbitControls makeDefault={!isEditMode} enablePan={true} minPolarAngle={Math.PI * 0.25} maxPolarAngle={Math.PI * 0.4} autoRotate={!isEditMode} autoRotateSpeed={0.15} dampingFactor={0.05} enableDamping minZoom={worldBounds.minZoom} maxZoom={650} target={worldBounds.center} />
-        <CanopyScene 
+        <CanopyScene
           isEditMode={isEditMode}
           transformMode={transformMode}
           selectedEditAgent={selectedEditAgent}
@@ -156,19 +162,19 @@ function CanopyView() {
 
       {/* Edit Mode Toolbar */}
       <div style={{
-          position: "absolute", bottom: isEditMode ? 40 : -150, left: "50%", transform: "translateX(-50%)", 
-          zIndex: 20, display: "flex", gap: 16, alignItems: "center", transition: "all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
-          background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, padding: "12px 20px",
-          boxShadow: "0 12px 48px rgba(0,0,0,0.15)", opacity: isEditMode ? 1 : 0, pointerEvents: isEditMode ? "auto" : "none"
+        position: "absolute", bottom: isEditMode ? 40 : -150, left: "50%", transform: "translateX(-50%)",
+        zIndex: 20, display: "flex", gap: 16, alignItems: "center", transition: "all 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+        background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, padding: "12px 20px",
+        boxShadow: "0 12px 48px rgba(0,0,0,0.15)", opacity: isEditMode ? 1 : 0, pointerEvents: isEditMode ? "auto" : "none"
       }}>
         <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginRight: 8 }}>
           Editing Layout
         </div>
-        
+
         {/* Nudge Controls */}
         {selectedEditAgent ? (
           <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-            
+
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
               <button onClick={() => handleNudge("z", -0.25)} style={nudgeBtnStyle}>↑</button>
               <div style={{ display: "flex", gap: 4 }}>
@@ -181,15 +187,15 @@ function CanopyView() {
             <div style={{ width: 1, height: 32, background: "var(--border-subtle)" }} />
 
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-               <button onClick={() => handleNudge("y", 0.25)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>+Y Up</button>
-               <button onClick={() => handleNudge("y", -0.25)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>-Y Dn</button>
+              <button onClick={() => handleNudge("y", 0.25)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>+Y Up</button>
+              <button onClick={() => handleNudge("y", -0.25)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>-Y Dn</button>
             </div>
 
             <div style={{ width: 1, height: 32, background: "var(--border-subtle)" }} />
 
             <div style={{ display: "flex", gap: 4 }}>
-               <button onClick={() => handleNudge("ry", Math.PI / 8)} style={{ ...nudgeBtnStyle, width: 36, fontSize: 16 }}>⟳</button>
-               <button onClick={() => handleNudge("ry", -Math.PI / 8)} style={{ ...nudgeBtnStyle, width: 36, fontSize: 16 }}>⟲</button>
+              <button onClick={() => handleNudge("ry", Math.PI / 8)} style={{ ...nudgeBtnStyle, width: 36, fontSize: 16 }}>⟳</button>
+              <button onClick={() => handleNudge("ry", -Math.PI / 8)} style={{ ...nudgeBtnStyle, width: 36, fontSize: 16 }}>⟲</button>
             </div>
 
           </div>
@@ -201,13 +207,13 @@ function CanopyView() {
 
         <div style={{ width: 1, height: 24, background: "var(--border-subtle)", margin: "0 4px" }} />
 
-        <button 
+        <button
           onClick={handleCancelLayout}
           style={{ background: "transparent", color: "var(--text-sub)", border: "1px solid var(--border-subtle)", borderRadius: 8, padding: "6px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
         >
           Cancel
         </button>
-        <button 
+        <button
           onClick={handleSaveLayout}
           style={{ background: "#4A9E96", color: "white", border: "none", borderRadius: 8, padding: "6px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 8px rgba(74,158,150,0.3)" }}
         >
@@ -220,59 +226,79 @@ function CanopyView() {
         {agents.map(a => {
           const isHovered = hoveredAgent === a.id;
           return (
-            <div key={a.id} 
-                 onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); }} 
-                 onMouseEnter={() => useWorldStore.getState().setHoveredAgent(a.id)}
-                 onMouseLeave={() => useWorldStore.getState().setHoveredAgent(null)}
-                 style={{
-              ...glass(selectedAgent === a.id ? 0.7 : 0.45),
-              padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-              borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
-              transform: isHovered ? "translateX(4px)" : "none",
-              border: isHovered ? "1px solid #4A9E96" : "1px solid transparent",
-              boxShadow: isHovered ? "0 4px 12px rgba(74, 158, 150, 0.2)" : "none",
-            }}>
+            <div key={a.id}
+              onClick={() => { setSelectedAgent(a.id); setActiveView("architect"); }}
+              onMouseEnter={() => useWorldStore.getState().setHoveredAgent(a.id)}
+              onMouseLeave={() => useWorldStore.getState().setHoveredAgent(null)}
+              style={{
+                ...glass(selectedAgent === a.id ? 0.7 : 0.45),
+                padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+                borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
+                transform: isHovered ? "translateX(4px)" : "none",
+                border: isHovered ? "1px solid #4A9E96" : "1px solid transparent",
+                boxShadow: isHovered ? "0 4px 12px rgba(74, 158, 150, 0.2)" : "none",
+              }}>
               <div style={{ width: 24, height: 24, position: "relative" }}>
                 <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
                 <div style={{
                   position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
-                  background: a.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
+                  background: a.paused ? "var(--text-muted)" : (!gatewayReady || a.status === "deploying") ? "#F4A83A" : a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
                   border: "2px solid white",
-                  animation: (!a.paused && !gatewayReady) ? "pulse 1.5s ease-in-out infinite" : "none",
+                  animation: (!a.paused && (!gatewayReady || a.status === "deploying")) ? "pulse 1.5s ease-in-out infinite" : "none",
                 }} />
               </div>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
-                <div style={{ fontSize: 10, color: a.paused ? "var(--text-muted)" : !gatewayReady ? "#F4A83A" : "var(--text-sub)", textTransform: "capitalize" }}>
-                  {a.paused ? "Paused" : !gatewayReady ? "Waking up..." : a.status === "error" ? "Offline" : a.currentAction}
+                <div style={{ fontSize: 10, color: a.paused ? "var(--text-muted)" : (!gatewayReady || a.status === "deploying") ? "#F4A83A" : "var(--text-sub)", textTransform: "capitalize" }}>
+                  {a.paused ? "Paused" : (!gatewayReady || a.status === "deploying") ? "Waking up..." : a.status === "error" ? "Offline" : a.currentAction}
                 </div>
               </div>
             </div>
           )
         })}
 
-        {/* Add Agent Button */}
-        <div onClick={() => setActiveView("onboarding")} style={{
-          background: "rgba(255,255,255,0.2)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
-          border: "1px dashed rgba(60, 102, 99, 0.3)",
-          boxShadow: "0 4px 12px rgba(0,0,0,0.02)",
-          padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-          borderRadius: 12, minWidth: 150, transition: "all 0.2s ease",
-        }}>
-          <div style={{
-            width: 24, height: 24, borderRadius: "50%", background: "rgba(60, 102, 99, 0.1)",
-            display: "flex", alignItems: "center", justifyContent: "center", color: "#3c6663"
+        {/* Action Buttons */}
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          {/* Add Agent Button */}
+          <div onClick={() => setActiveView("onboarding")} style={{
+            background: "rgba(255,255,255,0.2)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+            border: "1px dashed rgba(60, 102, 99, 0.3)",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.02)",
+            padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+            borderRadius: 12, flex: 1, transition: "all 0.2s ease",
           }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <div style={{
+              width: 24, height: 24, borderRadius: "50%", background: "rgba(60, 102, 99, 0.1)",
+              display: "flex", alignItems: "center", justifyContent: "center", color: "#3c6663"
+            }}>
+              <Plus size={14} strokeWidth={2.5} />
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#3c6663" }}>Add Agent</div>
           </div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#3c6663" }}>Add Agent</div>
+
+          {/* New Forum Button */}
+          <div onClick={() => setForumModalOpen(true)} style={{
+            background: "rgba(60, 102, 99, 0.8)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",
+            border: "1px solid rgba(60, 102, 99, 0.9)",
+            boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+            padding: "8px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
+            borderRadius: 12, flex: 1, transition: "all 0.2s ease",
+          }}>
+            <div style={{
+              width: 24, height: 24, borderRadius: "50%", background: "rgba(255, 255, 255, 0.2)",
+              display: "flex", alignItems: "center", justifyContent: "center", color: "#FFF"
+            }}>
+              <Users size={12} strokeWidth={2.5} />
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#FFF" }}>New Project</div>
+          </div>
         </div>
 
       </div>
 
       {/* Bottom Right Edit Mode Trigger */}
       {!isEditMode && (
-        <div 
+        <div
           onClick={() => setIsEditMode(true)}
           style={{
             position: "absolute", bottom: 24, right: 24, zIndex: 10,

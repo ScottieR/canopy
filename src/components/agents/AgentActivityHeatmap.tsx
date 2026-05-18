@@ -25,9 +25,16 @@ export function AgentActivityHeatmap({ agentId }: { agentId: string }) {
   };
 
   useEffect(() => {
-    fetchHeatmap();
+    let isPolling = false;
+    const safePoll = async () => {
+        if (isPolling) return;
+        isPolling = true;
+        try { await fetchHeatmap(); }
+        finally { isPolling = false; }
+    };
+    safePoll();
     // Refresh heatmap every 30 seconds
-    const interval = setInterval(fetchHeatmap, 30000);
+    const interval = setInterval(safePoll, 30000);
     return () => clearInterval(interval);
   }, [agentId]);
 
