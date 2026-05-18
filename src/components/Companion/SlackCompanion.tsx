@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-shell";
 
 import { emit, listen } from "@tauri-apps/api/event";
-import { LobsterIcon } from "../../App";
+import { LobsterIcon } from "../../components/World/LobsterIcon";
 import { PasswordInput } from "../shared/PasswordInput";let globalHasOpenedBrowser = false;
 
 export function SlackCompanion() {

@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn test_validate_openai_key_valid() {
         assert!(validate_openai_key("sk-proj-1234567890abcdefghijklmnopqrstuvwxyz").is_ok());
-        assert!(validate_openai_key("sk-abcdefghijklmnopqrstuvwxyz0123456789").is_ok());
+        assert!(validate_openai_key("sk-abcdefghijklmnopqrstuvwxyz0123456789a").is_ok());
     }
 
     #[test]

@@ -83,7 +83,8 @@ pub fn test_agent_with_id(id: &str) -> Agent {
 pub fn test_agent_with_name(name: &str) -> Agent {
     let mut agent = default_test_agent();
     agent.name = name.to_string();
-    agent.id = format!("agent-{}", name.to_lowercase().replace(' ', "-"));
+    let safe_name: String = name.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    agent.id = format!("agent-{}", safe_name);
     agent
 }
 
@@ -167,6 +168,7 @@ pub fn default_purchase_request(agent_id: &str) -> PurchaseRequest {
         category: "cleaning_supplies".to_string(),
         amount_cents: 1500, // $15
         merchant: "Test Merchant".to_string(),
+        description: "Test Purchase".to_string(),
         is_recurring: false,
     }
 }
@@ -194,21 +196,23 @@ pub fn test_purchase_request_with_category(
 pub fn default_test_bridge() -> Bridge {
     Bridge {
         id: "test-bridge-1".to_string(),
+        name: "Test Bridge".to_string(),
+        agent_id: "agent-1".to_string(),
         bridge_type: BridgeType::Slack,
         enabled: true,
         config: BridgeConfig {
-            workspace_id: Some("W123456".to_string()),
-            bot_user_id: Some("B123456".to_string()),
-            channels: vec!["C123456".to_string()],
+            scope: serde_json::json!({
+                "workspace_id": "W123456",
+                "bot_user_id": "B123456",
+                "channels": ["C123456"]
+            }),
             ..Default::default()
         },
         permissions: BridgePermissions {
             read: true,
             write: true,
             delete: false,
-            admin: false,
         },
-        created_at: Utc::now(),
     }
 }
 
@@ -226,7 +230,6 @@ pub fn test_read_only_bridge() -> Bridge {
         read: true,
         write: false,
         delete: false,
-        admin: false,
     };
     bridge
 }
@@ -238,14 +241,14 @@ pub fn validate_test_agent_id(id: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 63 {
         return Err("Agent ID must be 1-63 chars".into());
     }
-    if !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-        return Err("Agent ID must be alphanumeric with hyphens/underscores".into());
-    }
     if id.contains("..") || id.contains("../") {
         return Err("Agent ID cannot contain path traversal".into());
     }
     if id.contains(';') || id.contains('|') || id.contains('`') || id.contains('$') {
         return Err("Agent ID contains shell metacharacters".into());
+    }
+    if !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err("Agent ID must be alphanumeric with hyphens/underscores".into());
     }
     Ok(())
 }
@@ -317,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn test_budget_with_spending() {
+    fn test_budget_helper_with_spending() {
         let budget = test_budget_with_spending("agent-1", 2000, 5000);
         assert_eq!(budget.daily_spent_cents, 2000);
         assert_eq!(budget.monthly_spent_cents, 5000);

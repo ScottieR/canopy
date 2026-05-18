@@ -9,6 +9,7 @@ import { TelegramCompanion } from "./components/Companion/TelegramCompanion";
 import { ChatCompanion } from "./components/Companion/ChatCompanion";
 import { BluetoothCompanion } from "./components/Companion/BluetoothCompanion";
 import { BrowserPopout } from "./components/BrowserPopout";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles/globals.css";
 
 const companionType = new URLSearchParams(window.location.search).get("companion");
@@ -134,40 +135,56 @@ const GlobalBrowserListener = () => {
     }
     setupGlobalBrowserListener();
     return () => {
-      if (unlisten) unlisten();
+      if (unlisten) {
+        try { 
+          const res = unlisten(); 
+          if (res && typeof (res as any).catch === 'function') (res as any).catch(() => {}); 
+        } catch (e) {}
+      }
     };
   }, []);
 
   return null;
 };
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+const rootElement = document.getElementById("root") as HTMLElement;
+let root: ReactDOM.Root;
+if ((window as any).__REACT_ROOT__) {
+  root = (window as any).__REACT_ROOT__;
+} else {
+  root = ReactDOM.createRoot(rootElement);
+  (window as any).__REACT_ROOT__ = root;
+}
+
+root.render(
   <React.StrictMode>
-    <WindowWrapper>
-      {browserAgentId ? (
-        <BrowserPopout agentId={browserAgentId} />
-      ) : chatCompanionAgentId ? (
-        <ChatCompanion />
-      ) : companionType === "slack" ? (
-        <SlackCompanion />
-      ) : companionType === "passwords" ? (
-        <PasswordsCompanion />
-      ) : companionType === "github" ? (
-        <GithubCompanion />
-      ) : companionType === "discord" ? (
-        <DiscordCompanion />
-      ) : companionType === "telegram" ? (
-        <TelegramCompanion />
-      ) : companionType === "bluetooth" ? (
-        <BluetoothCompanion />
-      ) : companionType ? (
-        <CompanionGuide type={companionType} />
-      ) : (
-        <>
-          <GlobalBrowserListener />
-          <App />
-        </>
-      )}
-    </WindowWrapper>
+    <ErrorBoundary showDetails={true} allowNavigation={true}>
+      <WindowWrapper>
+        {browserAgentId ? (
+          <BrowserPopout agentId={browserAgentId} />
+        ) : chatCompanionAgentId ? (
+          <ChatCompanion />
+        ) : companionType === "slack" ? (
+          <SlackCompanion />
+        ) : companionType === "passwords" ? (
+          <PasswordsCompanion />
+        ) : companionType === "github" ? (
+          <GithubCompanion />
+        ) : companionType === "discord" ? (
+          <DiscordCompanion />
+        ) : companionType === "telegram" ? (
+          <TelegramCompanion />
+        ) : companionType === "bluetooth" ? (
+          <BluetoothCompanion />
+        ) : companionType ? (
+          <CompanionGuide type={companionType} />
+        ) : (
+          <>
+            <GlobalBrowserListener />
+            <App />
+          </>
+        )}
+      </WindowWrapper>
+    </ErrorBoundary>
   </React.StrictMode>
 );

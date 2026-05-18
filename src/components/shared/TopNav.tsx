@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { 
-  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+import {
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Bell
 } from "lucide-react";
@@ -10,24 +10,36 @@ import { AgentData, useWorldStore, AGENT_TYPE_INFO } from "../../store/worldStor
 import { Toggle, ServiceRow, glass } from "../../App";
 import { GenerativeResult } from "../GenerativeStudio";
 import { GlobalAlertsFeed } from "../GlobalAlertsFeed";
+import { DecisionQueuePanel } from "../DecisionQueue/DecisionQueuePanel";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // TOP NAVIGATION BAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function TopNav() {
-  const { activeView, setActiveView, theme, toggleTheme, agents, setSelectedAgent } = useWorldStore();
+  const { activeView, setActiveView, setActiveForumId, theme, toggleTheme, agents, setSelectedAgent, pendingDecisions } = useWorldStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [showAlertsFeed, setShowAlertsFeed] = useState(false);
   const [hasUnreadAlerts, setHasUnreadAlerts] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [showDecisionQueue, setShowDecisionQueue] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+
+  const actionableDecisions = pendingDecisions.filter(d => d.type === "pre_auth" || d.type === "needs_input" || d.type === "error");
+  const decisionCount = pendingDecisions.length;
 
   useEffect(() => {
+      let isPolling = false;
       const checkAlerts = async () => {
+          if (isPolling) return;
+          isPolling = true;
           try {
               const data = await invoke<any[]>("get_network_security_alerts");
               setHasUnreadAlerts(data.length > 0);
           } catch (e) {
               console.error(e);
+          } finally {
+              isPolling = false;
           }
       };
       checkAlerts();
@@ -35,11 +47,22 @@ function TopNav() {
       return () => clearInterval(interval);
   }, []);
 
+  // Close profile menu on outside click
+  useEffect(() => {
+    if (!showProfileMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(e.target as Node)) {
+        setShowProfileMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showProfileMenu]);
+
   const navItems = [
     { id: "canopy" as const, label: "Canopy" },
     { id: "architect" as const, label: "Agents" },
-    { id: "archive" as const, label: "Archive" },
-    { id: "integrations" as const, label: "Integrations" },
+    { id: "forum" as const, label: "Projects" },
   ];
 
   const filteredAgents = searchQuery ? agents.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase()) || a.role.toLowerCase().includes(searchQuery.toLowerCase())) : [];
@@ -75,7 +98,11 @@ function TopNav() {
       {/* Center nav */}
       <div style={{ display: "flex", gap: 4 }}>
         {navItems.filter(item => activeView !== "loading" && activeView !== "onboarding").map(item => (
-          <button key={item.id} onClick={() => setActiveView(item.id)} style={{
+          <button key={item.id} onClick={() => {
+            // Clicking "Forums" always shows the list first — clear any selected forum
+            if (item.id === "forum") setActiveForumId(null);
+            setActiveView(item.id);
+          }} style={{
             padding: "6px 16px", border: "none", borderRadius: 6, cursor: "pointer",
             fontSize: 12, fontWeight: activeView === item.id ? 700 : 400,
             letterSpacing: "0.04em", textTransform: "uppercase",
@@ -145,6 +172,54 @@ function TopNav() {
             }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
             </button>
+            {/* Diagnostics wrench — front-and-center, with red badge when any agent is erroring */}
+            <div
+              onClick={() => setActiveView("diagnostics")}
+              title="Diagnostics"
+              style={{
+                width: 32, height: 32, borderRadius: 8, background: activeView === "diagnostics" ? "rgba(60,102,99,0.15)" : "var(--border-subtle)",
+                display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", position: "relative",
+                color: activeView === "diagnostics" ? "#3c6663" : "var(--text-sub)",
+                transition: "all 0.15s ease",
+              }}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+              {agents.some(a => a.status === "error" && !a.paused) && (
+                <div style={{ position: "absolute", top: 5, right: 5, width: 7, height: 7, borderRadius: "50%", background: "#DC2626", border: "2px solid var(--surface-base)" }} />
+              )}
+            </div>
+            {/* Decision queue inbox — shows count badge when agents need attention */}
+            <div
+              onClick={() => setShowDecisionQueue(v => !v)}
+              title="Decision Queue"
+              style={{
+                width: 32, height: 32, borderRadius: 8, position: "relative",
+                background: showDecisionQueue ? "rgba(60,102,99,0.15)" : "var(--border-subtle)",
+                display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+                color: showDecisionQueue ? "#3c6663" : actionableDecisions.length > 0 ? "#D4A04A" : "var(--text-sub)",
+                transition: "all 0.15s ease",
+              }}
+            >
+              {/* Inbox icon */}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
+                <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" />
+              </svg>
+              {/* Count badge */}
+              {decisionCount > 0 && (
+                <div style={{
+                  position: "absolute", top: -4, right: -4,
+                  minWidth: 16, height: 16, borderRadius: 8, padding: "0 4px",
+                  background: actionableDecisions.length > 0 ? "#D4A04A" : "#4A9E96",
+                  border: "2px solid var(--surface-base)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 9, fontWeight: 800, color: "#fff",
+                }}>
+                  {decisionCount > 9 ? "9+" : decisionCount}
+                </div>
+              )}
+            </div>
+
             <div onClick={() => setShowAlertsFeed(true)} style={{
               width: 32, height: 32, borderRadius: "50%", background: "var(--border-subtle)", position: "relative",
               display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
@@ -153,24 +228,70 @@ function TopNav() {
               <Bell size={16} />
               {hasUnreadAlerts && <div style={{ position: "absolute", top: 6, right: 6, width: 6, height: 6, borderRadius: "50%", background: "#DC2626", border: "2px solid var(--surface-base)" }} />}
             </div>
-            <div onClick={() => setActiveView("profile")} style={{
-              width: 32, height: 32, borderRadius: "50%", background: "var(--border-subtle)",
-              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-              color: "var(--text-sub)",
-            }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
-            </div>
-            <div onClick={() => setActiveView("diagnostics")} style={{
-              width: 32, height: 32, borderRadius: "50%", background: "var(--border-subtle)",
-              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-              color: "var(--text-sub)",
-            }} title="System Diagnostics">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg>
+            {/* Profile / settings dropdown */}
+            <div ref={profileMenuRef} style={{ position: "relative" }}>
+              <div
+                onClick={() => setShowProfileMenu(p => !p)}
+                style={{
+                  width: 32, height: 32, borderRadius: "50%",
+                  background: showProfileMenu ? "rgba(60,102,99,0.15)" : "var(--border-subtle)",
+                  display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+                  color: showProfileMenu ? "#3c6663" : "var(--text-sub)",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+              </div>
+
+              {showProfileMenu && (
+                <div style={{
+                  position: "absolute", top: "calc(100% + 8px)", right: 0,
+                  background: "var(--surface-card, #fff)",
+                  border: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
+                  borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
+                  minWidth: 160, zIndex: 100, overflow: "hidden",
+                  padding: "4px 0",
+                }}>
+                  {[
+                    { id: "profile" as const, label: "Profile", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg> },
+                    { id: "archive" as const, label: "Archive", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></svg> },
+                    { id: "integrations" as const, label: "Integrations", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><rect x="2" y="3" width="6" height="6" rx="1" /><rect x="16" y="3" width="6" height="6" rx="1" /><rect x="9" y="15" width="6" height="6" rx="1" /><path d="M5 9v3a1 1 0 001 1h12a1 1 0 001-1V9" /><path d="M12 13v2" /></svg> },
+                    { id: "diagnostics" as const, label: "Diagnostics", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg> },
+                  ].map((item, i, arr) => (
+                    <div key={item.id}>
+                      {/* Divider before Diagnostics */}
+                      {item.id === "diagnostics" && (
+                        <div style={{ height: 1, background: "var(--border-subtle, rgba(0,0,0,0.06))", margin: "4px 0" }} />
+                      )}
+                      <div
+                        onClick={() => { setActiveView(item.id); setShowProfileMenu(false); }}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 9,
+                          padding: "8px 14px", cursor: "pointer",
+                          fontSize: 12, fontWeight: activeView === item.id ? 600 : 400,
+                          color: activeView === item.id ? "#3c6663" : "var(--text-main, #303330)",
+                          background: activeView === item.id ? "rgba(60,102,99,0.06)" : "transparent",
+                          transition: "background 0.1s ease",
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = activeView === item.id ? "rgba(60,102,99,0.08)" : "var(--surface-container-low, #f4f4f0)")}
+                        onMouseLeave={e => (e.currentTarget.style.background = activeView === item.id ? "rgba(60,102,99,0.06)" : "transparent")}
+                      >
+                        <span style={{ opacity: 0.6, display: "flex" }}>{item.icon}</span>
+                        {item.label}
+                        {activeView === item.id && (
+                          <svg style={{ marginLeft: "auto" }} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#3c6663" strokeWidth={3} strokeLinecap="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </>
         )}
       </div>
       {showAlertsFeed && <GlobalAlertsFeed onClose={() => setShowAlertsFeed(false)} />}
+      {showDecisionQueue && <DecisionQueuePanel onClose={() => setShowDecisionQueue(false)} />}
     </div>
   );
 }

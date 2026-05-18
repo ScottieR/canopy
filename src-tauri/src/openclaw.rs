@@ -50,16 +50,29 @@ pub fn get_docker_command() -> tokio::process::Command {
     if let Some(home) = dirs::home_dir() {
         let orb_docker = home.join(".orbstack/bin/docker");
         if orb_docker.exists() {
-            return tokio::process::Command::new(orb_docker);
+            let mut cmd = tokio::process::Command::new(orb_docker);
+            cmd.kill_on_drop(true);
+            return cmd;
         }
     }
-    if std::path::Path::new("/usr/local/bin/docker").exists() {
-        return tokio::process::Command::new("/usr/local/bin/docker");
+    let mut cmd = if std::path::Path::new("/usr/local/bin/docker").exists() {
+        tokio::process::Command::new("/usr/local/bin/docker")
+    } else if std::path::Path::new("/opt/homebrew/bin/docker").exists() {
+        tokio::process::Command::new("/opt/homebrew/bin/docker")
+    } else {
+        tokio::process::Command::new("docker")
+    };
+    cmd.kill_on_drop(true);
+    cmd
+}
+
+fn get_agent_isolated_port(agent_id: &str) -> u16 {
+    let mut hash = 0u32;
+    for b in agent_id.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(b as u32);
     }
-    if std::path::Path::new("/opt/homebrew/bin/docker").exists() {
-        return tokio::process::Command::new("/opt/homebrew/bin/docker");
-    }
-    tokio::process::Command::new("docker")
+    // Reserve 18805-18999 for isolated agents
+    18805 + (hash % 195) as u16
 }
 
 /// Interface to the OpenClaw Gateway API with SQLite persistence.
@@ -220,22 +233,21 @@ pub async fn create_agent(
         personality.name, role, personality.communication_style.replace('\n', " "), emoji, personality.identity_template.clone().unwrap_or_default()
     );
     
-    // Create the sync command to write both SOUL.md and IDENTITY.md without overwriting user edits
-    let write_cmd = generate_personality_sync_cmd(
-        &soul_path,
-        &soul_md,
-        &identity_md,
-        "", // prefs
-        LIBRARY_MD_TEMPLATE // library
-    );
-    
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &write_cmd])
-        .output()
-        .await;
+    // Write directly to the host directory instead of relying on docker exec and sh -c string limits
+    if let Some(workspace_root) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace")) {
+        let agent_workspace = workspace_root.join(&agent_id);
+        let _ = std::fs::create_dir_all(&agent_workspace);
+        let _ = std::fs::write(agent_workspace.join("SOUL.md"), &soul_md);
+        let _ = std::fs::write(agent_workspace.join("IDENTITY.md"), &identity_md);
+        let _ = std::fs::write(agent_workspace.join("PREFERENCES.md"), "");
+        let _ = std::fs::write(agent_workspace.join("LIBRARY.md"), LIBRARY_MD_TEMPLATE);
+        
+        let _ = std::fs::OpenOptions::new().create(true).write(true).open(agent_workspace.join("AGENTS.md"));
+        let _ = std::fs::OpenOptions::new().create(true).write(true).open(agent_workspace.join("TOOLS.md"));
+    }
 
     // Seed USER.md with context
-    seed_user_md(&db, &agent_id);
+    seed_user_md(&db, &agent_id, true);
 
     // Sync credentials
     write_auth_profiles(&agent_id, &get_creds_for_agent(&agent_id)).await;
@@ -277,7 +289,8 @@ pub async fn create_agent(
             .ok_or("Could not find data directory")?
             .join("Canopy");
 
-        let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, 18805);
+        let port = get_agent_isolated_port(&agent_id);
+        let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port);
         let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
         std::fs::write(&compose_path, compose_content).map_err(|e| e.to_string())?;
 
@@ -571,18 +584,38 @@ pub async fn list_workspace_files(agent_id: String) -> Result<Vec<WorkspaceFileE
     Ok(entries)
 }
 
+// Helper to resolve workspace directory (isolated vs shared)
+pub fn get_agent_workspace_dir(db: &crate::db::Database, agent_id: &str) -> Result<std::path::PathBuf, String> {
+    let is_isolated = db.get_agent(agent_id).map(|a| a.isolated).unwrap_or(false);
+    let mut path = dirs::data_dir().ok_or("No data dir")?.join("Canopy");
+    if is_isolated {
+        path.push("isolated");
+        path.push(agent_id);
+        path.push("workspace");
+    } else {
+        path.push("openclaw-state");
+        path.push("workspace");
+        path.push(agent_id);
+    }
+    Ok(path)
+}
+
+// Helper to resolve container name
+pub fn get_agent_container_name(db: &crate::db::Database, agent_id: &str) -> String {
+    let is_isolated = db.get_agent(agent_id).map(|a| a.isolated).unwrap_or(false);
+    if is_isolated {
+        format!("canopy-isolated-{}", agent_id)
+    } else {
+        "canopy-gateway".to_string()
+    }
+}
+
 #[tauri::command]
-pub async fn read_workspace_file(agent_id: String, filename: String) -> Result<String, String> {
+pub async fn read_workspace_file(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String) -> Result<String, String> {
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err("Invalid filename".into());
     }
-    let workspace = dirs::data_dir()
-        .ok_or("No data dir")?
-        .join("Canopy")
-        .join("openclaw-state")
-        .join("workspace")
-        .join(&agent_id);
-
+    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
     let file_path = workspace.join(&filename);
     if !file_path.exists() {
         return Ok("".to_string());
@@ -591,34 +624,23 @@ pub async fn read_workspace_file(agent_id: String, filename: String) -> Result<S
 }
 
 #[tauri::command]
-pub async fn write_workspace_file(agent_id: String, filename: String, content: String) -> Result<(), String> {
+pub async fn write_workspace_file(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String, content: String) -> Result<(), String> {
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err("Invalid filename".into());
     }
-    let workspace = dirs::data_dir()
-        .ok_or("No data dir")?
-        .join("Canopy")
-        .join("openclaw-state")
-        .join("workspace")
-        .join(&agent_id);
-
+    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
     std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
     let file_path = workspace.join(&filename);
     std::fs::write(&file_path, content).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn upload_workspace_file(agent_id: String, filename: String, base64_data: String) -> Result<(), String> {
+pub async fn upload_workspace_file(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String, base64_data: String) -> Result<(), String> {
     use base64::Engine;
     if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
         return Err("Invalid filename".into());
     }
-    let workspace = dirs::data_dir()
-        .ok_or("No data dir")?
-        .join("Canopy")
-        .join("openclaw-state")
-        .join("workspace")
-        .join(&agent_id);
+    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
 
     std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
     let file_path = workspace.join(&filename);
@@ -822,6 +844,7 @@ pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::mode
     if caps.coding    { skills.push("coding".to_string()); }
     if caps.gog       { skills.push("gog".to_string()); }
     if caps.summarize { skills.push("summarize".to_string()); }
+    if caps.memory_write { skills.push("memory-core".to_string()); }
 
     // Map Canopy integration IDs to OpenClaw plugin/channel names and append.
     for i in &agent.integrations {
@@ -863,17 +886,6 @@ c.agents.list=c.agents.list||[];
 const i=c.agents.list.findIndex(a=>a&&a.id==='{id}');
 if(i>=0){{
   c.agents.list[i].skills={skills};
-  
-  c.agents.list[i].exec = c.agents.list[i].exec || {{}};
-  c.agents.list[i].exec.ask = '{ask}';
-  
-  c.agents.list[i].heartbeat = c.agents.list[i].heartbeat || {{}};
-  if ({scheduled}) {{
-    c.agents.list[i].heartbeat.every = '30m';
-  }} else {{
-    delete c.agents.list[i].heartbeat.every;
-  }}
-  
   fs.writeFileSync(p,JSON.stringify(c,null,2));
   console.log('capabilities patched for {id}');
 }} else {{
@@ -882,8 +894,6 @@ if(i>=0){{
 "#,
         id = agent_id,
         skills = skills_json,
-        ask = ask_val,
-        scheduled = scheduled_bool,
     );
 
     let cmd_str = format!("[node -e patch] capabilities for {}", agent_id);
@@ -1087,7 +1097,8 @@ pub async fn toggle_agent_isolation(
         .ok_or("Could not find data directory")?
         .join("Canopy");
 
-    let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, 18805); // using 18805 as a stable port offset
+    let port = get_agent_isolated_port(&agent_id);
+    let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port); // using stable port offset
     let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
     std::fs::write(&compose_path, compose_content).map_err(|e| e.to_string())?;
 
@@ -1367,9 +1378,7 @@ pub async fn send_message_internal(
 
     // Step 2.5: Inject live DIAGNOSTICS.md into the agent's workspace
     if let Ok(diagnostics) = crate::channels::ping_agent_connections_internal(db, agent_id).await {
-        if let Some(workspace_root) = dirs::data_dir().map(|d| {
-            d.join("Canopy").join("openclaw-state").join("workspace").join(agent_id)
-        }) {
+        if let Ok(workspace_root) = get_agent_workspace_dir(db, agent_id) {
             let _ = std::fs::create_dir_all(&workspace_root);
             let mut diag_content = String::from("# Live Connection Diagnostics\n\n_This file is updated automatically before you process a message. It contains the live status of your integrations._\n\n");
             for diag in diagnostics {
@@ -1380,23 +1389,18 @@ pub async fn send_message_internal(
         }
     }
 
+    let container_name = get_agent_container_name(db, agent_id);
+
     // Step 3: Kill any orphaned `openclaw agents add` processes before spawning the agent
-    // command. Without the container-side timeout (older binaries), a timed-out agents add
-    // call leaves a full Node.js runtime (~600MB) running in the container. That orphan,
-    // combined with the new agent process, can push the container past its memory limit.
-    // pkill is idempotent — if there are no matching processes it exits 1 but causes no harm.
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(3),
         get_docker_command()
-            .args(["exec", "canopy-gateway", "sh", "-c",
+            .args(["exec", &container_name, "sh", "-c",
                    "pkill -f 'openclaw agents' 2>/dev/null; true"])
             .output(),
     ).await;
 
     // Step 4: Send via native OpenClaw CLI
-    // NODE_OPTIONS=--v8-pool-size=1 prevents the Node.js process from trying to create
-    // 4 worker threads at startup (which fails with uv_thread_create/EAGAIN under PID pressure).
-    // The openclaw CLI is a thin IPC client — 1 background thread is sufficient.
     use std::hash::{Hash, Hasher};
     use std::collections::hash_map::DefaultHasher;
     let mut hasher = DefaultHasher::new();
@@ -1409,7 +1413,7 @@ pub async fn send_message_internal(
         "exec", "-u", "node",
         "-e", "NODE_OPTIONS=--v8-pool-size=1",
         "-e", &cdp_env,
-        "canopy-gateway",
+        &container_name,
         "openclaw", "agent",
         "--agent", agent_id,
         "--message", message,
@@ -2338,27 +2342,44 @@ If there are "core skill" documents for which the contents have deep applicabili
 "#;
 
 /// Generates the shell command to sync personality files to the container.
-/// This uses `if [ ! -f ... ]` to ensure we NEVER overwrite existing files,
+/// If `force_overwrite` is false, this uses `if [ ! -f ... ]` to ensure we NEVER overwrite existing files,
 /// protecting user edits in SOUL.md, IDENTITY.md, and PREFERENCES.md.
-fn generate_personality_sync_cmd(soul_path: &str, soul: &str, identity: &str, prefs: &str, library: &str) -> String {
+/// If `force_overwrite` is true, it replaces the files (used during initial agent creation to overwrite scaffolding).
+fn generate_personality_sync_cmd(soul_path: &str, soul: &str, identity: &str, prefs: &str, library: &str, force_overwrite: bool) -> String {
     let escaped_soul = soul.replace('\'', "'\\''");
     let escaped_identity = identity.replace('\'', "'\\''");
     let escaped_prefs = prefs.replace('\'', "'\\''");
     let escaped_library = library.replace('\'', "'\\''");
     
-    format!(
-        "mkdir -p \"$(dirname '{soul_path}')\" && \
-         if [ ! -f '{soul_path}' ]; then printf '%s' '{soul}' > '{soul_path}'; fi && \
-         if [ ! -f \"$(dirname '{soul_path}')\"/IDENTITY.md ]; then printf '%s' '{identity}' > \"$(dirname '{soul_path}')\"/IDENTITY.md; fi && \
-         if [ ! -f \"$(dirname '{soul_path}')\"/PREFERENCES.md ]; then printf '%s' '{prefs}' > \"$(dirname '{soul_path}')\"/PREFERENCES.md; fi && \
-         if [ ! -f \"$(dirname '{soul_path}')\"/LIBRARY.md ]; then printf '%s' '{library}' > \"$(dirname '{soul_path}')\"/LIBRARY.md; fi && \
-         touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
-        soul_path = soul_path,
-        soul = escaped_soul,
-        identity = escaped_identity,
-        prefs = escaped_prefs,
-        library = escaped_library,
-    )
+    if force_overwrite {
+        format!(
+            "mkdir -p \"$(dirname '{soul_path}')\" && \
+             printf '%s' '{soul}' > '{soul_path}' && \
+             printf '%s' '{identity}' > \"$(dirname '{soul_path}')\"/IDENTITY.md && \
+             printf '%s' '{prefs}' > \"$(dirname '{soul_path}')\"/PREFERENCES.md && \
+             printf '%s' '{library}' > \"$(dirname '{soul_path}')\"/LIBRARY.md && \
+             touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
+            soul_path = soul_path,
+            soul = escaped_soul,
+            identity = escaped_identity,
+            prefs = escaped_prefs,
+            library = escaped_library,
+        )
+    } else {
+        format!(
+            "mkdir -p \"$(dirname '{soul_path}')\" && \
+             if [ ! -f '{soul_path}' ]; then printf '%s' '{soul}' > '{soul_path}'; fi && \
+             if [ ! -f \"$(dirname '{soul_path}')\"/IDENTITY.md ]; then printf '%s' '{identity}' > \"$(dirname '{soul_path}')\"/IDENTITY.md; fi && \
+             if [ ! -f \"$(dirname '{soul_path}')\"/PREFERENCES.md ]; then printf '%s' '{prefs}' > \"$(dirname '{soul_path}')\"/PREFERENCES.md; fi && \
+             if [ ! -f \"$(dirname '{soul_path}')\"/LIBRARY.md ]; then printf '%s' '{library}' > \"$(dirname '{soul_path}')\"/LIBRARY.md; fi && \
+             touch \"$(dirname '{soul_path}')\"/AGENTS.md \"$(dirname '{soul_path}')\"/TOOLS.md \"$(dirname '{soul_path}')\"/USER.md",
+            soul_path = soul_path,
+            soul = escaped_soul,
+            identity = escaped_identity,
+            prefs = escaped_prefs,
+            library = escaped_library,
+        )
+    }
 }
 
 // ─── Local Discovery & Import ────────────────────────────────────────────────
@@ -3439,7 +3460,8 @@ pub async fn boot_sync_agents(
             tracing::info!("boot_sync_agents: agent {} is isolated — ensuring its dedicated container is running", id);
             
             if let Some(data_dir) = dirs::data_dir().map(|d| d.join("Canopy")) {
-                let compose_content = crate::docker::generate_isolated_compose(id, &data_dir, 18805); // using 18805 as a stable port offset
+                let port = get_agent_isolated_port(id);
+                let compose_content = crate::docker::generate_isolated_compose(id, &data_dir, port); // using stable port offset
                 let compose_path = data_dir.join(format!("docker-compose-{}.yml", id));
                 let _ = std::fs::write(&compose_path, compose_content);
         
@@ -3447,9 +3469,31 @@ pub async fn boot_sync_agents(
                     .args(["-f", compose_path.to_str().unwrap(), "up", "-d"])
                     .output()
                     .await;
+                    
+                // Sleep briefly to let the container boot up
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                
+                // Add the agent to the isolated container's openclaw runtime
+                let container_name = format!("canopy-isolated-{}", id);
+                let workspace_path = format!("/home/node/.openclaw/workspace/{}", id);
+                
+                let mut add_args: Vec<&str> = vec![
+                    "exec", "-u", "node",
+                    "-e", "NODE_OPTIONS=--v8-pool-size=1",
+                    &container_name,
+                    "timeout", "120",
+                    "openclaw", "agents", "add",
+                    id,
+                    "--workspace", &workspace_path,
+                ];
+                let active_model = agent.personality.active_model.clone().unwrap_or_else(|| "google/gemini-3.1-pro-preview".to_string());
+                add_args.push("--model");
+                add_args.push(&active_model);
+                
+                let _ = get_docker_command().args(&add_args).output().await;
             }
             
-            seed_user_md(&db, id);
+            seed_user_md(&db, id, false);
             write_auth_profiles(id, &get_creds_for_agent(id)).await;
             ok += 1;
             continue;
@@ -3459,7 +3503,7 @@ pub async fn boot_sync_agents(
             tracing::info!("boot_sync_agents: agent {} already registered and dir exists — fast path (skip agents add)", id);
             
             // Only seed the USER.md if it's empty or doesn't exist, to prevent overwriting agent memories
-            seed_user_md(&db, id);
+            seed_user_md(&db, id, false);
 
             // Re-sync credentials for already-registered agents whose dir exists.
             // auth-profiles.json may have been overwritten or have stale/missing keys
@@ -3708,7 +3752,8 @@ pub async fn boot_sync_agents(
             &soul_content,
             &identity_content,
             custom_instructions,
-            LIBRARY_MD_TEMPLATE
+            LIBRARY_MD_TEMPLATE,
+            false // boot sync never overwrites
         );
 
         let _ = tokio::time::timeout(
@@ -3732,7 +3777,7 @@ pub async fn boot_sync_agents(
         // is up-to-date when it picks up its first task this session.
         write_permissions_md(&agent);
 
-        seed_user_md(&db, id);
+        seed_user_md(&db, id, false);
 
         ok += 1;
 
@@ -4230,7 +4275,8 @@ mod tests {
             "Soul Content", 
             "Identity Content", 
             "Prefs Content",
-            LIBRARY_MD_TEMPLATE
+            LIBRARY_MD_TEMPLATE,
+            false
         );
         
         // Ensure it uses file existence guards to NEVER overwrite files
@@ -4245,6 +4291,23 @@ mod tests {
         assert!(cmd.contains("Soul Content"));
         assert!(cmd.contains("Identity Content"));
         assert!(cmd.contains("Prefs Content"));
+    }
+
+    #[test]
+    fn generate_personality_sync_cmd_forces_overwrites() {
+        let cmd = generate_personality_sync_cmd(
+            "/workspace/agent1/SOUL.md", 
+            "Soul Content", 
+            "Identity Content", 
+            "Prefs Content",
+            LIBRARY_MD_TEMPLATE,
+            true
+        );
+        
+        // Ensure it does NOT use file existence guards, so it overwrites scaffolds on creation
+        assert!(!cmd.contains("if [ ! -f"));
+        assert!(cmd.contains("printf '%s' 'Soul Content' > '/workspace/agent1/SOUL.md'"));
+        assert!(cmd.contains("printf '%s' 'Identity Content' > \"$(dirname '/workspace/agent1/SOUL.md')\"/IDENTITY.md"));
     }
 
     #[test]
@@ -4402,13 +4465,16 @@ mod tests {
 }
 
 /// Helper function to seed USER.md with the current UserProfile and settings template if it's empty or missing.
-fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
+fn seed_user_md(db: &crate::db::Database, agent_id: &str, force_overwrite: bool) {
     if let Some(workspace_root) = dirs::data_dir().map(|d| d.join("Canopy").join("openclaw-state").join("workspace")) {
         let agent_workspace = workspace_root.join(agent_id);
         let _ = std::fs::create_dir_all(&agent_workspace);
         let user_md_path = agent_workspace.join("USER.md");
         
-        if !user_md_path.exists() || std::fs::metadata(&user_md_path).map(|m| m.len()).unwrap_or(0) == 0 {
+        let file_size = std::fs::metadata(&user_md_path).map(|m| m.len()).unwrap_or(0);
+        
+        // Overwrite if forced, if file doesn't exist, or if it's suspiciously small (scaffold)
+        if force_overwrite || !user_md_path.exists() || file_size < 50 {
             // First, try to find an existing USER.md from other agents that has been populated by the user
             let mut best_content = String::new();
             if let Ok(entries) = std::fs::read_dir(&workspace_root) {
@@ -4425,8 +4491,8 @@ fn seed_user_md(db: &crate::db::Database, agent_id: &str) {
                 }
             }
 
-            // If we found a meaningful USER.md from another agent (> 400 chars, usually boilerplate is ~350), copy it!
-            if best_content.len() > 400 {
+            // If we found a meaningful USER.md from another agent (> 600 chars, boilerplate is ~480), copy it!
+            if best_content.len() > 600 {
                 let _ = std::fs::write(&user_md_path, best_content);
                 return;
             }
@@ -4639,6 +4705,9 @@ fn generate_user_md_content(profile: Option<crate::models::UserProfile>, templat
     if let Some(p) = profile {
         if p.name.trim() != "Admin" && !p.name.trim().is_empty() {
             content.push_str(&format!("# User Context\n\n**Name:** {}\n", p.name));
+            if !p.timezone.is_empty() {
+                content.push_str(&format!("**Timezone:** {}\n", p.timezone));
+            }
             if !p.working_hours.is_empty() && p.working_hours != "9:00 AM - 5:00 PM" {
                 content.push_str(&format!("**Context / Work:** {}\n", p.working_hours));
             }

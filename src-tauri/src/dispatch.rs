@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
-use tauri::State;
+use tauri::{State, Emitter};
 use serde::{Deserialize, Serialize};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::accept_async;
@@ -14,12 +14,17 @@ use tracing::{info, warn, error};
 // State to hold the current valid pairing token
 pub struct DispatchState {
     pub current_token: RwLock<Option<String>>,
+    pub mobile_state: RwLock<serde_json::Value>,
 }
 
 impl DispatchState {
     pub fn new() -> Self {
         Self {
             current_token: RwLock::new(None),
+            mobile_state: RwLock::new(serde_json::json!({
+                "projects": [],
+                "inbox": []
+            })),
         }
     }
 }
@@ -54,6 +59,13 @@ pub async fn generate_pairing_token(state: State<'_, Arc<DispatchState>>) -> Res
 pub async fn revoke_pairing_token(state: State<'_, Arc<DispatchState>>) -> Result<(), String> {
     let mut writer = state.current_token.write().await;
     *writer = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_mobile_state(state: State<'_, Arc<DispatchState>>, payload: serde_json::Value) -> Result<(), String> {
+    let mut writer = state.mobile_state.write().await;
+    *writer = payload;
     Ok(())
 }
 
@@ -184,22 +196,53 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                                 }
                             }
                         }
+                        "list_projects" => {
+                            let reader = state.mobile_state.read().await;
+                            if let Some(projects) = reader.get("projects") {
+                                let res = RpcResponse {
+                                    msg_type: "projects_list".to_string(),
+                                    payload: projects.clone(),
+                                };
+                                if let Ok(json_str) = serde_json::to_string(&res) {
+                                    let _ = write.send(Message::Text(json_str)).await;
+                                }
+                            }
+                        }
+                        "list_inbox" => {
+                            let reader = state.mobile_state.read().await;
+                            if let Some(inbox) = reader.get("inbox") {
+                                let res = RpcResponse {
+                                    msg_type: "inbox_list".to_string(),
+                                    payload: inbox.clone(),
+                                };
+                                if let Ok(json_str) = serde_json::to_string(&res) {
+                                    let _ = write.send(Message::Text(json_str)).await;
+                                }
+                            }
+                        }
                         "send_message" => {
                             if let Some(payload) = req.payload {
                                 if let (Some(agent_id), Some(text_msg)) = (
                                     payload.get("agent_id").and_then(|v| v.as_str()),
                                     payload.get("text").and_then(|v| v.as_str())
                                 ) {
-                                    if let Ok(response_val) = crate::openclaw::send_message_internal(&*db_state, &app_handle, agent_id, text_msg, None).await {
-                                        let res = RpcResponse {
-                                            msg_type: "chat_response".to_string(),
-                                            payload: serde_json::json!({
-                                                "agent_id": agent_id,
-                                                "response": response_val
-                                            }),
-                                        };
-                                        if let Ok(json_str) = serde_json::to_string(&res) {
-                                            let _ = write.send(Message::Text(json_str)).await;
+                                    if agent_id == "system" {
+                                        // Forward system commands directly to Desktop UI via Tauri Event
+                                        let _ = app_handle.emit("mobile_system_command", serde_json::json!({
+                                            "command": text_msg
+                                        }));
+                                    } else {
+                                        if let Ok(response_val) = crate::openclaw::send_message_internal(&*db_state, &app_handle, agent_id, text_msg, None).await {
+                                            let res = RpcResponse {
+                                                msg_type: "chat_response".to_string(),
+                                                payload: serde_json::json!({
+                                                    "agent_id": agent_id,
+                                                    "response": response_val
+                                                }),
+                                            };
+                                            if let Ok(json_str) = serde_json::to_string(&res) {
+                                                let _ = write.send(Message::Text(json_str)).await;
+                                            }
                                         }
                                     }
                                 }

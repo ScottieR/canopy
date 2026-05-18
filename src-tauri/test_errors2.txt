@@ -1,0 +1,216 @@
+   Compiling canopy v0.1.0 (/Users/scottieryan/Documents/Claude/Projects/Agent Management/canopy/src-tauri)
+warning: unused import: `canopy_lib::errors::CanopyError`
+ --> tests/authorization.rs:7:9
+  |
+7 |     use canopy_lib::errors::CanopyError;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `canopy` (test "authorization") generated 1 warning (run `cargo fix --test "authorization" -p canopy` to apply 1 suggestion)
+warning: unused import: `PurchaseDecision`
+ --> tests/common.rs:5:75
+  |
+5 |     Bridge, BridgeType, BridgePermissions, BridgeConfig, PurchaseRequest, PurchaseDecision,
+  |                                                                           ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `std::path::Path`
+ --> tests/integration_agent_lifecycle.rs:8:5
+  |
+8 | use std::path::Path;
+  |     ^^^^^^^^^^^^^^^
+
+warning: unused import: `test_budget_with_daily_limit`
+ --> tests/integration_payment.rs:9:5
+  |
+9 |     test_budget_with_daily_limit, test_budget_with_spending, test_purchase_request,
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0560]: struct `BridgeConfig` has no field named `workspace_id`
+   --> tests/common.rs:201:13
+    |
+201 |             workspace_id: Some("W123456".to_string()),
+    |             ^^^^^^^^^^^^ `BridgeConfig` does not have this field
+    |
+    = note: available fields are: `scope`, `expires_at`, `push_enabled`
+
+error[E0560]: struct `BridgeConfig` has no field named `bot_user_id`
+   --> tests/common.rs:202:13
+    |
+202 |             bot_user_id: Some("B123456".to_string()),
+    |             ^^^^^^^^^^^ `BridgeConfig` does not have this field
+    |
+    = note: available fields are: `scope`, `expires_at`, `push_enabled`
+
+error[E0560]: struct `BridgeConfig` has no field named `channels`
+   --> tests/common.rs:203:13
+    |
+203 |             channels: vec!["C123456".to_string()],
+    |             ^^^^^^^^ `BridgeConfig` does not have this field
+    |
+    = note: available fields are: `scope`, `expires_at`, `push_enabled`
+
+error[E0560]: struct `BridgePermissions` has no field named `admin`
+   --> tests/common.rs:210:13
+    |
+210 |             admin: false,
+    |             ^^^^^ `BridgePermissions` does not have this field
+    |
+    = note: all struct fields are already assigned
+
+error[E0560]: struct `Bridge` has no field named `created_at`
+   --> tests/common.rs:212:9
+    |
+212 |         created_at: Utc::now(),
+    |         ^^^^^^^^^^ `Bridge` does not have this field
+    |
+    = note: available fields are: `name`, `agent_id`
+
+error[E0560]: struct `BridgePermissions` has no field named `admin`
+   --> tests/common.rs:230:9
+    |
+230 |         admin: false,
+    |         ^^^^^ `BridgePermissions` does not have this field
+    |
+    = note: all struct fields are already assigned
+
+error[E0609]: no field `workspace_id` on type `BridgeConfig`
+  --> tests/integration_auth.rs:70:23
+   |
+70 |         bridge.config.workspace_id.is_some(),
+   |                       ^^^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `scope`, `expires_at`, `push_enabled`
+
+error[E0609]: no field `bot_user_id` on type `BridgeConfig`
+  --> tests/integration_auth.rs:74:23
+   |
+74 |         bridge.config.bot_user_id.is_some(),
+   |                       ^^^^^^^^^^^ unknown field
+   |
+   = note: available fields are: `scope`, `expires_at`, `push_enabled`
+
+error[E0609]: no field `channels` on type `BridgeConfig`
+  --> tests/integration_auth.rs:88:24
+   |
+88 |         !bridge.config.channels.is_empty(),
+   |                        ^^^^^^^^ unknown field
+   |
+   = note: available fields are: `scope`, `expires_at`, `push_enabled`
+
+error[E0609]: no field `admin` on type `BridgePermissions`
+   --> tests/integration_auth.rs:200:33
+    |
+200 |     assert!(!bridge.permissions.admin, "Bridge should not have admin");
+    |                                 ^^^^^ unknown field
+    |
+    = note: available fields are: `read`, `write`, `delete`
+
+warning: unused variable: `creator_id`
+  --> tests/security_authorization.rs:21:9
+   |
+21 |     let creator_id = "user-123";
+   |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_creator_id`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `other_user_id`
+  --> tests/security_authorization.rs:22:9
+   |
+22 |     let other_user_id = "user-456";
+   |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_other_user_id`
+
+warning: variable does not need to be mutable
+  --> tests/integration_auth.rs:55:9
+   |
+55 |     let mut bridge = default_test_bridge();
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `agent`
+  --> tests/security_authorization.rs:38:9
+   |
+38 |     let agent = default_test_agent();
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_agent`
+
+warning: variable does not need to be mutable
+  --> tests/security_authorization.rs:74:9
+   |
+74 |     let mut agent = default_test_agent();
+   |         ----^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `attacker`
+  --> tests/security_authorization.rs:75:9
+   |
+75 |     let attacker = "attacker-user";
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attacker`
+
+For more information about this error, try `rustc --explain E0560`.
+warning: unused variable: `attacker`
+   --> tests/security_authorization.rs:116:9
+    |
+116 |     let attacker = "user-evil";
+    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attacker`
+
+warning: unused variable: `ctx`
+  --> tests/integration_agent_lifecycle.rs:15:28
+   |
+15 | fn create_test_agent_in_db(ctx: &TestContext, agent: &Agent) -> Result<(), String> {
+   |                            ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `ctx`
+  --> tests/integration_agent_lifecycle.rs:39:9
+   |
+39 |     let ctx = TestContext::new();
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+
+warning: variable does not need to be mutable
+  --> tests/integration_agent_lifecycle.rs:67:9
+   |
+67 |     let mut agent = test_agent_with_name(unicode_name);
+   |         ----^^^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `ctx`
+  --> tests/integration_agent_lifecycle.rs:65:9
+   |
+65 |     let ctx = TestContext::new();
+   |         ^^^ help: if this is intentional, prefix it with an underscore: `_ctx`
+
+Some errors have detailed explanations: E0560, E0609.
+For more information about an error, try `rustc --explain E0560`.
+warning: unused variable: `caps`
+   --> tests/integration_agent_lifecycle.rs:182:9
+    |
+182 |     let caps = agent.capabilities;
+    |         ^^^^ help: if this is intentional, prefix it with an underscore: `_caps`
+
+warning: `canopy` (test "integration_auth") generated 2 warnings
+error: could not compile `canopy` (test "integration_auth") due to 10 previous errors; 2 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+warning: `canopy` (test "common") generated 1 warning (1 duplicate)
+error: could not compile `canopy` (test "common") due to 6 previous errors; 1 warning emitted
+warning: `canopy` (test "security_authorization") generated 7 warnings (1 duplicate)
+error: could not compile `canopy` (test "security_authorization") due to 6 previous errors; 7 warnings emitted
+warning: `canopy` (test "integration_payment") generated 2 warnings (1 duplicate)
+error: could not compile `canopy` (test "integration_payment") due to 6 previous errors; 2 warnings emitted
+warning: `canopy` (test "integration_agent_lifecycle") generated 7 warnings (1 duplicate)
+error: could not compile `canopy` (test "integration_agent_lifecycle") due to 6 previous errors; 7 warnings emitted
+warning: `canopy` (test "security_rate_limiting") generated 1 warning (1 duplicate)
+error: could not compile `canopy` (test "security_rate_limiting") due to 6 previous errors; 1 warning emitted
+warning: `canopy` (test "security_injection") generated 1 warning (1 duplicate)
+error: could not compile `canopy` (test "security_injection") due to 6 previous errors; 1 warning emitted

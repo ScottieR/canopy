@@ -134,11 +134,7 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
       await invoke("write_workspace_file", { agentId: agent.id, filename: selectedFile, content: fileContent });
       setFileSaveStatus("Saved successfully!");
       setTimeout(() => setFileSaveStatus(""), 3000);
-      // Auto-fire the preview for personality-flavored saves. Small delay lets the
-      // agent's workspace settle (the .md files are read on the next request).
-      if (PERSONALITY_FILES.has(selectedFile)) {
-        setTimeout(() => previewRef.current?.runPreview(), 300);
-      }
+      // Auto-fire removed per user request: only run preview when the user clicks a test button.
     } catch (e) {
       setFileSaveStatus("Error saving file: " + e);
     }

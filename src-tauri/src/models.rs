@@ -371,6 +371,8 @@ pub struct PurchaseRequest {
     pub merchant: String,
     pub amount_cents: u64,
     pub category: String,
+    #[serde(default)]
+    pub is_recurring: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

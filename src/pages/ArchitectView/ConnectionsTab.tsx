@@ -387,13 +387,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           personality: { ...agent.personality, active_model: finalModel }
         });
 
-        // CRITICAL: Model format must be object { primary: "provider/model-id" }
-        // NOT a bare string. Bare string causes silent failure (agent never responds).
-        const modelConfig = typeof finalModel === 'string'
-          ? { primary: finalModel }
-          : finalModel;
-
-        await invoke("update_agent_model", { agentId: agent.id, model: modelConfig });
+        // The Rust backend's update_agent_model command expects a string and wraps it in {primary: "..."} internally
+        await invoke("update_agent_model", { agentId: agent.id, model: finalModel });
       }
       setLlmSaveStatus("success");
       setTimeout(() => setLlmSaveStatus("idle"), 2000);
@@ -456,7 +451,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     return () => {
       isMounted = false;
       if (unlistenFn) {
-        try { unlistenFn(); } catch (e) {}
+        try { 
+          const res = unlistenFn(); 
+          if (res && typeof (res as any).catch === 'function') (res as any).catch(() => {}); 
+        } catch (e) {}
         unlistenFn = undefined;
       }
     };
@@ -526,7 +524,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     return () => {
       isMounted = false;
       if (unlistenFn) {
-        try { unlistenFn(); } catch (e) {}
+        try { 
+          const res = unlistenFn(); 
+          if (res && typeof (res as any).catch === 'function') (res as any).catch(() => {}); 
+        } catch (e) {}
         unlistenFn = undefined;
       }
     };
@@ -1806,7 +1807,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             icon={<IconComponent size={18} color="#3c6663" />}
             name={c.name}
             subtitle={c.subtitle}
-            connected={dynamicStatuses[c.id] || false}
+            connected={c.id === 'github' ? !!githubToken : (dynamicStatuses[c.id] || false)}
             enabled={dynamicEnabled[c.id]}
             onToggle={(enabled) => {
               setDynamicEnabled(prev => ({ ...prev, [c.id]: enabled }));

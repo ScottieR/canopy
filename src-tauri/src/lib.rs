@@ -18,7 +18,7 @@ mod openclaw;
 mod keychain;
 mod bridge;
 mod payment;
-mod models;
+pub mod models;
 mod db;
 mod imessage;
 mod audit;
@@ -187,6 +187,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Docker / OrbStack
             docker::check_orbstack_installed,
+            docker::check_docker_installed,
             docker::install_orbstack,
             docker::get_container_status,
             docker::start_gateway,

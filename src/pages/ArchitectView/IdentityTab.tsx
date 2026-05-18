@@ -10,9 +10,10 @@ import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMes
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, TransformControls, Environment } from "@react-three/drei";
-import { TerrariumBase } from "../../components/World/WorldScene";
+import { TerrariumBase, HabitatErrorBoundary } from "../../components/World/WorldScene";
 import { GLBAgent, GLBModel } from "../../components/World/GLBAgent";
-import { Toggle, ServiceRow, glass, ACCESSORIES, PASTEL_COLORS, SafeBillboard, HABITATS } from "../../App";
+import { Toggle, ServiceRow, glass } from "../../App";
+import { PASTEL_COLORS, HABITATS, ACCESSORIES } from '../../constants/assets';
 import { getAssetUrl } from "../../utils/assets";
 
 export function IdentityTab({ agent }: { agent: AgentData }) {
@@ -144,10 +145,12 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                   scale={1.0}
                   rotation={[0, Math.PI / 4 - (placement.rotationY * Math.PI / 180), 0]}
                 >
-                  <TerrariumBase
-                    habitatId={selectedHabitat?.id || stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1}
-                    modelUrl={selectedHabitat?.path}
-                  />
+                  <HabitatErrorBoundary fallback={<mesh><boxGeometry args={[1, 1, 1]}/><meshBasicMaterial color="red" wireframe/></mesh>}>
+                    <TerrariumBase
+                      habitatId={selectedHabitat?.id || stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1}
+                      modelUrl={selectedHabitat?.path}
+                    />
+                  </HabitatErrorBoundary>
                   {(stagedVisuals?.decor || []).map((path, i) => {
                     const glbPath = path.replace('.png', '.glb');
                     return (
@@ -321,8 +324,8 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
           <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", padding: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>HABITAT</div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, overflowY: "auto", flex: 1, alignContent: "flex-start", paddingRight: 4, paddingBottom: 16 }}>
-              {HABITATS.map((h: any) => (
-                <div key={h}
+              {habitats.map((h: any) => (
+                <div key={h.id}
                   onClick={() => {
                     // Switching habitats: strip the position fields (x/y/z) from
                     // each saved decorTransform so the runtime auto-snaps every
@@ -333,7 +336,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                     // belonged to the previous habitat and items would float
                     // off-surface.
                     const currentHabitatId = stagedVisuals?.habitatId ?? agent.visual_identity?.habitatId;
-                    if (h !== currentHabitatId) {
+                    if (h.id !== currentHabitatId) {
                       setSelectedDecor(null);
                       const existingTransforms = stagedVisuals?.decorTransforms || {};
                       const repositionedTransforms: Record<string, any> = {};
@@ -343,21 +346,28 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                           repositionedTransforms[path] = rest;
                         }
                       }
-                      handleUpdateStaged({ habitatId: h, decorTransforms: repositionedTransforms });
+                      handleUpdateStaged({ habitatId: h.id, decorTransforms: repositionedTransforms });
                     } else {
-                      handleUpdateStaged({ habitatId: h });
+                      handleUpdateStaged({ habitatId: h.id });
                     }
                   }}
-                  style={{ background: "rgba(0,0,0,0.03)", borderRadius: 12, height: 100, overflow: "hidden", position: "relative", cursor: "pointer", border: stagedVisuals?.habitatId === h ? "2px solid #218380" : "2px solid rgba(0,0,0,0)", transition: "all 0.1s ease" }}>
-                  <Canvas orthographic camera={{ position: [5, 5, 5], zoom: 16 }} style={{ pointerEvents: "none" }}>
-                    <ambientLight intensity={1} />
-                    <directionalLight position={[10, 20, 5]} intensity={1} />
-                    <group position={[0, -0.6, 0]} rotation={[0, Math.PI / 4, 0]}>
-                      <React.Suspense fallback={null}>
-                        <TerrariumBase habitatId={h} />
-                      </React.Suspense>
-                    </group>
-                  </Canvas>
+                  style={{ background: "rgba(0,0,0,0.03)", borderRadius: 12, height: 100, overflow: "hidden", position: "relative", cursor: "pointer", border: stagedVisuals?.habitatId === h.id ? "2px solid #218380" : "2px solid rgba(0,0,0,0)", transition: "all 0.1s ease" }}>
+                  {h.imageUrl ? (
+                    <img src={getAssetUrl(h.imageUrl)} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt={h.name || "Habitat"} />
+                  ) : (
+                    <Canvas orthographic camera={{ position: [5, 5, 5], zoom: 16 }} style={{ pointerEvents: "none" }}>
+                      <ambientLight intensity={1} />
+                      <directionalLight position={[10, 20, 5]} intensity={1} />
+                      <group position={[0, -0.6, 0]} rotation={[0, Math.PI / 4, 0]}>
+                        <HabitatErrorBoundary fallback={<mesh><boxGeometry args={[1, 1, 1]}/><meshBasicMaterial color="red" wireframe/></mesh>}>
+                          <React.Suspense fallback={null}>
+                            <TerrariumBase habitatId={h.id} />
+                          </React.Suspense>
+                        </HabitatErrorBoundary>
+                      </group>
+                    </Canvas>
+                  )}
+                  {h.name && <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.4)", color: "white", fontSize: 9, padding: "2px 4px", fontWeight: "bold", truncate: true }}>{h.name}</div>}
                 </div>
               ))}
             </div>

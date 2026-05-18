@@ -7,6 +7,7 @@ use canopy_lib::models::{PurchaseRequest, AgentBudget};
 use common::{
     default_test_budget, default_purchase_request, test_budget_payments_disabled,
     test_budget_with_daily_limit, test_budget_with_spending, test_purchase_request,
+    test_purchase_request_with_category, test_budget_with_categories,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -157,8 +158,6 @@ fn test_purchase_request_with_custom_category() {
     // Validates: Category filtering supported
     // Ensures: Policy can be enforced by category
 
-    use common::test_purchase_request_with_category;
-
     let request = test_purchase_request_with_category("agent-1", "software");
 
     assert_eq!(request.category, "software");
@@ -236,8 +235,6 @@ fn test_purchase_with_unapproved_category() {
     // Test: Purchases in restricted categories are rejected
     // Validates: Category whitelist enforced
     // Ensures: Policy compliance maintained
-
-    use common::test_budget_with_categories;
 
     let restricted_budget = test_budget_with_categories("agent-1", vec!["software", "hardware"]);
     let furniture = test_purchase_request_with_category("agent-1", "furniture");

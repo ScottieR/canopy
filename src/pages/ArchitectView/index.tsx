@@ -8,7 +8,8 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
-import { Toggle, ServiceRow, glass, LobsterIcon } from "../../App";
+import { Toggle, ServiceRow, glass } from "../../App";
+import { LobsterIcon } from "../../components/World/LobsterIcon";
 
 import { ConnectionsTab } from './ConnectionsTab';
 import { TerminalPane } from './TerminalPane';
@@ -38,7 +39,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
     permissions: rawAgent.permissions || []
   }), [rawAgent]);
 
-  const { agents, setSelectedAgent, setActiveView, architectTab, setArchitectTab, togglePermission } = useWorldStore();
+  const { agents, setSelectedAgent, setActiveView, architectTab, setArchitectTab, togglePermission, gatewayReady } = useWorldStore();
   const [showPairingModal, setShowPairingModal] = useState(false);
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [diagErrors, setDiagErrors] = useState<string[]>([]);
@@ -288,7 +289,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
                           </div>
                           <div style={{
                             position: "absolute", bottom: -2, right: -2, width: 8, height: 8, borderRadius: "50%",
-                            background: a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
+                            background: a.paused ? "var(--text-muted)" : (!gatewayReady || a.status === "deploying") ? "#F4A83A" : a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
                             border: "1.5px solid white"
                           }} />
                         </div>

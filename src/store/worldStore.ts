@@ -96,6 +96,8 @@ export interface Conversation {
   messages: ChatMessage[];
   createdAt: number;       // unix ms
   lastActiveAt: number;    // unix ms — for sort order
+  type?: "dm" | "project";
+  status?: "active" | "archived";
 }
 
 export interface AgentData extends Agent {
@@ -142,6 +144,16 @@ export interface AgentData extends Agent {
   };
 }
 
+export interface InboxItem {
+  id: string;
+  type: "voice_note" | "agent_request";
+  content: string;
+  timestamp: number;
+  agent_id?: string;
+  agent_name?: string;
+  suggestion?: string;
+}
+
 export interface DiscoveredAgent {
   source: string;
   id: string;
@@ -149,18 +161,52 @@ export interface DiscoveredAgent {
   path: string;
 }
 
+// ─── Decision Queue ───────────────────────────────────────────────────────────
+// Agents surface items here when they need human input before acting,
+// want to notify the user of a completed autonomous action, or hit an error
+// that requires attention. The UI renders these as dismissable cards.
+export type DecisionType =
+  | "pre_auth"      // "I'm about to do X — OK?" — agent wants approval before acting
+  | "needs_input"   // "I can't continue without knowing Y" — genuinely blocked
+  | "completed"     // "I did X while you were away" — FYI, no action needed
+  | "error";        // "Something went wrong — here's what happened"
+
+export interface DecisionOption {
+  label: string;
+  value: string;
+  style?: "primary" | "danger" | "ghost";
+}
+
+export interface PendingDecision {
+  id: string;
+  agentId: string;
+  agentName: string;
+  agentImage?: string | null;
+  agentRobeColor?: string;
+  type: DecisionType;
+  context: string;         // What the agent was doing / what triggered this
+  question: string;        // The specific ask or headline notification
+  detail?: string;         // Optional longer explanation
+  options: DecisionOption[]; // Action buttons — empty array = dismiss-only
+  createdAt: number;       // unix ms
+  urgency?: "low" | "medium" | "high";
+}
+
 export interface WorldState {
   agents: AgentData[];
+  inbox: InboxItem[];
   selectedAgent: string | null;
   hoveredAgent: string | null;
-  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics";
+  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum";
+  activeForumId: string | null;
   architectTab: string;
   gatewayReady: boolean;
   theme: "light" | "dark";
   toggleTheme: () => void;
   setSelectedAgent: (id: string | null) => void;
   setHoveredAgent: (id: string | null) => void;
-  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics") => void;
+  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum") => void;
+  setActiveForumId: (id: string | null) => void;
   setArchitectTab: (tab: string) => void;
   setGatewayReady: (ready: boolean) => void;
   isAutoCloakEnabled: boolean;
@@ -183,11 +229,21 @@ export interface WorldState {
   // there's anything worth saving, then clears chatLog. Returns the new
   // conv id (or null if nothing was saved). Used by "New conversation".
   saveCurrentThread: (agentId: string) => string | null;
+  createProjectSpace: (agentId: string) => string | null;
   // switchConversation saves the current thread first (idempotent — no-op if
   // empty), then loads the target conversation's messages into chatLog.
   switchConversation: (agentId: string, convId: string) => void;
   renameConversation: (agentId: string, convId: string, title: string) => void;
   deleteConversation: (agentId: string, convId: string) => void;
+  // ── Inbox ─────────────────────────────────────────────────────────────
+  addInboxItem: (item: Omit<InboxItem, "id" | "timestamp">) => void;
+  removeInboxItem: (id: string) => void;
+  // ── Decision Queue ────────────────────────────────────────────────────
+  pendingDecisions: PendingDecision[];
+  addDecision: (d: PendingDecision) => void;
+  resolveDecision: (id: string, answer: string) => void; // user picked an option
+  dismissDecision: (id: string) => void;                 // user dismissed without acting
+  clearDecisions: (agentId?: string) => void;            // bulk clear (optional: by agent)
 }
 
 export const ZONES = {
@@ -201,7 +257,7 @@ export const ZONES = {
 export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "ext_network", label: "External Network", description: "Allow outbound API calls and web access", enabled: true, category: "network" },
   { id: "int_network", label: "Internal Network", description: "Communicate with other agents via data handoffs", enabled: true, category: "network" },
-  { id: "autonomous", label: "Autonomous Execution", description: "Run tasks without manual approval (Agent can autonomously execute loops without asking for your confirmation at each step)", enabled: false, category: "execution" },
+  { id: "autonomous", label: "Autonomous Execution", description: "Run tasks without manual approval (Agent can autonomously execute loops without asking for your confirmation at each step)", enabled: true, category: "execution" },
   { id: "scheduled", label: "Scheduled Tasks", description: "Execute on cron schedules", enabled: true, category: "execution" },
   { id: "memory_write", label: "Memory Write", description: "Store long-term data and learnings", enabled: true, category: "data" },
   { id: "file_read", label: "File System Read", description: "Read files in scoped directories", enabled: true, category: "data" },
@@ -253,11 +309,12 @@ export function getDefaultPersonality(role: string, name: string, agentTypeInfo:
   const personaName = name ? name : "Agent";
 
   if (!role || role === "Custom") {
-    basePrompt = info.defaultPrompt || `You are ${personaName}. Your primary objective is to execute instructions cleanly and effectively. Maintain a helpful and analytical tone.`;
+    basePrompt = info.identity_template || info.defaultPrompt || `You are ${personaName}. Your primary objective is to execute instructions cleanly and effectively. Maintain a helpful and analytical tone.`;
     basePrompt = basePrompt.replace("You are a highly capable and adaptable AI agent", `You are ${personaName}`);
   } else {
-    if (info.defaultPrompt) {
-      basePrompt = info.defaultPrompt.replace("You are", `You are ${personaName},`);
+    const defaultText = info.identity_template || info.defaultPrompt;
+    if (defaultText) {
+      basePrompt = defaultText.replace("You are", `You are ${personaName},`);
     } else {
       basePrompt = `You are ${personaName}, an expert acting in the capacity of a ${role}. As a specialized agent, you must execute your duties meticulously, draw upon your deep domain knowledge, and provide structured, high-signal outputs. Avoid conversational fluff.`;
     }
@@ -301,9 +358,11 @@ export const useWorldStore = create<WorldState>()(
   persist(
     (set) => ({
       agents: [],
+      inbox: [],
   selectedAgent: null,
   hoveredAgent: null,
   activeView: "loading",
+  activeForumId: null,
   architectTab: "overview",
   gatewayReady: false,
   isAutoCloakEnabled: false,
@@ -318,6 +377,7 @@ export const useWorldStore = create<WorldState>()(
   setSelectedAgent: (id) => set({ selectedAgent: id }),
   setHoveredAgent: (id) => set({ hoveredAgent: id }),
   setActiveView: (view) => set({ activeView: view }),
+  setActiveForumId: (id) => set({ activeForumId: id }),
   setArchitectTab: (tab) => set({ architectTab: tab }),
   setGatewayReady: (ready) => set({ gatewayReady: ready }),
   setAutoCloakEnabled: (enabled) => set({ isAutoCloakEnabled: enabled }),
@@ -347,6 +407,23 @@ export const useWorldStore = create<WorldState>()(
   })),
   updateAgentBrowserStatus: (id, status) => set((state) => ({
     agents: state.agents.map((a) => a.id === id ? { ...a, browser_status: status } : a)
+  })),
+
+  // ── Decision Queue ─────────────────────────────────────────────────────
+  pendingDecisions: [],
+  addDecision: (d) => set((state) => ({
+    pendingDecisions: [d, ...state.pendingDecisions],
+  })),
+  resolveDecision: (id, _answer) => set((state) => ({
+    pendingDecisions: state.pendingDecisions.filter(d => d.id !== id),
+  })),
+  dismissDecision: (id) => set((state) => ({
+    pendingDecisions: state.pendingDecisions.filter(d => d.id !== id),
+  })),
+  clearDecisions: (agentId) => set((state) => ({
+    pendingDecisions: agentId
+      ? state.pendingDecisions.filter(d => d.agentId !== agentId)
+      : [],
   })),
 
   // ── Conversation thread management ─────────────────────────────────────
@@ -391,6 +468,8 @@ export const useWorldStore = create<WorldState>()(
             messages: [...(agent.chatLog || [])],
             createdAt: now,
             lastActiveAt: now,
+            type: "dm",
+            status: "active"
           });
         }
         savedId = agent.activeConversationId;
@@ -408,6 +487,8 @@ export const useWorldStore = create<WorldState>()(
           messages: [...agent.chatLog],
           createdAt: now,
           lastActiveAt: now,
+          type: "dm",
+          status: "active"
         };
         conversations.push(newConv);
         savedId = newConv.id;
@@ -431,6 +512,39 @@ export const useWorldStore = create<WorldState>()(
     if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("canopy:chat-reset", { detail: { agentId } }));
     }
+    return savedId;
+  },
+
+  createProjectSpace: (agentId) => {
+    let savedId: string | null = null;
+    set((state) => {
+      const agent = state.agents.find(a => a.id === agentId);
+      if (!agent) return state;
+
+      let conversations = [...(agent.conversations || [])];
+
+      const now = Date.now();
+      const newConv: Conversation = {
+        id: `proj_${now}_${Math.random().toString(36).slice(2, 8)}`,
+        title: "New Project Space",
+        messages: [],
+        createdAt: now,
+        lastActiveAt: now,
+        type: "project",
+        status: "active"
+      };
+      conversations.push(newConv);
+      savedId = newConv.id;
+
+      // We don't automatically clear the active chat log if it was a DM, but we DO switch into the project space.
+      // Wait, let's just create it and let switchConversation handle the switch.
+      return {
+        agents: state.agents.map(a => a.id === agentId ? {
+          ...a,
+          conversations
+        } : a),
+      };
+    });
     return savedId;
   },
 
@@ -464,6 +578,8 @@ export const useWorldStore = create<WorldState>()(
           messages: [...agent.chatLog],
           createdAt: now,
           lastActiveAt: now,
+          type: "dm",
+          status: "active"
         });
       }
     }
@@ -496,11 +612,24 @@ export const useWorldStore = create<WorldState>()(
       activeConversationId: a.activeConversationId === convId ? null : a.activeConversationId,
     } : a),
   })),
+
+  // ── Inbox ─────────────────────────────────────────────────────────────
+  addInboxItem: (item) => set((state) => ({
+    inbox: [{
+      ...item,
+      id: `inbox_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: Date.now()
+    }, ...state.inbox]
+  })),
+  removeInboxItem: (id) => set((state) => ({
+    inbox: state.inbox.filter(i => i.id !== id)
+  })),
 }),
 {
   name: "canopy-world-store",
   partialize: (state) => ({ 
     agents: state.agents, 
+    inbox: state.inbox,
     isAutoCloakEnabled: state.isAutoCloakEnabled, 
     autoCloakTimeout: state.autoCloakTimeout 
   }),

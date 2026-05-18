@@ -104,8 +104,15 @@ export function WorkspaceFilesDrawer({
   // the drawer is open — collapsed users pay nothing.
   useEffect(() => {
     if (!open) return;
-    fetchFiles();
-    const t = setInterval(fetchFiles, 6000);
+    let isPolling = false;
+    const poll = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      try { await fetchFiles(); }
+      finally { isPolling = false; }
+    };
+    poll();
+    const t = setInterval(poll, 6000);
     return () => clearInterval(t);
   }, [open, fetchFiles]);
 

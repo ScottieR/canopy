@@ -26,10 +26,15 @@ export function GlobalAlertsFeed({ onClose }: { onClose: () => void }) {
     };
 
     useEffect(() => {
-        loadAlerts();
-        // The sniffer emits "security_alert_created", but for simplicity we can poll,
-        // or just rely on the component mount.
-        const interval = setInterval(loadAlerts, 5000);
+        let isPolling = false;
+        const safePoll = async () => {
+            if (isPolling) return;
+            isPolling = true;
+            try { await loadAlerts(); } 
+            finally { isPolling = false; }
+        };
+        safePoll();
+        const interval = setInterval(safePoll, 5000);
         return () => clearInterval(interval);
     }, []);
 

@@ -130,7 +130,7 @@ fn test_approve_payment_requires_ownership() {
 
     let agent_owner = "user-legitimate";
     let attacker = "user-evil";
-    let agent_id = "agent-1";
+    let _agent_id = "agent-1";
 
     // Owner can approve: ✅
     // Attacker cannot approve: ❌
@@ -172,7 +172,7 @@ fn test_read_conversation_requires_agent_ownership() {
 
     let owner = "user-123";
     let attacker = "user-evil";
-    let agent_id = "agent-1";
+    let _agent_id = "agent-1";
 
     // Owner can read: ✅
     // Attacker cannot read: ❌
@@ -312,7 +312,7 @@ fn test_cannot_guess_agent_id_for_other_user() {
     // Test: Even if pattern exists, auth check blocks access
 
     let guessed_id = "other-user-agent-1";
-    let attacker = "attacker-user";
+    let _attacker = "attacker-user";
 
     // Even if attacker guesses the ID, access should be blocked:
     // In real implementation:

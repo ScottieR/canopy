@@ -3,7 +3,7 @@ import agentsData from "../../../../shared/agents.json";
 import habitatsData from "../../../../shared/habitats.json";
 import { AgentNeighborhood } from "./AgentNeighborhood";
 import { OnboardingCompanion } from "./OnboardingCompanion";
-import { useGLTF } from "@react-three/drei";
+import { useGLTF, Html } from "@react-three/drei";
 import * as THREE from "three";
 import React from "react";
 import { getAssetUrl } from "../../utils/assets";
@@ -16,6 +16,16 @@ import { getAssetUrl } from "../../utils/assets";
 ["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].forEach(role => {
   useGLTF.preload(getAssetUrl(`/models/lobsters/${role}.glb`));
 });
+
+export class HabitatErrorBoundary extends React.Component<
+  { fallback: React.ReactNode; children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(err: any) { console.warn("Failed to load habitat GLB:", err); }
+  render() { return this.state.hasError ? this.props.fallback : this.props.children; }
+}
 
 export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }: { index?: number, habitatId?: number, modelUrl?: string, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
   const modelNum = habitatId || ((index % 9) + 1);
@@ -126,6 +136,50 @@ export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }
   return <primitive object={clonedScene} />;
 }
 
+export function ProjectForum({ space, position, onClick }: { space: any, position: THREE.Vector3, onClick: () => void }) {
+  const meshRef = React.useRef<THREE.Group>(null);
+  
+  React.useEffect(() => {
+    let animationId: number;
+    const animate = () => {
+      if (meshRef.current) {
+        meshRef.current.rotation.y += 0.005;
+      }
+      animationId = requestAnimationFrame(animate);
+    };
+    animate();
+    return () => cancelAnimationFrame(animationId);
+  }, []);
+
+  return (
+    <group position={position} onClick={(e) => { e.stopPropagation(); onClick(); }}>
+      {/* Use a larger Meshy habitat (e.g. 8) to act as the collaborative island */}
+      <group scale={1.5}>
+        <HabitatErrorBoundary fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
+          <React.Suspense fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
+            <TerrariumBase index={8} habitatId={8} />
+          </React.Suspense>
+        </HabitatErrorBoundary>
+      </group>
+
+      {/* Subtle Holographic Core indicator */}
+      <group position={[0, 1.8, 0]} ref={meshRef}>
+        <mesh>
+          <octahedronGeometry args={[0.5]} />
+          <meshBasicMaterial color="#83C5BE" wireframe transparent opacity={0.4} />
+        </mesh>
+      </group>
+
+      {/* Floating title */}
+      <Html position={[0, 3.2, 0]} center>
+         <div style={{ cursor: "pointer", color: "white", background: "rgba(30,50,48,0.8)", padding: "6px 12px", borderRadius: 12, fontSize: 13, fontWeight: 700, whiteSpace: "nowrap", border: "1px solid rgba(131, 197, 190, 0.3)", backdropFilter: "blur(8px)", boxShadow: "0 8px 32px rgba(0,0,0,0.3)" }}>
+           {space.title}
+         </div>
+      </Html>
+    </group>
+  );
+}
+
 export function WorldScene({ 
   agents, 
   onAgentClick, 
@@ -175,6 +229,28 @@ export function WorldScene({
     });
   }, [agents]);
 
+  const projectSpaces = useMemo(() => {
+    const spaces = new Map<string, any>();
+    if (!agents) return [];
+    agents.forEach(agent => {
+      agent.conversations?.forEach((c: any) => {
+        if (c.type === "project") {
+          if (!spaces.has(c.id)) spaces.set(c.id, { ...c, participants: [] });
+          if (!spaces.get(c.id).participants.includes(agent.id)) {
+            spaces.get(c.id).participants.push(agent.id);
+          }
+        }
+      });
+    });
+    return Array.from(spaces.values());
+  }, [agents]);
+
+  const forumPoints = useMemo(() => {
+    // Place forums in an arc or row behind the islands. 
+    // Z = -12 to keep them distinct from the spiral.
+    return projectSpaces.map((_, i) => new THREE.Vector3((i - Math.floor(projectSpaces.length / 2)) * 10, 0, -12));
+  }, [projectSpaces.length]);
+
   // Compute Ulam Spiral layout coordinates for the tiled surface
   const TILE_GAP = 2; // Space between tile centers
 
@@ -208,6 +284,21 @@ export function WorldScene({
 
   return (
     <group position={[0, -0.5, 0]}>
+      {/* Render Project Forums */}
+      {projectSpaces.map((space: any, i) => (
+        <ProjectForum 
+          key={space.id} 
+          space={space} 
+          position={forumPoints[i]} 
+          onClick={() => {
+            // Focus on the first participant to jump to the space context
+            if (space.participants.length > 0 && onAgentClick) {
+              onAgentClick(space.participants[0]);
+            }
+          }}
+        />
+      ))}
+
       {/* Agents and their 1:1 Terrarium Tiles */}
       {selectedAgents.map((agent: any, index) => {
         const isHovered = hoveredAgentId === agent.id;
@@ -218,48 +309,81 @@ export function WorldScene({
         const initPos = t ? new THREE.Vector3(t.x, t.y, t.z) : basePath;
         const initRotY = t?.rotationY || 0;
 
-        const content = (
-          <group 
-            position={initPos.toArray()} 
-            rotation={[0, initRotY, 0]}
-            onClick={(e) => {
-              if (isEditMode) {
-                e.stopPropagation();
-                onAgentClick?.(agent.id);
-              }
-            }}
-          >
-            {/* Hover Indicator Ring */}
-            {(isHovered || isSelectedForEdit) && <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[1.2, 1.4, 32]} /><meshBasicMaterial color={isSelectedForEdit ? "#D4A373" : "#83C5BE"} transparent opacity={isSelectedForEdit ? 0.9 : 0.6} /></mesh>}
+        let agentPos = initPos;
+        let agentRotY = initRotY;
+        let isAtForum = false;
 
-            {/* 
-                   Tile the monolithic base out beneath each agent 
-                */}
-            <React.Suspense fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
-              <TerrariumBase index={index} habitatId={agent.visual_identity?.habitatId} onNavMeshReady={(pts) => setNavMap(prev => ({ ...prev, [index]: pts }))} />
-            </React.Suspense>
-
-            {/* 
-                  Renders the agent directly on its personal soil tile.
-                  Because the Tile uses Procedural Raycasting to sink itself until its top surface is exactly 0,
-                  And the Lobster uses Normalization to rest its feet at exactly 0,
-                  they flawlessly snap together on ANY 3D model geometry automatically!
-                */}
-            <AgentNeighborhood
-              agent={agent}
-              index={index}
-              navPoints={navMap[index]}
-              position={[0, 0, 0]}
-              onClick={() => onAgentClick?.(agent.id)}
-              onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
-              onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
-            />
-          </group>
-        );
+        // Animate agent walking to the forum if they are active in it
+        if (agent.activeConversationId) {
+          const spaceIdx = projectSpaces.findIndex(s => s.id === agent.activeConversationId);
+          if (spaceIdx >= 0) {
+             const forumPos = forumPoints[spaceIdx];
+             const pIdx = projectSpaces[spaceIdx].participants.indexOf(agent.id);
+             const totalP = projectSpaces[spaceIdx].participants.length;
+             // Form a circle around the table
+             const angle = (pIdx / Math.max(1, totalP)) * Math.PI * 2;
+             const radius = 2.2;
+             agentPos = new THREE.Vector3(
+                forumPos.x + Math.cos(angle) * radius,
+                forumPos.y,
+                forumPos.z + Math.sin(angle) * radius
+             );
+             // Look at the center of the table
+             agentRotY = -Math.atan2(agentPos.z - forumPos.z, agentPos.x - forumPos.x) - Math.PI / 2;
+             isAtForum = true;
+          }
+        }
 
         return (
           <group key={agent.id || index}>
-            {content}
+            {/* The Island / Habitat Base remains at its layout position */}
+            <group 
+              position={initPos.toArray()} 
+              rotation={[0, initRotY, 0]}
+              onClick={(e) => {
+                if (isEditMode) {
+                  e.stopPropagation();
+                  onAgentClick?.(agent.id);
+                }
+              }}
+            >
+              {isSelectedForEdit && <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[1.2, 1.4, 32]} /><meshBasicMaterial color="#D4A373" transparent opacity={0.9} /></mesh>}
+
+              <HabitatErrorBoundary fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
+                <React.Suspense fallback={<mesh><cylinderGeometry args={[2, 2, 0.5, 32]} /><meshStandardMaterial color="#8EA676" /></mesh>}>
+                  <TerrariumBase index={index} habitatId={agent.visual_identity?.habitatId} onNavMeshReady={(pts) => setNavMap(prev => ({ ...prev, [index]: pts }))} />
+                </React.Suspense>
+              </HabitatErrorBoundary>
+              
+              {isAtForum && (
+                <AgentNeighborhood
+                  agent={agent}
+                  index={index}
+                  navPoints={navMap[index]}
+                  position={[0, 0, 0]}
+                  hideAgent={true}
+                />
+              )}
+            </group>
+
+            {/* The Agent Lobster moves dynamically */}
+            <group 
+              position={agentPos.toArray()} 
+              rotation={[0, agentRotY, 0]}
+            >
+              {isHovered && !isSelectedForEdit && <mesh position={[0, 0, 0]} rotation={[-Math.PI / 2, 0, 0]}><ringGeometry args={[1.2, 1.4, 32]} /><meshBasicMaterial color="#83C5BE" transparent opacity={0.6} /></mesh>}
+
+              <AgentNeighborhood
+                agent={agent}
+                index={index}
+                navPoints={navMap[index]}
+                position={[0, 0, 0]}
+                onClick={() => onAgentClick?.(agent.id)}
+                onPointerOver={(e) => { e.stopPropagation(); onAgentHover?.(agent.id); document.body.style.cursor = 'pointer'; }}
+                onPointerOut={() => { onAgentHover?.(null); document.body.style.cursor = 'default'; }}
+                hideDecor={isAtForum}
+              />
+            </group>
           </group>
         );
       })}

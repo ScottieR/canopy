@@ -452,11 +452,17 @@ pub async fn disconnect_discord() -> Result<String, String> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+pub struct GithubRepoPermissions {
+    pub push: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct GithubRepo {
     pub id: u64,
     pub name: String,
     pub full_name: String,
     pub private: bool,
+    pub permissions: Option<GithubRepoPermissions>,
 }
 
 #[tauri::command]
@@ -475,12 +481,18 @@ pub async fn fetch_github_repos(token: String) -> Result<Vec<GithubRepo>, String
         return Err(format!("GitHub API returned error: {}", res.status()));
     }
 
-    let repos: Vec<GithubRepo> = res
+    let all_repos: Vec<GithubRepo> = res
         .json()
         .await
         .map_err(|e| format!("Failed to parse GitHub repos: {}", e))?;
 
-    Ok(repos)
+    // Filter to only include repositories where the token has explicit write (push) access.
+    // Fine-grained PATs default to read-only for all public repos, which creates clutter.
+    let writable_repos = all_repos.into_iter().filter(|r| {
+        r.permissions.as_ref().map(|p| p.push).unwrap_or(false)
+    }).collect();
+
+    Ok(writable_repos)
 }
 
 // ─── GitHub ───────────────────────────────────────────────────────────────────

@@ -12,7 +12,8 @@
 import React, { useEffect, useImperativeHandle, useRef, useState, forwardRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData } from "../../store/worldStore";
-import { LobsterIcon, glass } from "../../App";
+import { glass } from "../../App";
+import { LobsterIcon } from "../../components/World/LobsterIcon";
 
 export type PersonalityPreviewHandle = {
   runPreview: (prompt?: string) => void;

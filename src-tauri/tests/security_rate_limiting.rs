@@ -189,7 +189,7 @@ fn test_prevents_payment_spam() {
     let mut limiter = RateLimiter::new(10, 60); // 10 checks/min
 
     let mut blocked = 0;
-    for i in 0..25 {
+    for _i in 0..25 {
         if !limiter.is_allowed() {
             blocked += 1;
         }
@@ -399,7 +399,7 @@ fn test_rate_limit_violations_can_be_monitored() {
     let mut limiter = RateLimiter::new(5, 60);
     let mut violation_count = 0;
 
-    for i in 0..15 {
+    for _i in 0..15 {
         if !limiter.is_allowed() {
             violation_count += 1;
         }

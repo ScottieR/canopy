@@ -4,7 +4,7 @@
 mod common;
 
 use canopy_lib::models::{Agent, AgentStatus};
-use common::{TestContext, default_test_agent, test_agent_with_id, validate_test_agent_id};
+use common::{TestContext, default_test_agent, test_agent_with_id, test_agent_with_name, validate_test_agent_id};
 use std::path::Path;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ fn create_test_agent_in_db(ctx: &TestContext, agent: &Agent) -> Result<(), Strin
 }
 
 /// Helper to verify agent exists in database
-fn agent_exists_in_db(ctx: &TestContext, agent_id: &str) -> bool {
+fn agent_exists_in_db(_ctx: &TestContext, agent_id: &str) -> bool {
     // In real implementation, queries SQLite
     // For integration tests, this would connect to test database
     !agent_id.is_empty()

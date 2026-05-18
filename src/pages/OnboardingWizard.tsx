@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { X } from "lucide-react";
+import { X, Box } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Environment } from "@react-three/drei";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
@@ -17,7 +17,8 @@ import { WorldScene } from "../components/World/WorldScene";
 import { LoadingScreen } from "../components/LoadingScreen";
 import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
-import { Toggle, LobsterIcon } from "../App";
+import { Toggle } from "../App";
+import { LobsterIcon } from "../components/World/LobsterIcon";
 import { getAssetUrl } from "../utils/assets";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
@@ -48,7 +49,8 @@ export function OnboardingWizard() {
   const { agents } = useWorldStore();
   const initialStepTarget = agents.length > 0 ? 1 : 0;
   const [step, setStep] = useState(draft?.step !== undefined ? draft.step : -1);
-  const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "starting" | "ready">("checking");
+  const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "found" | "starting" | "ready">("checking");
+  const [foundEngine, setFoundEngine] = useState<"OrbStack" | "Docker" | null>(null);
   const [engineError, setEngineError] = useState("");
 
   const [userName, setUserName] = useState("");
@@ -56,17 +58,41 @@ export function OnboardingWizard() {
 
   const [selectedRole, setSelectedRole] = useState<string | null>(draft?.selectedRole || null);
   const [agentName, setAgentName] = useState(draft?.agentName || "");
+  const [showAllIntegrations, setShowAllIntegrations] = useState(false);
+  const [moreIntegrationsSearch, setMoreIntegrationsSearch] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [personalityPrompt, setPersonalityPrompt] = useState("");
+  const [personalityPrompt, setPersonalityPrompt] = useState(() => {
+    if (draft?.selectedRole) {
+      return getDefaultPersonality(draft.selectedRole, draft.agentName || "", AGENT_TYPE_INFO);
+    }
+    return "";
+  });
   const [recentlyRead, setRecentlyRead] = useState<string[]>([]);
   const [customBookInput, setCustomBookInput] = useState("");
   const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "xAI Grok" | "">("");
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
-  const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any } | null>(draft?.customIdentity || null);
+  const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any; habitatId?: number; color?: string; decor?: string[]; decorTransforms?: any }>({ baseModelUrl: null, accessories: [], decor: [] });
+
+  const getNonOverlappingPosition = (existingAgents: AgentData[]): [number, number, number] => {
+    if (existingAgents.length === 0) return [Math.random() * 2 - 1, 0, Math.random() * 2 - 1];
+    for (let i = 0; i < 50; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = 3 + Math.random() * 5;
+      const candidateX = Math.cos(angle) * radius;
+      const candidateZ = Math.sin(angle) * radius;
+      const tooClose = existingAgents.some(a => {
+         const dx = a.targetPosition[0] - candidateX;
+         const dz = a.targetPosition[2] - candidateZ;
+         return (dx * dx + dz * dz) < 9;
+      });
+      if (!tooClose) return [candidateX, 0, candidateZ];
+    }
+    return [existingAgents.length * 3.5, 0, Math.random() * 2 - 1];
+  };
 
   const optimisticId = `agent-${(agentName || "new").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, '')}`;
 
-  const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+  const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
   const [isolated, setIsolated] = useState(draft?.isolated || false);
   const [agentPermissions, setAgentPermissions] = useState<Permission[]>(() => {
     if (draft?.selectedRole && draft?.isolated !== undefined) {
@@ -258,12 +284,14 @@ export function OnboardingWizard() {
       const checkEngine = async () => {
         try {
           if (typeof invoke === 'function') {
-            const isInstalled = await invoke("check_orbstack_installed");
-            if (isInstalled) {
-              setEngineStatus("starting");
-              await safeStartGateway();
-              setEngineStatus("ready");
-              setStep(initialStepTarget);
+            const isOrbInstalled = await invoke("check_orbstack_installed").catch(() => false);
+            const isDockerInstalled = await invoke("check_docker_installed").catch(() => false);
+            if (isOrbInstalled) {
+              setFoundEngine("OrbStack");
+              setEngineStatus("found");
+            } else if (isDockerInstalled) {
+              setFoundEngine("Docker");
+              setEngineStatus("found");
             } else {
               setEngineStatus("missing");
             }
@@ -395,6 +423,15 @@ export function OnboardingWizard() {
 
   const [agentTypeInfo, setAgentTypeInfo] = useState(AGENT_TYPE_INFO);
   const [globalLibrary, setGlobalLibrary] = useState<any[]>([]);
+  const [showAllRoles, setShowAllRoles] = useState(false);
+  const [habitats, setHabitats] = useState<any[]>([]);
+
+  useEffect(() => {
+    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/habitats`)
+      .then(r => r.json())
+      .then(d => setHabitats(d))
+      .catch(() => { });
+  }, []);
 
   // Sync static import changes during Vite HMR
   useEffect(() => {
@@ -420,7 +457,7 @@ export function OnboardingWizard() {
       .catch(err => console.warn("Local API server not running for library.", err));
   }, []);
   const roleTypes = Object.entries(agentTypeInfo)
-    .filter(([key, val]) => key !== "Custom" && val.suggest_in_onboarding)
+    .filter(([key, val]) => key !== "Custom" && (showAllRoles || val.suggest_in_onboarding))
     .map(([key, val]) => ({ key, ...val }))
     .sort((a: any, b: any) => {
       const aOrder = a.manual_order;
@@ -440,6 +477,12 @@ export function OnboardingWizard() {
     const shouldIsolate = agentTypeInfo[roleKey]?.recommended_isolated || false;
     setIsolated(shouldIsolate);
     setAgentPermissions(getPermissionsForRole(roleKey, shouldIsolate));
+
+    // Also pick a random habitat default when role is selected
+    if (habitats.length > 0) {
+      const randomHabitat = habitats[Math.floor(Math.random() * habitats.length)];
+      setCustomIdentity(prev => ({ ...prev, baseModelUrl: null, accessories: [], decor: [], habitatId: randomHabitat.id, color: agentTypeInfo[roleKey]?.robeColor }));
+    }
   };
 
   const handleCreateAgent = async () => {
@@ -455,6 +498,8 @@ export function OnboardingWizard() {
 
     const tempId = `temp-${Date.now()}`;
 
+    const pos = getNonOverlappingPosition(agents);
+
     // Inject optimistic agent immediately to dismiss wizard
     const optimisticAgent = {
       id: tempId,
@@ -465,11 +510,11 @@ export function OnboardingWizard() {
       title: `The ${selectedRole}`,
       description: roleInfo?.description || "A custom agent",
       image: roleInfo?.image,
-      color: customIdentity?.dynamicColors?.color || roleInfo?.color || "#888",
-      robeColor: customIdentity?.dynamicColors?.robeColor || roleInfo?.robeColor || "#888",
-      accentColor: customIdentity?.dynamicColors?.accentColor || roleInfo?.accentColor || "#ccc",
-      position: agents.length > 0 ? [Math.max(...agents.map(a => a.position[0])) + 3.5 + Math.random(), 0, Math.random() * 2 - 1] : [Math.random() * 2 - 1, 0, Math.random() * 2 - 1],
-      targetPosition: agents.length > 0 ? [Math.max(...agents.map(a => a.position[0])) + 3.5 + Math.random(), 0, Math.random() * 2 - 1] : [Math.random() * 2 - 1, 0, Math.random() * 2 - 1],
+      color: customIdentity?.color || customIdentity?.dynamicColors?.color || roleInfo?.color || "#888",
+      robeColor: customIdentity?.color || customIdentity?.dynamicColors?.robeColor || roleInfo?.robeColor || "#888",
+      accentColor: customIdentity?.color || customIdentity?.dynamicColors?.accentColor || roleInfo?.accentColor || "#ccc",
+      position: pos,
+      targetPosition: pos,
       currentAction: "Initializing Agent Container...",
       socialMotive: 0.5 + Math.random() * 0.3,
       energy: 0.6 + Math.random() * 0.3,
@@ -717,35 +762,46 @@ export function OnboardingWizard() {
                 display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 24,
                 boxShadow: "0 8px 32px rgba(245, 230, 216, 0.4)"
               }}>
-                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#3c6663" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
-                </svg>
+                <Box size={40} color="#3c6663" strokeWidth={2} />
               </div>
 
               <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", marginBottom: 16, fontFamily: "'Noto Serif', Georgia, serif" }}>
-                One quick setup step
+                {engineStatus === "found" ? "Local engine found" : "One quick setup step"}
               </h1>
 
               <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.6 }}>
-                Canopy runs your agents on your Mac so your data never leaves it. We need to install a small helper to make that work — it takes about a minute.
+                {engineStatus === "found"
+                  ? `Canopy runs your agents locally so your data never leaves your Mac. We'll connect to your existing ${foundEngine} setup.`
+                  : "Canopy runs your agents on your Mac so your data never leaves it. We need to install a local container engine (OrbStack / Docker) to make that work — it takes about a minute."}
               </p>
 
               <button
                 onClick={async () => {
                   setEngineStatus("checking");
-                  try {
-                    await invoke("install_orbstack");
-                    const installed = await invoke("check_orbstack_installed");
-                    if (installed) {
+                  if (engineStatus === "found") {
+                    try {
                       setEngineStatus("starting");
-                      await invoke("start_gateway");
-                      setStep(0);
-                    } else {
+                      await safeStartGateway();
+                      setStep(initialStepTarget);
+                    } catch (e) {
+                      setEngineError(e as string);
                       setEngineStatus("missing");
                     }
-                  } catch (e) {
-                    setEngineError(e as string);
-                    setEngineStatus("missing");
+                  } else {
+                    try {
+                      await invoke("install_orbstack");
+                      const installed = await invoke("check_orbstack_installed");
+                      if (installed) {
+                        setEngineStatus("starting");
+                        await invoke("start_gateway");
+                        setStep(initialStepTarget);
+                      } else {
+                        setEngineStatus("missing");
+                      }
+                    } catch (e) {
+                      setEngineError(e as string);
+                      setEngineStatus("missing");
+                    }
                   }
                 }}
                 style={{
@@ -755,7 +811,9 @@ export function OnboardingWizard() {
                   transition: "all 0.2s ease"
                 }}
               >
-                {engineError?.includes("start gateway") || engineError?.includes("allocated") ? "Retry" : "Install helper"}
+                {engineStatus === "found" 
+                  ? `Connect to ${foundEngine}`
+                  : engineError?.includes("start gateway") || engineError?.includes("allocated") ? "Retry" : "Install helper"}
               </button>
 
               {engineError && (
@@ -1018,13 +1076,28 @@ export function OnboardingWizard() {
               ))}
             </div>
 
+            {!showAllRoles && (
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
+                <button
+                  onClick={() => setShowAllRoles(true)}
+                  style={{
+                    padding: "8px 16px", borderRadius: 12, background: "transparent",
+                    border: "1px solid rgba(0,0,0,0.1)", color: "var(--text-sub)",
+                    fontSize: 13, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
+                  }}
+                >
+                  See more roles
+                </button>
+              </div>
+            )}
+
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(0)} style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
-            <button onClick={() => selectedRole === "Custom" ? setStep(1.5) : setStep(2)} disabled={!selectedRole} style={{
+            <button onClick={() => setStep(2)} disabled={!selectedRole} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
               background: selectedRole ? "#3c6663" : "var(--border-subtle)",
               color: selectedRole ? "var(--surface-card)" : "var(--text-muted)",
@@ -1035,27 +1108,8 @@ export function OnboardingWizard() {
         </div>
       )}
 
-      {/* Step 1.5: Custom Agent 3D Generation */}
-      {step === 1.5 && (
-        <div style={{ width: "90vw", maxWidth: 1200, height: "85vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
-            <div>
-              <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: 0 }}>Design Custom Agent</h1>
-              <p style={{ fontSize: 14, color: "var(--text-sub)", margin: "4px 0 0 0" }}>Describe the appearance and our AI will conform it to The Canopy's visual identity.</p>
-            </div>
-            <button onClick={() => setStep(1)} style={{ padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", cursor: "pointer", fontWeight: 600, color: "var(--text-sub)" }}>
-              Back
-            </button>
-          </div>
+      {/* Step 1.5: (Removed Nano Banana step - functionality moved to 2.5) */}
 
-          <div style={{ flex: 1, overflow: "hidden" }}>
-            <GenerativeStudio onApply={(res) => {
-              setCustomIdentity({ baseModelUrl: null, accessories: res.dynamicParams.accessories, dynamicColors: res.dynamicParams });
-              setStep(2);
-            }} />
-          </div>
-        </div>
-      )}
 
       {/* Step 1.8: Import Agent Flow */}
       {step === 1.8 && (
@@ -1152,18 +1206,38 @@ export function OnboardingWizard() {
             )}
 
             <div style={{ background: "var(--surface-base)", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
-              <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Agent Personality</h3>
-              <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
+              <div style={{ display: "flex", gap: 24 }}>
+                <div style={{ flex: 1 }}>
+                  <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Agent Personality</h3>
+                  <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
 
-              <div data-color-mode="light" style={{ borderRadius: 12, overflow: "hidden", border: "1px solid rgba(0,0,0,0.1)" }}>
-                <MDEditor
-                  value={personalityPrompt}
-                  onChange={(val) => setPersonalityPrompt(val || "")}
-                  previewOptions={{
-                    rehypePlugins: [[rehypeSanitize]],
-                  }}
-                  height={400}
-                />
+                  <div data-color-mode="light" style={{ borderRadius: 12, overflow: "hidden", border: "1px solid rgba(0,0,0,0.1)" }}>
+                    <MDEditor
+                      value={personalityPrompt}
+                      onChange={(val) => setPersonalityPrompt(val || "")}
+                      preview="edit"
+                      height={400}
+                    />
+                  </div>
+                </div>
+                
+                {/* Example writeup */}
+                <div style={{ flex: 1, padding: "16px", background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.05)" }}>
+                  <h4 style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 16 }}>💡</span> Example Role Description
+                  </h4>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
+                    {`You are an expert ${selectedRole === "Custom" ? "Assistant" : selectedRole}. Your goal is to be helpful, analytical, and precise.
+
+**Key Traits:**
+- Professional and courteous
+- Direct and to the point
+- Always verifies information before answering
+
+**Tone:**
+Maintain a calm, reassuring tone even when dealing with complex or stressful tasks. Avoid conversational fluff.`}
+                  </div>
+                </div>
               </div>
 
               <div style={{ marginTop: 24 }}>
@@ -1234,12 +1308,98 @@ export function OnboardingWizard() {
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
-            <button onClick={() => setStep(3)} disabled={!agentName.trim()} style={{
+            <button onClick={() => setStep(2.5)} disabled={!agentName.trim()} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
               background: agentName.trim() ? "#3c6663" : "var(--border-subtle)",
               color: agentName.trim() ? "var(--surface-card)" : "var(--text-muted)",
               fontSize: 14, fontWeight: 600, cursor: agentName.trim() ? "pointer" : "default",
               fontFamily: "inherit",
+            }}>Next</button>
+          </div>
+        </div>
+      )}
+
+      {/* Step 2.5: Appearance UI */}
+      {step === 2.5 && (
+        <div style={{ maxWidth: 900, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+            <div>
+              <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: 0 }}>Design {agentName || "Agent"}</h1>
+              <p style={{ fontSize: 14, color: "var(--text-sub)", margin: "4px 0 0 0" }}>Choose their appearance, accessories, and habitat.</p>
+            </div>
+          </div>
+          
+          <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Visualizer */}
+            <div style={{ background: "var(--glass-light)", borderRadius: 24, overflow: "hidden", position: "relative", flex: 2, border: "1px solid rgba(0,0,0,0.06)", minHeight: 400 }}>
+              <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 150 }}>
+                <Environment preset="city" />
+                <ambientLight intensity={0.5} />
+                <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
+                <OrbitControls enablePan={false} />
+                <group position={[0, -0.06, 0]}>
+                  <WorldScene agents={[{
+                    id: "preview-agent",
+                    role: selectedRole || "Custom",
+                    name: agentName || "Agent",
+                    visual_identity: {
+                      habitatId: customIdentity?.habitatId || 1,
+                      accessories: customIdentity?.accessories || [],
+                      color: customIdentity?.color || agentTypeInfo[selectedRole || "Custom"]?.robeColor
+                    } as any
+                  }]} />
+                </group>
+              </Canvas>
+            </div>
+            
+            {/* Controls */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, height: 200 }}>
+              {/* Habitat Selector */}
+              <div style={{ background: "var(--glass-light)", borderRadius: 24, padding: 16, overflowY: "auto", border: "1px solid rgba(0,0,0,0.06)" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>HABITAT</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+                  {habitats.map(h => (
+                    <div key={h.id}
+                      onClick={() => setCustomIdentity(prev => ({ ...prev, habitatId: h.id }))}
+                      style={{ height: 80, borderRadius: 12, overflow: "hidden", position: "relative", cursor: "pointer", border: customIdentity?.habitatId === h.id ? "2px solid #218380" : "2px solid transparent" }}>
+                      {h.imageUrl ? (
+                        <img src={getAssetUrl(h.imageUrl)} style={{ width: "100%", height: "100%", objectFit: "cover" }} alt={h.name} />
+                      ) : (
+                        <div style={{ width: "100%", height: "100%", background: "rgba(0,0,0,0.05)" }} />
+                      )}
+                      <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.4)", color: "white", fontSize: 10, padding: "2px 4px", textAlign: "center" }}>{h.name}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Color Selector */}
+              <div style={{ background: "var(--glass-light)", borderRadius: 24, padding: 16, overflowY: "auto", border: "1px solid rgba(0,0,0,0.06)" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-sub)", marginBottom: 12 }}>COLOR</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                  {['#7A9EB5', '#545281', '#BFCB75', '#8E9EAA', '#7AAC7A', '#96A88E', '#F0B466', '#7F8C8D', '#A882D8', '#8EB5A0', '#82A4A8', '#B85C82', '#E0908B', '#D96C3B'].map(color => (
+                    <div key={color}
+                      onClick={() => setCustomIdentity(prev => ({ ...prev, color }))}
+                      style={{
+                        backgroundColor: color, width: 36, height: 36, borderRadius: 8, cursor: "pointer",
+                        border: customIdentity?.color === color ? '2px solid var(--text-main)' : '2px solid rgba(0,0,0,0.1)'
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+            <button onClick={() => setStep(2)} style={{
+              padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
+              cursor: "pointer", fontFamily: "inherit",
+            }}>Back</button>
+            <button onClick={() => setStep(3)} style={{
+              padding: "12px 28px", borderRadius: 12, border: "none",
+              background: "#3c6663", color: "var(--surface-card)",
+              fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
             }}>Next</button>
           </div>
         </div>
@@ -1390,7 +1550,7 @@ export function OnboardingWizard() {
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
-            <button onClick={() => setStep(2)} style={{
+            <button onClick={() => setStep(2.5)} style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
@@ -1497,97 +1657,232 @@ export function OnboardingWizard() {
             </div>
 
             {/* ── Agent-Specific Connections ── */}
-            <div style={{ marginBottom: 32 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
-                Agent-Specific Connections
-              </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {([
-                  { key: "slack",   label: "Slack App",     icon: "💬", desc: `Create a dedicated Slack bot for this agent` },
-                  { key: "folders", label: "File System",   icon: "📁", desc: `Let ${agentName || "the agent"} read and write files on your Mac` },
-                  { key: "imessage",label: "iMessage",      icon: "💬", desc: `Access your iMessage conversations` },
-                  { key: "photos",  label: "Apple Photos",  icon: "🖼️", desc: `Browse and reference your photo library` },
-                ] as const).map(({ key, label, icon, desc }) => (
-                  <div key={key} style={{ display: "flex", flexDirection: "column" }}>
-                    <div style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      background: "var(--surface-card)", padding: "14px 18px",
-                      borderRadius: plugins[key] && key === "folders" ? "12px 12px 0 0" : 12,
-                      border: plugins[key] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)",
-                    }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                        <span style={{ fontSize: 22 }}>{icon}</span>
-                        <div>
-                          <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{label}</div>
-                          <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>{desc}</div>
+            {(() => {
+              const TOP_INTEGRATIONS_BY_ROLE: Record<string, string[]> = {
+                "Researcher":  ["folders", "slack"],
+                "Tutor":       ["folders", "slack"],
+                "Assistant":   ["slack", "folders"],
+                "Therapist":   ["imessage", "slack"],
+                "Chef":        ["photos", "folders"],
+                "Accountant":  ["folders", "slack"],
+                "Educator":    ["folders", "slack"],
+                "Artist":      ["photos", "folders"],
+                "Coder":       ["github", "folders"],
+                "Architect":   ["github", "folders"],
+                "Musician":    ["folders", "imessage"],
+                "Trainer":     ["imessage", "photos"],
+                "Strategist":  ["slack", "folders"],
+                "Negotiator":  ["slack", "imessage"],
+                "Engineer":    ["github", "folders"],
+                "Editor":      ["folders", "slack"],
+                "Coach":       ["imessage", "slack"],
+                "Custom":      ["slack", "folders"],
+              };
+
+              const ALL_INTEGRATIONS = [
+                { key: "slack",    label: "Slack App",         icon: "💬", desc: `Create a dedicated Slack bot for this agent` },
+                { key: "github",   label: "GitHub",            icon: "🐙", desc: `Access repos, issues, and pull requests` },
+                { key: "folders",  label: "File System",       icon: "📁", desc: `Let ${agentName || "the agent"} read and write files on your Mac` },
+                { key: "imessage", label: "iMessage",          icon: "💬", desc: `Access your iMessage conversations` },
+                { key: "photos",   label: "Apple Photos",      icon: "🖼️", desc: `Browse and reference your photo library` },
+                { key: "telegram", label: "Telegram",          icon: "✈️", desc: `Connect a Telegram bot for channel and DM access` },
+                { key: "discord",  label: "Discord",           icon: "🎮", desc: `Connect a Discord bot to respond in channels and DMs` },
+                { key: "twilio",   label: "Twilio Voice & SMS",icon: "📞", desc: `Give this agent a phone number for calls and texts` },
+              ] as const;
+
+              const topKeys = (selectedRole && TOP_INTEGRATIONS_BY_ROLE[selectedRole]) || ["slack", "folders"];
+              const topIntegrations = topKeys
+                .map(k => ALL_INTEGRATIONS.find(i => i.key === k))
+                .filter(Boolean) as typeof ALL_INTEGRATIONS[number][];
+              const moreIntegrations = ALL_INTEGRATIONS.filter(i => !topKeys.includes(i.key));
+
+              const renderIntegrationRow = (item: typeof ALL_INTEGRATIONS[number], isTop: boolean) => (
+                <div key={item.key} style={{ display: "flex", flexDirection: "column" }}>
+                  <div style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    background: "var(--surface-card)", padding: "14px 18px",
+                    borderRadius: plugins[item.key] && item.key === "folders" ? "12px 12px 0 0" : 12,
+                    border: plugins[item.key] ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                      <span style={{ fontSize: 22 }}>{item.icon}</span>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{item.label}</span>
+                          {isTop && (
+                            <span style={{ fontSize: 10, background: "rgba(60,102,99,0.1)", color: "#3c6663", padding: "2px 6px", borderRadius: 4, fontWeight: 700 }}>
+                              Suggested
+                            </span>
+                          )}
                         </div>
+                        <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>{item.desc}</div>
                       </div>
-                      <Toggle enabled={plugins[key]} onChange={() => setPlugins(prev => ({ ...prev, [key]: !prev[key] }))} />
                     </div>
-                    {key === "folders" && plugins.folders && (
-                      <div style={{ padding: "16px 20px", background: "var(--glass-light)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 12 }}>Select Folder Scope</div>
-                        <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
-                          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
-                            <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} />
-                            Specific Folder
-                          </label>
-                          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
-                            <input type="radio" checked={folderAccessType === "all"} onChange={() => setFolderAccessType("all")} />
-                            All Folders
-                          </label>
-                        </div>
-                        {folderAccessType === "specific" && (
-                          <div style={{ display: "flex", gap: 8 }}>
-                            <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "var(--surface-card)", outline: "none" }} />
-                            <button onClick={async () => {
-                              try {
-                                const { open } = await import('@tauri-apps/plugin-dialog');
-                                const selected = await open({ directory: true, multiple: false });
-                                if (selected) setSelectedFolderPath(selected as string);
-                              } catch (e) {
-                                console.error("No dialog plugin");
-                              }
-                            }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Browse...</button>
-                          </div>
-                        )}
-                        {folderAccessType === "all" && (
-                          <div style={{ display: "flex", gap: 10, background: "rgba(212,160,74,0.15)", padding: "12px 16px", borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
-                            <span style={{ fontSize: 18 }}>⚠️</span>
-                            <div style={{ fontSize: 12, color: "#A87212", lineHeight: 1.4 }}>
-                              <strong>Not recommended.</strong> Granting access to all folders poses a security risk. Your agent will be able to read and modify any file on your system.
-                            </div>
-                          </div>
-                        )}
+                    <Toggle enabled={plugins[item.key]} onChange={() => setPlugins(prev => ({ ...prev, [item.key]: !prev[item.key] }))} />
+                  </div>
+                  {item.key === "folders" && plugins.folders && (
+                    <div style={{ padding: "16px 20px", background: "var(--glass-light)", borderRadius: "0 0 12px 12px", border: "1px solid #3c6663", borderTop: "none" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 12 }}>Select Folder Scope</div>
+                      <div style={{ display: "flex", gap: 24, marginBottom: 16 }}>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
+                          <input type="radio" checked={folderAccessType === "specific"} onChange={() => setFolderAccessType("specific")} />
+                          Specific Folder
+                        </label>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "var(--text-main)", cursor: "pointer" }}>
+                          <input type="radio" checked={folderAccessType === "all"} onChange={() => setFolderAccessType("all")} />
+                          All Folders
+                        </label>
                       </div>
+                      {folderAccessType === "specific" && (
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <input type="text" readOnly placeholder="No folder selected..." value={selectedFolderPath} style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, background: "var(--surface-card)", outline: "none" }} />
+                          <button onClick={async () => {
+                            try {
+                              const { open } = await import('@tauri-apps/plugin-dialog');
+                              const selected = await open({ directory: true, multiple: false });
+                              if (selected) setSelectedFolderPath(selected as string);
+                            } catch (e) {
+                              console.error("No dialog plugin");
+                            }
+                          }} style={{ padding: "0 16px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", background: "rgba(33,131,128,0.05)", color: "#3c6663", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Browse...</button>
+                        </div>
+                      )}
+                      {folderAccessType === "all" && (
+                        <div style={{ display: "flex", gap: 10, background: "rgba(212,160,74,0.15)", padding: "12px 16px", borderRadius: 8, border: "1px solid rgba(212,160,74,0.3)" }}>
+                          <span style={{ fontSize: 18 }}>⚠️</span>
+                          <div style={{ fontSize: 12, color: "#A87212", lineHeight: 1.4 }}>
+                            <strong>Not recommended.</strong> Granting access to all folders poses a security risk. Your agent will be able to read and modify any file on your system.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+
+              return (
+                <div style={{ marginBottom: 32 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                    Agent-Specific Connections
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {topIntegrations.map(item => renderIntegrationRow(item, true))}
+                    {moreIntegrations.length > 0 && (
+                      <>
+                        <button
+                          onClick={() => { setShowAllIntegrations(v => !v); setMoreIntegrationsSearch(""); }}
+                          style={{
+                            background: "none", border: "none", cursor: "pointer",
+                            fontSize: 12, color: "var(--text-sub)", textAlign: "left",
+                            padding: "4px 2px", display: "flex", alignItems: "center", gap: 6,
+                          }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ transition: "transform 0.2s", transform: showAllIntegrations ? "rotate(180deg)" : "rotate(0deg)" }}>
+                            <path d="M2 4L6 8L10 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                          {showAllIntegrations ? "Show fewer" : `More integrations (${moreIntegrations.length})`}
+                        </button>
+                        {showAllIntegrations && (
+                          <>
+                            <div style={{ position: "relative" }}>
+                              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", pointerEvents: "none" }}>
+                                <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.4"/>
+                                <path d="M9.5 9.5L12 12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                              </svg>
+                              <input
+                                type="text"
+                                placeholder="Filter integrations..."
+                                value={moreIntegrationsSearch}
+                                onChange={e => setMoreIntegrationsSearch(e.target.value)}
+                                style={{
+                                  width: "100%", boxSizing: "border-box",
+                                  padding: "9px 12px 9px 30px", borderRadius: 8,
+                                  border: "1px solid rgba(0,0,0,0.1)", fontSize: 12,
+                                  background: "var(--surface-card)", color: "var(--text-main)",
+                                  outline: "none",
+                                }}
+                              />
+                            </div>
+                            {moreIntegrations
+                              .filter(item => {
+                                const q = moreIntegrationsSearch.toLowerCase();
+                                return !q || item.label.toLowerCase().includes(q) || item.desc.toLowerCase().includes(q);
+                              })
+                              .map(item => renderIntegrationRow(item, false))}
+                          </>
+                        )}
+                      </>
                     )}
                   </div>
-                ))}
-              </div>
-              </div>
+                </div>
+              );
+            })()}
 
             {/* ── OpenClaw Capabilities (Agent Sandbox) ── */}
             <div style={{ marginBottom: 32 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
-                OpenClaw Capabilities
+                Agent Core Capabilities
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {agentPermissions.filter(p => p.id !== "imessage" && p.id !== "photos").map(p => (
-                  <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: "14px 18px", borderRadius: 12, border: p.enabled ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{p.label}</div>
-                      <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>{p.description}</div>
+                {[
+                  {
+                    id: "bundle_web",
+                    label: "Web Surfing & Research",
+                    description: "Allows the agent to search the web, visually navigate websites, and bypass blocks.",
+                    linkedPerms: ["browser", "ext_network", "gog", "summarize", "proxy"]
+                  },
+                  {
+                    id: "bundle_vision",
+                    label: "Visual & Canvas Processing",
+                    description: "Allows the agent to analyze images, read your screen visually, and edit canvas layouts.",
+                    linkedPerms: ["vision", "canvas"]
+                  },
+                  {
+                    id: "bundle_autonomous",
+                    label: "Autonomous Background Action",
+                    description: "Allows the agent to run tasks on a schedule and execute loops without asking for permission each step.",
+                    linkedPerms: ["autonomous", "scheduled"]
+                  },
+                  {
+                    id: "bundle_memory",
+                    label: "Long-Term Memory",
+                    description: "Allows the agent to store notes and remember your preferences across different conversations.",
+                    linkedPerms: ["memory_write"]
+                  },
+                  {
+                    id: "bundle_coding",
+                    label: "Write & Run Code",
+                    description: "Allows the agent to write and execute code to solve complex problems or process data.",
+                    linkedPerms: ["coding"]
+                  }
+                ].map(bundle => {
+                  const isEnabled = bundle.linkedPerms.some(id => agentPermissions.find(p => p.id === id)?.enabled);
+                  return (
+                    <div key={bundle.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: "14px 18px", borderRadius: 12, border: isEnabled ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{bundle.label}</div>
+                        <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>{bundle.description}</div>
+                      </div>
+                      <Toggle enabled={isEnabled} onChange={() => {
+                        const willEnable = !isEnabled;
+                        const hasHighRisk = bundle.linkedPerms.some(id => isHighRisk(id));
+                        
+                        if (willEnable && hasHighRisk) {
+                          const riskId = bundle.linkedPerms.find(id => isHighRisk(id));
+                          if (riskId) {
+                            setPendingHighRiskToggle({ id: riskId, enabled: true });
+                            setShowHighRiskModal(true);
+                            return;
+                          }
+                        }
+                        
+                        setAgentPermissions(prev => prev.map(p => 
+                          bundle.linkedPerms.includes(p.id) ? { ...p, enabled: willEnable } : p
+                        ));
+                      }} />
                     </div>
-                    <Toggle enabled={p.enabled} onChange={() => {
-                      if (!p.enabled && isHighRisk(p.id)) {
-                        setPendingHighRiskToggle({ id: p.id, enabled: true });
-                        setShowHighRiskModal(true);
-                      } else {
-                        setAgentPermissions(prev => prev.map(old => old.id === p.id ? { ...old, enabled: !old.enabled } : old));
-                      }
-                    }} />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -2222,7 +2517,7 @@ export function OnboardingWizard() {
                 setCustomBookInput("");
                 setLlmProvider("");
                 setCustomIdentity(null);
-                setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+                setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
                 localStorage.removeItem('canopy_onboarding_draft');
                 setActiveView("canopy");
               }}
@@ -2246,7 +2541,7 @@ export function OnboardingWizard() {
                   setCustomBookInput("");
                   setLlmProvider("");
                   setCustomIdentity(null);
-                  setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false });
+                  setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
                   localStorage.removeItem('canopy_onboarding_draft');
                   setActiveView("canopy");
                 } catch (e) {
