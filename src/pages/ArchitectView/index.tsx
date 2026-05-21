@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { 
-  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
-  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
+import {
+  Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
+  Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Monitor, Smartphone
 } from "lucide-react";
@@ -27,12 +27,12 @@ import { DiagnosticsTab } from './DiagnosticsTab';
 import { MobilePairingModal } from '../../components/Companion/MobilePairingModal';
 
 export // ═══════════════════════════════════════════════════════════════════════════════
-// ONBOARDING WIZARD
-// ═══════════════════════════════════════════════════════════════════════════════
+  // ONBOARDING WIZARD
+  // ═══════════════════════════════════════════════════════════════════════════════
 
-// function OnboardingWizard() { Extracted
+  // function OnboardingWizard() { Extracted
 
-function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
+  function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
   const agent = useMemo(() => ({
     ...rawAgent,
     integrations: rawAgent.integrations || [],
@@ -62,7 +62,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
     setOpenclawStatusOutput("");
     setShowDiagnosticsPane(false);
     setShowUpdateTip(false);
-    
+
     // Clear scroll memory when switching agents
     scrollPositions.current = {};
     if (scrollContainerRef.current) scrollContainerRef.current.scrollTop = 0;
@@ -168,14 +168,14 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
   // Tabs are ordered by the user's mental model: who they are → how they think → what they can do → what they've done.
   // IDs stay stable so persisted state and any deep-links don't break — only labels and order change.
   const tabs = [
-    { id: "overview",    label: "Home",            icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
-    { id: "identity",    label: "Appearance",      icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
-    { id: "personality", label: "Instructions",    icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
+    { id: "overview", label: "Home", icon: <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" /> },
+    { id: "identity", label: "Appearance", icon: <path d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" /> },
+    { id: "personality", label: "Personality", icon: <path d="M13 10V3L4 14h7v7l9-11h-7z" /> },
     { id: "connections", label: "Skills & Access", icon: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /> },
-    { id: "browser",     label: "Web Browser",     icon: <path d="M22 12H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" /> },
-    { id: "activity",    label: "Activity",        icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
-    { id: "spend",       label: "Spending",        icon: <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" /> },
-    { id: "diagnostics", label: "Diagnostics",     icon: <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path> },
+    { id: "browser", label: "Web Browser", icon: <path d="M22 12H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" /> },
+    { id: "activity", label: "Activity", icon: <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /> },
+    { id: "spend", label: "Spending", icon: <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" /> },
+    { id: "diagnostics", label: "Diagnostics", icon: <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path> },
   ];
 
   const SvgIcon = ({ children, size = 20 }: { children: React.ReactNode; size?: number }) => (
@@ -241,67 +241,67 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
             />
           </div>
           <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <div
-                  onClick={() => setIsAgentMenuOpen(!isAgentMenuOpen)}
-                  style={{ display: "flex", alignItems: "center", cursor: "pointer", gap: 6 }}
-                >
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{agent.name}</div>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-sub)", transition: "transform 0.2s", transform: isAgentMenuOpen ? "rotate(180deg)" : "rotate(0deg)" }}>
-                    <polyline points="6 9 12 15 18 9"></polyline>
-                  </svg>
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-sub)", textTransform: "capitalize", marginTop: 2 }}>{agent.role}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <div
+                onClick={() => setIsAgentMenuOpen(!isAgentMenuOpen)}
+                style={{ display: "flex", alignItems: "center", cursor: "pointer", gap: 6 }}
+              >
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{agent.name}</div>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-sub)", transition: "transform 0.2s", transform: isAgentMenuOpen ? "rotate(180deg)" : "rotate(0deg)" }}>
+                  <polyline points="6 9 12 15 18 9"></polyline>
+                </svg>
               </div>
+              <div style={{ fontSize: 11, color: "var(--text-sub)", textTransform: "capitalize", marginTop: 2 }}>{agent.role}</div>
+            </div>
 
-              {/* Custom Dropdown Menu */}
-              {isAgentMenuOpen && (
-                <>
-                  <div
-                    onClick={() => setIsAgentMenuOpen(false)}
-                    style={{ position: "fixed", inset: 0, zIndex: 99 }}
-                  />
-                  <div style={{
-                    position: "absolute", top: 38, left: 0, width: 220, background: "var(--surface-card)",
-                    border: "1px solid rgba(0,0,0,0.08)", borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.1)",
-                    zIndex: 100, overflow: "hidden", display: "flex", flexDirection: "column"
-                  }}>
-                    {agents.map(a => (
-                      <div
-                        key={a.id}
-                        onClick={() => {
-                          setSelectedAgent(a.id);
-                          setIsAgentMenuOpen(false);
-                        }}
-                        style={{
-                          display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
-                          cursor: "pointer", background: a.id === agent.id ? "rgba(33,131,128,0.06)" : "transparent",
-                          borderLeft: a.id === agent.id ? "3px solid #218380" : "3px solid transparent",
-                          transition: "background 0.1s"
-                        }}
-                      >
-                        <div style={{ position: "relative" }}>
-                          <div style={{
-                            width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-                            background: `${a.robeColor || "#CCC"}15`, boxShadow: `0 0 0 1px ${a.robeColor || "#CCC"}40`
-                          }}>
-                            <LobsterIcon size={26} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
-                          </div>
-                          <div style={{
-                            position: "absolute", bottom: -2, right: -2, width: 8, height: 8, borderRadius: "50%",
-                            background: a.paused ? "var(--text-muted)" : (!gatewayReady || a.status === "deploying") ? "#F4A83A" : a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
-                            border: "1.5px solid white"
-                          }} />
+            {/* Custom Dropdown Menu */}
+            {isAgentMenuOpen && (
+              <>
+                <div
+                  onClick={() => setIsAgentMenuOpen(false)}
+                  style={{ position: "fixed", inset: 0, zIndex: 99 }}
+                />
+                <div style={{
+                  position: "absolute", top: 38, left: 0, width: 220, background: "var(--surface-card)",
+                  border: "1px solid rgba(0,0,0,0.08)", borderRadius: 12, boxShadow: "0 8px 32px rgba(0,0,0,0.1)",
+                  zIndex: 100, overflow: "hidden", display: "flex", flexDirection: "column"
+                }}>
+                  {agents.map(a => (
+                    <div
+                      key={a.id}
+                      onClick={() => {
+                        setSelectedAgent(a.id);
+                        setIsAgentMenuOpen(false);
+                      }}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 12, padding: "10px 14px",
+                        cursor: "pointer", background: a.id === agent.id ? "rgba(33,131,128,0.06)" : "transparent",
+                        borderLeft: a.id === agent.id ? "3px solid #218380" : "3px solid transparent",
+                        transition: "background 0.1s"
+                      }}
+                    >
+                      <div style={{ position: "relative" }}>
+                        <div style={{
+                          width: 28, height: 28, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                          background: `${a.robeColor || "#CCC"}15`, boxShadow: `0 0 0 1px ${a.robeColor || "#CCC"}40`
+                        }}>
+                          <LobsterIcon size={26} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
                         </div>
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
-                          <div style={{ fontSize: 10, color: "var(--text-sub)", textTransform: "capitalize" }}>{a.role}</div>
-                        </div>
+                        <div style={{
+                          position: "absolute", bottom: -2, right: -2, width: 8, height: 8, borderRadius: "50%",
+                          background: a.paused ? "var(--text-muted)" : (!gatewayReady || a.status === "deploying") ? "#F4A83A" : a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
+                          border: "1.5px solid white"
+                        }} />
                       </div>
-                    ))}
-                  </div>
-                </>
-              )}
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
+                        <div style={{ fontSize: 10, color: "var(--text-sub)", textTransform: "capitalize" }}>{a.role}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -508,7 +508,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           )}
         </div>
       ) : (
-        <div 
+        <div
           ref={scrollContainerRef}
           onScroll={handleScroll}
           style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}
@@ -529,7 +529,7 @@ function ArchitectView({ agent: rawAgent }: { agent: AgentData }) {
           {architectTab === "diagnostics" && <DiagnosticsTab key={agent.id} agent={agent} onNavigate={setArchitectTab} />}
         </div>
       )}
-      
+
       <MobilePairingModal isOpen={showPairingModal} onClose={() => setShowPairingModal(false)} />
     </div>
   );

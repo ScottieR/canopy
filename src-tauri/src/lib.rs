@@ -189,6 +189,7 @@ pub fn run() {
             docker::check_orbstack_installed,
             docker::check_docker_installed,
             docker::install_orbstack,
+            docker::configure_orbstack_memory,
             docker::get_container_status,
             docker::start_gateway,
             docker::stop_gateway,
@@ -241,6 +242,7 @@ pub fn run() {
             openclaw::copy_file_to_workspace,
             openclaw::set_preferences_template,
             openclaw::fetch_apple_health_data,
+            openclaw::system_assess,
             workspace_manager::get_agent_allowed_directories,
             workspace_manager::update_agent_allowed_directories,
             // Machine Browser

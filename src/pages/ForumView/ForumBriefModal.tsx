@@ -267,7 +267,7 @@ export function ForumBriefModal({ onClose }: Props) {
         confidence: s.confidence,
         forumRole: s.forumRole,
         isolated: s.isolated,
-        currentAction: "Joining forum…",
+        currentAction: "Joining project…",
       }));
 
     const forumId = createForum(brief, forumAgents, tags);
@@ -534,7 +534,7 @@ export function ForumBriefModal({ onClose }: Props) {
                         </div>
                         <div style={{ fontSize: 11, color: "rgba(239,68,68,0.8)", lineHeight: 1.5 }}>
                           These agents have access to sensitive integrations (e.g. financial accounts, property data).
-                          In a forum, their responses are shared with other agents — your private data could appear in the shared workspace.
+                          In a project, their responses are shared with other agents — your private data could appear in the shared workspace.
                           Only include them if you understand and accept this risk.
                         </div>
                       </div>
@@ -561,7 +561,7 @@ export function ForumBriefModal({ onClose }: Props) {
                         }}
                         style={{ accentColor: "#EF4444", width: 13, height: 13, cursor: "pointer" }}
                       />
-                      I understand that this agent's sensitive data may appear in the shared forum context
+                      I understand that this agent's sensitive data may appear in the shared project context
                     </label>
                   </div>
 

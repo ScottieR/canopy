@@ -25,6 +25,8 @@ function DiagnosticsView() {
   const logsEndRef = useRef<HTMLDivElement>(null);
   const [agentDiagnostics, setAgentDiagnostics] = useState<{agentName: string, diagnostics: any[]}[]>([]);
   const [loadingConnections, setLoadingConnections] = useState(false);
+  const [memoryStatus, setMemoryStatus] = useState<string | null>(null);
+  const [applyingMemory, setApplyingMemory] = useState(false);
 
   const runConnectionDiagnostics = async () => {
     setLoadingConnections(true);
@@ -170,6 +172,52 @@ function DiagnosticsView() {
             >
               <Zap size={16} /> Force Reset Browsers
             </button>
+          </div>
+
+          {/* ── OrbStack / VM memory ── */}
+          <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+              <Server size={16} /> Infrastructure — OrbStack VM Memory
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>
+              Canopy requires the OrbStack Linux VM to have at least <strong>16 GB</strong> of RAM.
+              Running below this causes OpenClaw to be killed mid-task (exit 137 / OOM).
+              This button reads <code style={{ fontSize: 11, background: "rgba(0,0,0,0.05)", padding: "1px 5px", borderRadius: 4 }}>~/.orbstack/config/config.json</code> and raises
+              the limit if needed, then restarts the VM.
+            </div>
+            <button
+              onClick={async () => {
+                setApplyingMemory(true);
+                setMemoryStatus(null);
+                try {
+                  const msg: string = await invoke("configure_orbstack_memory");
+                  setMemoryStatus(msg);
+                } catch (e) {
+                  setMemoryStatus("Error: " + String(e));
+                }
+                setApplyingMemory(false);
+              }}
+              disabled={applyingMemory}
+              style={{
+                background: "#218380", color: "white", border: "none",
+                padding: "8px 16px", borderRadius: 8, cursor: applyingMemory ? "default" : "pointer",
+                fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
+                opacity: applyingMemory ? 0.6 : 1,
+              }}
+            >
+              <HardDrive size={15} />
+              {applyingMemory ? "Applying (restarting VM…)" : "Ensure 16 GB VM Memory"}
+            </button>
+            {memoryStatus && (
+              <div style={{
+                marginTop: 12, fontSize: 12, padding: "8px 12px", borderRadius: 8,
+                background: memoryStatus.startsWith("Error") ? "rgba(239,68,68,0.08)" : "rgba(74,158,150,0.08)",
+                color: memoryStatus.startsWith("Error") ? "#aa371c" : "#218380",
+                border: `1px solid ${memoryStatus.startsWith("Error") ? "rgba(239,68,68,0.2)" : "rgba(74,158,150,0.2)"}`,
+              }}>
+                {memoryStatus}
+              </div>
+            )}
           </div>
 
           <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)", marginTop: 16 }}>

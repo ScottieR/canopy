@@ -1,4 +1,5 @@
 use rusqlite::{params, Connection, Result as SqlResult};
+use std::collections::HashMap;
 use std::time::SystemTime;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -127,11 +128,193 @@ fn open_imessage_db() -> Result<Connection, String> {
         })
 }
 
+// ─── Contact Name Resolution ───────────────────────────────────────────────
+
+/// Strip everything except digits from a phone string.
+fn digits_only(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+/// Normalise a phone string to a 10-digit US number (no country code).
+/// Returns the raw digit string if normalisation doesn't apply.
+fn normalize_phone(phone: &str) -> String {
+    let digits = digits_only(phone);
+    // "+1XXXXXXXXXX" or "1XXXXXXXXXX" → strip leading 1
+    if digits.len() == 11 && digits.starts_with('1') {
+        digits[1..].to_string()
+    } else {
+        digits
+    }
+}
+
+/// Format a raw phone number/identifier into a more readable string.
+/// Used as a fallback when we can't resolve a contact name.
+fn format_identifier(id: &str) -> String {
+    // Email addresses — leave as-is
+    if id.contains('@') {
+        return id.to_string();
+    }
+    // Group chat IDs — leave as-is
+    if id.starts_with("chat") {
+        return id.to_string();
+    }
+    // Strip non-digits, drop leading country code, format as (XXX) XXX-XXXX
+    let digits = digits_only(id);
+    let ten = if digits.len() == 11 && digits.starts_with('1') {
+        digits[1..].to_string()
+    } else {
+        digits
+    };
+    if ten.len() == 10 {
+        format!("({}) {}-{}", &ten[0..3], &ten[3..6], &ten[6..10])
+    } else {
+        id.to_string()
+    }
+}
+
+/// Try to read the macOS Contacts database and return a map of
+/// normalised phone/email → full contact name.
+/// Returns an empty map on any failure (no permissions, missing DB, etc.).
+fn try_resolve_contact_names() -> HashMap<String, String> {
+    let mut map: HashMap<String, String> = HashMap::new();
+
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return map,
+    };
+
+    // macOS stores contacts in one or more source directories under here.
+    let sources_dir = home.join("Library/Application Support/Contacts/Sources");
+    let db_paths: Vec<PathBuf> = match std::fs::read_dir(&sources_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path().join("AddressBook-v22.abcddb"))
+            .filter(|p| p.exists())
+            .collect(),
+        Err(_) => return map,
+    };
+
+    for db_path in &db_paths {
+        let conn = match Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        ) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // ── Phone numbers ──────────────────────────────────────────────────
+        let phone_sql = "
+            SELECT p.ZFULLNUMBER, r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION
+            FROM ZABCDPHONENUMBER p
+            JOIN ZABCDRECORD r ON p.ZOWNER = r.Z_PK
+            WHERE p.ZFULLNUMBER IS NOT NULL
+        ";
+        if let Ok(mut stmt) = conn.prepare(phone_sql) {
+            let _ = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            }).map(|rows| {
+                for row in rows.filter_map(|r| r.ok()) {
+                    if let (Some(phone), first, last, org) = row {
+                        let name = build_name(first, last, org);
+                        if !name.is_empty() {
+                            let norm = normalize_phone(&phone);
+                            if !norm.is_empty() {
+                                map.insert(norm, name);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // ── Email addresses ────────────────────────────────────────────────
+        let email_sql = "
+            SELECT e.ZADDRESS, r.ZFIRSTNAME, r.ZLASTNAME, r.ZORGANIZATION
+            FROM ZABCDEMAILADDRESS e
+            JOIN ZABCDRECORD r ON e.ZOWNER = r.Z_PK
+            WHERE e.ZADDRESS IS NOT NULL
+        ";
+        if let Ok(mut stmt) = conn.prepare(email_sql) {
+            let _ = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            }).map(|rows| {
+                for row in rows.filter_map(|r| r.ok()) {
+                    if let (Some(email), first, last, org) = row {
+                        let name = build_name(first, last, org);
+                        if !name.is_empty() {
+                            map.insert(email.to_lowercase(), name);
+                        }
+                    }
+                }
+            });
+        };  // semicolon forces the Statement temporary to drop before `conn` goes out of scope
+    }
+
+    debug!("Resolved {} contacts from macOS Contacts database", map.len());
+    map
+}
+
+/// Combine first/last/org into a display name, preferring personal name over org.
+fn build_name(first: Option<String>, last: Option<String>, org: Option<String>) -> String {
+    let f = first.unwrap_or_default();
+    let l = last.unwrap_or_default();
+    let full = format!("{} {}", f, l).trim().to_string();
+    if !full.is_empty() {
+        return full;
+    }
+    org.unwrap_or_default().trim().to_string()
+}
+
+/// Resolve a chat_identifier to a human-readable display name.
+/// Tries contacts lookup first, then formats the number/email, then returns as-is.
+fn resolve_display_name(chat_identifier: &str, contacts: &HashMap<String, String>) -> String {
+    // 1. Phone number lookup (normalised)
+    if !chat_identifier.contains('@') && !chat_identifier.starts_with("chat") {
+        let norm = normalize_phone(chat_identifier);
+        if let Some(name) = contacts.get(&norm) {
+            return name.clone();
+        }
+        // Also try with full original digits
+        let full_digits = digits_only(chat_identifier);
+        if let Some(name) = contacts.get(&full_digits) {
+            return name.clone();
+        }
+        // Fallback: format the number nicely
+        return format_identifier(chat_identifier);
+    }
+
+    // 2. Email lookup
+    if chat_identifier.contains('@') {
+        if let Some(name) = contacts.get(&chat_identifier.to_lowercase()) {
+            return name.clone();
+        }
+        // Email is already readable — return as-is
+        return chat_identifier.to_string();
+    }
+
+    // 3. Group chats or anything else — leave as-is
+    chat_identifier.to_string()
+}
+
 // ─── Core iMessage Operations ──────────────────────────────────────────────
 
-/// Read all iMessage threads from the database
+/// Read all iMessage threads from the database, with contact names resolved.
 fn query_imessage_threads() -> Result<Vec<IMessageThread>, String> {
     let conn = open_imessage_db()?;
+
+    // Load contact names once up-front; failures are silently ignored (empty map).
+    let contacts = try_resolve_contact_names();
 
     let mut stmt = conn
         .prepare(
@@ -149,11 +332,10 @@ fn query_imessage_threads() -> Result<Vec<IMessageThread>, String> {
         )
         .map_err(|e| format!("Failed to prepare query: {}", e))?;
 
-    let threads = stmt
+    let mut threads = stmt
         .query_map([], |row| {
             let chat_identifier: String = row.get(0)?;
-            let display_name_opt: Option<String> = row.get(1)?;
-            let display_name = display_name_opt.filter(|s| !s.is_empty()).unwrap_or_else(|| chat_identifier.clone());
+            let display_name_raw: Option<String> = row.get(1)?;
             let last_date_opt: Option<i64> = row.get(2)?;
             let message_count: i64 = row.get(3).unwrap_or(0);
 
@@ -164,8 +346,9 @@ fn query_imessage_threads() -> Result<Vec<IMessageThread>, String> {
             };
 
             Ok(IMessageThread {
+                // display_name resolved below (after query_map, which can't capture contacts)
+                display_name: display_name_raw.filter(|s| !s.is_empty()).unwrap_or_else(|| chat_identifier.clone()),
                 chat_identifier,
-                display_name,
                 last_message_date,
                 message_count,
             })
@@ -174,7 +357,18 @@ fn query_imessage_threads() -> Result<Vec<IMessageThread>, String> {
         .collect::<SqlResult<Vec<_>>>()
         .map_err(|e| format!("Failed to collect results: {}", e))?;
 
-    info!("Found {} iMessage threads", threads.len());
+    // Resolve display names: use the chat table's display_name for group chats
+    // (those have a non-empty name already). For 1:1 threads where display_name
+    // == chat_identifier (unresolved), look up the contact name.
+    for thread in &mut threads {
+        if thread.display_name == thread.chat_identifier {
+            thread.display_name = resolve_display_name(&thread.chat_identifier, &contacts);
+        }
+        // Group chats whose display_name was set by iMessage already look fine;
+        // we leave those unchanged.
+    }
+
+    info!("Found {} iMessage threads ({} contacts loaded)", threads.len(), contacts.len());
     Ok(threads)
 }
 

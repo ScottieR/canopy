@@ -353,10 +353,14 @@ pub async fn start_machine_browser(
     //
     // Same env URL shape used by `sync_agent_skills` when the user toggles the browser
     // capability — single source of truth for "where does the agent connect".
-    let proxy_port = enable_jit_proxy(app_handle, agent_id.clone()).await.map_err(|e| e.to_string())?;
+    let proxy_port = enable_jit_proxy(app_handle.clone(), agent_id.clone()).await.map_err(|e| e.to_string())?;
     let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
+    use tauri::Manager;
+    let db = app_handle.state::<crate::db::Database>();
+    let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
+
     let _ = crate::openclaw::get_docker_command()
-        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
                "openclaw", "agents", "edit", &agent_id,
                "--env", &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint)])
         .output().await;

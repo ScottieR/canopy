@@ -22,10 +22,10 @@ export function AttachedAccessory({
     const clone = SkeletonUtils.clone(scene);
     clone.traverse(node => {
       node.userData = { ...node.userData, isAccessory: true };
-      if (node.isMesh && node.material) {
+      if (node instanceof THREE.Mesh) {
         const materials = Array.isArray(node.material) ? node.material : [node.material];
         materials.forEach((mat: any) => {
-          if (mat.map) {
+          if (mat && mat.map) {
             mat.map.generateMipmaps = false;
             mat.map.minFilter = THREE.LinearFilter;
             mat.map.needsUpdate = true;

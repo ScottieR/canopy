@@ -25,14 +25,20 @@ pub struct OpenClawAuditReport {
 #[tauri::command]
 pub async fn audit_openclaw_config(
     app_handle: tauri::AppHandle,
+    agent_id: Option<String>,
 ) -> Result<OpenClawAuditReport, String> {
+    use tauri::Manager;
     use tauri::Emitter;
-    let _ = app_handle.emit("diagnostics-log", "Starting OpenClaw gateway diagnostics...");
+    
+    let db = app_handle.state::<crate::db::Database>();
+    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+
+    let _ = app_handle.emit("diagnostics-log", format!("Starting OpenClaw gateway diagnostics for {}...", container_name));
 
     // 1. Check if container is running
-    let _ = app_handle.emit("diagnostics-log", "Checking if canopy-gateway container is running...");
+    let _ = app_handle.emit("diagnostics-log", format!("Checking if {} container is running...", container_name));
     let container_future = crate::openclaw::get_docker_command()
-        .args(["inspect", "-f", "{{.State.Running}}", "canopy-gateway"])
+        .args(["inspect", "-f", "{{.State.Running}}", &container_name])
         .output();
 
     let status_output = tokio::time::timeout(std::time::Duration::from_secs(5), container_future)
@@ -61,7 +67,7 @@ pub async fn audit_openclaw_config(
     // 2. Fetch the config directly from the container
     let _ = app_handle.emit("diagnostics-log", "Container is running. Fetching openclaw.json configuration...");
     let cat_future = crate::openclaw::get_docker_command()
-        .args(["exec", "canopy-gateway", "cat", "/home/node/.openclaw/openclaw.json"])
+        .args(["exec", &container_name, "cat", "/home/node/.openclaw/openclaw.json"])
         .output();
 
     let cat_output = match tokio::time::timeout(std::time::Duration::from_secs(5), cat_future).await {
@@ -170,7 +176,7 @@ pub async fn audit_openclaw_config(
     let mut github_token_injected = false;
     if github_enabled {
         let bashrc_check = crate::openclaw::get_docker_command()
-            .args(["exec", "canopy-gateway", "grep", "GITHUB_TOKEN", "/home/node/.bashrc"])
+            .args(["exec", &container_name, "grep", "GITHUB_TOKEN", "/home/node/.bashrc"])
             .output().await;
         if let Ok(out) = bashrc_check {
             github_token_injected = out.status.success();
@@ -195,8 +201,10 @@ pub async fn audit_openclaw_config(
 #[tauri::command]
 pub async fn repair_openclaw_config(
     app_handle: tauri::AppHandle,
-    target_model: Option<String> // specify it exactly, or None to auto-detect
+    target_model: Option<String>, // specify it exactly, or None to auto-detect
+    agent_id: Option<String>,
 ) -> Result<String, String> {
+    use tauri::Manager;
     // Prevent concurrent repair runs — each run writes config keys that trigger a gateway
     // self-SIGTERM restart. Two concurrent runs cause overlapping restarts → OOM cascade.
     if REPAIR_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
@@ -210,13 +218,16 @@ pub async fn repair_openclaw_config(
     }
     let _guard = RepairGuard;
 
-    let audit_report = audit_openclaw_config(app_handle.clone()).await?;
+    let audit_report = audit_openclaw_config(app_handle.clone(), agent_id.clone()).await?;
     if !audit_report.container_running {
         tracing::info!("Gateway offline during repair attempt - initiating secure start...");
-        crate::docker::start_gateway().await.map_err(|e| format!("Failed to start gateway for repair: {}", e))?;
+        crate::docker::start_gateway_internal(Some(app_handle.clone())).await.map_err(|e| format!("Failed to start gateway for repair: {}", e))?;
         // Brief pause for initialization
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     }
+
+    let db = app_handle.state::<crate::db::Database>();
+    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
 
     // Decide which model to write.
     // Priority: explicit caller override → keep existing model if it's valid → fall back to expected.
@@ -253,13 +264,13 @@ pub async fn repair_openclaw_config(
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(8),
                     crate::openclaw::get_docker_command()
-                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
                                "openclaw", "config", "set", key, val])
                         .output(),
                 ).await;
             }
             let _ = crate::openclaw::get_docker_command()
-                .args(["restart", "canopy-gateway"])
+                .args(["restart", &container_name])
                 .output()
                 .await;
             return Ok(format!("Gateway configuration verified — model '{}' is valid, no model change needed.", current));
@@ -301,7 +312,7 @@ pub async fn repair_openclaw_config(
 
     for (key, val) in fixes.iter() {
         let cmd_future = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+            .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
                    "openclaw", "config", "set", key, val])
             .output();
 
@@ -325,9 +336,16 @@ pub async fn repair_openclaw_config(
 }
 
 #[tauri::command]
-pub async fn get_openclaw_status() -> Result<String, String> {
+pub async fn get_openclaw_status(
+    app_handle: tauri::AppHandle,
+    agent_id: Option<String>,
+) -> Result<String, String> {
+    use tauri::Manager;
+    let db = app_handle.state::<crate::db::Database>();
+    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+
     let status_fut = crate::openclaw::get_docker_command()
-        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
                "openclaw", "status"])
         .output();
 

@@ -467,7 +467,11 @@ pub struct GithubRepo {
 
 #[tauri::command]
 pub async fn fetch_github_repos(token: String) -> Result<Vec<GithubRepo>, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
     let res = client
         .get("https://api.github.com/user/repos?per_page=100")
         .header("User-Agent", "Canopy-App")
@@ -506,6 +510,7 @@ pub async fn fetch_github_repos(token: String) -> Result<Vec<GithubRepo>, String
 
 #[tauri::command]
 pub async fn configure_github(
+    db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     personal_access_token: String,
     username: Option<String>,
@@ -527,6 +532,8 @@ pub async fn configure_github(
         crate::keychain::store_secret(&format!("github-username-{}", agent_id), user.trim())
             .map_err(|e| format!("Keychain error: {}", e))?;
     }
+
+    let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
 
     // Install gh CLI and global dynamic wrapper (runs as root)
     let root_setup_script = r#"
@@ -554,7 +561,7 @@ EOF
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         get_docker_command()
-            .args(["exec", "-u", "root", "-e", "DEBIAN_FRONTEND=noninteractive", "canopy-gateway", "sh", "-c", root_setup_script])
+            .args(["exec", "-u", "root", "-e", "DEBIAN_FRONTEND=noninteractive", &container_name, "sh", "-c", root_setup_script])
             .output()
     ).await;
 
@@ -569,7 +576,7 @@ EOF
     );
     
     let _ = get_docker_command()
-        .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &node_setup_script])
+        .args(["exec", "-u", "node", &container_name, "sh", "-c", &node_setup_script])
         .output().await;
 
     restart_gateway_soft().await;
@@ -582,13 +589,15 @@ EOF
 /// the token is no longer reachable by the agent's tooling. No openclaw.json change is
 /// required because GitHub is wired through a workspace wrapper, not a `channels.*` block.
 #[tauri::command]
-pub async fn disconnect_github(agent_id: String) -> Result<String, String> {
+pub async fn disconnect_github(db: tauri::State<'_, crate::db::Database>, agent_id: String) -> Result<String, String> {
     if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
         return Err(format!("disconnect_github: invalid agent id {:?}", agent_id));
     }
 
     let _ = crate::keychain::delete_secret_internal(&format!("github-access-token-{}", agent_id));
     let _ = crate::keychain::delete_secret_internal(&format!("github-username-{}", agent_id));
+
+    let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
 
     // Best-effort container-side cleanup. The wrapper + env file may not exist if the
     // user never connected GitHub; `rm -f` is silent in that case.
@@ -600,7 +609,7 @@ pub async fn disconnect_github(agent_id: String) -> Result<String, String> {
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "sh", "-c", &cleanup])
+            .args(["exec", "-u", "node", &container_name, "sh", "-c", &cleanup])
             .output(),
     ).await;
 
@@ -610,6 +619,7 @@ pub async fn disconnect_github(agent_id: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::Manager;
 
     #[tokio::test]
     #[ignore]
@@ -621,9 +631,15 @@ mod tests {
             return;
         }
 
+        let app = tauri::test::mock_app();
+        let handle = app.handle();
+        let db = crate::db::Database::init(&handle).unwrap();
+        app.manage(db);
+        let state = app.state::<crate::db::Database>();
+
         // Run the configure_github command with a dummy token
         let token = "ghp_teste2e_token_1234567890".to_string();
-        let res = configure_github("agent-test".to_string(), token.clone(), Some("testuser".to_string())).await;
+        let res = configure_github(state, "agent-test".to_string(), token.clone(), Some("testuser".to_string())).await;
         res.expect("configure_github failed");
 
         // Verify the environment variable was injected into the agent's bin wrapper
@@ -738,7 +754,11 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
         .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
     let mut diagnostics = Vec::new();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
 
     // Read the current openclaw.json once and reuse it across all integration
     // checks. We need it to verify the GATEWAY-SIDE state (is this agent's
@@ -746,10 +766,11 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
     // token is valid against the third-party API. A valid token + an unloaded
     // gateway plugin was Poppy's exact failure mode — the old check reported
     // "healthy" while runtime was failing.
+    let container_name = crate::openclaw::get_agent_container_name(db, agent_id);
     let gateway_cfg: Option<serde_json::Value> = match tokio::time::timeout(
         std::time::Duration::from_secs(4),
         crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "cat", "/home/node/.openclaw/openclaw.json"])
+            .args(["exec", "-u", "node", &container_name, "cat", "/home/node/.openclaw/openclaw.json"])
             .output(),
     ).await {
         Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).ok(),

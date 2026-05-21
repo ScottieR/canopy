@@ -68,7 +68,7 @@ pub struct Database {
 
 impl Database {
     /// Initialize the database, creating tables and migrations as needed
-    pub fn init(app_handle: &tauri::AppHandle) -> SqlResult<Self> {
+    pub fn init<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) -> SqlResult<Self> {
         // Determine database path
         let data_dir = if let Some(dir) = dirs::data_dir() {
             dir.join("Canopy")

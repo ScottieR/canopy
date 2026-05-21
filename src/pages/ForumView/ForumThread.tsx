@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from "react";
 import { Forum, ForumArtifact, ForumMessage, useForumStore } from "../../store/forumStore";
 import { resolveAnswer } from "./forumOrchestrator";
+import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 
 interface Props {
   forum: Forum;
@@ -142,6 +143,21 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
           color: isAgentToAgent ? "var(--text-sub, #636E72)" : "var(--text-main, #303330)",
         }}>
           {msg.text}
+          {msg.miniApp && msg.miniApp.target === "inline" && (
+            <GenUIRenderer 
+              app={msg.miniApp} 
+              onEvent={(evt) => {
+                console.log("GenUI Event emitted:", evt);
+                // In a real implementation, this would trigger an invoke("send_message", ...)
+                // back to the specific agent that generated this UI.
+                useForumStore.getState().addForumMessage(forum.id, {
+                  kind: "chat",
+                  sender: "user",
+                  text: `[GenUI Event] User interacted with ${msg.miniApp?.component}: ${JSON.stringify(evt)}`
+                });
+              }}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -149,6 +165,7 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
 }
 
 function UserMessage({ msg }: { msg: ForumMessage }) {
+  const [expandedImg, setExpandedImg] = useState<string | null>(null);
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexDirection: "row-reverse" }}>
       <div style={{
@@ -165,19 +182,70 @@ function UserMessage({ msg }: { msg: ForumMessage }) {
         <div style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.4, marginBottom: 4 }}>
           {formatTime(msg.timestamp)}
         </div>
-        <div style={{
-          padding: "9px 13px",
-          borderRadius: 12,
-          borderTopRightRadius: 4,
-          background: "rgba(60,102,99,0.1)",
-          border: "1px solid rgba(60,102,99,0.18)",
-          fontSize: 12, lineHeight: 1.6,
-          color: "var(--text-main, #303330)",
-          maxWidth: "80%",
-        }}>
-          {msg.text}
-        </div>
+        {/* Attachments */}
+        {msg.attachments && msg.attachments.length > 0 && (
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end", marginBottom: 6 }}>
+            {msg.attachments.map((att, i) => (
+              att.mimeType.startsWith("image/") ? (
+                <div key={i} style={{ position: "relative" }}>
+                  <img
+                    src={att.dataUrl}
+                    alt={att.name}
+                    title={att.name}
+                    onClick={() => setExpandedImg(att.dataUrl)}
+                    style={{
+                      width: 80, height: 80, objectFit: "cover",
+                      borderRadius: 8, cursor: "pointer",
+                      border: "1.5px solid rgba(60,102,99,0.2)",
+                    }}
+                  />
+                </div>
+              ) : (
+                <div key={i} style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "5px 9px", borderRadius: 8,
+                  background: "rgba(60,102,99,0.08)",
+                  border: "1px solid rgba(60,102,99,0.18)",
+                  fontSize: 11, color: "var(--text-sub, #636E72)",
+                }}>
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  {att.name}
+                </div>
+              )
+            ))}
+          </div>
+        )}
+        {msg.text && (
+          <div style={{
+            padding: "9px 13px",
+            borderRadius: 12,
+            borderTopRightRadius: 4,
+            background: "rgba(60,102,99,0.1)",
+            border: "1px solid rgba(60,102,99,0.18)",
+            fontSize: 12, lineHeight: 1.6,
+            color: "var(--text-main, #303330)",
+            maxWidth: "80%",
+          }}>
+            {msg.text}
+          </div>
+        )}
       </div>
+      {/* Lightbox */}
+      {expandedImg && (
+        <div
+          onClick={() => setExpandedImg(null)}
+          style={{
+            position: "fixed", inset: 0, zIndex: 1000,
+            background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)",
+            display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
+          }}
+        >
+          <img src={expandedImg} style={{ maxWidth: "90vw", maxHeight: "85vh", borderRadius: 12, boxShadow: "0 8px 40px rgba(0,0,0,0.5)" }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -460,31 +528,47 @@ function ArtifactShelf({
   selectedArtifactId: string | null;
   onArtifactClick: (id: string) => void;
 }) {
-  const artifacts = forum.artifacts ?? [];
-  if (artifacts.length === 0) return null;
+  // Only show deliverable artifacts — intermediate research/strategy notes are
+  // already visible on the blackboard and don't need separate cards here.
+  const allArtifacts = forum.artifacts ?? [];
+  let deliverables = allArtifacts.filter(a => a.isDeliverable);
+
+  // Backwards-compat: forums produced before the isDeliverable field was added
+  // have no flagged deliverables. In that case, show only the last artifact
+  // (the final output) rather than flooding the shelf with intermediate notes.
+  if (deliverables.length === 0 && allArtifacts.length > 0) {
+    deliverables = [allArtifacts[allArtifacts.length - 1]];
+  }
+
+  // Hide the shelf entirely when there's nothing to show.
+  if (deliverables.length === 0) return null;
 
   return (
     <div style={{
-      borderTop: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
-      background: "var(--surface-container-low, #f4f4f0)",
+      borderTop: "1px solid rgba(74,158,150,0.2)",
+      background: "rgba(74,158,150,0.04)",
       flexShrink: 0,
-      padding: "12px 16px",
+      padding: "10px 14px 12px",
     }}>
-      {/* Section header */}
+      {/* Header */}
       <div style={{
-        fontSize: 10, fontWeight: 700, textTransform: "uppercase",
-        letterSpacing: "0.08em", color: "var(--text-sub, #636E72)",
-        opacity: 0.55, marginBottom: 10,
+        display: "flex", alignItems: "center", gap: 6, marginBottom: 8,
       }}>
-        Outputs · {forum.artifacts.length}
+        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2.5} strokeLinecap="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+          <polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+        <span style={{
+          fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+          letterSpacing: "0.07em", color: "#4A9E96",
+        }}>
+          {deliverables.length === 1 ? "Deliverable" : `Deliverables · ${deliverables.length}`}
+        </span>
       </div>
 
-      {/* Scrollable card row */}
-      <div style={{
-        display: "flex", gap: 8,
-        overflowX: "auto", paddingBottom: 4,
-      }}>
-        {artifacts.map(artifact => {
+      {/* Cards — vertical stack in the thread column, not a horizontal scroll */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {deliverables.map(artifact => {
           const meta = ARTIFACT_META[artifact.type] ?? ARTIFACT_META.markdown;
           const isSelected = artifact.id === selectedArtifactId;
           const preview = artifact.preview ?? derivePreview(artifact.content, artifact.type);
@@ -495,112 +579,82 @@ function ArtifactShelf({
               key={artifact.id}
               onClick={() => onArtifactClick(artifact.id)}
               style={{
-                flexShrink: 0, width: 168,
-                display: "flex", flexDirection: "column", gap: 6,
-                padding: "11px 13px",
-                borderRadius: 12,
-                background: isSelected ? `${meta.color}10` : "var(--surface-card, #fff)",
+                width: "100%",
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: isSelected ? `${meta.color}12` : "var(--surface-card, #fff)",
                 border: isSelected
                   ? `1.5px solid ${meta.color}55`
-                  : "1.5px solid var(--border-subtle, rgba(0,0,0,0.08))",
+                  : "1.5px solid rgba(74,158,150,0.18)",
                 cursor: "pointer", textAlign: "left",
                 fontFamily: "inherit",
                 transition: "all 0.15s ease",
-                boxShadow: isSelected ? `0 2px 12px ${meta.color}20` : "none",
+                boxShadow: isSelected ? `0 2px 10px ${meta.color}20` : "0 1px 3px rgba(0,0,0,0.04)",
               }}
               onMouseEnter={e => {
-                if (!isSelected) {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = `${meta.color}40`;
-                  (e.currentTarget as HTMLButtonElement).style.boxShadow = `0 2px 8px ${meta.color}15`;
-                }
+                if (!isSelected) (e.currentTarget as HTMLButtonElement).style.borderColor = `${meta.color}44`;
               }}
               onMouseLeave={e => {
-                if (!isSelected) {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = "var(--border-subtle, rgba(0,0,0,0.08))";
-                  (e.currentTarget as HTMLButtonElement).style.boxShadow = "none";
-                }
+                if (!isSelected) (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(74,158,150,0.18)";
               }}
             >
-              {/* Type icon + label row */}
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {/* Type icon */}
+              <div style={{
+                width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+                background: `${meta.color}15`,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                color: meta.color,
+              }}>
+                {meta.icon}
+              </div>
+
+              {/* Text */}
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{
-                  width: 24, height: 24, borderRadius: 7, flexShrink: 0,
-                  background: `${meta.color}18`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  color: meta.color,
+                  fontSize: 12, fontWeight: 700,
+                  color: "var(--text-main, #303330)",
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  marginBottom: 2,
                 }}>
-                  {meta.icon}
+                  {artifact.title}
                 </div>
-                <span style={{
-                  fontSize: 10, fontWeight: 600, color: meta.color,
-                  textTransform: "uppercase", letterSpacing: "0.06em",
-                }}>
-                  {meta.label}
-                </span>
-                {isSelected && (
-                  <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke={meta.color} strokeWidth={2.5} strokeLinecap="round" style={{ marginLeft: "auto" }}>
+                <div style={{
+                  fontSize: 10.5, lineHeight: 1.4,
+                  color: "var(--text-sub, #636E72)", opacity: 0.7,
+                  overflow: "hidden", display: "-webkit-box",
+                  WebkitLineClamp: 1, WebkitBoxOrient: "vertical",
+                } as React.CSSProperties}>
+                  {preview}
+                </div>
+              </div>
+
+              {/* Selected indicator or open arrow */}
+              <div style={{ flexShrink: 0, color: isSelected ? meta.color : "rgba(0,0,0,0.2)" }}>
+                {isSelected ? (
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
                     <polyline points="20 6 9 17 4 12"/>
                   </svg>
+                ) : (
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+                    <polyline points="9 18 15 12 9 6"/>
+                  </svg>
                 )}
-              </div>
-
-              {/* Title */}
-              <div style={{
-                fontSize: 12, fontWeight: 700,
-                color: "var(--text-main, #303330)",
-                lineHeight: 1.3,
-                overflow: "hidden", display: "-webkit-box",
-                WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
-              } as React.CSSProperties}>
-                {artifact.title}
-              </div>
-
-              {/* Preview snippet */}
-              <div style={{
-                fontSize: 11, lineHeight: 1.5,
-                color: "var(--text-sub, #636E72)", opacity: 0.7,
-                overflow: "hidden", display: "-webkit-box",
-                WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
-              } as React.CSSProperties}>
-                {preview}
-              </div>
-
-              {/* Agent attribution */}
-              {(agent ?? artifact.agentName) && (
-                <div style={{
-                  display: "flex", alignItems: "center", gap: 5,
-                  marginTop: 2,
-                }}>
-                  <div style={{
-                    width: 14, height: 14, borderRadius: "50%",
-                    background: `${agent?.robeColor ?? meta.color}25`,
-                    border: `1px solid ${agent?.robeColor ?? meta.color}55`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 7, fontWeight: 700, color: agent?.robeColor ?? meta.color,
-                    flexShrink: 0,
-                  }}>
-                    {(agent?.name ?? artifact.agentName ?? "A").charAt(0).toUpperCase()}
-                  </div>
-                  <span style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.5 }}>
-                    {agent?.name ?? artifact.agentName}
-                  </span>
-                </div>
-              )}
-              {/* Made with Canopy watermark */}
-              <div style={{
-                display: "flex", alignItems: "center", gap: 4,
-                marginTop: 6, paddingTop: 6,
-                borderTop: `1px solid ${meta.color}18`,
-                opacity: 0.35,
-              }}>
-                <img src="/app-icon.png" alt="" style={{ width: 10, height: 10, objectFit: "contain" }} />
-                <span style={{ fontSize: 9, color: "var(--text-sub, #636E72)", letterSpacing: "0.02em" }}>
-                  Made with Canopy
-                </span>
               </div>
             </button>
           );
         })}
+      </div>
+
+      {/* Made with Canopy watermark — subtle, single instance */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 4,
+        marginTop: 8, opacity: 0.3,
+      }}>
+        <img src="/app-icon.png" alt="" style={{ width: 9, height: 9, objectFit: "contain" }} />
+        <span style={{ fontSize: 9, color: "var(--text-sub, #636E72)", letterSpacing: "0.02em" }}>
+          Made with Canopy
+        </span>
       </div>
     </div>
   );
@@ -608,64 +662,275 @@ function ArtifactShelf({
 
 // ─── Input bar ────────────────────────────────────────────────────────────────
 
+interface Attachment { name: string; dataUrl: string; mimeType: string }
+
 function ThreadInput({ forumId }: { forumId: string }) {
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const addMsg = useForumStore(s => s.addForumMessage);
 
+  const canSend = text.trim().length > 0 || attachments.length > 0;
+
   const send = () => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!canSend) return;
     addMsg(forumId, {
       kind: "chat",
       sender: "user",
-      text: trimmed,
+      text: text.trim(),
+      attachments: attachments.length > 0 ? attachments : undefined,
     });
     setText("");
+    setAttachments([]);
+  };
+
+  const handleFiles = (files: FileList | null) => {
+    if (!files) return;
+    Array.from(files).forEach(file => {
+      const reader = new FileReader();
+      reader.onload = e => {
+        const dataUrl = e.target?.result as string;
+        setAttachments(prev => [...prev, { name: file.name, dataUrl, mimeType: file.type || "application/octet-stream" }]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const removeAttachment = (i: number) => {
+    setAttachments(prev => prev.filter((_, idx) => idx !== i));
   };
 
   return (
     <div style={{
-      padding: "12px 16px",
+      padding: "10px 12px 12px",
       borderTop: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
-      display: "flex", gap: 8, alignItems: "flex-end",
       background: "var(--surface-card, #fff)",
       flexShrink: 0,
     }}>
-      <textarea
-        value={text}
-        onChange={e => setText(e.target.value)}
-        onKeyDown={e => {
-          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-        }}
-        placeholder="Direct the team, ask a question, or interject…"
-        rows={2}
-        style={{
-          flex: 1, resize: "none",
-          background: "var(--surface-container-low, #f4f4f0)",
-          border: "1px solid var(--border-subtle, rgba(0,0,0,0.08))",
-          borderRadius: 10, padding: "8px 12px",
-          color: "var(--text-main, #303330)", fontSize: 12,
-          lineHeight: 1.5, fontFamily: "inherit", outline: "none",
-          transition: "border-color 0.15s ease",
-        }}
-        onFocus={e => (e.target.style.borderColor = "rgba(60,102,99,0.4)")}
-        onBlur={e => (e.target.style.borderColor = "var(--border-subtle, rgba(0,0,0,0.08))")}
-      />
-      <button
-        onClick={send}
-        disabled={!text.trim()}
-        style={{
-          padding: "8px 14px", borderRadius: 9,
-          background: text.trim() ? "var(--primary, #3c6663)" : "rgba(60,102,99,0.1)",
-          color: text.trim() ? "#fff" : "rgba(60,102,99,0.4)",
-          border: "none", fontSize: 12, fontWeight: 600,
-          cursor: text.trim() ? "pointer" : "not-allowed",
-          fontFamily: "inherit", transition: "all 0.15s ease",
-          flexShrink: 0, alignSelf: "flex-end",
-        }}
-      >
-        Send
-      </button>
+      {/* Attachment previews */}
+      {attachments.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+          {attachments.map((att, i) => (
+            <div key={i} style={{ position: "relative" }}>
+              {att.mimeType.startsWith("image/") ? (
+                <img
+                  src={att.dataUrl}
+                  alt={att.name}
+                  style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 7, border: "1.5px solid rgba(60,102,99,0.2)" }}
+                />
+              ) : (
+                <div style={{
+                  width: 56, height: 56, borderRadius: 7,
+                  background: "rgba(60,102,99,0.08)",
+                  border: "1.5px solid rgba(60,102,99,0.18)",
+                  display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 3,
+                  padding: 4,
+                }}>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#3c6663" strokeWidth={1.5} strokeLinecap="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                  <span style={{ fontSize: 8, color: "#636E72", textAlign: "center", wordBreak: "break-all", maxWidth: "100%", lineHeight: 1.2 }}>
+                    {att.name.split(".").pop()?.toUpperCase()}
+                  </span>
+                </div>
+              )}
+              <button
+                onClick={() => removeAttachment(i)}
+                style={{
+                  position: "absolute", top: -5, right: -5,
+                  width: 16, height: 16, borderRadius: "50%",
+                  background: "#EF4444", border: "1.5px solid #fff",
+                  color: "#fff", fontSize: 9, fontWeight: 700,
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  lineHeight: 1, padding: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Input row */}
+      <div style={{ display: "flex", gap: 7, alignItems: "flex-end" }}>
+        {/* Attach button */}
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          title="Attach file or image"
+          style={{
+            width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+            border: "1px solid var(--border-subtle, rgba(0,0,0,0.1))",
+            background: "transparent",
+            color: "var(--text-sub, #636E72)",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+            opacity: 0.55, transition: "opacity 0.15s ease",
+            alignSelf: "flex-end",
+          }}
+          onMouseEnter={e => (e.currentTarget.style.opacity = "0.9")}
+          onMouseLeave={e => (e.currentTarget.style.opacity = "0.55")}
+        >
+          <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept="image/*,.pdf,.txt,.md,.csv,.json"
+          style={{ display: "none" }}
+          onChange={e => handleFiles(e.target.files)}
+          onClick={e => ((e.target as HTMLInputElement).value = "")} // allow re-selecting same file
+        />
+
+        <textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+          }}
+          onPaste={e => {
+            // Support paste-from-clipboard images
+            const items = Array.from(e.clipboardData?.items ?? []);
+            const imageItem = items.find(it => it.type.startsWith("image/"));
+            if (imageItem) {
+              const file = imageItem.getAsFile();
+              if (file) {
+                const reader = new FileReader();
+                reader.onload = ev => {
+                  const dataUrl = ev.target?.result as string;
+                  setAttachments(prev => [...prev, { name: `pasted-image-${Date.now()}.png`, dataUrl, mimeType: "image/png" }]);
+                };
+                reader.readAsDataURL(file);
+                e.preventDefault();
+              }
+            }
+          }}
+          placeholder="Direct the team, ask a question, or interject…"
+          rows={2}
+          style={{
+            flex: 1, resize: "none",
+            background: "var(--surface-container-low, #f4f4f0)",
+            border: "1px solid var(--border-subtle, rgba(0,0,0,0.08))",
+            borderRadius: 10, padding: "8px 12px",
+            color: "var(--text-main, #303330)", fontSize: 12,
+            lineHeight: 1.5, fontFamily: "inherit", outline: "none",
+            transition: "border-color 0.15s ease",
+          }}
+          onFocus={e => (e.target.style.borderColor = "rgba(60,102,99,0.4)")}
+          onBlur={e => (e.target.style.borderColor = "var(--border-subtle, rgba(0,0,0,0.08))")}
+        />
+        <button
+          onClick={send}
+          disabled={!canSend}
+          style={{
+            padding: "8px 14px", borderRadius: 9,
+            background: canSend ? "var(--primary, #3c6663)" : "rgba(60,102,99,0.1)",
+            color: canSend ? "#fff" : "rgba(60,102,99,0.4)",
+            border: "none", fontSize: 12, fontWeight: 600,
+            cursor: canSend ? "pointer" : "not-allowed",
+            fontFamily: "inherit", transition: "all 0.15s ease",
+            flexShrink: 0, alignSelf: "flex-end",
+          }}
+        >
+          Send
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Typing indicator ─────────────────────────────────────────────────────────
+
+const TYPING_ACTIONS = ["…"];
+
+/**
+ * Live "agent is working" bubble shown while an LLM call is in-flight.
+ * Picks the first agent whose currentAction ends with "…" and shows:
+ *   - Their avatar (pulsing ring)
+ *   - Action label + elapsed seconds (once > 4s so fast phases feel snappy)
+ *   - Three bouncing dots
+ */
+function TypingBubble({ forum }: { forum: Forum }) {
+  const [elapsed, setElapsed] = useState(0);
+
+  const activeAgent = forum.agents.find(a =>
+    a.currentAction && TYPING_ACTIONS.some(suffix => a.currentAction!.endsWith(suffix))
+  );
+
+  const action = activeAgent?.currentAction ?? "Working…";
+  const color = activeAgent?.robeColor || "#4A9E96";
+
+  // Reset timer whenever the active agent or its action changes
+  useEffect(() => {
+    if (!activeAgent) return;
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [activeAgent?.agentId, action]);
+
+  if (!activeAgent || forum.status !== "active") return null;
+
+  const elapsedLabel = elapsed >= 5 ? ` · ${elapsed}s` : "";
+
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+      {/* Avatar with breathing ring */}
+      <div style={{
+        width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
+        background: rgba(color, 0.15),
+        border: `1.5px solid ${rgba(color, 0.5)}`,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: 10, fontWeight: 700, color,
+        marginTop: 2,
+        animation: "typing-avatar-pulse 2s ease-in-out infinite",
+      }}>
+        {(activeAgent.name ?? "A").charAt(0).toUpperCase()}
+      </div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Name + action label */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 4 }}>
+          <span style={{ fontSize: 11, fontWeight: 600, color }}>{activeAgent.name}</span>
+          <span style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.55, fontStyle: "italic" }}>
+            {action}{elapsedLabel}
+          </span>
+        </div>
+
+        {/* Bubble with bouncing dots */}
+        <div style={{
+          padding: "9px 14px",
+          borderRadius: 12, borderTopLeftRadius: 4,
+          background: "var(--surface-container-lowest, #fff)",
+          border: "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
+          display: "inline-flex", alignItems: "center", gap: 5,
+        }}>
+          {[0, 0.18, 0.36].map((delay, i) => (
+            <span key={i} style={{
+              width: 7, height: 7, borderRadius: "50%",
+              background: color, opacity: 0.7, display: "inline-block",
+              animation: `typing-dot 1.3s ease-in-out ${delay}s infinite`,
+            }} />
+          ))}
+        </div>
+      </div>
+
+      <style>{`
+        @keyframes typing-dot {
+          0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+          30% { transform: translateY(-6px); opacity: 1; }
+        }
+        @keyframes typing-avatar-pulse {
+          0%, 100% { box-shadow: 0 0 0 0 ${rgba(color, 0.0)}; }
+          50% { box-shadow: 0 0 0 5px ${rgba(color, 0.12)}; }
+        }
+        @keyframes milestone-pulse {
+          0%, 100% { box-shadow: 0 0 0 4px rgba(74,158,150,0.12), 0 0 12px rgba(74,158,150,0.2); }
+          50% { box-shadow: 0 0 0 6px rgba(74,158,150,0.08), 0 0 18px rgba(74,158,150,0.15); }
+        }
+      `}</style>
     </div>
   );
 }
@@ -675,10 +940,14 @@ function ThreadInput({ forumId }: { forumId: string }) {
 export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll on new messages
+  // The typing indicator is visible whenever any agent is working
+  const isTyping = forum.status === "active" &&
+    forum.agents.some(a => a.currentAction?.endsWith("…"));
+
+  // Auto-scroll on new messages OR when typing indicator appears/disappears
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [forum.messages.length]);
+  }, [forum.messages.length, isTyping]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -707,6 +976,10 @@ export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Prop
           if (msg.sender === "user") return <UserMessage key={msg.id} msg={msg} />;
           return <AgentMessage key={msg.id} msg={msg} forum={forum} />;
         })}
+
+        {/* Live typing indicator — shown while any agent call is in-flight */}
+        <TypingBubble forum={forum} />
+
         <div ref={bottomRef} />
       </div>
 

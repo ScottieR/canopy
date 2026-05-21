@@ -263,6 +263,106 @@ npm test -- --reporter=verbose              # Verbose React output
 
 ---
 
-**Last Updated:** April 18, 2026  
-**Test Coverage:** Phase 1 Critical Path (100%)  
-**Next Phase:** Phase 2 Multi-Agent & Handoff Tests
+## Phase 2: Multi-Agent & System Calls
+
+### system_assess — Direct Provider API (no OpenClaw session)
+
+**Why:** `system_assess` bypasses OpenClaw entirely and calls provider APIs directly. It's the
+backbone of forum brief assessment and any future internal coordination tasks. Its model-selection
+and fallback logic must be airtight — a bug here silently falls back to keyword scoring without
+the user knowing.
+
+**Location:** `src-tauri/src/openclaw.rs` — `system_assess`, `call_anthropic_direct`,
+`call_openai_direct`, `call_gemini_direct`
+
+**Key decisions documented here:**
+
+| Decision | What | Why |
+|----------|------|-----|
+| Provider priority | Gemini Flash Lite → Haiku → GPT-4o Mini | Cheapest available model wins |
+| Key source | Global keychain only (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`) | System calls aren't agent-specific |
+| Model names (direct API) | Strip `google/` / `anthropic/` prefix before calling provider REST endpoints | Provider APIs use bare names, not OpenClaw-style `provider/model` strings |
+| Gemini endpoint | `v1beta/models/{model}:generateContent?key=` | Key passed as query param, not header |
+| No session storage | HTTP POST only, no session ID | Zero footprint — must never appear in any agent's chat history |
+
+**Tests to add (Phase 2):**
+
+```rust
+#[cfg(test)]
+mod system_assess_tests {
+    // 1. key_priority_gemini_wins_when_all_keys_present
+    //    Mock keychain: all three keys set → assert Gemini is called first
+    //
+    // 2. falls_back_to_anthropic_when_no_gemini_key
+    //    Mock keychain: only ANTHROPIC_API_KEY → assert Anthropic called
+    //
+    // 3. falls_back_to_openai_when_only_openai_key
+    //    Mock keychain: only OPENAI_API_KEY → assert OpenAI called
+    //
+    // 4. returns_error_when_no_keys_configured
+    //    Mock keychain: empty → assert Err("no provider API keys configured")
+    //
+    // 5. gemini_provider_prefix_stripped
+    //    call_gemini_direct("google/gemini-2.5-flash-lite", ...) → URL contains
+    //    "gemini-2.5-flash-lite" not "google/gemini-2.5-flash-lite"
+    //
+    // 6. falls_back_to_next_provider_on_http_error
+    //    Mock Gemini returns 429 → assert Anthropic is tried next
+    //
+    // 7. response_text_extracted_correctly_per_provider
+    //    Anthropic: content[0].text  |  OpenAI: choices[0].message.content
+    //    Gemini: candidates[0].content.parts[0].text
+}
+```
+
+**Run tests (once written):**
+```bash
+cd canopy/src-tauri
+cargo test system_assess_tests
+```
+
+### Forum Coordinator (forumCoordinator.ts)
+
+**Why:** The coordinator calls `system_assess` and parses a structured JSON response. Parse
+failures must fall back gracefully — a broken coordinator silently degrading to keyword scoring
+is better than blocking the user from starting a project.
+
+**Location:** `src/pages/ForumView/forumCoordinator.ts`
+
+**Tests to add (Phase 2):**
+
+```ts
+// forumCoordinator.test.ts
+//
+// 1. assessForum_returns_keyword_fallback_when_system_assess_throws
+//    Mock invoke("system_assess") → throws → scores should match scoreBrief output
+//
+// 2. assessForum_parses_valid_llm_response
+//    Mock invoke returns well-formed JSON → scores have correct confidence/forumRole/rationale
+//
+// 3. assessForum_handles_partial_json_with_fence
+//    Mock returns ```json {...}``` wrapped response → still parses correctly
+//
+// 4. assessForum_isolated_agents_never_volunteer
+//    agents = [{...isolated: true}] → all isolatedScores have volunteers: false
+//
+// 5. assessForum_sorts_volunteers_first
+//    Mix of confidence 80 (non-volunteer) and 40 (volunteer) → volunteer sorts first
+//
+// 6. assessForum_empty_agents_returns_empty
+//    agents = [] → { scores: [], isolatedScores: [], tags: [...] }
+//
+// 7. parseCoordinatorResponse_rejects_unknown_agent_ids
+//    JSON contains agentId not in provided agents list → filtered out, returns null
+```
+
+**Run tests (once written):**
+```bash
+cd canopy && npm test -- forumCoordinator.test
+```
+
+---
+
+**Last Updated:** May 20, 2026
+**Test Coverage:** Phase 1 Critical Path (100%) · Phase 2 specs documented, implementation pending
+**Next Phase:** Phase 2 — system_assess unit tests, forum coordinator tests, multi-agent handoff

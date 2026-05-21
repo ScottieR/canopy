@@ -9,12 +9,14 @@ import { TelegramCompanion } from "./components/Companion/TelegramCompanion";
 import { ChatCompanion } from "./components/Companion/ChatCompanion";
 import { BluetoothCompanion } from "./components/Companion/BluetoothCompanion";
 import { BrowserPopout } from "./components/BrowserPopout";
+import { GenUIRenderer } from "./components/GenUI/GenUIRenderer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles/globals.css";
 
 const companionType = new URLSearchParams(window.location.search).get("companion");
 const browserAgentId = new URLSearchParams(window.location.search).get("browser");
 const chatCompanionAgentId = new URLSearchParams(window.location.search).get("chatCompanion");
+const genuiPayload = new URLSearchParams(window.location.search).get("genui");
 
 // ── Global external-link interceptor ──────────────────────────────────────────
 //
@@ -67,8 +69,7 @@ function installGlobalExternalLinkHandler() {
     const sameOrigin =
       url.origin === window.location.origin ||
       url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
-      url.protocol === "tauri:";
+      url.hostname === "127.0.0.1";
     if (sameOrigin) return;
 
     e.preventDefault();
@@ -89,12 +90,12 @@ function installGlobalExternalLinkHandler() {
 // Install only for the main app window — companion windows (Slack/Github/etc.)
 // and the BrowserPopout already manage their own link behaviour and depend on
 // in-window navigation for OAuth-style flows.
-if (!companionType && !browserAgentId && !chatCompanionAgentId) {
+if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload) {
   installGlobalExternalLinkHandler();
 }
 
 const WindowWrapper = ({ children }: { children: React.ReactNode }) => {
-  if (!companionType && !browserAgentId && !chatCompanionAgentId) return <>{children}</>;
+  if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload) return <>{children}</>;
   
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -137,9 +138,52 @@ const GlobalBrowserListener = () => {
     return () => {
       if (unlisten) {
         try { 
-          const res = unlisten(); 
-          if (res && typeof (res as any).catch === 'function') (res as any).catch(() => {}); 
+          unlisten(); 
         } catch (e) {}
+      }
+    };
+  }, []);
+
+  return null;
+};
+
+const GlobalGenUIListener = () => {
+  const poppedOutWindows = React.useRef<Set<string>>(new Set());
+
+  React.useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    async function setupGlobalGenUIListener() {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        unlisten = await listen<any>("spawn_genui_window", async (e) => {
+          const { agent_id, component, props } = e.payload;
+          const windowId = `genui_${agent_id}_${component}_${Date.now()}`;
+          if (!poppedOutWindows.current.has(windowId)) {
+            poppedOutWindows.current.add(windowId);
+            const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+            // Encode the payload into the URL query so the new window can read it
+            const payload = encodeURIComponent(JSON.stringify({ component, props, agentId: agent_id, target: "window" }));
+            new WebviewWindow(windowId, {
+              url: `/index.html?genui=${payload}`,
+              title: `${component}`,
+              width: 600,
+              height: 400,
+              decorations: true,
+              alwaysOnTop: true,
+              transparent: true, // Allow custom styling for HUD widgets
+            });
+          }
+        });
+      } catch (err) {
+        console.warn("Global GenUI window listener failed", err);
+      }
+    }
+    setupGlobalGenUIListener();
+    return () => {
+      if (unlisten) {
+        try { 
+          unlisten(); 
+        } catch(e) {}
       }
     };
   }, []);
@@ -160,7 +204,26 @@ root.render(
   <React.StrictMode>
     <ErrorBoundary showDetails={true} allowNavigation={true}>
       <WindowWrapper>
-        {browserAgentId ? (
+        {genuiPayload ? (
+          <div style={{ width: "100%", height: "100%", padding: 20, boxSizing: "border-box", background: "var(--surface-base)" }}>
+            <GenUIRenderer 
+              app={JSON.parse(decodeURIComponent(genuiPayload))} 
+              onEvent={async (evt) => {
+                const app = JSON.parse(decodeURIComponent(genuiPayload));
+                console.log("Floating GenUI Window Event:", evt);
+                const { invoke } = await import('@tauri-apps/api/core');
+                try {
+                  await invoke("send_message", {
+                    agentId: app.agentId,
+                    message: `[GenUI Event] User interacted with floating ${app.component}: ${JSON.stringify(evt)}`,
+                  });
+                } catch (e) {
+                  console.error("Failed to route GenUI window event back to agent", e);
+                }
+              }} 
+            />
+          </div>
+        ) : browserAgentId ? (
           <BrowserPopout agentId={browserAgentId} />
         ) : chatCompanionAgentId ? (
           <ChatCompanion />

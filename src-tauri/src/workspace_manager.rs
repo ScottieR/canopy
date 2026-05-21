@@ -35,7 +35,11 @@ pub async fn get_agent_allowed_directories(agent_id: String) -> Result<Vec<Strin
 }
 
 #[tauri::command]
-pub async fn update_agent_allowed_directories(agent_id: String, directories: Vec<String>) -> Result<(), String> {
+pub async fn update_agent_allowed_directories(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    directories: Vec<String>,
+) -> Result<(), String> {
     let path = get_agent_workspace_config_path(&agent_id)
         .map_err(|e| e.to_string())?;
 
@@ -44,6 +48,28 @@ pub async fn update_agent_allowed_directories(agent_id: String, directories: Vec
 
     std::fs::write(&path, content)
         .map_err(|e| format!("Failed to write allowed directories: {}", e))?;
+
+    // If the agent is isolated, we must restart its specific container to pick up the new volume mounts
+    let is_isolated = db.get_agent(&agent_id).ok().flatten().map(|a| a.isolated).unwrap_or(false);
+    if is_isolated {
+        let data_dir = dirs::data_dir().unwrap().join("Canopy");
+        let port = crate::openclaw::get_agent_isolated_port(&agent_id);
+        let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port);
+        let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
+        let _ = std::fs::write(&compose_path, compose_content);
+
+        let _ = crate::docker::get_docker_compose_command()
+            .args(["-f", compose_path.to_str().unwrap(), "up", "-d"])
+            .output()
+            .await;
+            
+        // Because recreating the container wipes any root filesystem changes (like apt-get installs),
+        // we must re-apply the GitHub configuration if they had it enabled.
+        if let Ok(gh_token) = crate::keychain::get_secret(&format!("github-access-token-{}", agent_id)) {
+            let gh_user = crate::keychain::get_secret(&format!("github-username-{}", agent_id)).ok();
+            let _ = crate::channels::configure_github(db.clone(), agent_id.clone(), gh_token, gh_user).await;
+        }
+    }
 
     Ok(())
 }

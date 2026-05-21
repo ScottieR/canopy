@@ -1,12 +1,13 @@
 /**
  * forumCoordinator.ts
  *
- * LLM-driven brief assessment that replaces the static keyword scorer (scoreBrief.ts).
+ * LLM-driven brief assessment — scores each team member's relevance to a project brief.
  *
  * Architecture:
- * - Picks a coordinator agent (exec/assistant role preferred, else first active agent)
- * - Sends a single message asking the coordinator to rate each team member's relevance
- * - Parses the JSON array response into AgentScore[]
+ * - Calls `system_assess` (Tauri command) which picks the user's cheapest available model
+ *   (Gemini Flash Lite → Claude Haiku → GPT-4o Mini) and calls the provider API directly.
+ * - No OpenClaw session, no conversation history, zero footprint in any agent's chat.
+ * - Parses the JSON response into AgentScore[]
  * - Falls back transparently to keyword-based scoreBrief on any failure
  *
  * The caller (ForumBriefModal) does not need to know whether the LLM path
@@ -25,31 +26,8 @@ export interface AgentScoreWithIsolation extends AgentScore {
 // Re-export so callers can import from this file instead of scoreBrief
 export type { AgentScore };
 export { extractTags };
-export type { AgentScoreWithIsolation };
 
 const VOLUNTEER_THRESHOLD = 35;
-
-// ─── Coordinator selection ─────────────────────────────────────────────────────
-
-/**
- * Pick the best coordinator agent. We prefer someone with an executive/
- * assistant/coordinator-type role because they're built for meta-reasoning.
- * Falls back to first active agent, then first agent in list.
- */
-function findCoordinator(agents: AgentData[]): AgentData | null {
-  if (agents.length === 0) return null;
-
-  const coordinatorTerms = [
-    "assistant", "executive", "coordinator", "manager",
-    "chief", "advisor", "director",
-  ];
-
-  const preferred = agents.find(a =>
-    coordinatorTerms.some(t => a.role?.toLowerCase().includes(t))
-  );
-
-  return preferred ?? agents.find(a => a.status === "active") ?? agents[0];
-}
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
@@ -101,20 +79,6 @@ Rules for AGENTS — for EACH agent, assess their relevance:
 }
 
 // ─── Response parsing ─────────────────────────────────────────────────────────
-
-function extractText(response: unknown): string {
-  if (typeof response === "string") return response;
-  const r = response as Record<string, unknown>;
-  const result = r?.result as Record<string, unknown> | undefined;
-  const payloads = (result?.payloads ?? r?.payloads) as Array<Record<string, unknown>> | undefined;
-  return (
-    (payloads?.[0]?.text as string) ||
-    (r?.response as string) ||
-    (r?.content as string) ||
-    (r?.text as string) ||
-    ""
-  );
-}
 
 interface RawScore {
   agentId: string;
@@ -218,16 +182,17 @@ export interface AssessForumResult {
 }
 
 /**
- * Assess a forum brief using a real coordinator agent call.
+ * Assess a forum brief using the system_assess command (cheapest available model).
  *
- * Returns { scores, tags } where:
+ * Returns { scores, isolatedScores, tags } where:
  * - scores is sorted with volunteers first (confidence ≥ 35), descending by confidence
+ * - isolatedScores are keyword-scored and never auto-volunteer
  * - tags are LLM-derived topic labels for the forum (e.g. "Pricing Strategy")
  *
  * Falls back transparently to keyword scoring if:
- * - OpenClaw is unavailable
+ * - No provider API keys are configured
+ * - The provider API returns an error
  * - Response can't be parsed as valid JSON
- * - No agents are available
  */
 /** Helper: attach isolation flag to a score. */
 function withIsolation(score: AgentScore, isolated: boolean): AgentScoreWithIsolation {
@@ -245,29 +210,20 @@ export async function assessForum(
   const normalAgents = agents.filter(a => !a.isolated);
   const isolatedAgents = agents.filter(a => a.isolated);
 
-  const coordinator = findCoordinator(normalAgents.length > 0 ? normalAgents : agents);
-  if (!coordinator) {
-    const fallback = scoreBrief(brief, normalAgents);
-    const isolatedFallback = scoreBrief(brief, isolatedAgents).map(s => withIsolation({ ...s, volunteers: false }, true));
-    return {
-      scores: fallback.map(s => withIsolation(s, false)),
-      isolatedScores: isolatedFallback,
-      tags: extractTags(brief),
-    };
+  // No agents to score — nothing to do
+  if (normalAgents.length === 0 && isolatedAgents.length === 0) {
+    return { scores: [], isolatedScores: [], tags: extractTags(brief) };
   }
 
   try {
-    // Only score the normal (non-isolated) agents via LLM
+    // Build the coordinator prompt with the full agent roster
     const prompt = buildCoordinatorPrompt(brief, normalAgents);
 
-    const response = await invoke<unknown>("send_message", {
-      agentId: coordinator.id,
-      message: prompt,
-      sessionId: null,
-    });
-
-    const text = extractText(response);
-    if (!text) throw new Error("Empty response from coordinator");
+    // system_assess picks the cheapest available model (Gemini Flash Lite → Haiku
+    // → GPT-4o Mini) and calls the provider API directly — no OpenClaw session,
+    // no conversation history, zero footprint in any agent's chat.
+    const text = await invoke<string>("system_assess", { prompt });
+    if (!text) throw new Error("Empty response from system_assess");
 
     const result = parseCoordinatorResponse(text, normalAgents);
     if (!result || result.agents.length === 0) {

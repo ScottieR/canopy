@@ -96,7 +96,7 @@ function diagnoseError(err: unknown, agentName?: string): Diagnosis {
     return {
       summary: "OpenClaw was killed (out of memory)",
       detail: raw.slice(0, 200),
-      fix: "Restart OrbStack or Docker Desktop to recover memory, then retry.",
+      fix: "The OrbStack VM ran out of memory. Open OrbStack → Settings → Resources and increase RAM to 12–16 GB, then restart Canopy. The gateway's container limit has been updated to 4 GB so this should not recur — but the VM itself must have enough headroom.",
     };
   }
   if (/openclaw:/i.test(raw)) {
@@ -105,6 +105,13 @@ function diagnoseError(err: unknown, agentName?: string): Diagnosis {
       summary: `Agent configuration error${who}`,
       detail: match?.[1] ?? raw.slice(0, 200),
       fix: "Open the agent's settings in the Agents tab and check their model and personality configuration.",
+    };
+  }
+  if (lower.includes("character limit") || lower.includes("message is too long") || lower.includes("message exceeds") || lower.includes("context_length_exceeded") || lower.includes("maximum context length")) {
+    return {
+      summary: `Message too long${who}`,
+      detail: raw.slice(0, 200),
+      fix: "The project content or brief is too long for this agent's context window. Try a shorter brief, or retry — the board content will be trimmed automatically.",
     };
   }
   if (lower.includes("timeout") || lower.includes("timed out")) {
@@ -128,11 +135,25 @@ function diagnoseError(err: unknown, agentName?: string): Diagnosis {
       fix: "Too many requests — wait a moment and retry.",
     };
   }
+  if (lower.includes("quota") || lower.includes("billing") || lower.includes("credit") || lower.includes("insufficient_quota") || lower.includes("you've exceeded") || lower.includes("has been exceeded")) {
+    return {
+      summary: `Model quota or credits exceeded${who}`,
+      detail: raw.slice(0, 200),
+      fix: "Your API key has hit its usage limit. Top up credits in your API provider dashboard (Anthropic or OpenAI), then retry.",
+    };
+  }
   if (lower.includes("unauthorized") || lower.includes("401") || lower.includes("api key")) {
     return {
       summary: "API authentication failed",
       detail: raw.slice(0, 200),
       fix: "Check that your API key is valid and still has credits. Update it in the agent's settings.",
+    };
+  }
+  if (lower.includes("model") && (lower.includes("not found") || lower.includes("does not exist") || lower.includes("invalid"))) {
+    return {
+      summary: `Unknown or invalid model${who}`,
+      detail: raw.slice(0, 200),
+      fix: "Open the agent's settings in the Agents tab and check the model name is correct.",
     };
   }
 
@@ -150,13 +171,18 @@ function extractText(response: unknown): string {
   const r = response as Record<string, unknown>;
   const result = r?.result as Record<string, unknown> | undefined;
   const payloads = (result?.payloads ?? r?.payloads) as Array<Record<string, unknown>> | undefined;
-  const text = (
+  const raw = (
     (payloads?.[0]?.text as string) ||
     (r?.response as string) ||
     (r?.content as string) ||
     (r?.text as string) ||
     ""
   );
+  // openclaw.rs prepends [THOUGHT_PROCESS]...[/THOUGHT_PROCESS] blocks when
+  // extended thinking is enabled (lines 1773-1775). Strip them so downstream
+  // parsers (parseDraftResponse, question detection, etc.) only see the
+  // actual agent response text.
+  const text = raw.replace(/\[THOUGHT_PROCESS\][\s\S]*?\[\/THOUGHT_PROCESS\]\n*/g, "").trim();
   if (!text) throw new Error("Empty response — no text extracted from agent reply");
   return text;
 }
@@ -190,6 +216,25 @@ function parseAgentQuestion(response: string): AgentQuestion | null {
     // Not JSON — treat as prose
   }
   return null;
+}
+
+// ─── Prompt safety ────────────────────────────────────────────────────────────
+
+/** Hard cap on any single message to send_message.
+ *  128 KB is the Rust-side limit. We stay comfortably below it so prompt
+ *  template overhead never causes a surprise truncation. */
+const MAX_PROMPT_CHARS = 24_000;
+
+/**
+ * Trim a block of text that is embedded inside a larger prompt so the whole
+ * prompt stays under MAX_PROMPT_CHARS. Returns the trimmed string with an
+ * ellipsis note if it was cut.
+ */
+function fitBlock(block: string, reservedForRest: number): string {
+  const available = MAX_PROMPT_CHARS - reservedForRest;
+  if (block.length <= available) return block;
+  return block.slice(0, Math.max(0, available - 60)) +
+    "\n\n… [content trimmed to fit context window]";
 }
 
 // ─── Agent role detection ─────────────────────────────────────────────────────
@@ -277,6 +322,9 @@ Otherwise, return your research as clear markdown with headers. Be specific to t
 }
 
 function buildStrategyPrompt(forum: Forum, agent: ForumAgent, researchText: string, clarifications: string): string {
+  // ~600 chars of fixed template; reserve that + clarification overhead
+  const reserved = 700 + clarifications.length + forum.brief.length;
+  const safeResearch = fitBlock(researchText, reserved);
   return `You are ${agent.name}, ${agent.role}, participating in a collaborative forum.
 
 **Brief:** "${forum.brief}"
@@ -284,7 +332,7 @@ ${clarifications ? `\n**User clarifications:**\n${clarifications}\n` : ""}
 **Your forum role:** ${agent.forumRole}
 
 **Research findings from your team:**
-${researchText.slice(0, 2000)}
+${safeResearch}
 
 This is the STRATEGIC APPROACH phase. Based on the research and your expertise as ${agent.role}, develop the recommended path forward:
 - Clear recommended direction with rationale
@@ -298,7 +346,7 @@ Format as clear markdown. Be specific and actionable — a recommended path, not
 // ─── Format-aware draft ───────────────────────────────────────────────────────
 
 interface DraftResponse {
-  format: "markdown" | "html";
+  format: "markdown" | "html" | "genui";
   content: string;
 }
 
@@ -307,10 +355,10 @@ interface DraftResponse {
  * Falls back to HTML detection, then defaults to markdown.
  */
 function parseDraftResponse(raw: string): DraftResponse {
-  const match = raw.match(/---FORMAT---\s*(markdown|html)\s*---CONTENT---\s*([\s\S]*)/i);
+  const match = raw.match(/---FORMAT---\s*(markdown|html|genui)\s*---CONTENT---\s*([\s\S]*)/i);
   if (match) {
     return {
-      format: match[1].toLowerCase().trim() as "markdown" | "html",
+      format: match[1].toLowerCase().trim() as "markdown" | "html" | "genui",
       content: match[2].trim(),
     };
   }
@@ -322,10 +370,21 @@ function parseDraftResponse(raw: string): DraftResponse {
   ) {
     return { format: "html", content: trimmed };
   }
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    // Basic heuristic: if it's pure JSON, assume it's a genui payload
+    try {
+      JSON.parse(trimmed);
+      return { format: "genui", content: trimmed };
+    } catch {
+      // Not valid JSON, fall back
+    }
+  }
   return { format: "markdown", content: trimmed };
 }
 
 function buildDraftPrompt(forum: Forum, agent: ForumAgent, boardSoFar: string, clarifications: string): string {
+  const reserved = 1200 + clarifications.length + forum.brief.length;
+  const safeBoard = fitBlock(boardSoFar, reserved);
   return `You are ${agent.name}, ${agent.role}, producing the final deliverable for a collaborative forum.
 
 **Brief:** "${forum.brief}"
@@ -333,7 +392,7 @@ ${clarifications ? `\n**User clarifications:**\n${clarifications}\n` : ""}
 **Your forum role:** ${agent.forumRole}
 
 **Work so far (research + strategy):**
-${boardSoFar.slice(0, 2500)}
+${safeBoard}
 
 Choose the BEST FORMAT for this deliverable:
 
@@ -344,6 +403,8 @@ Choose the BEST FORMAT for this deliverable:
 - Style using: primary #3c6663, accent #4A9E96, background #faf9f6, text #303330
 - You may import Chart.js from https://cdn.jsdelivr.net/npm/chart.js or D3.js from https://d3js.org/d3.v7.min.js
 - Make it polished, beautiful, and immediately usable — not a demo
+
+**GENUI** — for complex, native React-like Mini-Apps. Output a structured JSON object representing a GenUI component (e.g. DataTable, ApprovalCard, or Custom Html with embedded logic). 
 
 If you need to confirm ONE thing before drafting, ask as a structured question (nothing else):
 {"__type": "question", "text": "Your question?", "options": ["Option A", "Option B", "Option C"]}
@@ -362,16 +423,25 @@ html
 ---CONTENT---
 [your complete self-contained HTML document]
 
-Default to markdown if HTML wouldn't genuinely improve this deliverable. When in doubt: if it's words, use markdown; if it's a tool or visualization, use HTML. Be specific to the actual brief — no filler.`;
+OR:
+
+---FORMAT---
+genui
+---CONTENT---
+[your stringified JSON GenUI payload here]
+
+Default to markdown if HTML or GenUI wouldn't genuinely improve this deliverable. When in doubt: if it's words, use markdown; if it's a tool or visualization, use HTML or GenUI. Be specific to the actual brief — no filler.`;
 }
 
 function buildReviewPrompt(forum: Forum, agent: ForumAgent, draftBoard: string): string {
+  const reserved = 400 + forum.brief.length;
+  const safeBoard = fitBlock(draftBoard, reserved);
   return `You are ${agent.name}, ${agent.role}. Your forum has produced a deliverable.
 
 **Original brief:** "${forum.brief}"
 
 **Deliverable:**
-${draftBoard.slice(0, 2000)}
+${safeBoard}
 
 REVIEW PHASE — in 2–4 sentences:
 1. Does this address the brief?
@@ -402,9 +472,6 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     const forum = store.forums.find(f => f.id === forumId);
     if (!forum) return;
 
-    // Guard: don't re-run if agent messages already exist
-    if (forum.messages.some(m => m.sender === "agent")) return;
-
     const {
       addForumMessage,
       addForumArtifact,
@@ -431,7 +498,11 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     const reviewer = findByRole(agents, "qa", "review", "engin", "advis", "test");
 
     // Helpers
-    const sessionId = (agent: ForumAgent) => `forum_${forumId}_${agent.agentId}`;
+    // Phase-scoped session IDs keep each orchestrator call context-clean.
+    // The prompts already include all necessary context (board content, clarifications),
+    // so persistent cross-call history only snowballs token usage without adding value.
+    const sessionId = (agent: ForumAgent, phase: string) =>
+      `forum_${forumId}_${agent.agentId}_${phase}`;
 
     const post = (agentId: string, text: string, kind: ForumMessageKind = "chat") => {
       const agent = agents.find(a => a.agentId === agentId);
@@ -458,20 +529,40 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       if (ms) updateMilestone(forumId, ms.id, status);
     };
 
-    /** Call an agent and extract text. Throws a descriptive Error on failure. */
-    const callAgent = async (agent: ForumAgent, prompt: string): Promise<string> => {
-      updateAgentAction(forumId, agent.agentId, "Thinking…");
-      try {
-        const response = await invoke<unknown>("send_message", {
-          agentId: agent.agentId,
-          message: prompt,
-          sessionId: sessionId(agent),
-        });
-        return extractText(response);
-      } catch (err) {
-        const d = diagnoseError(err, agent.name);
-        throw new Error(`[${d.summary}] ${d.detail} | FIX: ${d.fix}`);
+    /** Call an agent and extract text. Throws a descriptive Error on failure.
+     *  Each call uses a phase-scoped session so context doesn't snowball across
+     *  the multiple sequential calls within a single project run.
+     *
+     *  Retries once on timeout errors (5s pause) — most "LLM request timeout"
+     *  failures are transient Node event-loop blips, not permanent failures.
+     */
+    const callAgent = async (agent: ForumAgent, prompt: string, phase: string): Promise<string> => {
+      const isTimeoutErr = (e: unknown) => {
+        const s = String(e).toLowerCase();
+        return s.includes("timeout") || s.includes("taking a long time");
+      };
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : "Retrying…");
+        try {
+          const response = await invoke<unknown>("send_message", {
+            agentId: agent.agentId,
+            message: prompt,
+            sessionId: sessionId(agent, phase),
+          });
+          return extractText(response);
+        } catch (err) {
+          if (isTimeoutErr(err) && attempt < 2) {
+            // Transient timeout — wait 5s and retry once before surfacing the error.
+            await new Promise(r => setTimeout(r, 5_000));
+            continue;
+          }
+          const d = diagnoseError(err, agent.name);
+          throw new Error(`[${d.summary}] ${d.detail} | FIX: ${d.fix}`);
+        }
       }
+      // Unreachable — loop always returns or throws.
+      throw new Error("callAgent: unexpected end of retry loop");
     };
 
     /**
@@ -485,11 +576,12 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     const callAgentAllowingQuestion = async (
       agent: ForumAgent,
       prompt: string,
+      phase: string,
       actionLabel = "Thinking…"
     ): Promise<string> => {
       updateAgentAction(forumId, agent.agentId, actionLabel);
 
-      let response = await callAgent(agent, prompt);
+      let response = await callAgent(agent, prompt, phase);
       if (stopped) return response;
 
       const question = parseAgentQuestion(response);
@@ -521,11 +613,12 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         text: answer,
       });
 
-      // Re-call the agent with the answer in context
+      // Re-call using the same phase session so the agent has context of its own question
       updateAgentAction(forumId, agent.agentId, actionLabel);
       response = await callAgent(
         agent,
-        `The user answered your question "${question.text}" with: "${answer}". Now please continue with your original task.`
+        `The user answered your question "${question.text}" with: "${answer}". Now please continue with your original task.`,
+        phase
       );
       return response;
     };
@@ -578,7 +671,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       const coordinator = agents[0];
       updateAgentAction(forumId, coordinator.agentId, "Opening forum…");
 
-      const kickoffText = await callAgent(coordinator, buildKickoffPrompt(forum, coordinator));
+      const kickoffText = await callAgent(coordinator, buildKickoffPrompt(forum, coordinator), "kickoff");
       if (stopped) return;
 
       post(coordinator.agentId, kickoffText);
@@ -591,7 +684,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
       try {
         updateAgentAction(forumId, coordinator.agentId, "Clarifying…");
-        const clarifyResponse = await callAgent(coordinator, buildClarifyPrompt(forum, coordinator));
+        const clarifyResponse = await callAgent(coordinator, buildClarifyPrompt(forum, coordinator), "clarify");
         if (!stopped) {
           // Parse questions JSON
           const cleaned = clarifyResponse.trim()
@@ -639,13 +732,19 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       const clarifications = clarificationLines.join("\n");
       updateAgentAction(forumId, coordinator.agentId, "Waiting…");
 
+      // Small inter-phase delay — avoids bursting the API rate limit window
+      // when multiple agents share the same key or hit the same TPM bucket.
+      const pace = () => new Promise<void>(r => setTimeout(r, 1200));
+
       // ── Phase 1: Research ─────────────────────────────────────────────────
       if (stopped) return;
+      await pace(); if (stopped) return;
       activateMilestone("Research & data pull", "active");
 
       const researchText = await callAgentAllowingQuestion(
         researcher,
         buildResearchPrompt(forum, researcher, clarifications),
+        "research",
         "Researching…"
       );
       if (stopped) return;
@@ -659,13 +758,8 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         researcher.name
       );
       updateBlackboard(forumId, board1, researcher.agentId);
-      addForumArtifact(forumId, {
-        type: "markdown",
-        title: "Research Findings",
-        content: researchText,
-        agentId: researcher.agentId,
-        agentName: researcher.name,
-      });
+      // Research findings are intermediate work — they go on the blackboard but are
+      // not surfaced as a separate artifact card. Only the final deliverable is.
       updateAgentAction(forumId, researcher.agentId, "Research posted ✓");
       activateMilestone("Research & data pull", "done");
 
@@ -679,12 +773,14 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
       // ── Phase 2: Strategy ─────────────────────────────────────────────────
       if (stopped) return;
+      await pace(); if (stopped) return;
       activateMilestone("Strategic framing", "active");
       updateAgentAction(forumId, strategist.agentId, "Developing approach…");
 
       const stratText = await callAgent(
         strategist,
-        buildStrategyPrompt(forum, strategist, researchText, clarifications)
+        buildStrategyPrompt(forum, strategist, researchText, clarifications),
+        "strategy"
       );
       if (stopped) return;
 
@@ -692,13 +788,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
       const board2 = appendSection(board1, "Recommended Approach", stratText, strategist.name);
       updateBlackboard(forumId, board2, strategist.agentId);
-      addForumArtifact(forumId, {
-        type: "markdown",
-        title: "Strategic Approach",
-        content: stratText,
-        agentId: strategist.agentId,
-        agentName: strategist.name,
-      });
+      // Strategy is intermediate framing — lives on the blackboard, not as an artifact card.
       updateAgentAction(forumId, strategist.agentId, "Approach posted ✓");
       activateMilestone("Strategic framing", "done");
 
@@ -712,11 +802,13 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
       // ── Phase 3: Draft ────────────────────────────────────────────────────
       if (stopped) return;
+      await pace(); if (stopped) return;
       activateMilestone("Prose & voice pass", "active");
 
       const rawDraftText = await callAgentAllowingQuestion(
         writer,
         buildDraftPrompt(forum, writer, board2, clarifications),
+        "draft",
         "Drafting…"
       );
       if (stopped) return;
@@ -746,12 +838,14 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         : chatPreview(draft.content);
       post(writer.agentId, draftPreview);
 
+      // This is the real deliverable — the thing the user actually asked for.
       addForumArtifact(forumId, {
         type: draft.format,
         title: forum.title,
         content: draft.content,
         agentId: writer.agentId,
         agentName: writer.name,
+        isDeliverable: true,
       });
       updateAgentAction(forumId, writer.agentId, "Draft posted ✓");
       activateMilestone("Prose & voice pass", "done");
@@ -762,11 +856,12 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
       if (reviewer.agentId !== writer.agentId) {
         const reviewContext = draft.format === "html"
-          ? `[The team produced an interactive HTML deliverable for: ${forum.brief}]\n\nResearch & strategy:\n${board2.slice(0, 1500)}`
+          ? `[The team produced an interactive HTML deliverable for: ${forum.brief}]\n\nResearch & strategy:\n${fitBlock(board2, forum.brief.length + 200)}`
           : board3;
         const reviewText = await callAgent(
           reviewer,
-          buildReviewPrompt(forum, reviewer, reviewContext)
+          buildReviewPrompt(forum, reviewer, reviewContext),
+          "review"
         );
         if (stopped) return;
         post(reviewer.agentId, reviewText);
@@ -798,9 +893,13 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
   };
 
   run().catch(err => {
-    // Catch unhandled rejections outside the main try/catch (e.g. from helpers)
+    // Catch unhandled rejections outside the main try/catch (e.g. from helpers).
+    // Guard: if the forum is already paused the inner catch already handled it —
+    // don't add a second error message.
     if (!stopped) {
       const store = useForumStore.getState();
+      const currentForum = store.forums.find(f => f.id === forumId);
+      if (currentForum?.status === "paused") return; // inner catch already handled it
       const d = diagnoseError(err);
       store.addForumMessage(forumId, {
         kind: "system", sender: "system",
@@ -817,5 +916,131 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       pendingAnswers.forEach(resolve => resolve("__stopped__"));
       pendingAnswers.clear();
     },
+  };
+}
+
+export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorController {
+  let stopped = false;
+
+  const run = async () => {
+    const store = useForumStore.getState();
+    const forum = store.forums.find(f => f.id === forumId);
+    if (!forum) return;
+
+    const {
+      addForumMessage,
+      updateBlackboard,
+      updateAgentAction,
+      setForumStatus,
+      setBlackboardBlock,
+    } = store;
+
+    // Find the last user message to respond to
+    const lastUserMsg = [...forum.messages].reverse().find(m => m.sender === "user" && !m.text.startsWith("[GenUI Event]"));
+    if (!lastUserMsg) return;
+
+    // Status is already set to "active" by the useEffect trigger
+
+    const agents = forum.agents;
+    if (agents.length === 0) return;
+
+    // Default to the first agent if we can't find a specific role
+    const responder = findByRole(agents, "edit", "write", "prose", "comm", "strat", "design") ?? agents[0];
+
+    updateAgentAction(forumId, responder.agentId, "Thinking…");
+
+    // Upload any attachments from the user's message to the responder's workspace
+    const attachments = lastUserMsg.attachments ?? [];
+    const uploadedFilenames: string[] = [];
+    for (const att of attachments) {
+      try {
+        const safeFilename = att.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        await invoke("upload_workspace_file", {
+          agentId: responder.agentId,
+          filename: safeFilename,
+          base64Data: att.dataUrl,
+        });
+        uploadedFilenames.push(safeFilename);
+      } catch (uploadErr) {
+        console.warn("Failed to upload attachment to agent workspace:", att.name, uploadErr);
+      }
+    }
+
+    try {
+      const attachmentNote = uploadedFilenames.length > 0
+        ? `\n\nThe user has also attached ${uploadedFilenames.length === 1 ? "a file" : `${uploadedFilenames.length} files`} to this message. ${uploadedFilenames.length === 1 ? "It has" : "They have"} been saved to your workspace: ${uploadedFilenames.map(f => `"${f}"`).join(", ")}. You can read ${uploadedFilenames.length === 1 ? "it" : "them"} using your file system tools.`
+        : "";
+
+      // Cap user text at 4000 chars (edge-case: pasted huge blobs of text)
+      const userText = lastUserMsg.text.slice(0, 4000);
+      const followUpPrompt = `The user has a follow-up request regarding the final deliverable. Here is their message:\n\n"${userText}"${attachmentNote}\n\nIf you need to update the final deliverable on the blackboard, provide the complete, updated content using EXACTLY this delimiter structure:\n\n---FORMAT---\n[markdown, html, or genui]\n---CONTENT---\n[your updated content here]\n\nIf you are only answering a quick question and do not need to rewrite the deliverable, just reply normally without delimiters.`;
+
+      const response = await invoke<unknown>("send_message", {
+        agentId: responder.agentId,
+        message: followUpPrompt,
+        sessionId: `forum_${forumId}_${responder.agentId}`,
+      });
+      
+      const rawText = extractText(response);
+      if (stopped) return;
+
+      const hasDelimiters = /---FORMAT---/i.test(rawText);
+
+      if (hasDelimiters) {
+        const draft = parseDraftResponse(rawText);
+        setBlackboardBlock(forumId, {
+          type: draft.format,
+          content: draft.content,
+          agentId: responder.agentId,
+          agentName: responder.name,
+          generatedAt: Date.now(),
+        });
+
+        addForumMessage(forumId, {
+          kind: "chat", sender: "agent", agentId: responder.agentId, agentName: responder.name,
+          text: "I've updated the deliverable on the blackboard based on your feedback.",
+        });
+      } else {
+        addForumMessage(forumId, {
+          kind: "chat", sender: "agent", agentId: responder.agentId, agentName: responder.name,
+          text: rawText,
+        });
+
+        // Update the blackboard history text if it looks like a large document update
+        if (rawText.length > 200 || rawText.includes("```")) {
+          updateBlackboard(forumId, appendSection(
+            forum.blackboardContent,
+            "Revisions",
+            rawText,
+            responder.name
+          ));
+        }
+      }
+
+      updateAgentAction(forumId, responder.agentId, "Complete ✓");
+      setForumStatus(forumId, "completed");
+
+    } catch (err) {
+      if (stopped) return;
+      const d = diagnoseError(err, responder.name);
+      addForumMessage(forumId, {
+        kind: "system", sender: "system",
+        text: `⚠ ${d.summary}\n\nError: ${d.detail}\n\nFix: ${d.fix}`,
+      });
+      setForumStatus(forumId, "paused");
+    }
+  };
+
+  run().catch(err => {
+    if (!stopped) {
+      const store = useForumStore.getState();
+      store.setForumStatus(forumId, "paused");
+    }
+  });
+
+  return {
+    stop: () => {
+      stopped = true;
+    }
   };
 }

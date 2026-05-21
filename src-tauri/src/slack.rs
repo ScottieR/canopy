@@ -596,8 +596,9 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
             chs = channels_json,
         );
 
+        let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
         let cmd_future = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_script])
+            .args(["exec", "-u", "node", &container_name, "node", "-e", &patch_script])
             .output();
 
         if let Ok(Ok(output)) = tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
@@ -690,8 +691,14 @@ pub async fn check_slack_connection(agent_id: Option<String>) -> Result<SlackCon
 ///   This is NOT obtained via the OAuth redirect flow — the user must paste it manually.
 ///   Without it, Socket Mode cannot establish its WebSocket connection.
 #[tauri::command]
-pub async fn start_slack_listener() -> Result<String, String> {
-    let app_token = keychain::get_secret("slack-app-token")
+pub async fn start_slack_listener(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: Option<String>,
+) -> Result<String, String> {
+    let app_token_key = if let Some(id) = &agent_id { format!("agent_{}_slack_app_token", id) } else { "slack-app-token".to_string() };
+    let bot_token_key = if let Some(id) = &agent_id { format!("agent_{}_slack_bot_token", id) } else { "slack-bot-token".to_string() };
+
+    let app_token = keychain::get_secret(&app_token_key)
         .map_err(|_| {
             "Slack App Token (xapp-...) not found in keychain. \
              Create one in your Slack app dashboard under App-Level Tokens \
@@ -699,7 +706,7 @@ pub async fn start_slack_listener() -> Result<String, String> {
                 .to_string()
         })?;
 
-    let bot_token = keychain::get_secret("slack-bot-token")
+    let bot_token = keychain::get_secret(&bot_token_key)
         .map_err(|_| "Slack Bot Token (xoxb-...) not found in keychain. Connect Slack via Settings first.".to_string())?;
 
     let app_token = app_token.trim().to_string();
@@ -761,10 +768,12 @@ console.log('slack config patched');
         app = app_token_json,
     );
 
+    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
         crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_script])
+            .args(["exec", "-u", "node", &container_name, "node", "-e", &patch_script])
             .output(),
     ).await {
         Ok(Ok(o)) => o,
@@ -789,7 +798,7 @@ console.log('slack config patched');
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         crate::openclaw::get_docker_command()
-            .args(["restart", "canopy-gateway"])
+            .args(["restart", &container_name])
             .output(),
     ).await;
 
@@ -806,7 +815,10 @@ console.log('slack config patched');
 /// Tokens are NOT removed from keychain — reconnecting only requires calling
 /// `start_slack_listener()` again.
 #[tauri::command]
-pub async fn stop_slack_listener() -> Result<(), String> {
+pub async fn stop_slack_listener(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: Option<String>,
+) -> Result<(), String> {
     // Disable via direct JSON patch instead of `openclaw config set` so we get one
     // process restart total (the explicit docker restart below) rather than the
     // self-SIGTERM-from-config-set + explicit-restart double-churn we had previously.
@@ -824,10 +836,12 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 console.log('slack disabled in config');
 "#;
 
+    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(8),
         crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", patch_script])
+            .args(["exec", "-u", "node", &container_name, "node", "-e", patch_script])
             .output(),
     ).await {
         Ok(res) => res.map_err(|e| format!("Failed to disable Slack in gateway config: {}", e))?,
@@ -844,7 +858,7 @@ console.log('slack disabled in config');
 
     // Restart the gateway to drop the Socket Mode connection.
     let _ = crate::openclaw::get_docker_command()
-        .args(["restart", "canopy-gateway"])
+        .args(["restart", &container_name])
         .output()
         .await;
 
@@ -872,20 +886,47 @@ pub async fn disconnect_slack_for_agent(
     let _ = keychain::delete_secret_internal(&format!("agent_{}_slack_app_token", agent_id));
     let _ = keychain::delete_secret_internal(&format!("agent_{}_slack_bot_token", agent_id));
 
-    // Rebuild channels.slack.accounts and bindings WITHOUT this agent. The internal
-    // function reads the keychain, so wiping the entries above is enough — they'll be
-    // absent from the new accounts map. It returns `true` when openclaw.json was
-    // actually rewritten; we only bounce the gateway in that case so we don't drop
-    // OTHER agents' Slack Socket Mode connections for nothing.
-    let changed = crate::openclaw::sync_gateway_channels_internal(&db).await?;
+    let is_isolated = db.get_agent(&agent_id).map(|a| a.map(|a| a.isolated).unwrap_or(false)).unwrap_or(false);
 
-    if changed {
+    if is_isolated {
+        let patch_script = r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.channels=c.channels||{};
+c.channels.slack=c.channels.slack||{};
+c.channels.slack.enabled=false;
+c.channels.slack.botToken='';
+c.channels.slack.appToken='';
+c.plugins=c.plugins||{};
+c.plugins.entries=c.plugins.entries||{};
+c.plugins.entries.slack=c.plugins.entries.slack||{};
+c.plugins.entries.slack.enabled=false;
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+"#;
+        let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            crate::openclaw::get_docker_command()
+                .args(["exec", "-u", "node", &container_name, "node", "-e", patch_script])
+                .output(),
+        ).await;
+
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             crate::openclaw::get_docker_command()
-                .args(["restart", "canopy-gateway"])
+                .args(["restart", &container_name])
                 .output(),
         ).await;
+    } else {
+        let changed = crate::openclaw::sync_gateway_channels_internal(&db).await?;
+        if changed {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                crate::openclaw::get_docker_command()
+                    .args(["restart", "canopy-gateway"])
+                    .output(),
+            ).await;
+        }
     }
 
     info!("Slack disconnected for agent {}; tokens removed.", agent_id);

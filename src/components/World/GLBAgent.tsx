@@ -114,7 +114,7 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
     }
 
     console.log(`[GLBAgent] Animation Effect triggered. forceAnimation: ${forceAnimation}, activeActionName: ${activeActionName}, available: ${names.join(", ")}`);
-    const action = actions[activeActionName];
+    const action = activeActionName ? actions[activeActionName] : null;
 
     // Explicitly stop all other actions to prevent cross-contamination or stuck weights
     Object.values(actions).forEach((a) => {

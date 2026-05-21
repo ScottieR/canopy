@@ -429,7 +429,7 @@ export function CanopyScene({
         projects: projects,
         inbox: state.inbox
       } 
-    }).catch(e => console.warn("Failed to sync mobile state:", e));
+    }).catch((e: any) => console.warn("Failed to sync mobile state:", e));
   }, [agents, useWorldStore.getState().inbox]);
 
   useEffect(() => {
@@ -1086,9 +1086,85 @@ export function CompanionGuide({ type }: { type: string }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// AGENT WARMUP GATE
+// ═══════════════════════════════════════════════════════════════════════════════
+// Slim non-blocking banner shown while agents are still initializing.
+// Sits below the TopNav and auto-polls every 15s. Disappears when gatewayReady
+// becomes true — no full overlay, user can still browse the rest of the app.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function GatewayWarmupBanner() {
+  const setGatewayReady = useWorldStore(s => s.setGatewayReady);
+  const agents = useWorldStore(s => s.agents);
+  const [checking, setChecking] = useState(false);
+  const [failedCheck, setFailedCheck] = useState(false);
+
+  const check = async () => {
+    if (checking) return;
+    setChecking(true);
+    setFailedCheck(false);
+    for (const agent of agents) {
+      try {
+        const status = await invoke<string>("check_agent_status", { agentId: agent.id });
+        if (status === "active") {
+          setGatewayReady(true);
+          setChecking(false);
+          return;
+        }
+      } catch { }
+    }
+    setChecking(false);
+    setFailedCheck(true);
+  };
+
+  // Auto-poll every 15s so the banner disappears on its own without user action
+  useEffect(() => {
+    const t = setInterval(check, 15_000);
+    return () => clearInterval(t);
+  }, [agents]);
+
+  return (
+    <div style={{
+      display: "flex", alignItems: "center", gap: 10,
+      padding: "0 16px", height: 36,
+      background: failedCheck ? "rgba(245,158,11,0.1)" : "rgba(74,158,150,0.08)",
+      borderBottom: failedCheck ? "1px solid rgba(245,158,11,0.2)" : "1px solid rgba(74,158,150,0.15)",
+      flexShrink: 0,
+    }}>
+      {/* Animated pulse dot */}
+      <div style={{
+        width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+        background: failedCheck ? "#F59E0B" : "#4A9E96",
+        animation: checking ? "none" : "pulse 1.5s ease-in-out infinite",
+        opacity: checking ? 0.4 : 1,
+      }} />
+      <span style={{ fontSize: 12, color: failedCheck ? "#B45309" : "var(--text-sub)", flex: 1 }}>
+        {failedCheck
+          ? "Agents still offline — check OrbStack is running"
+          : "Agents are waking up, this usually takes 30–60 seconds…"}
+      </span>
+      <button
+        onClick={check}
+        disabled={checking}
+        style={{
+          fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 6,
+          background: "transparent",
+          color: failedCheck ? "#B45309" : "#4A9E96",
+          border: `1px solid ${failedCheck ? "rgba(245,158,11,0.4)" : "rgba(74,158,150,0.3)"}`,
+          cursor: checking ? "default" : "pointer", opacity: checking ? 0.5 : 1,
+          fontFamily: "inherit", transition: "opacity 0.15s",
+        }}
+      >
+        {checking ? "Checking…" : "Check now"}
+      </button>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
-  const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme, isAutoCloakEnabled, autoCloakTimeout, setIsCloaked } = useWorldStore();
+  const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme, isAutoCloakEnabled, autoCloakTimeout, setIsCloaked, gatewayReady } = useWorldStore();
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
   const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");
@@ -1110,6 +1186,36 @@ export default function App() {
       const { listen } = await import('@tauri-apps/api/event');
       unlisten = await listen<any>('jit_auth_requested', (event) => {
         setPendingJitAuth(event.payload);
+      });
+    };
+    setup();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Health monitor: react to gateway going offline/degraded mid-session.
+  // The health_monitor daemon fires this event every 60s. If the gateway
+  // goes down while the user is active, we reset gatewayReady so the UI
+  // shows the reconnect prompt rather than silently failing on the next message.
+  useEffect(() => {
+    let unlisten: any;
+    const setup = async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      unlisten = await listen<{ status: string }>('gateway-health', (event) => {
+        const { status } = event.payload;
+        if (status === "offline" || status === "degraded") {
+          // Only reset if we thought we were ready — avoids fighting with boot polling.
+          if (useWorldStore.getState().gatewayReady) {
+            console.warn("[gateway-health] Gateway went", status, "— resetting ready state");
+            useWorldStore.getState().setGatewayReady(false);
+          }
+        } else if (status === "active") {
+          if (!useWorldStore.getState().gatewayReady) {
+            console.info("[gateway-health] Gateway back online — marking ready");
+            useWorldStore.getState().setGatewayReady(true);
+          }
+        }
       });
     };
     setup();
@@ -1192,15 +1298,16 @@ export default function App() {
             console.warn("preflight_cleanup non-fatal:", e)
           );
 
-          setLoadStatus("Starting infrastructure gateway...");
-          await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
-
-          setLoadStatus("Registering agents with gateway...");
-          // Listen for per-agent progress events emitted by the Rust side.
+          // Listen for progress events emitted by the Rust side (gateway + agents).
           const { listen } = await import('@tauri-apps/api/event');
           const unlisten = await listen<string>('boot-sync-progress', (event) => {
             setLoadStatus(event.payload);
           });
+
+          setLoadStatus("Starting infrastructure gateway...");
+          await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
+
+          setLoadStatus("Registering agents with gateway...");
           await invoke("boot_sync_agents").catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
           unlisten();
 
@@ -1279,6 +1386,48 @@ export default function App() {
              return ea;
           });
           setAgents(mergedAgents);
+
+          // ── Wait for gateway readiness ──────────────────────────────────────
+          // boot_sync_agents registers agents in OpenClaw's DB, but the gateway
+          // spends a further 30-60s initialising channels and ACPX sidecars for
+          // each agent. During that window any agent call returns "Unknown agent id".
+          // We hold the loading screen here until at least one agent confirms "active"
+          // (or 60 s elapses, in which case we proceed with a warning banner).
+          {
+            const agentIds = loadedAgents.map(a => a.id);
+            const READY_TIMEOUT_MS = 60_000;
+            const POLL_INTERVAL_MS = 2_500;
+            const deadline = Date.now() + READY_TIMEOUT_MS;
+            let agentsReady = false;
+
+            setLoadStatus("Waiting for agents to come online…");
+
+            while (Date.now() < deadline && !agentsReady) {
+              await new Promise<void>(r => setTimeout(r, POLL_INTERVAL_MS));
+              for (const id of agentIds) {
+                try {
+                  const status = await invoke("check_agent_status", { agentId: id }) as string;
+                  if (status === "active") { agentsReady = true; break; }
+                } catch { /* non-fatal — keep polling */ }
+              }
+              if (!agentsReady) {
+                const elapsed = Math.round((Date.now() - (deadline - READY_TIMEOUT_MS)) / 1000);
+                setLoadStatus(`Agents warming up… ${elapsed}s`);
+              }
+            }
+
+            if (agentsReady) {
+              useWorldStore.getState().setGatewayReady(true);
+              setLoadStatus("Agents ready ✓");
+              // Brief pause so the "ready" state is visible before the app appears
+              await new Promise<void>(r => setTimeout(r, 400));
+            } else {
+              // Timeout — proceed anyway so the user isn't stuck forever.
+              // They'll see a warning if they try to start a project before agents warm up.
+              setLoadStatus("Gateway is taking longer than usual — proceeding. Some features may not be ready yet.");
+              await new Promise<void>(r => setTimeout(r, 2500));
+            }
+          }
 
           const hash = window.location.hash.replace('#/', '').replace('#', '');
           const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
@@ -1424,6 +1573,8 @@ export default function App() {
       <LockScreen />
       <UpdateManager />
       {activeView !== "onboarding" && <TopNav />}
+      {/* Non-blocking warmup banner — sits below nav, auto-dismisses when agents ready */}
+      {activeView !== "onboarding" && activeView !== "loading" && !gatewayReady && <GatewayWarmupBanner />}
 
       {activeView === "loading" && <LoadingScreen status={loadStatus} />}
       {activeView === "onboarding" && <OnboardingWizard />}

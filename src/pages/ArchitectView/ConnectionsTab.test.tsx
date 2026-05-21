@@ -47,6 +47,13 @@ const mockAgent: AgentData = {
   recentSpend: [],
   chatLog: [],
   memories: [],
+  personality: {
+    name: 'Test Agent',
+    communication_style: 'Helpful and direct',
+    expertise: ['testing'],
+    guardrails: [],
+    custom_instructions: 'Keep it brief.',
+  },
   personalityPrompt: 'You are a helpful assistant',
   avatarPrompt: 'A friendly robot',
   visual_identity: { baseModelUrl: null, accessories: [] },

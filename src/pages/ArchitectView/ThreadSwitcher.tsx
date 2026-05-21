@@ -63,6 +63,7 @@ export function ThreadSwitcher({ agent }: { agent: AgentData }) {
   // Build the sorted list — newest activity first, plus an "Active draft"
   // marker for the in-progress chat that hasn't been saved yet.
   const sortedConversations: Conversation[] = [...(agent.conversations || [])]
+    .filter(c => !c.id?.startsWith("_sys_")) // hide internal system sessions
     .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
 
   // Filter by search query. We match on title AND message text — users often

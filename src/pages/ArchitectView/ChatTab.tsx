@@ -3,7 +3,8 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, ChevronDown,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip,
+  AlertTriangle
 } from "lucide-react";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
@@ -36,11 +37,167 @@ const formatMessageTime = (dateInput: Date | string | number) => {
   }
 };
 
+function EmbedPreview({ agentId, refName, title, height }: { agentId: string; refName: string; title: string; height: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  
+  useEffect(() => {
+    const filename = refName.endsWith(".html") ? refName : `${refName}.html`;
+    invoke<string>("read_workspace_file", { agentId, filename })
+      .then(body => setContent(body))
+      .catch(e => setError(String(e)));
+  }, [agentId, refName]);
+
+  return (
+    <div style={{ margin: "12px 0", border: "1px solid var(--border-subtle)", borderRadius: 12, overflow: "hidden", background: "var(--surface-card)" }}>
+      <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 8, background: "rgba(0,0,0,0.02)" }}>
+        <button
+          title="Export HTML"
+          onClick={() => {
+            if (!content) return;
+            const blob = new Blob([content], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = refName.endsWith(".html") ? refName : `${refName}.html`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }}
+          style={{ background: "none", border: "none", padding: 0, cursor: content ? "pointer" : "default", opacity: content ? 1 : 0.4, display: "flex" }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--primary)" }}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </button>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>{title}</span>
+      </div>
+      {error ? (
+        <div style={{ padding: 16, fontSize: 12, color: "#E57373" }}>Failed to load embed: {error}</div>
+      ) : content === null ? (
+        <div style={{ padding: 16, fontSize: 12, color: "var(--text-muted)" }}>Loading {refName}...</div>
+      ) : content.trim() === "" ? (
+        <div style={{ padding: 32, fontSize: 13, color: "var(--text-muted)", fontStyle: "italic", textAlign: "center", background: "rgba(0,0,0,0.02)" }}>
+          File <strong>{refName}</strong> is empty or hasn't been saved to the workspace yet.
+        </div>
+      ) : (
+        <iframe
+          srcDoc={content}
+          style={{ width: "100%", height: height ? `${height}px` : "400px", border: "none" }}
+          sandbox="allow-scripts allow-same-origin"
+          title={title}
+        />
+      )}
+    </div>
+  );
+}
+
 export // ─── Chat / Communion Component ──────────────────────────────────────────────
 
 function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentData; compact?: boolean; hideHeader?: boolean }) {
   const { agents, setAgents, setArchitectTab } = useWorldStore();
   const gatewayReady = useWorldStore(s => s.gatewayReady);
+  const [repairLog, setRepairLog] = useState<string | null>(null);
+  const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);
+  const [isRepairing, setIsRepairing] = useState(false);
+  const [hardResetting, setHardResetting] = useState(false);
+
+  const handleResume = async () => {
+    try {
+      // Optimistically update local store state
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => 
+          a.id === agent.id ? { ...a, paused: false, status: "idle" as any } : a
+        )
+      }));
+      if (typeof invoke === 'function') {
+        await invoke("set_agent_paused", { agentId: agent.id, paused: false });
+        // After resuming, run boot_sync_agents to ensure it is registered and running
+        await invoke("boot_sync_agents").catch(e => console.warn("Failed to boot sync resumed agent:", e));
+      }
+    } catch (e) {
+      console.error("Failed to resume agent:", e);
+      // Revert local store state on error
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => 
+          a.id === agent.id ? { ...a, paused: true, status: "sleeping" as any } : a
+        )
+      }));
+      alert("Failed to resume agent: " + e);
+    }
+  };
+
+  const handleRepair = async () => {
+    setIsRepairing(true);
+    setRepairLog("Starting repair process...\n\nSynchronizing credentials and rebuilding agent gateway container.");
+    setRepairSucceeded(null);
+    try {
+      if (typeof invoke === 'function') {
+        // Retrieve credentials
+        const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_anthropic_key` }).catch(() => "") || "")
+          || String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
+        const agOpenAI = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_openai_key` }).catch(() => "") || "")
+          || String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
+        const agGemini = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_gemini_key` }).catch(() => "") || "")
+          || String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
+        const agGrok = String(await invoke("get_secret_cmd", { key: `agent_${agent.id}_grok_key` }).catch(() => "") || "")
+          || String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
+            || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
+
+        await invoke("sync_credentials", {
+          agentId: agent.id, keys: {
+            "ANTHROPIC_API_KEY": agAnthropic,
+            "OPENAI_API_KEY": agOpenAI,
+            "GEMINI_API_KEY": agGemini,
+            "XAI_API_KEY": agGrok,
+          }
+        }).catch((err) => console.error("Sync credentials failed:", err));
+
+        const res = await invoke("repair_gateway", { agentId: agent.id });
+        setRepairLog(String(res));
+        setRepairSucceeded(true);
+
+        // Clear the error status — the agent is now registered and live.
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => a.id === agent.id
+            ? { ...a, status: "active", currentAction: "idle" }
+            : a)
+        }));
+      }
+    } catch (e) {
+      setRepairLog("✗ Repair failed:\n" + String(e));
+      setRepairSucceeded(false);
+      console.error("Openclaw repair failed:", e);
+    } finally {
+      setIsRepairing(false);
+    }
+  };
+
+  const handleHardReset = async () => {
+    setHardResetting(true);
+    setRepairLog("Hard Reset in progress...\n\nRestarting OrbStack Linux VM and rebuilding the gateway container.\nThis takes 15–20 seconds.");
+    setRepairSucceeded(null);
+    try {
+      if (typeof invoke === 'function') {
+        await invoke("hard_reset_infrastructure");
+        setRepairLog("✓ Hard Reset complete — OrbStack VM restarted. Re-registering agents...");
+        try {
+          await invoke("boot_sync_agents");
+          setRepairLog("✓ Hard Reset complete — gateway restarted and agents re-initialized.");
+          setRepairSucceeded(true);
+        } catch (syncErr) {
+          console.warn("boot_sync after hard reset:", syncErr);
+          setRepairLog("✓ Hard Reset complete — gateway restarted.\n(Agent re-sync ran in background.)");
+          setRepairSucceeded(true);
+        }
+      }
+    } catch (e) {
+      setRepairLog(`✗ Hard Reset failed:\n${String(e)}\n\nMake sure OrbStack is installed and try opening it manually.`);
+      setRepairSucceeded(false);
+    } finally {
+      setHardResetting(false);
+    }
+  };
+
   const [message, setMessage] = useState(agent.draftMessage || "");
   // chatLog is declared up here (rather than further down where it used to
   // live) so the thread-reseed and voice-playback useEffects below can
@@ -204,6 +361,49 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(true);
   const abortRef = useRef(false);
+
+  // Message Queueing State
+  const [queuedMessages, setQueuedMessages] = useState<{text: string, attachments: any[], threadMode: "same" | "new"}[]>([]);
+
+  const handleQueueMessage = (threadMode: "same" | "new" = "same") => {
+    const baseText = message.trim();
+    if (!baseText && attachments.length === 0) return;
+    
+    setQueuedMessages(prev => [...prev, {
+      text: baseText,
+      attachments: [...attachments],
+      threadMode
+    }]);
+    
+    setMessage("");
+    setAttachments([]);
+  };
+
+  // Process queued messages when loading finishes
+  useEffect(() => {
+    if (!loading && queuedMessages.length > 0 && !abortRef.current) {
+      const timer = setTimeout(() => {
+        const nextMsg = queuedMessages[0];
+        setQueuedMessages(prev => prev.slice(1));
+        
+        if (nextMsg.threadMode === "new") {
+           const newSessionId = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+           useWorldStore.setState(state => ({
+             agents: state.agents.map(a => {
+               if (a.id !== agent.id) return a;
+               return { ...a, activeConversationId: newSessionId, chatLog: [] };
+             })
+           }));
+           setTimeout(() => {
+             handleSendMessage(nextMsg.text, nextMsg.attachments, newSessionId);
+           }, 100);
+        } else {
+           handleSendMessage(nextMsg.text, nextMsg.attachments);
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [loading, queuedMessages, agent.id]);
 
   const handleScroll = useCallback(() => {
     if (chatContainerRef.current) {
@@ -464,18 +664,20 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const handleStop = () => {
     abortRef.current = true;
     setLoading(false);
+    setQueuedMessages([]); // Clear queue on stop
   };
 
-  const handleSendMessage = async (overrideText?: string) => {
+  const handleSendMessage = async (overrideText?: string, overrideAttachments?: any[], overrideSessionId?: string) => {
     if (loading) return;
     const baseText = (overrideText ?? message).trim();
-    if (!baseText && attachments.length === 0) return;
+    const activeAttachments = overrideAttachments ?? attachments;
+    if (!baseText && activeAttachments.length === 0) return;
 
     abortRef.current = false;
 
     let finalMessage = baseText;
-    if (!overrideText && attachments.length > 0) {
-      const fileNames = attachments.map(a => a.name).join(", ");
+    if (activeAttachments.length > 0) {
+      const fileNames = activeAttachments.map(a => a.name).join(", ");
       finalMessage += `\n\n[System Context: I have uploaded the following files to your workspace: ${fileNames}. Please analyze them if requested.]`;
     }
 
@@ -485,11 +687,11 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       text: baseText,
       time: formatMessageTime(new Date()),
       ts: Date.now(),
-      attachments: !overrideText && attachments.length > 0 ? [...attachments] : undefined,
+      attachments: activeAttachments.length > 0 ? [...activeAttachments] : undefined,
     };
 
     setChatLog(prev => capLog([...prev, userMsg]));
-    if (!overrideText) {
+    if (overrideText === undefined && overrideAttachments === undefined) {
       setMessage("");
       setAttachments([]);
     }
@@ -506,9 +708,11 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         }
       }
 
-      let activeSessionId = agent.activeConversationId;
-      if (!activeSessionId) {
-        activeSessionId = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      let activeSessionId = overrideSessionId || agent.activeConversationId;
+      const convExists = agent.conversations?.some(c => c.id === activeSessionId);
+      
+      if (!activeSessionId || !convExists) {
+        activeSessionId = activeSessionId || `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         useWorldStore.setState(state => ({
           agents: state.agents.map(a => {
             if (a.id !== agent.id) return a;
@@ -539,12 +743,18 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         return;
       }
 
-      const responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
+      let responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
+
+      const authMatch = responseText.match(/\[request_auth:\s*([^\]]+)\]/);
+      if (authMatch) {
+         setAuthDomain(authMatch[1].trim());
+         responseText = responseText.replace(authMatch[0], "").trim();
+      }
 
       const agentMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: "agent",
-        text: responseText,
+        text: responseText || "I've sent a credential request to your WebVault.",
         time: formatMessageTime(new Date()),
       };
 
@@ -661,7 +871,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, position: "relative" }}>
       {!compact && !hideHeader && (
         <div style={{ marginBottom: 12, padding: "0 10px", marginTop: 4 }}>
           <div style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>
@@ -781,49 +991,85 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                   const thoughtStartRegex = /\[THOUGHT_PROCESS\]/i;
                   const thoughtEndRegex = /\[\/THOUGHT_PROCESS\]/i;
                   
+                  const chunks: { type: string; content?: string }[] = [];
                   let remainingText = text;
                   while (remainingText.length > 0) {
                       const startIndex = remainingText.search(thoughtStartRegex);
                       if (startIndex === -1) {
-                          if (remainingText.trim()) {
-                              elements.push(
-                                <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
-                                  <MDEditor.Markdown source={remainingText} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
-                                </div>
-                              );
-                          }
+                          if (remainingText.trim()) chunks.push({ type: "text", content: remainingText });
                           break;
                       }
                       
                       const before = remainingText.substring(0, startIndex);
-                      if (before.trim()) {
-                          elements.push(
-                            <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
-                              <MDEditor.Markdown source={before} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
-                            </div>
-                          );
-                      }
+                      if (before.trim()) chunks.push({ type: "text", content: before });
                       
                       remainingText = remainingText.substring(startIndex + "[THOUGHT_PROCESS]".length);
                       const endIndex = remainingText.search(thoughtEndRegex);
-                      let thoughtText = "";
                       if (endIndex === -1) {
-                          thoughtText = remainingText.trim();
+                          chunks.push({ type: "thought", content: remainingText.trim() });
                           remainingText = "";
                       } else {
-                          thoughtText = remainingText.substring(0, endIndex).trim();
+                          chunks.push({ type: "thought", content: remainingText.substring(0, endIndex).trim() });
                           remainingText = remainingText.substring(endIndex + "[/THOUGHT_PROCESS]".length);
                       }
-                      
-                      if (thoughtText) {
+                  }
+
+                  chunks.forEach((chunk, i) => {
+                      if (chunk.type === "thought") {
                           elements.push(
-                              <details key={`thought-${elements.length}`} style={{ margin: "8px 0", padding: "8px 12px", background: "rgba(0,0,0,0.05)", borderRadius: 8, fontSize: 12, color: "var(--text-sub)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                              <details key={`thought-${i}`} style={{ margin: "8px 0", padding: "8px 12px", background: "rgba(0,0,0,0.05)", borderRadius: 8, fontSize: 12, color: "var(--text-sub)", border: "1px solid rgba(0,0,0,0.05)" }}>
                                 <summary style={{ cursor: "pointer", fontWeight: 600, outline: "none", opacity: 0.8 }}>Thought Process</summary>
-                                <div style={{ marginTop: 8, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{thoughtText}</div>
+                                <div style={{ marginTop: 8, fontStyle: "italic", whiteSpace: "pre-wrap" }}>{chunk.content}</div>
                               </details>
                           );
+                      } else if (chunk.type === "text" && chunk.content) {
+                          const embedRegex = /\[embed\s+([^\]]+)\/\]/gi;
+                          let textToProcess = chunk.content;
+                          let match;
+                          let lastIndex = 0;
+                          
+                          while ((match = embedRegex.exec(textToProcess)) !== null) {
+                              if (match.index > lastIndex) {
+                                  const beforeText = textToProcess.substring(lastIndex, match.index);
+                                  if (beforeText.trim()) {
+                                      elements.push(
+                                          <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                                            <MDEditor.Markdown source={beforeText} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                                          </div>
+                                      );
+                                  }
+                              }
+                              
+                              const attrsStr = match[1];
+                              const refMatch = attrsStr.match(/ref="([^"]+)"/i);
+                              const titleMatch = attrsStr.match(/title="([^"]+)"/i);
+                              const heightMatch = attrsStr.match(/height="([^"]+)"/i);
+                              
+                              const refName = refMatch ? refMatch[1] : "unknown";
+                              const title = titleMatch ? titleMatch[1] : "Embedded Content";
+                              const height = heightMatch ? heightMatch[1] : "400";
+                              
+                              elements.push(
+                                  <EmbedPreview
+                                      key={`embed-${elements.length}`}
+                                      agentId={agent.id}
+                                      refName={refName}
+                                      title={title}
+                                      height={height}
+                                  />
+                              );
+                              lastIndex = embedRegex.lastIndex;
+                          }
+                          const afterText = textToProcess.substring(lastIndex);
+                          if (afterText.trim()) {
+                              elements.push(
+                                  <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                                    <MDEditor.Markdown source={afterText} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                                  </div>
+                              );
+                          }
                       }
-                  }
+                  });
                   
                   return <>{elements}</>;
                 })()}
@@ -1132,6 +1378,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         </div>
       )}
 
+      {queuedMessages.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12, padding: "0 10px" }}>
+           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-sub)", display: "flex", alignItems: "center", gap: 6 }}>
+              <List size={14} /> Queued Tasks ({queuedMessages.length})
+           </div>
+           {queuedMessages.map((msg, i) => (
+              <div key={i} style={{ 
+                background: "var(--surface-base)", border: "1px solid var(--border-subtle)", 
+                padding: "8px 12px", borderRadius: 8, fontSize: 12, color: "var(--text-main)",
+                display: "flex", justifyContent: "space-between", alignItems: "center"
+              }}>
+                 <div style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginRight: 12 }}>
+                   {msg.threadMode === "new" && <span style={{ background: "var(--primary-light, rgba(60,102,99,0.2))", color: "#3c6663", padding: "2px 6px", borderRadius: 4, marginRight: 8, fontSize: 10, fontWeight: 700 }}>NEW THREAD</span>}
+                   {msg.text || (msg.attachments.length > 0 ? `[${msg.attachments.length} attachment${msg.attachments.length > 1 ? 's' : ''}]` : "Empty Message")}
+                 </div>
+                 <button 
+                   onClick={() => setQueuedMessages(prev => prev.filter((_, idx) => idx !== i))}
+                   style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4, display: "flex", alignItems: "center", justifyContent: "center" }}
+                 >
+                   <X size={14} />
+                 </button>
+              </div>
+           ))}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginTop: attachments.length > 0 ? 8 : 16, alignItems: "flex-end", padding: "0 10px 10px 10px" }}>
         <button
           onClick={() => fileInputRef.current?.click()}
@@ -1172,7 +1444,10 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           onKeyDown={e => { 
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) handleSendMessage(); 
+              if ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) {
+                 if (loading) handleQueueMessage("same");
+                 else handleSendMessage();
+              }
             }
           }}
           onPaste={e => {
@@ -1191,20 +1466,20 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               }
             }
           }}
-          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
-          disabled={loading || !gatewayReady || agent.paused}
+          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : loading ? "Type here to queue another task..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
+          disabled={!gatewayReady || agent.paused}
           rows={1}
           style={{
             flex: 1, padding: "14px 18px", borderRadius: 14,
             border: "1px solid rgba(0,0,0,0.08)",
             background: "var(--glass-light)",
             fontSize: 13, fontFamily: "inherit", color: "var(--text-main)",
-            outline: "none", opacity: (loading || !gatewayReady || agent.paused) ? 0.6 : 1,
+            outline: "none", opacity: (!gatewayReady || agent.paused) ? 0.6 : 1,
             resize: "vertical", minHeight: "46px", maxHeight: "200px", boxSizing: "border-box"
           }}
         />
-        <div style={{ display: "flex", gap: 8 }}>
-          {loading ? (
+        <div style={{ display: "flex", gap: 8, flexDirection: "row" }}>
+          {loading && (
             <button
               onClick={handleStop}
               style={{
@@ -1217,16 +1492,18 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 height: "46px"
               }}
             >Stop</button>
-          ) : (
+          )}
+
+          {!loading ? (
             <button
               onClick={() => handleSendMessage()}
-              disabled={(!message.trim() && attachments.length === 0) || loading || !gatewayReady || agent.paused}
+              disabled={(!message.trim() && attachments.length === 0) || !gatewayReady || agent.paused}
               title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? "Agents are waking up, please wait..." : undefined}
               style={{
                 padding: "14px 20px", borderRadius: 14, border: "none",
-                background: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
-                color: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
-                fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && !loading && gatewayReady && !agent.paused) ? "pointer" : "default",
+                background: ((message.trim() || attachments.length > 0) && !gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
+                color: ((message.trim() || attachments.length > 0) && !gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
+                fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && !gatewayReady && !agent.paused) ? "pointer" : "default",
                 fontFamily: "inherit",
                 transition: "all 0.15s ease",
                 height: "46px"
@@ -1236,6 +1513,38 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 <path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>
               </svg>
             ) : "Send"}</button>
+          ) : (
+            <>
+               <button
+                 onClick={() => handleQueueMessage("same")}
+                 disabled={!message.trim() && attachments.length === 0}
+                 style={{
+                   padding: "14px 16px", borderRadius: 14, border: "none",
+                   background: ((message.trim() || attachments.length > 0)) ? "#3c6663" : "var(--border-subtle)",
+                   color: ((message.trim() || attachments.length > 0)) ? "#fff" : "var(--text-muted)",
+                   fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0)) ? "pointer" : "default",
+                   fontFamily: "inherit",
+                   height: "46px", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap"
+                 }}
+               >
+                 <List size={16} /> Queue
+               </button>
+               <button
+                 onClick={() => handleQueueMessage("new")}
+                 disabled={!message.trim() && attachments.length === 0}
+                 title="Queue in a New Topic/Thread"
+                 style={{
+                   padding: "14px 16px", borderRadius: 14,
+                   background: ((message.trim() || attachments.length > 0)) ? "var(--glass-light)" : "var(--border-subtle)",
+                   color: ((message.trim() || attachments.length > 0)) ? "var(--text-main)" : "var(--text-muted)",
+                   fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0)) ? "pointer" : "default",
+                   fontFamily: "inherit", border: "1px solid rgba(0,0,0,0.08)",
+                   height: "46px", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap"
+                 }}
+               >
+                 <Plus size={16} /> New Thread
+               </button>
+            </>
           )}
         </div>
       </div>
@@ -1245,6 +1554,219 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         /* temp pulse override just to be safe */ /* @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
       `}</style>
+
+      {/* Paused Overlay */}
+      {agent.paused && (
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 50,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: 24,
+          ...glass(0.75),
+        }}>
+          <div style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            maxWidth: 400,
+            gap: 16,
+          }}>
+            <div style={{
+              width: 64,
+              height: 64,
+              borderRadius: "50%",
+              background: "rgba(60, 102, 99, 0.1)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#3c6663",
+            }}>
+              <Pause size={32} />
+            </div>
+            <div>
+              <h3 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 700, color: "var(--text-main)" }}>Agent is Paused</h3>
+              <p style={{ margin: 0, fontSize: 14, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                {agent.name} is currently sleeping and won't respond to messages.
+              </p>
+            </div>
+            <button
+              onClick={handleResume}
+              style={{
+                marginTop: 8,
+                padding: "12px 24px",
+                borderRadius: 12,
+                background: "linear-gradient(135deg, #3c6663, #609995)",
+                color: "var(--surface-card)",
+                fontSize: 14,
+                fontWeight: 700,
+                border: "none",
+                cursor: "pointer",
+                boxShadow: "0 4px 12px rgba(60, 102, 99, 0.3)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                transition: "transform 0.15s ease",
+              }}
+              onMouseOver={e => e.currentTarget.style.transform = "scale(1.03)"}
+              onMouseOut={e => e.currentTarget.style.transform = "scale(1)"}
+            >
+              <Play size={16} fill="currentColor" /> Resume Agent
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Offline Overlay */}
+      {agent.status === "error" && !agent.paused && gatewayReady && (
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 50,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: 24,
+          ...glass(0.85),
+        }}>
+          <div style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            maxWidth: 500,
+            gap: 16,
+            width: "100%",
+          }}>
+            <div style={{
+              width: 64,
+              height: 64,
+              borderRadius: "50%",
+              background: "rgba(229, 115, 115, 0.1)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#E57373",
+            }}>
+              <AlertTriangle size={32} />
+            </div>
+            <div>
+              <h3 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 700, color: "var(--text-main)" }}>Agent is Offline</h3>
+              <p style={{ margin: 0, fontSize: 14, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                {agent.name}'s workspace stopped unexpectedly. Try repairing the gateway, or perform a hard reset if it keeps failing.
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+              <button
+                onClick={handleRepair}
+                disabled={isRepairing || hardResetting}
+                style={{
+                  padding: "10px 20px",
+                  borderRadius: 10,
+                  background: "#3c6663",
+                  color: "var(--surface-card)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  border: "none",
+                  cursor: (isRepairing || hardResetting) ? "not-allowed" : "pointer",
+                  opacity: (isRepairing || hardResetting) ? 0.6 : 1,
+                  transition: "all 0.2s ease",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                {isRepairing ? "Repairing..." : "Repair Gateway"}
+              </button>
+              <button
+                onClick={handleHardReset}
+                disabled={isRepairing || hardResetting}
+                style={{
+                  padding: "10px 20px",
+                  borderRadius: 10,
+                  background: "transparent",
+                  color: "#E57373",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  border: "1px solid #E57373",
+                  cursor: (isRepairing || hardResetting) ? "not-allowed" : "pointer",
+                  opacity: (isRepairing || hardResetting) ? 0.6 : 1,
+                  transition: "all 0.2s ease",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                {hardResetting ? "Resetting..." : "Hard Reset"}
+              </button>
+            </div>
+            {repairLog && (
+              <div style={{
+                padding: 16,
+                borderRadius: 12,
+                background: repairSucceeded === true ? "rgba(52,211,153,0.07)" : repairSucceeded === false ? "rgba(229,115,115,0.08)" : "rgba(0,0,0,0.04)",
+                border: `1px solid ${repairSucceeded === true ? "rgba(52,211,153,0.25)" : repairSucceeded === false ? "rgba(229,115,115,0.3)" : "rgba(0,0,0,0.1)"}`,
+                color: repairSucceeded === true ? "#1a6b52" : repairSucceeded === false ? "#c62828" : "var(--text-sub)",
+                fontSize: 11,
+                marginTop: 8,
+                whiteSpace: "pre-wrap",
+                fontFamily: "monospace",
+                maxHeight: 180,
+                width: "100%",
+                overflowY: "auto",
+                lineHeight: 1.5,
+                textAlign: "left",
+              }}>
+                {repairLog}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Waking Up Overlay */}
+      {(!gatewayReady || agent.status === "deploying") && !agent.paused && (
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          zIndex: 50,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          textAlign: "center",
+          padding: 24,
+          ...glass(0.75),
+        }}>
+          <div style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            maxWidth: 400,
+            gap: 16,
+          }}>
+            <div style={{
+              width: 64,
+              height: 64,
+              borderRadius: "50%",
+              background: "rgba(244, 168, 58, 0.1)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              color: "#F4A83A",
+            }}>
+              <RefreshCw size={32} style={{ animation: "spin 2s linear infinite" }} />
+            </div>
+            <div>
+              <h3 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 700, color: "var(--text-main)" }}>Agent is Waking Up</h3>
+              <p style={{ margin: 0, fontSize: 14, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                The gateway is starting. This takes up to 90 seconds on a cold start — hang tight.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
