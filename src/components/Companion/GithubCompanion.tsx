@@ -12,6 +12,7 @@ export function GithubCompanion() {
   const [errorMsg, setErrorMsg] = useState("");
   const [repoMode, setRepoMode] = useState<"all" | "specific">("all");
   const [repos, setRepos] = useState<{ id: number; name: string; full_name: string; private: boolean }[]>([]);
+  const [selectedRepos, setSelectedRepos] = useState<Record<number, boolean>>({});
   const [step, setStep] = useState<1 | 2>(1);
 
   const [isVisible, setIsVisible] = useState(false);
@@ -34,6 +35,9 @@ export function GithubCompanion() {
         try {
           const fetchedRepos: any = await invoke("fetch_github_repos", { token: githubToken.trim() });
           setRepos(fetchedRepos || []);
+          const initialSelected: Record<number, boolean> = {};
+          (fetchedRepos || []).forEach((r: any) => initialSelected[r.id] = true);
+          setSelectedRepos(initialSelected);
         } catch (e) {
           console.error("Failed to fetch repos", e);
         }
@@ -61,7 +65,9 @@ export function GithubCompanion() {
           newIntegrations = newIntegrations.filter(i => !i.startsWith("github_repo_"));
           // Add new ones
           repos.forEach(r => {
-             newIntegrations.push(`github_repo_${r.full_name}`);
+             if (selectedRepos[r.id]) {
+                 newIntegrations.push(`github_repo_${r.full_name}`);
+             }
           });
           if (!newIntegrations.includes("github")) newIntegrations.push("github");
           
@@ -230,11 +236,17 @@ export function GithubCompanion() {
                 <div style={{ padding: 16, fontSize: 13, color: "var(--text-sub)", textAlign: "center" }}>No repositories found. Ensure the token has correct scopes.</div>
               ) : (
                 repos.map(r => (
-                  <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid rgba(0,0,0,0.05)" }}>
+                  <label key={r.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: "1px solid rgba(0,0,0,0.05)", cursor: "pointer" }}>
+                    <input 
+                       type="checkbox" 
+                       checked={selectedRepos[r.id] ?? false} 
+                       onChange={(e) => setSelectedRepos(prev => ({ ...prev, [r.id]: e.target.checked }))} 
+                       style={{ accentColor: "#3c6663" }} 
+                    />
                     <Github size={14} style={{ color: "var(--text-sub)" }} />
                     <div style={{ fontSize: 13, color: "var(--text-main)", fontWeight: 600 }}>{r.full_name}</div>
                     {r.private && <div style={{ fontSize: 10, background: "rgba(0,0,0,0.05)", padding: "2px 6px", borderRadius: 4, color: "var(--text-sub)" }}>Private</div>}
-                  </div>
+                  </label>
                 ))
               )}
             </div>

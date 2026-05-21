@@ -29,7 +29,7 @@ export interface Agent {
   isolated: boolean;
   paused: boolean;
   container_id: string | null;
-  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; decor?: string[]; habitatId?: number; color?: string; habitatOffset?: any; };
+  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; decor?: string[]; decorTransforms?: Record<string, any>; habitatId?: number; color?: string; habitatOffset?: any; };
   personality: {
     name: string;
     communication_style: string;
@@ -138,6 +138,8 @@ export interface AgentData extends Agent {
   visual_identity: {
     baseModelUrl: string | null;
     accessories: string[];
+    decor?: string[];
+    decorTransforms?: Record<string, any>;
     habitatId?: number;
     color?: string;
     habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; };
@@ -273,6 +275,7 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "coding", label: "Code Execution", description: "Run scripts and evaluate code locally", enabled: true, category: "skills" },
   { id: "gog", label: "Search Engine", description: "Query the web for information", enabled: true, category: "skills" },
   { id: "summarize", label: "Summarization", description: "Condense large documents or web pages", enabled: true, category: "skills" },
+  { id: "genui", label: "Generative UI", description: "Render interactive UI components", enabled: true, category: "skills" },
 ];
 
 export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; recommended_isolated?: boolean; recommended_tier?: "guarded" | "balanced" | "unrestricted"; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;

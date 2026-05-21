@@ -37,6 +37,9 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
 
   const sortedConversations: Conversation[] = [...(agent.conversations || [])]
     .filter(c => c.status !== "archived")
+    // Hide system-use sessions (prefixed _sys_) — these are internal app calls
+    // like project assessment that should never appear in the user-facing history.
+    .filter(c => !c.id?.startsWith("_sys_"))
     .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
 
   const q = query.trim().toLowerCase();
@@ -213,28 +216,26 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
       </div>
 
       {/* Quick actions */}
-      <div style={{ display: "flex", gap: 6, padding: "8px 10px", borderBottom: "1px solid var(--border-subtle)" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, padding: "16px 12px 12px" }}>
         <button
           onClick={() => saveCurrentThread(agent.id)}
           style={{
-            flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-            padding: "5px 8px", border: "1px solid var(--border-subtle)", borderRadius: 6,
-            background: "transparent", color: "var(--text-sub)", fontSize: 11, fontWeight: 600, cursor: "pointer",
-            fontFamily: "inherit",
+            padding: "8px", borderRadius: 8, border: "1px solid var(--border-subtle)",
+            background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 600,
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
           }}
         >
-          <MessageSquare size={11} /> Message
+          <MessageSquare size={11} /> + Message
         </button>
         <button
           onClick={() => setActiveView("forum")}
           style={{
-            flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
-            padding: "5px 8px", border: "1px solid rgba(60,102,99,0.3)", borderRadius: 6,
-            background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 600,
-            cursor: "pointer", fontFamily: "inherit",
+            padding: "8px", borderRadius: 8, border: "1px solid var(--border-subtle)",
+            background: "var(--surface-sunken)", color: "var(--text-sub)", fontSize: 12, fontWeight: 600,
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
           }}
         >
-          <Users size={11} /> Forum
+          <Users size={11} /> + Project
         </button>
       </div>
 
@@ -259,9 +260,9 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
       {/* Lists */}
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
         {sortedConversations.length === 0 ? (
-          <div style={{ padding: "20px 16px", fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6, textAlign: "center" }}>
-            No history yet.<br />
-            <span style={{ opacity: 0.7 }}>Start a message or forum above.</span>
+          <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
+            <div style={{ opacity: 0.5, marginBottom: 8 }}><MessageSquare size={24} /></div>
+            <span style={{ opacity: 0.7 }}>Start a message or project above.</span>
           </div>
         ) : filteredConversations.length === 0 ? (
           <div style={{ padding: 16, fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
@@ -270,23 +271,23 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
         ) : (
           <div style={{ display: "flex", flexDirection: "column" }}>
 
-            {/* Forums section */}
+            {/* Projects section */}
             {forums.length > 0 && (
-              <div>
-                <button
+              <div style={{ padding: "0 8px 16px" }}>
+                <div
                   onClick={() => setForumsExpanded(!forumsExpanded)}
                   style={{
-                    display: "flex", alignItems: "center", width: "100%", padding: "8px 12px 4px",
-                    background: "none", border: "none", cursor: "pointer", gap: 5,
+                    display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", cursor: "pointer",
+                    color: "var(--text-muted)", fontSize: 10, fontWeight: 700, letterSpacing: "0.05em"
                   }}
                 >
                   {forumsExpanded
-                    ? <ChevronDown size={11} color="var(--text-muted)" />
-                    : <ChevronRight size={11} color="var(--text-muted)" />}
-                  <span style={{ fontSize: 9, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                    Forums · {forums.length}
+                    ? <ChevronDown size={12} style={{ marginLeft: -4 }} />
+                    : <ChevronRight size={12} style={{ marginLeft: -4 }} />}
+                  <span style={{ flex: 1 }}>
+                    PROJECTS · {forums.length}
                   </span>
-                </button>
+                </div>
                 {forumsExpanded && forums.map(renderRow)}
               </div>
             )}

@@ -2516,7 +2516,7 @@ Maintain a calm, reassuring tone even when dealing with complex or stressful tas
                 setRecentlyRead([]);
                 setCustomBookInput("");
                 setLlmProvider("");
-                setCustomIdentity(null);
+                setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
                 setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
                 localStorage.removeItem('canopy_onboarding_draft');
                 setActiveView("canopy");
@@ -2540,7 +2540,7 @@ Maintain a calm, reassuring tone even when dealing with complex or stressful tas
                   setRecentlyRead([]);
                   setCustomBookInput("");
                   setLlmProvider("");
-                  setCustomIdentity(null);
+                  setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
                   setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
                   localStorage.removeItem('canopy_onboarding_draft');
                   setActiveView("canopy");

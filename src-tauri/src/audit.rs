@@ -188,34 +188,14 @@ pub fn check_security_alerts(db: &Database, agent_id: &str) -> Result<Vec<Securi
         });
     }
 
-    // Check for permission changes outside business hours
-    let business_hour_violations = entries.iter()
-        .filter(|entry| {
-            if entry.action == "permission_granted" || entry.action == "permission_revoked" {
-                if let Ok(timestamp) = DateTime::parse_from_rfc3339(&entry.timestamp) {
-                    let ts = timestamp.with_timezone(&Utc);
-                    let hour = ts.hour();
-                    // Outside 9am-5pm UTC (business hours)
-                    hour < 9 || hour >= 17
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        })
-        .count();
+    // Note: "off_hours_permission_change" check removed — Canopy is a personal app used
+    // at any hour, and "business hours" is undefined here. A hardcoded 9am-5pm UTC window
+    // fired false Medium alerts for every user not in UTC. Permission changes are already
+    // captured in the audit log for review; no heuristic time-of-day filter is warranted.
 
-    if business_hour_violations > 0 {
-        alerts.push(SecurityAlert {
-            alert_type: "off_hours_permission_change".to_string(),
-            severity: AlertSeverity::Medium,
-            detail: format!("{} permission changes detected outside business hours", business_hour_violations),
-            timestamp: now.to_rfc3339(),
-        });
-    }
-
-    // Check for rapid message sending (>20 messages per minute)
+    // Check for rapid message sending (>200 messages per minute)
+    // Threshold is 200, not 20 — a multi-agent forum run can legitimately fire 10+ messages
+    // per agent per phase. 20/min triggered false Critical alerts during normal orchestration.
     let rapid_messages = entries.iter()
         .filter(|entry| {
             if entry.action == "message_sent" {
@@ -231,11 +211,11 @@ pub fn check_security_alerts(db: &Database, agent_id: &str) -> Result<Vec<Securi
         })
         .count();
 
-    if rapid_messages > 20 {
+    if rapid_messages > 200 {
         alerts.push(SecurityAlert {
             alert_type: "rapid_message_sending".to_string(),
             severity: AlertSeverity::Critical,
-            detail: format!("{} messages sent in the last minute (threshold: 20)", rapid_messages),
+            detail: format!("{} messages sent in the last minute (threshold: 200)", rapid_messages),
             timestamp: now.to_rfc3339(),
         });
     }

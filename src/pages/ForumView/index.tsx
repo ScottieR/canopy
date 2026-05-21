@@ -3,161 +3,318 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useForumStore, Milestone, Forum, ForumBlock } from "../../store/forumStore";
 import { useWorldStore } from "../../store/worldStore";
-import { ForumStage } from "./ForumStage";
 import { ForumThread } from "./ForumThread";
-import { createForumOrchestrator } from "./forumOrchestrator";
+import { createForumOrchestrator, createFollowUpOrchestrator, ForumOrchestratorController } from "./forumOrchestrator";
 import { ForumBriefModal } from "./ForumBriefModal";
+import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 
-// ─── Progress Spine ───────────────────────────────────────────────────────────
+// ─── Milestone List ───────────────────────────────────────────────────────────
+// Vertical scrollable list of project steps — shows actual agent-defined labels
+// and auto-scrolls to keep the active step in view.
 
-function ProgressSpine({ milestones }: { milestones: Milestone[] }) {
+function MilestoneList({ milestones, forumStatus }: { milestones: Milestone[]; forumStatus: string }) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll active item into the center of the list
+  useEffect(() => {
+    if (activeRef.current && listRef.current) {
+      const container = listRef.current;
+      const el = activeRef.current;
+      const containerTop = container.scrollTop;
+      const containerH = container.clientHeight;
+      const elTop = el.offsetTop;
+      const elH = el.clientHeight;
+      // Scroll so the active item is roughly vertically centered
+      const target = elTop - containerH / 2 + elH / 2;
+      container.scrollTo({ top: target, behavior: "smooth" });
+    }
+  }, [milestones]);
+
+  // Always show "Brief" as a completed first step
+  const allSteps: { label: string; status: "done" | "active" | "pending"; id: string }[] = [
+    { id: "__brief__", label: "Brief & scope defined", status: "done" },
+    ...milestones.map(m => ({ id: m.id, label: m.label, status: m.status as "done" | "active" | "pending" })),
+  ];
+
+  const isRunning = forumStatus === "active";
+  const lastDoneIdx = allSteps.reduce((acc, s, i) => s.status === "done" ? i : acc, -1);
+  const nextIdx = lastDoneIdx + 1;
+
   return (
-    <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.07))", flexShrink: 0 }}>
+    <div style={{
+      display: "flex", flexDirection: "column",
+      borderRight: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
+      overflow: "hidden", flexShrink: 0,
+      width: 240,
+    }}>
+      {/* Section header */}
       <div style={{
-        fontSize: 10, fontWeight: 600, textTransform: "uppercase",
-        letterSpacing: "0.07em", color: "var(--text-sub, #636E72)",
-        opacity: 0.6, marginBottom: 10,
+        padding: "10px 14px 8px",
+        borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
+        display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
       }}>
-        Progress
+        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2.5} strokeLinecap="round">
+          <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+        </svg>
+        <span style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+          color: "var(--text-sub, #636E72)",
+        }}>
+          Project Steps
+        </span>
+        {isRunning && (
+          <div style={{
+            marginLeft: "auto", width: 6, height: 6, borderRadius: "50%",
+            background: "#4A9E96",
+            animation: "milestone-pulse 2s ease-in-out infinite",
+          }} />
+        )}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-        {milestones.map((ms, i) => (
-          <div key={ms.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", paddingBottom: i < milestones.length - 1 ? 12 : 0, position: "relative" }}>
-            {/* Connector line */}
-            {i < milestones.length - 1 && (
-              <div style={{
-                position: "absolute", left: 9, top: 20, bottom: -1, width: 1,
-                background: ms.status === "done" ? "#4A9E96" : "var(--border-subtle, rgba(0,0,0,0.1))",
-                transition: "background 0.4s ease",
-              }} />
-            )}
 
-            {/* Dot */}
-            <div style={{
-              width: 18, height: 18, borderRadius: "50%", flexShrink: 0, marginTop: 1,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              background: ms.status === "done" ? "#4A9E96" : "transparent",
-              border: ms.status === "done"
-                ? "2px solid #4A9E96"
-                : ms.status === "active"
-                  ? "2px solid #4A9E96"
-                  : "2px solid var(--border-strong, rgba(0,0,0,0.15))",
-              boxShadow: ms.status === "active"
-                ? "0 0 0 4px rgba(74,158,150,0.12), 0 0 12px rgba(74,158,150,0.2)"
-                : "none",
-              transition: "all 0.3s ease",
-              animation: ms.status === "active" ? "milestone-pulse 2s ease-in-out infinite" : "none",
-            }}>
-              {ms.status === "done" && (
-                <svg width={9} height={9} viewBox="0 0 9 9" fill="none">
-                  <polyline points="1.5,4.5 3.5,6.5 7.5,2.5" stroke="#fff" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              )}
-              {ms.status === "active" && (
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4A9E96" }} />
-              )}
-            </div>
-
-            {/* Label */}
-            <div style={{
-              fontSize: 12, lineHeight: 1.4, paddingTop: 1,
-              color: ms.status === "done"
-                ? "var(--text-sub, #636E72)"
-                : ms.status === "active"
-                  ? "var(--text-main, #303330)"
-                  : "var(--text-sub, #636E72)",
-              opacity: ms.status === "pending" ? 0.4 : ms.status === "done" ? 0.65 : 1,
-              transition: "all 0.3s ease",
-            }}>
-              {ms.label}
-            </div>
+      {/* Scrollable list */}
+      <div
+        ref={listRef}
+        style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}
+      >
+        {allSteps.length === 1 && forumStatus !== "active" ? (
+          <div style={{
+            padding: "20px 14px", fontSize: 11, color: "var(--text-sub, #636E72)",
+            opacity: 0.5, fontStyle: "italic", lineHeight: 1.5,
+          }}>
+            Steps will appear as the team builds the work plan…
           </div>
-        ))}
+        ) : (
+          allSteps.map((step, i) => {
+            const isDone = step.status === "done";
+            const isActive = step.status === "active";
+            const isPending = step.status === "pending";
+            const isNext = i === nextIdx && !isActive;
+
+            return (
+              <div
+                key={step.id}
+                ref={isActive ? activeRef : undefined}
+                style={{
+                  display: "flex", alignItems: "flex-start", gap: 10,
+                  padding: "7px 14px",
+                  background: isActive ? "rgba(74,158,150,0.07)" : "transparent",
+                  transition: "background 0.3s ease",
+                  position: "relative",
+                }}
+              >
+                {/* Vertical line connector */}
+                {i < allSteps.length - 1 && (
+                  <div style={{
+                    position: "absolute", left: 20, top: 22, bottom: -7,
+                    width: 1.5,
+                    background: isDone ? "#4A9E96" : "rgba(0,0,0,0.08)",
+                    transition: "background 0.4s ease",
+                  }} />
+                )}
+
+                {/* Status icon */}
+                <div style={{
+                  width: 18, height: 18, borderRadius: "50%", flexShrink: 0, marginTop: 1,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  background: isDone
+                    ? "#4A9E96"
+                    : isActive
+                      ? "rgba(74,158,150,0.15)"
+                      : "rgba(0,0,0,0.04)",
+                  border: isDone
+                    ? "2px solid #4A9E96"
+                    : isActive
+                      ? "2px solid #4A9E96"
+                      : "2px solid rgba(0,0,0,0.1)",
+                  boxShadow: isActive
+                    ? "0 0 0 3px rgba(74,158,150,0.15), 0 0 10px rgba(74,158,150,0.25)"
+                    : "none",
+                  animation: isActive ? "milestone-pulse 2s ease-in-out infinite" : "none",
+                  transition: "all 0.4s ease",
+                }}>
+                  {isDone ? (
+                    <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={3} strokeLinecap="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  ) : isActive ? (
+                    <div style={{
+                      width: 6, height: 6, borderRadius: "50%",
+                      background: "#4A9E96",
+                      animation: "milestone-pulse 1.4s ease-in-out infinite",
+                    }} />
+                  ) : (
+                    <div style={{
+                      width: 5, height: 5, borderRadius: "50%",
+                      background: isNext ? "rgba(74,158,150,0.4)" : "rgba(0,0,0,0.15)",
+                    }} />
+                  )}
+                </div>
+
+                {/* Label */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 11.5, lineHeight: 1.4,
+                    fontWeight: isActive ? 600 : isDone ? 400 : 400,
+                    color: isActive
+                      ? "#3c6663"
+                      : isDone
+                        ? "var(--text-sub, #636E72)"
+                        : isPending
+                          ? "var(--text-sub, #636E72)"
+                          : "var(--text-main, #303330)",
+                    opacity: isPending ? 0.45 : isDone ? 0.65 : 1,
+                    transition: "all 0.3s ease",
+                  }}>
+                    {step.label}
+                  </div>
+                  {isActive && (
+                    <div style={{
+                      fontSize: 9, color: "#4A9E96", marginTop: 2,
+                      fontWeight: 500, letterSpacing: "0.02em",
+                      display: "flex", alignItems: "center", gap: 4,
+                    }}>
+                      <span style={{ animation: "milestone-pulse 1.2s ease-in-out infinite" }}>●</span>
+                      In progress
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
     </div>
   );
 }
 
-// ─── Team Roster ──────────────────────────────────────────────────────────────
+// ─── Agent Status Bar ─────────────────────────────────────────────────────────
+// Rich agent cards with avatar, live action, elapsed time, and stuck detection.
 
-function TeamRoster({ forum }: { forum: ReturnType<typeof useForumStore.getState>["forums"][0] }) {
-  const isActive = (action?: string) =>
-    action && !action.includes("✓") && action !== "Reading brief…" && forum.status === "active";
+function useElapsed(changedAt?: number) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  if (!changedAt) return null;
+  const sec = Math.floor((now - changedAt) / 1000);
+  if (sec < 5) return null;
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m ${sec % 60}s`;
+}
+
+function AgentCard({ agent, forumStatus }: {
+  agent: ReturnType<typeof useForumStore.getState>["forums"][0]["agents"][0];
+  forumStatus: string;
+}) {
+  const color = agent.robeColor || "#4A9E96";
+  const elapsed = useElapsed(agent.actionChangedAt);
+  const isActive = forumStatus === "active";
+  const isThinking = isActive && !!agent.currentAction && !agent.currentAction.includes("✓") && !agent.currentAction.includes("Complete");
+  const isDone = agent.currentAction?.includes("✓") || agent.currentAction?.includes("Complete");
+  const isStuck = isThinking && !!elapsed && parseInt(elapsed) > 0 && (elapsed.includes("m") || parseInt(elapsed) >= 90);
+  const statusText = agent.currentAction || agent.forumRole;
+
+  // Elapsed color: neutral under 60s, amber 60-120s, red 120s+
+  let elapsedColor = "rgba(0,0,0,0.3)";
+  if (elapsed) {
+    const secs = elapsed.includes("m")
+      ? parseInt(elapsed) * 60 + parseInt(elapsed.split("m ")[1] || "0")
+      : parseInt(elapsed);
+    if (secs >= 120) elapsedColor = "#EF4444";
+    else if (secs >= 60) elapsedColor = "#F59E0B";
+  }
 
   return (
-    <div style={{ padding: "14px 16px", flexShrink: 0 }}>
-      <div style={{
-        fontSize: 10, fontWeight: 600, textTransform: "uppercase",
-        letterSpacing: "0.07em", color: "var(--text-sub, #636E72)",
-        opacity: 0.6, marginBottom: 10,
-      }}>
-        Team
+    <div style={{
+      display: "flex", flexDirection: "column",
+      flex: 1, minWidth: 0,
+      padding: "10px 10px 8px",
+      borderRadius: 12,
+      background: isThinking ? `${color}0e` : isDone ? "rgba(74,158,150,0.05)" : "rgba(0,0,0,0.02)",
+      border: isStuck
+        ? "1px solid rgba(239,68,68,0.3)"
+        : isThinking
+          ? `1px solid ${color}35`
+          : "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
+      transition: "all 0.4s ease",
+      position: "relative",
+    }}>
+      {/* Avatar + status dot */}
+      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: "50%",
+            background: `${color}22`,
+            border: `2px solid ${color}${isThinking ? "88" : "33"}`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 12, fontWeight: 700, color,
+            transition: "all 0.3s ease",
+            boxShadow: isThinking ? `0 0 0 3px ${color}18, 0 0 14px ${color}22` : "none",
+            animation: isThinking ? "typing-avatar-pulse 2s ease-in-out infinite" : "none",
+          }}>
+            {agent.name.charAt(0).toUpperCase()}
+          </div>
+          <div style={{
+            position: "absolute", bottom: -1, right: -1,
+            width: 9, height: 9, borderRadius: "50%",
+            background: isThinking ? color : isDone ? "#4A9E96" : "rgba(0,0,0,0.12)",
+            border: "1.5px solid var(--surface, #faf9f6)",
+            animation: isThinking ? "milestone-pulse 1.8s ease-in-out infinite" : "none",
+            transition: "background 0.3s ease",
+          }} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-main, #303330)", lineHeight: 1.2 }}>
+            {agent.name}
+          </div>
+          <div style={{ fontSize: 9, color: color, opacity: 0.7, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
+            {agent.forumRole}
+          </div>
+        </div>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {forum.agents.map(agent => {
-          const color = agent.robeColor || "#4A9E96";
-          const busy = isActive(agent.currentAction);
-          const done = agent.currentAction?.includes("✓");
-          const statusText = agent.currentAction || agent.forumRole;
 
-          return (
-            <div key={agent.agentId} style={{
-              display: "flex", alignItems: "center", gap: 10, padding: "7px 10px",
-              borderRadius: 10,
-              background: busy ? `${color}12` : "rgba(0,0,0,0.02)",
-              border: busy ? `1px solid ${color}40` : "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
-              transition: "all 0.4s ease",
-            }}>
-              {/* Avatar with live pulse ring */}
-              <div style={{ position: "relative", flexShrink: 0 }}>
-                <div style={{
-                  width: 28, height: 28, borderRadius: "50%",
-                  background: `${color}22`,
-                  border: `1.5px solid ${color}${busy ? "88" : "44"}`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 11, fontWeight: 700, color,
-                  transition: "border-color 0.3s ease",
-                }}>
-                  {agent.name.charAt(0).toUpperCase()}
-                </div>
-                {/* Status dot */}
-                <div style={{
-                  position: "absolute", bottom: -1, right: -1,
-                  width: 8, height: 8, borderRadius: "50%",
-                  background: busy ? color : done ? "#4A9E96" : "rgba(0,0,0,0.12)",
-                  border: "1.5px solid var(--surface-container-low, #f4f4f0)",
-                  animation: busy ? "milestone-pulse 1.8s ease-in-out infinite" : "none",
-                  transition: "background 0.3s ease",
-                }} />
-              </div>
+      {/* Live action text */}
+      <div style={{
+        fontSize: 10, lineHeight: 1.35,
+        color: isThinking ? color : "var(--text-sub, #636E72)",
+        opacity: isThinking ? 0.9 : 0.55,
+        overflow: "hidden", textOverflow: "ellipsis",
+        display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+        transition: "color 0.3s ease",
+        minHeight: 26,
+      }}>
+        {statusText}
+      </div>
 
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main, #303330)" }}>
-                  {agent.name}
-                </div>
-                <div style={{
-                  fontSize: 10, marginTop: 1,
-                  color: busy ? color : "var(--text-sub, #636E72)",
-                  opacity: busy ? 0.85 : 0.55,
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  transition: "color 0.3s ease",
-                }}>
-                  {statusText}
-                </div>
-              </div>
+      {/* Elapsed time */}
+      {elapsed && isActive && (
+        <div style={{
+          position: "absolute", top: 8, right: 8,
+          fontSize: 9, fontWeight: 600,
+          color: elapsedColor,
+          transition: "color 0.5s ease",
+          letterSpacing: "0.02em",
+        }}>
+          {elapsed}
+        </div>
+      )}
+    </div>
+  );
+}
 
-              {/* Confidence bar */}
-              <div style={{ flexShrink: 0, width: 28 }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color, textAlign: "right" }}>
-                  {agent.confidence}%
-                </div>
-                <div style={{ height: 2, borderRadius: 2, marginTop: 2, background: "rgba(0,0,0,0.08)", overflow: "hidden" }}>
-                  <div style={{ height: "100%", borderRadius: 2, background: color, width: `${agent.confidence}%`, transition: "width 0.5s ease" }} />
-                </div>
-              </div>
-            </div>
-          );
-        })}
+function AgentStatusBar({ forum }: { forum: ReturnType<typeof useForumStore.getState>["forums"][0] }) {
+  return (
+    <div style={{
+      padding: "10px 16px 10px",
+      borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
+      flexShrink: 0,
+    }}>
+      <div style={{ display: "flex", gap: 8, maxWidth: 900 }}>
+        {forum.agents.map(agent => (
+          <AgentCard key={agent.agentId} agent={agent} forumStatus={forum.status} />
+        ))}
       </div>
     </div>
   );
@@ -194,7 +351,7 @@ function ForumActions({
     <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
       <button
         onClick={() => { setOpen(o => !o); setConfirmDelete(false); }}
-        title="Forum options"
+        title="Project options"
         style={{
           width: 28, height: 28, borderRadius: 8, border: "1px solid var(--border-subtle, rgba(0,0,0,0.09))",
           background: open ? "var(--border-subtle, rgba(0,0,0,0.06))" : "transparent",
@@ -232,7 +389,7 @@ function ForumActions({
                 <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>
                 <line x1="10" y1="12" x2="14" y2="12"/>
               </svg>
-              Archive forum
+              Archive project
             </button>
           )}
 
@@ -256,7 +413,7 @@ function ForumActions({
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>
                 <path d="M9 6V4h6v2"/>
               </svg>
-              Delete forum
+              Delete project
             </button>
           ) : (
             <div style={{ padding: "8px 14px" }}>
@@ -422,7 +579,7 @@ function AddAgentPicker({
         padding: "14px 16px", zIndex: 50, minWidth: 200,
         fontSize: 12, color: "var(--text-sub, #636E72)",
       }}>
-        All agents are already in this forum.
+        All agents are already in this project.
       </div>
     );
   }
@@ -441,7 +598,7 @@ function AddAgentPicker({
         fontSize: 10, fontWeight: 700, textTransform: "uppercase",
         letterSpacing: "0.07em", color: "var(--text-sub, #636E72)", opacity: 0.5,
       }}>
-        Add to forum
+        Add to project
       </div>
       {available.map(agent => {
         const color = agent.robeColor || "#4A9E96";
@@ -457,8 +614,8 @@ function AddAgentPicker({
                 accentColor: agent.accentColor,
                 image: agent.image ?? null,
                 confidence: 50,
-                forumRole: "Added to forum",
-                currentAction: "Joining forum…",
+                forumRole: "Added to project",
+                currentAction: "Joining project…",
               });
               onClose();
             }}
@@ -599,21 +756,25 @@ function ForumBlackboard({
   const isHtmlMode: boolean = selectedArtifact
     ? selectedArtifact.type === "html"
     : blackboardBlock?.type === "html";
+    
+  const isGenUIMode: boolean = selectedArtifact
+    ? selectedArtifact.type === "genui"
+    : blackboardBlock?.type === "genui";
 
   const htmlContent: string | null = isHtmlMode
     ? (selectedArtifact?.content ?? blackboardBlock?.content ?? null)
     : null;
 
-  // Reset to preview when switching between html/markdown modes
+  // Reset to preview when switching between html/markdown/genui modes
   useEffect(() => {
     setViewMode("rendered");
-  }, [isHtmlMode, selectedArtifactId]);
+  }, [isHtmlMode, isGenUIMode, selectedArtifactId]);
 
   const displayContent = selectedArtifact
     ? selectedArtifact.content
     : historyIdx !== null
       ? forum.blackboardHistory[historyIdx]?.content ?? forum.blackboardContent
-      : isHtmlMode
+      : (isHtmlMode || isGenUIMode)
         ? (blackboardBlock?.content ?? "")
         : forum.blackboardContent;
 
@@ -633,7 +794,7 @@ function ForumBlackboard({
   }, [isComplete, isRendered]);
 
   const copyToClipboard = () => {
-    const textToCopy = isHtmlMode ? (htmlContent ?? displayContent) : forum.blackboardContent;
+    const textToCopy = isHtmlMode ? (htmlContent ?? displayContent) : isGenUIMode ? displayContent : forum.blackboardContent;
     navigator.clipboard.writeText(textToCopy).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2200);
@@ -776,8 +937,8 @@ function ForumBlackboard({
           locked ? "Unlock — agents can edit" : "Lock — agents cannot edit this content"
         )}
 
-        {/* Time Machine — hidden when viewing a pinned artifact or HTML block */}
-        {!selectedArtifact && !isHtmlMode && forum.blackboardHistory.length > 0 && (
+        {/* Time Machine — hidden when viewing a pinned artifact or HTML/GenUI block */}
+        {!selectedArtifact && !isHtmlMode && !isGenUIMode && forum.blackboardHistory.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="var(--text-sub, #636E72)" strokeWidth={2} strokeLinecap="round" style={{ opacity: 0.5 }}>
               <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
@@ -837,8 +998,25 @@ function ForumBlackboard({
           />
         )}
 
-        {/* ── HTML placeholder when no content yet ── */}
-        {isHtmlMode && isRendered && !htmlContent && (
+        {/* ── GenUI Rendered View ── */}
+        {isGenUIMode && isRendered && displayContent && (
+          <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
+            <GenUIRenderer 
+              app={JSON.parse(displayContent)} 
+              onEvent={(evt) => {
+                console.log("Canvas GenUI Event:", evt);
+                useForumStore.getState().addForumMessage(forum.id, {
+                  kind: "chat",
+                  sender: "user",
+                  text: `[GenUI Event] User interacted with canvas app: ${JSON.stringify(evt)}`
+                });
+              }} 
+            />
+          </div>
+        )}
+
+        {/* ── HTML/GenUI placeholder when no content yet ── */}
+        {(isHtmlMode || isGenUIMode) && isRendered && !displayContent && (
           <div style={{
             height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
             color: "var(--text-sub, #636E72)", opacity: 0.35, fontSize: 13, fontStyle: "italic",
@@ -848,7 +1026,7 @@ function ForumBlackboard({
         )}
 
         {/* ── Rendered markdown view ── */}
-        {!isHtmlMode && isRendered && (
+        {!isHtmlMode && !isGenUIMode && isRendered && (
           <div
             ref={scrollRef}
             style={{
@@ -872,15 +1050,15 @@ function ForumBlackboard({
           </div>
         )}
 
-        {/* ── Source / edit view (works for both markdown and HTML source) ── */}
+        {/* ── Source / edit view (works for markdown, HTML, and GenUI JSON source) ── */}
         {!isRendered && (
           <textarea
             ref={textareaRef}
             value={displayContent}
             onChange={e => {
-              if (!locked && isLive && !isHtmlMode) updateBlackboard(forum.id, e.target.value);
+              if (!locked && isLive && !isHtmlMode && !isGenUIMode) updateBlackboard(forum.id, e.target.value);
             }}
-            readOnly={!isLive || locked || isHtmlMode}
+            readOnly={!isLive || locked || isHtmlMode || isGenUIMode}
             style={{
               width: "100%", height: "100%",
               background: "transparent", border: "none", outline: "none",
@@ -925,7 +1103,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
   const archiveForum = useForumStore(s => s.archiveForum);
   const deleteForum = useForumStore(s => s.deleteForum);
   const unarchiveForum = useForumStore(s => s.unarchiveForum);
-  const { setActiveForumId } = useWorldStore();
+  const { setActiveForumId, gatewayReady } = useWorldStore();
   const [archiveExpanded, setArchiveExpanded] = useState(false);
 
   const active = [...forums]
@@ -968,13 +1146,16 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
           </div>
         </div>
         <button
-          onClick={onNewForum}
+          onClick={gatewayReady ? onNewForum : undefined}
+          title={!gatewayReady ? "Agents are still waking up…" : undefined}
           style={{
             display: "flex", alignItems: "center", gap: 7,
             padding: "8px 16px", borderRadius: 9,
-            background: "var(--primary, #3c6663)", color: "#fff",
-            border: "none", fontSize: 13, fontWeight: 600, cursor: "pointer",
-            fontFamily: "inherit",
+            background: gatewayReady ? "var(--primary, #3c6663)" : "rgba(60,102,99,0.25)",
+            color: "#fff",
+            border: "none", fontSize: 13, fontWeight: 600,
+            cursor: gatewayReady ? "pointer" : "default",
+            fontFamily: "inherit", transition: "background 0.2s",
           }}
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
@@ -1000,14 +1181,17 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
               Start a project to assemble your agents<br/>around a goal or task.
             </div>
             <button
-              onClick={onNewForum}
+              onClick={gatewayReady ? onNewForum : undefined}
+              title={!gatewayReady ? "Agents are still waking up…" : undefined}
               style={{
                 marginTop: 4, padding: "8px 18px", borderRadius: 9,
                 background: "rgba(60,102,99,0.08)", border: "1px solid rgba(60,102,99,0.25)",
-                color: "var(--primary, #3c6663)", fontSize: 12, cursor: "pointer", fontFamily: "inherit",
+                color: gatewayReady ? "var(--primary, #3c6663)" : "var(--text-muted)",
+                fontSize: 12, cursor: gatewayReady ? "pointer" : "default", fontFamily: "inherit",
+                opacity: gatewayReady ? 1 : 0.5,
               }}
             >
-              Start your first project →
+              {gatewayReady ? "Start your first project →" : "Waiting for agents…"}
             </button>
           </div>
         ) : sorted.map(f => (
@@ -1232,6 +1416,7 @@ function ForumCard({
 export function ForumView() {
   const forums = useForumStore(s => s.forums);
   const retryForum = useForumStore(s => s.retryForum);
+  const resumeForum = useForumStore(s => s.resumeForum);
   const archiveForum = useForumStore(s => s.archiveForum);
   const deleteForum = useForumStore(s => s.deleteForum);
   const updateForumTags = useForumStore(s => s.updateForumTags);
@@ -1279,31 +1464,106 @@ export function ForumView() {
   // Reset artifact selection when switching forums
   useEffect(() => { setSelectedArtifactId(null); }, [forum?.id]);
 
+  // Track which orchestratorVersion we've already started so we don't double-run.
+  const startedVersionRef = useRef<number>(-1);
+
   useEffect(() => {
     if (!forum) return;
     if (forum.status !== "active") return;
-    if (forum.messages.some(m => m.sender === "agent")) return; // already ran / retried
+    // Guard by version rather than by message presence — retryForum and resumeForum
+    // both increment orchestratorVersion, which lets us re-run even when there are
+    // existing agent messages (resume case).
+    const version = forum.orchestratorVersion ?? 0;
+    if (startedVersionRef.current >= version) return;
 
-    // Small delay so the view has time to render before the first agent call
+    // Track OUR engine locally so cleanup never accidentally stops an engine
+    // we didn't create (e.g. a follow-up orchestrator that set status → "active").
+    let myEngine: ForumOrchestratorController | null = null;
+
+    // Small delay so the view has time to render before the first agent call.
+    // Also used for orphan detection: if this is the FIRST mount this session
+    // (startedVersionRef still -1) and there are already agent messages, the
+    // orchestrator was running in a previous session that ended (app restart,
+    // page reload). Auto-pause so the Resume button appears rather than leaving
+    // the project silently stuck in "active".
     const startId = setTimeout(() => {
-      engineRef.current = createForumOrchestrator(forum.id);
+      const freshForum = useForumStore.getState().forums.find(f => f.id === forum.id);
+      const isOrphaned =
+        startedVersionRef.current === -1 &&
+        freshForum?.messages.some(m => m.sender === "agent");
+
+      startedVersionRef.current = version;
+
+      if (isOrphaned) {
+        // Auto-resume — the project was running when the app closed. No need to
+        // wait for the user to notice and click a button; just pick up where we
+        // left off. resumeForum increments orchestratorVersion → the useEffect
+        // dependency fires again → orchestrator starts on the next cycle.
+        useForumStore.getState().resumeForum(forum.id);
+        return;
+      }
+
+      myEngine = createForumOrchestrator(forum.id);
+      engineRef.current = myEngine;
     }, 1200);
 
     return () => {
       clearTimeout(startId);
-      engineRef.current?.stop();
+      if (myEngine) {
+        myEngine.stop();
+        if (engineRef.current === myEngine) engineRef.current = null;
+      }
     };
-  }, [forum?.id, forum?.status]); // re-run when forum ID changes or status flips back to "active" on retry
+  }, [forum?.id, forum?.status, forum?.orchestratorVersion]); // re-run when version bumped (retry/resume)
+
+  // Follow-up orchestrator for when user messages after completion.
+  // Uses a local engine ref so its cleanup never stops a separately-created engine.
+  useEffect(() => {
+    if (!forum) return;
+    if (forum.status !== "completed") return;
+
+    // Check if the last message is from the user and we haven't reacted yet
+    const lastMsg = forum.messages[forum.messages.length - 1];
+    if (lastMsg?.sender === "user" && !lastMsg.text.startsWith("[GenUI Event]")) {
+      let myEngine: ForumOrchestratorController | null = null;
+      const startId = setTimeout(() => {
+        // Change status to "active" — this will trigger the main orchestrator useEffect
+        // to re-run, but that effect guards on "no agent messages yet" so it exits early.
+        // Using a local myEngine ref means the main effect's cleanup won't stop us.
+        useForumStore.getState().setForumStatus(forum.id, "active");
+        myEngine = createFollowUpOrchestrator(forum.id);
+        engineRef.current = myEngine;
+      }, 500);
+      return () => {
+        clearTimeout(startId);
+        if (myEngine) {
+          myEngine.stop();
+          if (engineRef.current === myEngine) engineRef.current = null;
+        }
+      };
+    }
+  }, [forum?.id, forum?.status, forum?.messages.length]);
 
   /** Reset forum state and restart the orchestrator. */
+  /** Full restart — clears messages, blackboard, milestones. Use when the brief or
+   *  agents need to be re-run from scratch. */
   const handleRetry = useCallback(() => {
+    if (!forum) return;
+    if (!window.confirm("Restart from scratch? This will clear all messages and the blackboard. To keep the thread and just re-run the agents, use Retry instead.")) return;
+    engineRef.current?.stop();
+    engineRef.current = null;
+    retryForum(forum.id);
+  }, [forum, retryForum]);
+
+  /** Retry after a mid-session error — keeps all messages and blackboard, clears the
+   *  error state and re-runs the orchestrator. App-reload orphans are auto-resumed
+   *  in the orchestrator useEffect; this button is only for errors during a live session. */
+  const handleResume = useCallback(() => {
     if (!forum) return;
     engineRef.current?.stop();
     engineRef.current = null;
-    // retryForum resets messages/blackboard/milestones and sets status → "active",
-    // which will trigger the useEffect above to start a fresh orchestrator run.
-    retryForum(forum.id);
-  }, [forum, retryForum]);
+    resumeForum(forum.id);
+  }, [forum, resumeForum]);
 
   // ── No active forum → show list ────────────────────────────────────────────
   if (!forum) {
@@ -1346,7 +1606,7 @@ export function ForumView() {
           <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <polyline points="15 18 9 12 15 6"/>
           </svg>
-          All Forums
+          All Projects
         </button>
 
         {/* Title */}
@@ -1389,7 +1649,7 @@ export function ForumView() {
           {/* Add agent button */}
           <button
             onClick={() => setAddAgentOpen(o => !o)}
-            title="Add agent to forum"
+            title="Add agent to project"
             style={{
               width: 22, height: 22, borderRadius: "50%", flexShrink: 0,
               border: "1.5px dashed rgba(74,158,150,0.5)",
@@ -1469,25 +1729,45 @@ export function ForumView() {
               <span style={{ fontSize: 12, color: "#EF4444", fontWeight: 600, flex: 1 }}>
                 {titleLine}
               </span>
+              {/* Retry — keeps messages + blackboard, re-runs orchestrator from current point */}
               <button
-                onClick={handleRetry}
+                onClick={handleResume}
+                title="Keep all messages and the blackboard — try again from where it stopped"
                 style={{
                   display: "flex", alignItems: "center", gap: 5,
                   padding: "5px 12px", borderRadius: 8,
-                  background: "rgba(239,68,68,0.1)",
-                  border: "1px solid rgba(239,68,68,0.3)",
-                  color: "#EF4444", fontSize: 12, fontWeight: 600,
+                  background: "rgba(60,102,99,0.1)",
+                  border: "1px solid rgba(60,102,99,0.3)",
+                  color: "#3c6663", fontSize: 12, fontWeight: 600,
                   cursor: "pointer", fontFamily: "inherit",
                   transition: "all 0.15s ease",
                 }}
-                onMouseEnter={e => (e.currentTarget.style.background = "rgba(239,68,68,0.18)")}
-                onMouseLeave={e => (e.currentTarget.style.background = "rgba(239,68,68,0.1)")}
+                onMouseEnter={e => (e.currentTarget.style.background = "rgba(60,102,99,0.18)")}
+                onMouseLeave={e => (e.currentTarget.style.background = "rgba(60,102,99,0.1)")}
               >
                 <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
                   <polyline points="23 4 23 10 17 10"/>
                   <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
                 </svg>
                 Retry
+              </button>
+              {/* Restart — full wipe, asks for confirmation */}
+              <button
+                onClick={handleRetry}
+                title="Clear all messages and start over from the brief"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  padding: "5px 10px", borderRadius: 8,
+                  background: "transparent",
+                  border: "1px solid rgba(239,68,68,0.25)",
+                  color: "#EF4444", fontSize: 11,
+                  cursor: "pointer", fontFamily: "inherit",
+                  opacity: 0.65, transition: "opacity 0.15s ease",
+                }}
+                onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
+                onMouseLeave={e => (e.currentTarget.style.opacity = "0.65")}
+              >
+                Restart
               </button>
             </div>
             {/* Detail + fix */}
@@ -1514,82 +1794,56 @@ export function ForumView() {
       })()}
 
       {/* ── Main content ── */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
 
-        {/* ── Left: Stage + Blackboard ── */}
-        <div style={{
-          flex: 1, display: "flex", flexDirection: "column",
-          borderRight: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
-          overflow: "hidden", minWidth: 0,
-        }}>
-          {/* Collaborative work explainer — shown once per project, dismissable */}
-          {!eduDismissed && (
-            <div style={{
-              margin: "12px 16px 0", padding: "10px 14px 10px 16px",
-              background: "rgba(74,158,150,0.08)", border: "1px solid rgba(74,158,150,0.2)",
-              borderRadius: 10, display: "flex", alignItems: "flex-start", gap: 10,
-              flexShrink: 0,
-            }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2} strokeLinecap="round" style={{ flexShrink: 0, marginTop: 1 }}>
-                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-              </svg>
-              <div style={{ flex: 1, fontSize: 12, color: "var(--text-sub, #636E72)", lineHeight: 1.5 }}>
-                Your agents work through a <strong>shared blackboard</strong> — each one reads what others have contributed and builds on it, like a team around a whiteboard. No group chat, no coordination overhead.
-              </div>
-              <button onClick={dismissEdu} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-sub, #636E72)", padding: 2, flexShrink: 0, opacity: 0.5 }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-          )}
+        {/* ── Agent Status Bar — full width across the top ── */}
+        <AgentStatusBar forum={forum} />
 
-          {/* Stage */}
+        {/* ── Collaborative work explainer — shown once, dismissable ── */}
+        {!eduDismissed && (
           <div style={{
+            margin: "0 0 0", padding: "7px 16px 7px 18px",
+            background: "rgba(74,158,150,0.06)", borderBottom: "1px solid rgba(74,158,150,0.14)",
+            display: "flex", alignItems: "center", gap: 10,
             flexShrink: 0,
-            borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
-            position: "relative",
           }}>
-            <ForumStage agents={forum.agents} height={200} />
-            {/* Stage label */}
-            <div style={{
-              position: "absolute", top: 10, left: 14,
-              fontSize: 10, color: "var(--primary, #3c6663)", opacity: 0.45,
-              textTransform: "uppercase", letterSpacing: "0.08em",
-            }}>
-              Mission Stage
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2} strokeLinecap="round" style={{ flexShrink: 0 }}>
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <div style={{ flex: 1, fontSize: 11, color: "var(--text-sub, #636E72)", lineHeight: 1.4 }}>
+              Agents work through a <strong>shared blackboard</strong> — each one reads what others contributed and builds on it.
             </div>
+            <button onClick={dismissEdu} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-sub, #636E72)", padding: 2, flexShrink: 0, opacity: 0.4 }}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
           </div>
+        )}
 
-          {/* Blackboard */}
-          <ForumBlackboard
-            forum={forum}
-            selectedArtifactId={selectedArtifactId}
-            onClearArtifact={() => setSelectedArtifactId(null)}
-          />
-        </div>
+        {/* ── Three-column workspace ── */}
+        <div style={{ flex: 1, display: "flex", overflow: "hidden", minHeight: 0 }}>
 
-        {/* ── Right: Thread + Progress + Team ── */}
-        <div style={{
-          width: 320, flexShrink: 0,
-          display: "flex", flexDirection: "column",
-          overflow: "hidden",
-          background: "var(--surface-container-low, #f4f4f0)",
-          borderLeft: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
-        }}>
-          {/* Progress spine */}
-          <ProgressSpine milestones={forum.milestones} />
-
-          {/* Team roster */}
-          <TeamRoster forum={forum} />
-
-          {/* Thread */}
+          {/* ── Conversation thread ── */}
           <div style={{
-            flex: 1, borderTop: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
-            overflow: "hidden", display: "flex", flexDirection: "column",
+            width: 320, flexShrink: 0, display: "flex", flexDirection: "column",
+            borderRight: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
+            overflow: "hidden",
           }}>
             <ForumThread
               forum={forum}
               selectedArtifactId={selectedArtifactId}
               onArtifactClick={id => setSelectedArtifactId(prev => prev === id ? null : id)}
+            />
+          </div>
+
+          {/* ── Project steps — vertical scrollable milestone list ── */}
+          <MilestoneList milestones={forum.milestones} forumStatus={forum.status} />
+
+          {/* ── Blackboard — takes all remaining space ── */}
+          <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+            <ForumBlackboard
+              forum={forum}
+              selectedArtifactId={selectedArtifactId}
+              onClearArtifact={() => setSelectedArtifactId(null)}
             />
           </div>
         </div>

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import * as THREE from "three";
 import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
@@ -12,7 +13,7 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls, TransformControls, Environment } from "@react-three/drei";
 import { TerrariumBase, HabitatErrorBoundary } from "../../components/World/WorldScene";
 import { GLBAgent, GLBModel } from "../../components/World/GLBAgent";
-import { Toggle, ServiceRow, glass } from "../../App";
+import { Toggle, ServiceRow, glass, SafeBillboard } from "../../App";
 import { PASTEL_COLORS, HABITATS, ACCESSORIES } from '../../constants/assets';
 import { getAssetUrl } from "../../utils/assets";
 
@@ -66,18 +67,28 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
 
   const [catalog, setCatalog] = useState<any>(null);
   useEffect(() => {
-    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/accessories`)
-      .then(r => r.json())
-      .then(d => setCatalog(d))
-      .catch(() => { });
+    const fetchAccessories = () => {
+      fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/accessories`)
+        .then(r => r.json())
+        .then(d => setCatalog(d))
+        .catch(() => { });
+    };
+    fetchAccessories();
+    const interval = setInterval(fetchAccessories, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   const [habitats, setHabitats] = useState<any[]>([]);
   useEffect(() => {
-    fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/habitats`)
-      .then(r => r.json())
-      .then(d => setHabitats(d))
-      .catch(() => { });
+    const fetchHabitats = () => {
+      fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/habitats`)
+        .then(r => r.json())
+        .then(d => setHabitats(d))
+        .catch(() => { });
+    };
+    fetchHabitats();
+    const interval = setInterval(fetchHabitats, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   const selectedHabitat = habitats.find(h => h.id === (stagedVisuals?.habitatId || agent.visual_identity?.habitatId || 1));
@@ -125,6 +136,63 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
     if (!decorSearch) return combined;
     return combined.filter(a => matchesQuery(a, decorSearch));
   }, [agent.role, decorSearch, visibleAccessories, catalog, matchesQuery]);
+
+  const nudgeBtnStyle = {
+    background: "var(--surface-elevated)", color: "var(--text-main)",
+    border: "1px solid var(--border-subtle)", borderRadius: 6,
+    width: 28, height: 28, padding: 0, fontSize: 13, fontWeight: 700,
+    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center"
+  };
+
+  const handleDecorNudge = (axis: "x" | "y" | "z" | "ry", amount: number) => {
+    if (!selectedDecor) return;
+    const path = selectedDecor;
+    const current = stagedVisuals?.decorTransforms || {};
+    const existing = current[path] || {};
+    const index = (stagedVisuals?.decor || []).indexOf(path);
+    if (index === -1) return;
+
+    let base = { x: 0, y: 0, z: 0, rotationY: 0 };
+    if (existing.x !== undefined) {
+      base.x = existing.x;
+      base.y = existing.y;
+      base.z = existing.z;
+    } else {
+      const decorPoints = selectedHabitat?.decorPoints || [];
+      if (decorPoints.length > 0) {
+        const ptIdx = pickDecorPointIndex(agent.id, index, decorPoints.length);
+        base.x = decorPoints[ptIdx].x * ADMIN_TO_MAIN_DECOR_SCALE;
+        base.y = decorPoints[ptIdx].y * ADMIN_TO_MAIN_DECOR_SCALE;
+        base.z = decorPoints[ptIdx].z * ADMIN_TO_MAIN_DECOR_SCALE;
+      } else {
+        const seed = path.length + index;
+        base.x = Math.sin(seed * 1.1) * 0.6;
+        base.y = 0;
+        base.z = Math.cos(seed * 1.3) * 0.6;
+      }
+    }
+
+    if (existing.rotationY !== undefined) {
+      base.rotationY = existing.rotationY;
+    } else {
+      const defaultDecorRotation = catalog?.items?.[path]?.decorRotation;
+      const fallbackYaw = Math.sin((path.length + index * 13) * 1.7) * Math.PI;
+      base.rotationY = defaultDecorRotation ? defaultDecorRotation[1] : fallbackYaw;
+    }
+
+    handleUpdateStaged({
+      decorTransforms: {
+        ...current,
+        [path]: {
+          ...existing,
+          x: base.x + (axis === "x" ? amount : 0),
+          y: base.y + (axis === "y" ? amount : 0),
+          z: base.z + (axis === "z" ? amount : 0),
+          rotationY: base.rotationY + (axis === "ry" ? amount : 0)
+        }
+      }
+    });
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32, height: "100%", paddingRight: 8 }}>
@@ -221,6 +289,52 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                 style={{ background: "#218380", border: "none", padding: "6px 12px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: "white", cursor: "pointer", transition: "all 0.2s", boxShadow: "0 4px 12px rgba(33,131,128,0.2)" }}
               >
                 Save Changes
+              </button>
+            </div>
+          )}
+
+          {/* Nudge Controls */}
+          {selectedDecor && (
+            <div style={{
+              position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)",
+              zIndex: 20, display: "flex", gap: 16, alignItems: "center",
+              background: "var(--surface-card)", border: "1px solid var(--border-subtle)", borderRadius: 16, padding: "8px 16px",
+              boxShadow: "0 12px 48px rgba(0,0,0,0.15)"
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-main)", marginRight: 4 }}>
+                Move Decor
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                <button onClick={() => handleDecorNudge("z", -0.1)} style={nudgeBtnStyle}>↑</button>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button onClick={() => handleDecorNudge("x", -0.1)} style={nudgeBtnStyle}>←</button>
+                  <button onClick={() => handleDecorNudge("z", 0.1)} style={nudgeBtnStyle}>↓</button>
+                  <button onClick={() => handleDecorNudge("x", 0.1)} style={nudgeBtnStyle}>→</button>
+                </div>
+              </div>
+
+              <div style={{ width: 1, height: 32, background: "var(--border-subtle)" }} />
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <button onClick={() => handleDecorNudge("y", 0.1)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>+Y Up</button>
+                <button onClick={() => handleDecorNudge("y", -0.1)} style={{ ...nudgeBtnStyle, width: 48, fontSize: 11 }}>-Y Dn</button>
+              </div>
+
+              <div style={{ width: 1, height: 32, background: "var(--border-subtle)" }} />
+
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => handleDecorNudge("ry", Math.PI / 16)} style={{ ...nudgeBtnStyle, width: 36, fontSize: 16 }}>⟳</button>
+                <button onClick={() => handleDecorNudge("ry", -Math.PI / 16)} style={{ ...nudgeBtnStyle, width: 36, fontSize: 16 }}>⟲</button>
+              </div>
+
+              <div style={{ width: 1, height: 32, background: "var(--border-subtle)" }} />
+
+              <button
+                onClick={() => setSelectedDecor(null)}
+                style={{ background: "transparent", color: "var(--text-sub)", border: "none", padding: "4px", cursor: "pointer", display: "flex", alignItems: "center" }}
+              >
+                <X size={16} />
               </button>
             </div>
           )}
@@ -367,7 +481,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                       </group>
                     </Canvas>
                   )}
-                  {h.name && <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.4)", color: "white", fontSize: 9, padding: "2px 4px", fontWeight: "bold", truncate: true }}>{h.name}</div>}
+                  {h.name && <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, background: "rgba(0,0,0,0.4)", color: "white", fontSize: 9, padding: "2px 4px", fontWeight: "bold", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>{h.name}</div>}
                 </div>
               ))}
             </div>

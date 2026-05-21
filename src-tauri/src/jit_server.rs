@@ -130,6 +130,17 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                 }
                                 Err(_) => (400, r#"{"error":"Invalid attention request body"}"#.to_string()),
                             }
+                        } else if path == "/spawn_genui" {
+                            // Agent → user GenUI request. Spawns a native floating WebviewWindow
+                            // to render a GenUI mini-app persistently on the desktop.
+                            match serde_json::from_slice::<serde_json::Value>(body) {
+                                Ok(req) => {
+                                    use tauri::Emitter;
+                                    let _ = app.emit("spawn_genui_window", req);
+                                    (200, r#"{"status":"spawned","message":"GenUI window spawned."}"#.to_string())
+                                }
+                                Err(_) => (400, r#"{"error":"Invalid GenUI request body"}"#.to_string()),
+                            }
                         } else if path == "/request_permission" {
                             // Agent → user permission elevation. Blocks waiting for a decision:
                             // once / session / forever / deny.
@@ -292,15 +303,18 @@ pub async fn approve_jit_request(
         } else {
             // Session or One-Time
             // Inject dynamically into container without saving to the DB profile
-            crate::openclaw::inject_jit_credential(&agent_id, &credential_id).await.map_err(|e| e.to_string())?;
+            crate::openclaw::inject_jit_credential(&db, &agent_id, &credential_id).await.map_err(|e| e.to_string())?;
             
             if duration == "one_time" {
                 // Spawn task to automatically revoke after 5 minutes
                 let agent_id_clone = agent_id.clone();
                 let cred_id_clone = credential_id.clone();
+                let app_handle_clone = app_handle.clone();
                 tokio::spawn(async move {
+                    use tauri::Manager;
                     tokio::time::sleep(std::time::Duration::from_secs(300)).await;
-                    let _ = crate::openclaw::revoke_jit_credential(&agent_id_clone, &cred_id_clone).await;
+                    let db_state = app_handle_clone.state::<crate::db::Database>();
+                    let _ = crate::openclaw::revoke_jit_credential(&*db_state, &agent_id_clone, &cred_id_clone).await;
                     tracing::info!("Auto-revoked one_time JIT credential {} for {}", cred_id_clone, agent_id_clone);
                 });
             }

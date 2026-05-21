@@ -46,6 +46,7 @@ btleplug = "0.11"
 hex = "0.4"
 
 [dev-dependencies]
+tauri = { version = "2", features = ["test"] }
 tokio-test = "0.4"
 mockall = "0.12"
 tempfile = "3"

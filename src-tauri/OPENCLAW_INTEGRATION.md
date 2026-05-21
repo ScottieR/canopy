@@ -533,7 +533,103 @@ Key tests and what they guard:
 
 ---
 
-## 13. Keeping This Document Updated
+## 13. System Calls — Bypassing OpenClaw Intentionally
+
+Some internal Canopy operations should **never** route through OpenClaw. They must not:
+- Create sessions or conversation history
+- Appear in any agent's chat tab (`ThreadsRail`, `ThreadSwitcher`)
+- Accumulate context across calls (causes token snowball and quota hits)
+- Require a specific agent to be running
+
+### The `system_assess` command
+
+`system_assess` in `openclaw.rs` is the canonical example of a "bypass" call. It:
+1. Reads global API keys directly from the macOS Keychain (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`)
+2. Picks the cheapest `strategy="light"` model from whichever provider has a key
+3. Makes a direct HTTPS POST to the provider's REST API — not to the OpenClaw gateway
+4. Returns plain text; no session ID, no agent ID, no conversation footprint
+
+**Provider priority (cheapest first):** Gemini 2.5 Flash Lite → Claude Haiku 4.5 → GPT-4o Mini
+
+**Model name translation for direct API calls:**
+
+| OpenClaw model string | Direct API model name | Endpoint |
+|-----------------------|-----------------------|----------|
+| `google/gemini-2.5-flash-lite` | `gemini-2.5-flash-lite` | `generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key=` |
+| `anthropic/claude-haiku-4-5` | `claude-haiku-4-5` | `api.anthropic.com/v1/messages` |
+| `openai/gpt-4o-mini` | `gpt-4o-mini` | `api.openai.com/v1/chat/completions` |
+
+The `google/` / `anthropic/` / `openai/` provider prefix used inside OpenClaw is stripped before
+calling the provider REST API directly. `call_gemini_direct` handles this automatically via
+`.strip_prefix("google/")`.
+
+### The `_sys_` session prefix (legacy — superceded by system_assess)
+
+Before `system_assess` existed, internal calls used `sessionId: "_sys_forum_assessment"` with
+`send_message`. This routed through OpenClaw but used a stable session ID that was filtered from
+`ThreadsRail` and `ThreadSwitcher` by a `.filter(c => !c.id?.startsWith("_sys_"))` guard.
+
+This approach is **deprecated for new system calls** — it still accumulates context inside
+OpenClaw and depends on a specific agent being running. Use `system_assess` instead.
+
+### When to add a new system call vs. using an agent
+
+Use `system_assess` (or a similar direct-API command) when:
+- The task is internal/meta (assessment, classification, routing, summarization of app state)
+- You don't want the call visible in any agent's history
+- You want the cheapest available model regardless of which agents the user has configured
+- The call is one-shot with no follow-up
+
+Use `send_message` to a real agent when:
+- The agent's persona, SOUL.md, or conversation history is relevant
+- The response will be shown to the user as an agent message
+- The task requires the agent's specific capabilities or integrations
+
+---
+
+## 14. OrbStack VM Memory — Required Configuration
+
+### The problem
+
+OrbStack runs all Docker containers inside a Linux VM. By default that VM gets **8 GB of RAM**.
+The `canopy-gateway` container was previously configured with `memory: 16G` — double what the VM
+could actually allocate — so the Linux OOM killer would fire under normal load.
+
+### Current container budget
+
+| Container | Memory limit | Notes |
+|-----------|-------------|-------|
+| `canopy-gateway` | `4 G` | OpenClaw + Node.js proxying external APIs; 4 GB is 2× peak load |
+| `canopy-chroma` | `512 m` | Local vector DB; personal scale stays well under this |
+| `canopy-isolated-*` | `2 G` each | Per isolated agent; one at a time in normal use |
+| OrbStack VM overhead | ~1 GB | Reserved for the VM kernel + macOS IPC |
+| **Total worst case** | ~5.5 GB | One isolated agent + chroma + gateway |
+
+**The default OrbStack 8 GB VM is sufficient** for normal use with the corrected limits.
+
+### If you hit OOM again
+
+The limits above stop container overcommit. If OOM still occurs, the VM itself is probably
+undersized for your workload (many forums running simultaneously, isolated agents, browser plugin).
+
+**Fix:** OrbStack → Settings → Resources → Memory → raise to **12–16 GB**.
+
+### Debugging container memory
+
+```bash
+# Live memory stats for all Canopy containers
+docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}" $(docker ps --filter "label=com.canopy.managed=true" -q)
+
+# One-liner to check if gateway is near its limit
+docker stats canopy-gateway --no-stream --format "MEM: {{.MemUsage}} / {{.MemPerc}}"
+```
+
+If `MemPerc` is consistently above 70%, raise the container limit in `docker.rs`
+`generate_compose_file()` **and** ensure the OrbStack VM has at least 2× headroom.
+
+---
+
+## 15. Keeping This Document Updated
 
 When OpenClaw releases a new version:
 

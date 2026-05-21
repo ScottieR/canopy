@@ -34,6 +34,14 @@ export interface ForumMessage {
   questionAllowFreeText?: boolean;     // show "Something else…" free-text input
   questionAnswered?: boolean;          // true once user has picked an answer
   questionAnswer?: string;            // the answer they gave
+  // For dynamic Mini-Apps (GenUI platform)
+  miniApp?: {
+    component: string; // e.g., "Map", "CostOverlay", "DataTable", "ApprovalCard", "Html"
+    props: Record<string, any>;
+    target: "inline" | "canvas";
+  };
+  // File/image attachments uploaded by the user
+  attachments?: { name: string; dataUrl: string; mimeType: string }[];
 }
 
 // ─── Milestone ────────────────────────────────────────────────────────────────
@@ -60,6 +68,8 @@ export interface ForumAgent {
   confidence: number;     // 0–100, relevance to this forum's brief
   forumRole: string;      // e.g. "Research & data pull", "Strategic framing"
   currentAction?: string; // live status in the forum
+  /** Unix ms timestamp of the last time currentAction changed — used for elapsed-time display. */
+  actionChangedAt?: number;
   /** True if the underlying agent has isolation enabled — carries sensitive integrations.
    *  The forum orchestrator uses this to restrict what context is shared from this agent. */
   isolated?: boolean;
@@ -70,6 +80,7 @@ export interface ForumAgent {
 export type ForumArtifactType =
   | "markdown"   // prose document / report
   | "html"       // interactive HTML app / dashboard
+  | "genui"      // dynamic Mini-App
   | "deck"       // slide deck
   | "image"      // generated image
   | "diagram"    // flowchart / architecture
@@ -84,6 +95,8 @@ export interface ForumArtifact {
   agentId?: string;
   agentName?: string;
   createdAt: number;
+  /** True only for the final user-facing deliverable — not intermediate research/strategy notes. */
+  isDeliverable?: boolean;
 }
 
 // ─── Blackboard Block ─────────────────────────────────────────────────────────
@@ -91,8 +104,8 @@ export interface ForumArtifact {
 // Replaces plain markdown for the final deliverable phase.
 
 export interface ForumBlock {
-  type: "markdown" | "html";
-  content: string;
+  type: "markdown" | "html" | "genui";
+  content: string; // for genui, this is a stringified JSON payload
   reasoning?: string;       // optional agent explanation of format choice
   agentId?: string;
   agentName?: string;
@@ -133,6 +146,9 @@ export interface Forum {
   artifacts: ForumArtifact[];
   createdAt: number;
   lastActiveAt: number;
+  // Incremented each time the orchestrator is asked to start/restart — lets the
+  // useEffect distinguish a fresh run from one that already ran for this version.
+  orchestratorVersion: number;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -160,6 +176,10 @@ export interface ForumState {
   setBlackboardBlock: (forumId: string, block: ForumBlock) => void;
   /** Reset a paused/errored forum back to "active" so the orchestrator can retry. */
   retryForum: (forumId: string) => void;
+  /** Resume a paused forum without clearing messages or blackboard — increments
+   *  orchestratorVersion so the main useEffect re-triggers. Use after transient
+   *  errors (quota, rate limit) where the thread context should be preserved. */
+  resumeForum: (forumId: string) => void;
   /** Replace the forum's tag list (supports user edits). */
   updateForumTags: (forumId: string, tags: string[]) => void;
   /** Add an agent to an existing forum. */
@@ -170,6 +190,10 @@ export interface ForumState {
   deleteForum: (forumId: string) => void;
   /** Move an archived forum back to its previous status. */
   unarchiveForum: (forumId: string) => void;
+  /** Replace the forum's milestone list with agent-defined steps. */
+  setMilestones: (forumId: string, milestones: Milestone[]) => void;
+  /** Append a new milestone (used by orchestrator to add project-specific steps). */
+  addMilestone: (forumId: string, label: string, agentId?: string) => string;
 }
 
 function generateId(prefix: string) {
@@ -252,6 +276,7 @@ export const useForumStore = create<ForumState>()(
           artifacts: [],
           createdAt: now,
           lastActiveAt: now,
+          orchestratorVersion: 0,
         };
 
         set(state => ({ forums: [...state.forums, forum], activeForumId: id }));
@@ -320,7 +345,9 @@ export const useForumStore = create<ForumState>()(
               ? {
                   ...f,
                   agents: f.agents.map(a =>
-                    a.agentId === agentId ? { ...a, currentAction: action } : a
+                    a.agentId === agentId
+                      ? { ...a, currentAction: action, actionChangedAt: Date.now() }
+                      : a
                   ),
                 }
               : f
@@ -460,9 +487,67 @@ export const useForumStore = create<ForumState>()(
               trustBudget: { ...f.trustBudget, tokensUsed: 0, usdUsed: 0, circuitBreakerFired: false },
               agents: f.agents.map(a => ({ ...a, currentAction: "Joining forum…" })),
               lastActiveAt: now,
+              orchestratorVersion: (f.orchestratorVersion ?? 0) + 1,
             };
           }),
         }));
+      },
+
+      resumeForum: (forumId) => {
+        set(state => ({
+          forums: state.forums.map(f => {
+            if (f.id !== forumId) return f;
+            // Strip only the error/paused system messages from the thread —
+            // keep all agent and user messages so the conversation is preserved.
+            const cleanedMessages = f.messages.filter(m =>
+              !(m.kind === "system" && m.text.startsWith("⚠"))
+            );
+            // Add a "Resuming…" divider so the user can see the restart point
+            const now = Date.now();
+            const divider: ForumMessage = {
+              id: generateId("msg"),
+              kind: "system",
+              sender: "system",
+              text: "↺ Resuming project…",
+              timestamp: now,
+            };
+            return {
+              ...f,
+              status: "active",
+              messages: [...cleanedMessages, divider],
+              agents: f.agents.map(a => ({ ...a, currentAction: "Resuming…" })),
+              lastActiveAt: now,
+              orchestratorVersion: (f.orchestratorVersion ?? 0) + 1,
+            };
+          }),
+        }));
+      },
+
+      setMilestones: (forumId, milestones) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id === forumId ? { ...f, milestones } : f
+          ),
+        }));
+      },
+
+      addMilestone: (forumId, label, agentId) => {
+        const id = generateId("ms");
+        set(state => ({
+          forums: state.forums.map(f => {
+            if (f.id !== forumId) return f;
+            // First milestone added: mark it active immediately
+            const isFirst = f.milestones.length === 0;
+            return {
+              ...f,
+              milestones: [
+                ...f.milestones,
+                { id, label, status: isFirst ? "active" : "pending", agentId } as Milestone,
+              ],
+            };
+          }),
+        }));
+        return id;
       },
     }),
     {

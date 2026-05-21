@@ -452,8 +452,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       isMounted = false;
       if (unlistenFn) {
         try { 
-          const res = unlistenFn(); 
-          if (res && typeof (res as any).catch === 'function') (res as any).catch(() => {}); 
+          unlistenFn(); 
         } catch (e) {}
         unlistenFn = undefined;
       }
@@ -525,8 +524,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       isMounted = false;
       if (unlistenFn) {
         try { 
-          const res = unlistenFn(); 
-          if (res && typeof (res as any).catch === 'function') (res as any).catch(() => {}); 
+          unlistenFn(); 
         } catch (e) {}
         unlistenFn = undefined;
       }
@@ -833,21 +831,6 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             {llmSaveStatus === "loading" ? "Saving..." : llmSaveStatus === "success" ? "Saved!" : llmSaveStatus === "error" ? "Error" : "Save Overrides"}
           </button>
         </div>
-      </div>
-
-      {/* Info banner */}
-      <div style={{
-        background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10,
-        padding: "10px 14px", fontSize: 12, color: "#0369a1", lineHeight: 1.5,
-      }}>
-        Gateway-level service connections are managed in the{" "}
-        <button onClick={() => setActiveView("integrations")} style={{
-          background: "none", border: "none", color: "#0369a1", fontWeight: 700,
-          cursor: "pointer", textDecoration: "underline", fontSize: 12, padding: 0, fontFamily: "inherit",
-        }}>
-          Integrations tab
-        </button>
-        . Configure here which services are active for <strong>{agent.name}</strong> and which channels/contacts it can access.
       </div>
 
       {/* High-Risk Modal */}
@@ -1237,7 +1220,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
 
                     try {
                       const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                      const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['drive'], readOnly: driveMode === "read", granular_drive: driveAccessScope === "granular" });
+                      const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['drive'], readOnly: driveMode === "read", granular_drive: (driveAccessScope as string) === "granular" });
                       if (res && res.access_token) {
                         checkDynamicStatuses();
                         await invoke("sync_gateway_channels");

@@ -97,6 +97,13 @@ for AGENT_ID in $AGENTS; do
   echo ""
   echo "  → $AGENT_ID"
 
+  IS_ISOLATED=$(sqlite3 "$DB" "SELECT isolated FROM agents WHERE id = '$AGENT_ID';" 2>/dev/null || echo "0")
+  if [[ "$IS_ISOLATED" == "1" || "$IS_ISOLATED" == "true" ]]; then
+    CONTAINER="canopy-isolated-${AGENT_ID}"
+  else
+    CONTAINER="canopy-gateway"
+  fi
+
   # Get agent-specific key if set, fall back to global
   AGENT_GEMINI=$(extract_key "agent_${AGENT_ID}_gemini_key")
   AGENT_ANTHROPIC=$(extract_key "agent_${AGENT_ID}_anthropic_key")
@@ -108,12 +115,12 @@ for AGENT_ID in $AGENTS; do
   AGENT_AUTH=$(build_auth_profiles "$AGENT_GEMINI" "$AGENT_ANTHROPIC" "$AGENT_OPENAI")
 
   # Create workspace dir
-  "$DOCKER" exec -u node canopy-gateway mkdir -p "/home/node/.openclaw/workspace/${AGENT_ID}" 2>&1 || true
+  "$DOCKER" exec -u node "$CONTAINER" mkdir -p "/home/node/.openclaw/workspace/${AGENT_ID}" 2>&1 || true
 
   # Register with openclaw
   ADD_OUT=$("$DOCKER" exec -u node \
     -e "NODE_OPTIONS=--v8-pool-size=1 --max-old-space-size=512" \
-    canopy-gateway \
+    "$CONTAINER" \
     openclaw agents add "$AGENT_ID" \
     --workspace "/home/node/.openclaw/workspace/${AGENT_ID}" 2>&1 || echo "exit $?")
   if echo "$ADD_OUT" | grep -qE "Agent dir:|already exists|already registered"; then
@@ -123,10 +130,10 @@ for AGENT_ID in $AGENTS; do
   fi
 
   # Create agent dir and write auth-profiles
-  "$DOCKER" exec -u node canopy-gateway \
+  "$DOCKER" exec -u node "$CONTAINER" \
     mkdir -p "/home/node/.openclaw/agents/${AGENT_ID}/agent" 2>&1 || true
 
-  echo "$AGENT_AUTH" | "$DOCKER" exec -i -u node canopy-gateway \
+  echo "$AGENT_AUTH" | "$DOCKER" exec -i -u node "$CONTAINER" \
     sh -c "cat > /home/node/.openclaw/agents/${AGENT_ID}/agent/auth-profiles.json && \
            chmod 600 /home/node/.openclaw/agents/${AGENT_ID}/agent/auth-profiles.json && \
            cp /home/node/.openclaw/agents/${AGENT_ID}/agent/auth-profiles.json \
@@ -141,10 +148,18 @@ done
 echo ""
 echo "[6/6] Smoke testing first agent..."
 FIRST_AGENT=$(echo "$AGENTS" | head -1)
-echo "  Sending test message to $FIRST_AGENT..."
+
+IS_ISOLATED=$(sqlite3 "$DB" "SELECT isolated FROM agents WHERE id = '$FIRST_AGENT';" 2>/dev/null || echo "0")
+if [[ "$IS_ISOLATED" == "1" || "$IS_ISOLATED" == "true" ]]; then
+  TEST_CONTAINER="canopy-isolated-${FIRST_AGENT}"
+else
+  TEST_CONTAINER="canopy-gateway"
+fi
+
+echo "  Sending test message to $FIRST_AGENT on $TEST_CONTAINER..."
 TEST_OUT=$("$DOCKER" exec -u node \
   -e "NODE_OPTIONS=--v8-pool-size=1" \
-  canopy-gateway \
+  "$TEST_CONTAINER" \
   openclaw agent --agent "$FIRST_AGENT" -m "Reply with just: OK" --json 2>&1)
 
 if echo "$TEST_OUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['payloads'][0]['text'])" 2>/dev/null; then

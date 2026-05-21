@@ -14,7 +14,7 @@ interface SecurityAlert {
 
 export function GlobalAlertsFeed({ onClose }: { onClose: () => void }) {
     const [alerts, setAlerts] = useState<SecurityAlert[]>([]);
-    const { agents, fetchAgents } = useWorldStore();
+    const { agents, setAgents } = useWorldStore();
 
     const loadAlerts = async () => {
         try {
@@ -44,8 +44,12 @@ export function GlobalAlertsFeed({ onClose }: { onClose: () => void }) {
     };
 
     const handleUnpause = async (agentId: string) => {
-        await invoke("set_agent_paused", { agentId, paused: false });
-        await fetchAgents();
+        try {
+            await invoke("set_agent_paused", { agentId, paused: false });
+            setAgents(agents.map(a => a.id === agentId ? { ...a, paused: false } : a));
+        } catch (e) {
+            console.error("Failed to unpause agent:", e);
+        }
     };
 
     return (

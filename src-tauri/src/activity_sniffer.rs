@@ -88,8 +88,9 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
                                     tracing::warn!("Auto-pausing agent {} due to high-risk network egress: {}", agent.id, reason);
                                     let _ = db.set_agent_paused(&agent.id, true);
                                     
+                                    let container_name = crate::openclaw::get_agent_container_name(&db, &agent.id);
                                     let _ = crate::openclaw::get_docker_command()
-                                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", "canopy-gateway",
+                                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
                                                "openclaw", "agents", "remove", &agent.id])
                                         .output()
                                         .await;

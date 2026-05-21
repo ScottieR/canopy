@@ -42,7 +42,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
     if (this.props.onError) {
       this.props.onError({
         message: error.message,
-        componentStack: errorInfo.componentStack,
+        componentStack: errorInfo.componentStack || '',
         timestamp: new Date().toISOString(),
       });
     }
@@ -51,14 +51,14 @@ export class ErrorBoundary extends React.Component<Props, State> {
     try {
       if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
         const { appDataDir, join } = await import('@tauri-apps/api/path');
-        const { appendTextFile, mkdir } = await import('@tauri-apps/plugin-fs');
+        const { writeTextFile, mkdir } = await import('@tauri-apps/plugin-fs');
         
         const baseDir = await appDataDir();
         await mkdir(baseDir, { recursive: true }).catch(() => {});
         const logPath = await join(baseDir, 'crash_logs.txt');
         
-        const logEntry = `\n\n[${new Date().toISOString()}] CRASH REPORT:\nError: ${error.message}\nStack: ${error.stack}\nComponent Stack: ${errorInfo.componentStack}\n`;
-        await appendTextFile(logPath, logEntry);
+        const logEntry = `\n\n[${new Date().toISOString()}] CRASH REPORT:\nError: ${error.message}\nStack: ${error.stack}\nComponent Stack: ${errorInfo.componentStack || ''}\n`;
+        await writeTextFile(logPath, logEntry, { append: true });
         console.log(`Crash saved to ${logPath}`);
       }
     } catch (fsErr) {
