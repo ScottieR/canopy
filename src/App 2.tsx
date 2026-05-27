@@ -452,7 +452,7 @@ export function CanopyScene({
           // Find an orchestrator or default agent to create it under
           const firstAgent = useWorldStore.getState().agents[0];
           if (firstAgent) {
-            useWorldStore.getState().createForumSpace(firstAgent.id);
+            useWorldStore.getState().createProjectSpace(firstAgent.id);
             useWorldStore.getState().setActiveView("canopy");
           }
         } else if (cmd.startsWith("COMMAND: DISMISS_INBOX_ITEM:")) {
@@ -468,7 +468,7 @@ export function CanopyScene({
             if (item.type === "voice_note") {
               const firstAgent = useWorldStore.getState().agents[0];
               if (firstAgent) {
-                useWorldStore.getState().createForumSpace(firstAgent.id);
+                useWorldStore.getState().createProjectSpace(firstAgent.id);
               }
             }
           }

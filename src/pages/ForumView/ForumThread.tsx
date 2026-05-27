@@ -592,136 +592,7 @@ function ArtifactShelf({
   selectedArtifactId: string | null;
   onArtifactClick: (id: string) => void;
 }) {
-  // Only show deliverable artifacts — intermediate research/strategy notes are
-  // already visible on the blackboard and don't need separate cards here.
-  const allArtifacts = forum.artifacts ?? [];
-  let deliverables = allArtifacts.filter(a => a.isDeliverable);
-
-  // Backwards-compat: forums produced before the isDeliverable field was added
-  // have no flagged deliverables. In that case, show only the last artifact
-  // (the final output) rather than flooding the shelf with intermediate notes.
-  if (deliverables.length === 0 && allArtifacts.length > 0) {
-    deliverables = [allArtifacts[allArtifacts.length - 1]];
-  }
-
-  // Hide the shelf entirely when there's nothing to show.
-  if (deliverables.length === 0) return null;
-
-  return (
-    <div style={{
-      borderTop: "1px solid rgba(74,158,150,0.2)",
-      background: "rgba(74,158,150,0.04)",
-      flexShrink: 0,
-      padding: "10px 14px 12px",
-    }}>
-      {/* Header */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 6, marginBottom: 8,
-      }}>
-        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2.5} strokeLinecap="round">
-          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-          <polyline points="22 4 12 14.01 9 11.01"/>
-        </svg>
-        <span style={{
-          fontSize: 10, fontWeight: 700, textTransform: "uppercase",
-          letterSpacing: "0.07em", color: "#4A9E96",
-        }}>
-          {deliverables.length === 1 ? "Deliverable" : `Deliverables · ${deliverables.length}`}
-        </span>
-      </div>
-
-      {/* Cards — vertical stack in the thread column, not a horizontal scroll */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {deliverables.map(artifact => {
-          const meta = ARTIFACT_META[artifact.type] ?? ARTIFACT_META.markdown;
-          const isSelected = artifact.id === selectedArtifactId;
-          const preview = artifact.preview ?? derivePreview(artifact.content, artifact.type);
-          const agent = forum.agents?.find(a => a.agentId === artifact.agentId);
-
-          return (
-            <button
-              key={artifact.id}
-              onClick={() => onArtifactClick(artifact.id)}
-              style={{
-                width: "100%",
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "10px 12px",
-                borderRadius: 10,
-                background: isSelected ? `${meta.color}12` : "var(--surface-card, #fff)",
-                border: isSelected
-                  ? `1.5px solid ${meta.color}55`
-                  : "1.5px solid rgba(74,158,150,0.18)",
-                cursor: "pointer", textAlign: "left",
-                fontFamily: "inherit",
-                transition: "all 0.15s ease",
-                boxShadow: isSelected ? `0 2px 10px ${meta.color}20` : "0 1px 3px rgba(0,0,0,0.04)",
-              }}
-              onMouseEnter={e => {
-                if (!isSelected) (e.currentTarget as HTMLButtonElement).style.borderColor = `${meta.color}44`;
-              }}
-              onMouseLeave={e => {
-                if (!isSelected) (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(74,158,150,0.18)";
-              }}
-            >
-              {/* Type icon */}
-              <div style={{
-                width: 30, height: 30, borderRadius: 8, flexShrink: 0,
-                background: `${meta.color}15`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                color: meta.color,
-              }}>
-                {meta.icon}
-              </div>
-
-              {/* Text */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{
-                  fontSize: 12, fontWeight: 700,
-                  color: "var(--text-main, #303330)",
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  marginBottom: 2,
-                }}>
-                  {artifact.title}
-                </div>
-                <div style={{
-                  fontSize: 10.5, lineHeight: 1.4,
-                  color: "var(--text-sub, #636E72)", opacity: 0.7,
-                  overflow: "hidden", display: "-webkit-box",
-                  WebkitLineClamp: 1, WebkitBoxOrient: "vertical",
-                } as React.CSSProperties}>
-                  {preview}
-                </div>
-              </div>
-
-              {/* Selected indicator or open arrow */}
-              <div style={{ flexShrink: 0, color: isSelected ? meta.color : "rgba(0,0,0,0.2)" }}>
-                {isSelected ? (
-                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                ) : (
-                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-                    <polyline points="9 18 15 12 9 6"/>
-                  </svg>
-                )}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Made with Canopy watermark — subtle, single instance */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 4,
-        marginTop: 8, opacity: 0.3,
-      }}>
-        <img src="/app-icon.png" alt="" style={{ width: 9, height: 9, objectFit: "contain" }} />
-        <span style={{ fontSize: 9, color: "var(--text-sub, #636E72)", letterSpacing: "0.02em" }}>
-          Made with Canopy
-        </span>
-      </div>
-    </div>
-  );
+  return null; // The Artifact Shelf is deprecated and has been merged into the right-hand filetree panel per user directive.
 }
 
 // ─── Input bar ────────────────────────────────────────────────────────────────
@@ -729,10 +600,19 @@ function ArtifactShelf({
 interface Attachment { name: string; dataUrl: string; mimeType: string }
 
 function ThreadInput({ forumId, onSendMessage }: { forumId: string; onSendMessage?: (text: string, attachments: Attachment[]) => void }) {
-  const [text, setText] = useState("");
+  const forum = useForumStore(s => s.forums.find(f => f.id === forumId));
+  const setForumDraft = useForumStore(s => s.setForumDraft);
+  
+  const [text, setText] = useState(forum?.draftMessage || "");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const addMsg = useForumStore(s => s.addForumMessage);
+
+  // Sync draft message when typing
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    setText(e.target.value);
+    setForumDraft(forumId, e.target.value);
+  };
 
   const canSend = text.trim().length > 0 || attachments.length > 0;
 
@@ -749,6 +629,7 @@ function ThreadInput({ forumId, onSendMessage }: { forumId: string; onSendMessag
       });
     }
     setText("");
+    setForumDraft(forumId, "");
     setAttachments([]);
   };
 

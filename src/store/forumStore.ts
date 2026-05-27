@@ -86,6 +86,16 @@ export type ForumArtifactType =
   | "diagram"    // flowchart / architecture
   | "data";      // spreadsheet / structured data
 
+export interface ForumComment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  createdAt: number;
+  blockId?: string; // block-level anchoring for comments
+  resolved?: boolean;
+}
+
 export interface ForumArtifact {
   id: string;
   type: ForumArtifactType;
@@ -94,9 +104,11 @@ export interface ForumArtifact {
   preview?: string;       // optional short excerpt (auto-derived if absent)
   agentId?: string;
   agentName?: string;
+  role_id?: string;
   createdAt: number;
   /** True only for the final user-facing deliverable — not intermediate research/strategy notes. */
   isDeliverable?: boolean;
+  comments?: ForumComment[];
 }
 
 // ─── Blackboard Block ─────────────────────────────────────────────────────────
@@ -149,6 +161,7 @@ export interface Forum {
   // Incremented each time the orchestrator is asked to start/restart — lets the
   // useEffect distinguish a fresh run from one that already ran for this version.
   orchestratorVersion: number;
+  draftMessage?: string;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -175,6 +188,7 @@ export interface ForumState {
   addForumArtifact: (forumId: string, artifact: Omit<ForumArtifact, "id" | "createdAt">) => void;
   /** Set the format-aware blackboard block (markdown or HTML deliverable). */
   setBlackboardBlock: (forumId: string, block: ForumBlock) => void;
+  setForumDraft: (forumId: string, draft: string) => void;
   /** Reset a paused/errored forum back to "active" so the orchestrator can retry. */
   retryForum: (forumId: string) => void;
   /** Resume a paused forum without clearing messages or blackboard — increments
@@ -191,7 +205,7 @@ export interface ForumState {
   deleteForum: (forumId: string) => void;
   /** Move an archived forum back to its previous status. */
   unarchiveForum: (forumId: string) => void;
-  /** Append a new milestone (used by orchestrator to add project-specific steps). */
+  /** Append a new milestone (used by orchestrator to add forum-specific steps). */
   addMilestone: (forumId: string, label: string, agentId?: string) => string;
   /** Remove an agent from an active forum (stops their participation but keeps their history). */
   removeAgentFromForum: (forumId: string, agentId: string) => void;
@@ -209,7 +223,7 @@ function deriveTitle(brief: string): string {
 function deriveMilestones(brief: string, agents: ForumAgent[]): Milestone[] {
   // Placeholder initial milestone; will be overwritten by dynamic planning phase
   return [
-    { id: generateId("ms"), label: "Planning project...", status: "active" }
+    { id: generateId("ms"), label: "Planning forum...", status: "active" }
   ];
 }
 
@@ -384,6 +398,14 @@ export const useForumStore = create<ForumState>()(
         }));
       },
 
+      setForumDraft: (forumId, draft) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id === forumId ? { ...f, draftMessage: draft } : f
+          ),
+        }));
+      },
+
       answerForumQuestion: (forumId, messageId, answer) => {
         set(state => ({
           forums: state.forums.map(f =>
@@ -504,7 +526,7 @@ export const useForumStore = create<ForumState>()(
               id: generateId("msg"),
               kind: "system",
               sender: "system",
-              text: "↺ Resuming project…",
+              text: "↺ Resuming forum…",
               timestamp: now,
             };
             return {

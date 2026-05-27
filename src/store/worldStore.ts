@@ -96,7 +96,7 @@ export interface Conversation {
   messages: ChatMessage[];
   createdAt: number;       // unix ms
   lastActiveAt: number;    // unix ms — for sort order
-  type?: "dm" | "project";
+  type?: "dm" | "forum";
   status?: "active" | "archived";
 }
 
@@ -231,7 +231,7 @@ export interface WorldState {
   // there's anything worth saving, then clears chatLog. Returns the new
   // conv id (or null if nothing was saved). Used by "New conversation".
   saveCurrentThread: (agentId: string) => string | null;
-  createProjectSpace: (agentId: string) => string | null;
+  createForumSpace: (agentId: string) => string | null;
   // switchConversation saves the current thread first (idempotent — no-op if
   // empty), then loads the target conversation's messages into chatLog.
   switchConversation: (agentId: string, convId: string) => void;
@@ -521,7 +521,7 @@ export const useWorldStore = create<WorldState>()(
     return savedId;
   },
 
-  createProjectSpace: (agentId) => {
+  createForumSpace: (agentId) => {
     let savedId: string | null = null;
     set((state) => {
       const agent = state.agents.find(a => a.id === agentId);
@@ -532,17 +532,17 @@ export const useWorldStore = create<WorldState>()(
       const now = Date.now();
       const newConv: Conversation = {
         id: `proj_${now}_${Math.random().toString(36).slice(2, 8)}`,
-        title: "New Project Space",
+        title: "New Forum Space",
         messages: [],
         createdAt: now,
         lastActiveAt: now,
-        type: "project",
+        type: "forum",
         status: "active"
       };
       conversations.push(newConv);
       savedId = newConv.id;
 
-      // We don't automatically clear the active chat log if it was a DM, but we DO switch into the project space.
+      // We don't automatically clear the active chat log if it was a DM, but we DO switch into the forum space.
       // Wait, let's just create it and let switchConversation handle the switch.
       return {
         agents: state.agents.map(a => a.id === agentId ? {
@@ -563,8 +563,8 @@ export const useWorldStore = create<WorldState>()(
     if (!target && convId.startsWith("forum_")) {
       target = {
         id: convId,
-        type: "project",
-        title: "Project",
+        type: "forum",
+        title: "Forum",
         messages: [],
         status: "active",
         createdAt: Date.now(),
