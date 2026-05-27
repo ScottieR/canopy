@@ -6,7 +6,141 @@ import { useWorldStore } from "../../store/worldStore";
 import { ForumThread } from "./ForumThread";
 import { createForumOrchestrator, createFollowUpOrchestrator, ForumOrchestratorController } from "./forumOrchestrator";
 import { ForumBriefModal } from "./ForumBriefModal";
+import { ExportForumModal } from "./ExportForumModal";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
+
+// ─── Annotation Hook & Overlay ────────────────────────────────────────────────
+
+interface SelectionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top: number;
+  left: number;
+}
+
+interface AnnotationState {
+  isActive: boolean;
+  text: string;
+  blockId: string | null;
+  rect: SelectionRect | null;
+}
+
+function useCanvasAnnotation(isAnnotationMode: boolean) {
+  const [annotation, setAnnotation] = useState<AnnotationState>({
+    isActive: false,
+    text: '',
+    blockId: null,
+    rect: null,
+  });
+
+  const handleSelectionChange = useCallback(() => {
+    if (!isAnnotationMode) {
+      setAnnotation((prev) => prev.isActive ? { isActive: false, text: '', blockId: null, rect: null } : prev);
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setAnnotation((prev) => prev.isActive ? { isActive: false, text: '', blockId: null, rect: null } : prev);
+      return;
+    }
+
+    const text = selection.toString().trim();
+    if (!text) {
+      setAnnotation((prev) => prev.isActive ? { isActive: false, text: '', blockId: null, rect: null } : prev);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+
+    let blockId = null;
+    let currentNode = selection.anchorNode;
+    
+    if (currentNode && currentNode.nodeType === Node.TEXT_NODE) {
+      currentNode = currentNode.parentNode;
+    }
+
+    while (currentNode && currentNode instanceof Element) {
+      if (currentNode.hasAttribute('data-block-id')) {
+        blockId = currentNode.getAttribute('data-block-id');
+        break;
+      }
+      currentNode = currentNode.parentElement;
+    }
+
+    setAnnotation({
+      isActive: true,
+      text,
+      blockId,
+      rect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        top: rect.top,
+        left: rect.left,
+      },
+    });
+  }, [isAnnotationMode]);
+
+  useEffect(() => {
+    document.addEventListener('selectionchange', handleSelectionChange);
+    document.addEventListener('mouseup', handleSelectionChange);
+    document.addEventListener('keyup', handleSelectionChange);
+    window.addEventListener('resize', handleSelectionChange);
+    document.addEventListener('scroll', handleSelectionChange, true);
+
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      document.removeEventListener('mouseup', handleSelectionChange);
+      document.removeEventListener('keyup', handleSelectionChange);
+      window.removeEventListener('resize', handleSelectionChange);
+      document.removeEventListener('scroll', handleSelectionChange, true);
+    };
+  }, [handleSelectionChange]);
+
+  return annotation;
+}
+
+function CanvasAnnotationOverlay({ annotation }: { annotation: AnnotationState }) {
+  if (!annotation.isActive || !annotation.rect) return null;
+
+  return (
+    <div 
+      style={{
+        position: 'fixed',
+        top: annotation.rect.top - 44, // Position slightly above the selection
+        left: annotation.rect.left + annotation.rect.width / 2, // Center relative to selection width
+        transform: 'translateX(-50%)',
+        zIndex: 9999,
+        background: '#1A1A1A',
+        color: 'white',
+        padding: '6px 12px',
+        borderRadius: '6px',
+        fontSize: '12px',
+        fontWeight: 500,
+        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        pointerEvents: 'auto',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px'
+      }}
+      onClick={() => {
+        console.log("Annotation requested for block:", annotation.blockId, "text:", annotation.text);
+      }}
+    >
+      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      Comment {annotation.blockId ? `(Block: ${annotation.blockId})` : ''}
+    </div>
+  );
+}
 
 // ─── Milestone List ───────────────────────────────────────────────────────────
 // Vertical scrollable list of project steps — shows actual agent-defined labels
@@ -61,7 +195,7 @@ function MilestoneList({ milestones, forumStatus }: { milestones: Milestone[]; f
           fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
           color: "var(--text-sub, #636E72)",
         }}>
-          Project Steps
+          Forum Steps
         </span>
         {isRunning && (
           <div style={{
@@ -972,6 +1106,8 @@ function CoAuthors({ authors }: { authors: Array<{ name: string; robeColor: stri
 }
 
 function GlassCard({ card, mdComponents }: { card: BoardCard; mdComponents: any }) {
+  const [expanded, setExpanded] = useState(false);
+  
   return (
     <div 
       className="glass-card"
@@ -987,22 +1123,60 @@ function GlassCard({ card, mdComponents }: { card: BoardCard; mdComponents: any 
         border: "1px solid rgba(255, 255, 255, 0.5)",
         boxShadow: "0 8px 32px 0 rgba(31, 38, 135, 0.04)",
         transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
-        overflow: "hidden",
+        overflow: expanded ? "visible" : "hidden",
+        maxHeight: expanded ? "none" : "200px",
         position: "relative",
+        cursor: expanded ? "default" : "pointer",
       }}
+      onClick={() => { if (!expanded) setExpanded(true); }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 10, marginBottom: 4 }}>
-        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--text-main, #303330)", letterSpacing: "-0.01em" }}>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--text-main, #303330)", letterSpacing: "-0.01em", wordWrap: "break-word", overflowWrap: "break-word" }}>
+          {/* Filetree SVG Icon Placeholder */}
+          <svg style={{ marginRight: 6, verticalAlign: "middle" }} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+            <polyline points="13 2 13 9 20 9"></polyline>
+          </svg>
           {card.title}
         </h3>
-        <CoAuthors authors={card.authors} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CoAuthors authors={card.authors} />
+          {expanded && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
+              style={{
+                background: "transparent", border: "none", cursor: "pointer",
+                padding: "2px", display: "flex", alignItems: "center", justifyContent: "center",
+                color: "var(--text-sub)", opacity: 0.6
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <polyline points="18 15 12 9 6 15"></polyline>
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
-      <div style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--text-main, #303330)" }}>
+      <div style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--text-main, #303330)", opacity: expanded ? 1 : 0.8 }}>
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
           {card.body}
         </ReactMarkdown>
       </div>
+      
+      {!expanded && (
+        <div style={{
+          position: "absolute",
+          bottom: 0, left: 0, right: 0,
+          height: 60,
+          background: "linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.9) 80%)",
+          display: "flex", alignItems: "flex-end", justifyContent: "center",
+          paddingBottom: 8,
+          pointerEvents: "none"
+        }}>
+          <span style={{ fontSize: 10, fontWeight: 600, color: "var(--primary, #3c6663)", opacity: 0.8 }}>Click to expand</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -1040,6 +1214,9 @@ function ForumBlackboard({
   const [historyIdx, setHistoryIdx] = useState<number | null>(null); // null = live
   const [locked, setLocked] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [isAnnotationMode, setIsAnnotationMode] = useState(false);
+  const annotation = useCanvasAnnotation(isAnnotationMode);
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1270,6 +1447,18 @@ function ForumBlackboard({
           </>
         )}
 
+        {/* Export Forum */}
+        {toolbarBtn(
+          () => setExportModalOpen(true), false, "#4A9E96",
+          <>
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Export
+          </>,
+          "Export Forum"
+        )}
+
         {/* Director's Lock */}
         {toolbarBtn(
           () => setLocked(l => !l), locked, "#EF4444",
@@ -1283,6 +1472,18 @@ function ForumBlackboard({
             {locked ? "Locked" : "Lock"}
           </>,
           locked ? "Unlock — agents can edit" : "Lock — agents cannot edit this content"
+        )}
+
+        {/* Annotation Mode */}
+        {toolbarBtn(
+          () => setIsAnnotationMode(a => !a), isAnnotationMode, "#EAB308",
+          <>
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            {isAnnotationMode ? "Annotating" : "Annotate"}
+          </>,
+          "Toggle Annotation Mode to select text and comment"
         )}
 
         {/* Time Machine — hidden when viewing a pinned artifact or HTML/GenUI block */}
@@ -1368,7 +1569,7 @@ function ForumBlackboard({
                     ref={scrollRef}
                     style={{
                       width: "100%", height: "100%", overflowY: "auto",
-                      padding: "20px 28px",
+                      padding: "24px 32px", wordWrap: "break-word", overflowWrap: "break-word",
                       opacity: isLive ? 1 : 0.7,
                     }}
                   >
@@ -1441,6 +1642,8 @@ function ForumBlackboard({
             }}
           />
         )}
+        <CanvasAnnotationOverlay annotation={annotation} />
+        {exportModalOpen && <ExportForumModal forum={forum} onClose={() => setExportModalOpen(false)} />}
       </div>
     </div>
   );
@@ -1508,7 +1711,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
         flexShrink: 0,
       }}>
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main, #303330)" }}>Projects</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main, #303330)" }}>Forums</div>
           <div style={{ fontSize: 11, color: "var(--text-sub, #636E72)", marginTop: 2 }}>
             {active.length} project{active.length !== 1 ? "s" : ""}
             {archived.length > 0 && ` · ${archived.length} archived`}
@@ -1530,7 +1733,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
-          New Project
+          New Forum
         </button>
       </div>
 
@@ -1547,7 +1750,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
             </svg>
             <div style={{ fontSize: 14, fontWeight: 600 }}>No projects yet</div>
             <div style={{ fontSize: 12, textAlign: "center" }}>
-              Start a project to assemble your agents<br/>around a goal or task.
+              Start a forum to assemble your agents<br/>around a goal or task.
             </div>
             <button
               onClick={gatewayReady ? onNewForum : undefined}
@@ -2025,7 +2228,7 @@ export function ForumView() {
           <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <polyline points="15 18 9 12 15 6"/>
           </svg>
-          All Projects
+          All Forums
         </button>
 
         {/* Title & Brief */}

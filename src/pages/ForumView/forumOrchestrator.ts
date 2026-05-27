@@ -182,7 +182,7 @@ function extractText(response: unknown): string {
   // extended thinking is enabled (lines 1773-1775). Strip them so downstream
   // parsers (parseDraftResponse, question detection, etc.) only see the
   // actual agent response text.
-  const text = raw.replace(/\[THOUGHT_PROCESS\][\s\S]*?\[\/THOUGHT_PROCESS\]\n*/g, "").trim();
+  const text = raw.replace(/<think>[\s\S]*?<\/think>\n*/g, "").trim();
   if (!text) throw new Error("Empty response — no text extracted from agent reply");
   return text;
 }
@@ -223,7 +223,7 @@ function parseAgentQuestion(response: string): AgentQuestion | null {
 /** Hard cap on any single message to send_message.
  *  128 KB is the Rust-side limit. We stay comfortably below it so prompt
  *  template overhead never causes a surprise truncation. */
-const MAX_PROMPT_CHARS = 24_000;
+const MAX_PROMPT_CHARS = 180_000;
 
 /**
  * Trim a block of text that is embedded inside a larger prompt so the whole
