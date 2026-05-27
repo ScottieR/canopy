@@ -98,6 +98,17 @@ impl Database {
         Ok(db)
     }
 
+    /// Initialize an in-memory database (primarily for testing)
+    pub fn init_in_memory() -> SqlResult<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute("PRAGMA foreign_keys = ON", [])?;
+        let db = Database {
+            conn: Mutex::new(conn),
+        };
+        db.run_migrations()?;
+        Ok(db)
+    }
+
     /// Run all migrations to create tables
     fn run_migrations(&self) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();

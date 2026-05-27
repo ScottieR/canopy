@@ -32,7 +32,7 @@ async fn check_gateway_health(app_handle: &tauri::AppHandle) {
     let container_running = match tokio::time::timeout(
         Duration::from_secs(5),
         get_docker_command()
-            .args(["inspect", "--format", "{{.State.Running}}", "openclaw"])
+            .args(["inspect", "--format", "{{.State.Running}}", "canopy-gateway"])
             .output(),
     ).await {
         Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout).trim() == "true",
@@ -40,7 +40,7 @@ async fn check_gateway_health(app_handle: &tauri::AppHandle) {
     };
 
     if !container_running {
-        tracing::warn!("health_monitor: openclaw container is not running");
+        tracing::warn!("health_monitor: canopy-gateway container is not running");
         let _ = app_handle.emit("gateway-health", serde_json::json!({ "status": "offline" }));
         return;
     }

@@ -456,8 +456,11 @@ export const useWorldStore = create<WorldState>()(
         // they're preserved when the user switches back later.
         const existing = conversations.find(c => c.id === agent.activeConversationId);
         if (existing) {
+          const isNewContent = (agent.chatLog || []).length !== existing.messages.length ||
+            (agent.chatLog || [])[(agent.chatLog || []).length - 1]?.id !== existing.messages[existing.messages.length - 1]?.id;
+
           conversations = conversations.map(c => c.id === agent.activeConversationId
-            ? { ...c, messages: [...(agent.chatLog || [])], lastActiveAt: Date.now() }
+            ? { ...c, messages: [...(agent.chatLog || [])], lastActiveAt: isNewContent ? Date.now() : c.lastActiveAt }
             : c);
         } else {
           // Fallback: If it was active but missing from the array, push it anew.
@@ -504,7 +507,7 @@ export const useWorldStore = create<WorldState>()(
           conversations,
           chatLog: [],
           draftMessage: "",
-          activeConversationId: null,
+          activeConversationId: `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           chatClearedAt: Date.now(),
         } : a),
       };
@@ -554,7 +557,21 @@ export const useWorldStore = create<WorldState>()(
   switchConversation: (agentId, convId) => set((state) => {
     const agent = state.agents.find(a => a.id === agentId);
     if (!agent) return state;
-    const target = (agent.conversations || []).find(c => c.id === convId);
+    
+    // Inject a stub for forums if missing, so we can switch to them
+    let target = (agent.conversations || []).find(c => c.id === convId);
+    if (!target && convId.startsWith("forum_")) {
+      target = {
+        id: convId,
+        type: "project",
+        title: "Project",
+        messages: [],
+        status: "active",
+        createdAt: Date.now(),
+        lastActiveAt: Date.now()
+      };
+      agent.conversations = [...(agent.conversations || []), target];
+    }
     if (!target) return state;
 
     // Snapshot the current chatLog into its own conversation before swapping,
@@ -570,8 +587,13 @@ export const useWorldStore = create<WorldState>()(
       // (i.e. activeConversationId is set), update that thread's messages
       // rather than creating a duplicate.
       if (agent.activeConversationId) {
+        const existing = conversations.find(c => c.id === agent.activeConversationId);
+        const isNewContent = !existing ||
+          agent.chatLog.length !== existing.messages.length ||
+          agent.chatLog[agent.chatLog.length - 1]?.id !== existing.messages[existing.messages.length - 1]?.id;
+
         conversations = conversations.map(c => c.id === agent.activeConversationId
-          ? { ...c, messages: [...agent.chatLog], lastActiveAt: Date.now() }
+          ? { ...c, messages: [...agent.chatLog], lastActiveAt: isNewContent ? Date.now() : c.lastActiveAt }
           : c);
       } else {
         const now = Date.now();
@@ -611,8 +633,10 @@ export const useWorldStore = create<WorldState>()(
     agents: state.agents.map(a => a.id === agentId ? {
       ...a,
       conversations: (a.conversations || []).filter(c => c.id !== convId),
-      // If we deleted the active conversation, clear the active marker.
-      activeConversationId: a.activeConversationId === convId ? null : a.activeConversationId,
+      // If we deleted the active conversation, clear the active marker with a new unique session ID.
+      activeConversationId: a.activeConversationId === convId 
+        ? `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` 
+        : a.activeConversationId,
     } : a),
   })),
 
@@ -631,7 +655,26 @@ export const useWorldStore = create<WorldState>()(
 {
   name: "canopy-world-store",
   partialize: (state) => ({ 
-    agents: state.agents, 
+    agents: state.agents.map((a) => ({
+      ...a,
+      chatLog: a.chatLog?.map((m) => ({
+        ...m,
+        attachments: m.attachments?.map((att) => ({
+          ...att,
+          dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
+        }))
+      })),
+      conversations: a.conversations?.map((c) => ({
+        ...c,
+        messages: c.messages?.map((m) => ({
+          ...m,
+          attachments: m.attachments?.map((att) => ({
+            ...att,
+            dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
+          }))
+        }))
+      }))
+    })),
     inbox: state.inbox,
     isAutoCloakEnabled: state.isAutoCloakEnabled, 
     autoCloakTimeout: state.autoCloakTimeout 

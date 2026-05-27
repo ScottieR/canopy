@@ -2,12 +2,15 @@ import React, { useRef, useEffect, useState } from "react";
 import { Forum, ForumArtifact, ForumMessage, useForumStore } from "../../store/forumStore";
 import { resolveAnswer } from "./forumOrchestrator";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   forum: Forum;
   selectedArtifactId: string | null;
   onArtifactClick: (id: string) => void;
+  onSendMessage?: (text: string, attachments?: { name: string; dataUrl: string; mimeType: string }[]) => void;
 }
+
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,8 +42,8 @@ function SystemMessage({ msg }: { msg: ForumMessage }) {
 }
 
 function HandoffChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
-  const fromAgent = forum.agents.find(a => a.agentId === msg.agentId);
-  const toAgent = forum.agents.find(a => a.agentId === msg.toAgentId);
+  const fromAgent = forum.agents?.find(a => a.agentId === msg.agentId);
+  const toAgent = forum.agents?.find(a => a.agentId === msg.toAgentId);
   const color = fromAgent?.robeColor || "#4A9E96";
 
   return (
@@ -68,7 +71,7 @@ function HandoffChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
 }
 
 function VoteChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
-  const agent = forum.agents.find(a => a.agentId === msg.agentId);
+  const agent = forum.agents?.find(a => a.agentId === msg.agentId);
   const color = agent?.robeColor || "#4A9E96";
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "3px 0" }}>
@@ -92,7 +95,7 @@ function VoteChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
 
 function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   const isHandoffType = msg.toAgentId != null;
-  const agent = forum.agents.find(a => a.agentId === msg.agentId);
+  const agent = forum.agents?.find(a => a.agentId === msg.agentId);
   const color = agent?.robeColor || "#4A9E96";
   const isAgentToAgent = isHandoffType;
 
@@ -120,7 +123,7 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
             <>
               <span style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.4 }}>→</span>
               <span style={{ fontSize: 11, color: "var(--text-sub, #636E72)", opacity: 0.7 }}>
-                {forum.agents.find(a => a.agentId === msg.toAgentId)?.name ?? "Agent"}
+                {forum.agents?.find(a => a.agentId === msg.toAgentId)?.name ?? "Agent"}
               </span>
             </>
           )}
@@ -145,7 +148,8 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
           {msg.text}
           {msg.miniApp && msg.miniApp.target === "inline" && (
             <GenUIRenderer 
-              app={msg.miniApp} 
+              app={msg.miniApp}
+              attachments={forum.messages.flatMap(m => m.attachments || [])} 
               onEvent={(evt) => {
                 console.log("GenUI Event emitted:", evt);
                 // In a real implementation, this would trigger an invoke("send_message", ...)
@@ -164,7 +168,73 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   );
 }
 
-function UserMessage({ msg }: { msg: ForumMessage }) {
+interface ForumAttachmentThumbnailProps {
+  agentId?: string;
+  attachment: { name: string; dataUrl: string };
+  onExpand: (url: string) => void;
+}
+
+function ForumAttachmentThumbnail({ agentId, attachment, onExpand }: ForumAttachmentThumbnailProps) {
+  const [dataUrl, setDataUrl] = useState<string>(attachment.dataUrl || "");
+  const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(attachment.name);
+
+  useEffect(() => {
+    if (!attachment.dataUrl && isImage && agentId) {
+      invoke<string>("read_workspace_file_base64", { agentId, filename: attachment.name })
+        .then((url) => {
+          if (url) {
+            setDataUrl(url);
+          }
+        })
+        .catch((err) => {
+          console.warn("Failed to load dynamic forum attachment:", err);
+        });
+    } else if (attachment.dataUrl) {
+      setDataUrl(attachment.dataUrl);
+    }
+  }, [agentId, attachment.name, attachment.dataUrl, isImage]);
+
+  if (isImage && dataUrl) {
+    return (
+      <img
+        src={dataUrl}
+        alt={attachment.name}
+        title={attachment.name}
+        onClick={() => onExpand(dataUrl)}
+        style={{
+          width: 80,
+          height: 80,
+          objectFit: "cover",
+          borderRadius: 8,
+          cursor: "pointer",
+          border: "1.5px solid rgba(60,102,99,0.2)",
+        }}
+      />
+    );
+  }
+
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      padding: "5px 9px",
+      borderRadius: 8,
+      background: "rgba(60,102,99,0.08)",
+      border: "1px solid rgba(60,102,99,0.18)",
+      fontSize: 11,
+      color: "var(--text-sub, #636E72)",
+    }}>
+      <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+      </svg>
+      {attachment.name}
+    </div>
+  );
+}
+
+function UserMessage({ msg, agentId }: { msg: ForumMessage; agentId?: string }) {
   const [expandedImg, setExpandedImg] = useState<string | null>(null);
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexDirection: "row-reverse" }}>
@@ -188,16 +258,10 @@ function UserMessage({ msg }: { msg: ForumMessage }) {
             {msg.attachments.map((att, i) => (
               att.mimeType.startsWith("image/") ? (
                 <div key={i} style={{ position: "relative" }}>
-                  <img
-                    src={att.dataUrl}
-                    alt={att.name}
-                    title={att.name}
-                    onClick={() => setExpandedImg(att.dataUrl)}
-                    style={{
-                      width: 80, height: 80, objectFit: "cover",
-                      borderRadius: 8, cursor: "pointer",
-                      border: "1.5px solid rgba(60,102,99,0.2)",
-                    }}
+                  <ForumAttachmentThumbnail
+                    agentId={agentId}
+                    attachment={att}
+                    onExpand={setExpandedImg}
                   />
                 </div>
               ) : (
@@ -257,7 +321,7 @@ function QuestionBubble({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   const [freeText, setFreeText] = useState("");
   const answerQuestion = useForumStore(s => s.answerForumQuestion);
 
-  const agent = forum.agents.find(a => a.agentId === msg.agentId);
+  const agent = forum.agents?.find(a => a.agentId === msg.agentId);
   const color = agent?.robeColor || "#4A9E96";
   const answered = msg.questionAnswered;
 
@@ -572,7 +636,7 @@ function ArtifactShelf({
           const meta = ARTIFACT_META[artifact.type] ?? ARTIFACT_META.markdown;
           const isSelected = artifact.id === selectedArtifactId;
           const preview = artifact.preview ?? derivePreview(artifact.content, artifact.type);
-          const agent = forum.agents.find(a => a.agentId === artifact.agentId);
+          const agent = forum.agents?.find(a => a.agentId === artifact.agentId);
 
           return (
             <button
@@ -664,7 +728,7 @@ function ArtifactShelf({
 
 interface Attachment { name: string; dataUrl: string; mimeType: string }
 
-function ThreadInput({ forumId }: { forumId: string }) {
+function ThreadInput({ forumId, onSendMessage }: { forumId: string; onSendMessage?: (text: string, attachments: Attachment[]) => void }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -674,12 +738,16 @@ function ThreadInput({ forumId }: { forumId: string }) {
 
   const send = () => {
     if (!canSend) return;
-    addMsg(forumId, {
-      kind: "chat",
-      sender: "user",
-      text: text.trim(),
-      attachments: attachments.length > 0 ? attachments : undefined,
-    });
+    if (onSendMessage) {
+      onSendMessage(text.trim(), attachments);
+    } else {
+      addMsg(forumId, {
+        kind: "chat",
+        sender: "user",
+        text: text.trim(),
+        attachments: attachments.length > 0 ? attachments : undefined,
+      });
+    }
     setText("");
     setAttachments([]);
   };
@@ -856,7 +924,7 @@ const TYPING_ACTIONS = ["…"];
 function TypingBubble({ forum }: { forum: Forum }) {
   const [elapsed, setElapsed] = useState(0);
 
-  const activeAgent = forum.agents.find(a =>
+  const activeAgent = (forum.agents || []).find(a =>
     a.currentAction && TYPING_ACTIONS.some(suffix => a.currentAction!.endsWith(suffix))
   );
 
@@ -937,12 +1005,12 @@ function TypingBubble({ forum }: { forum: Forum }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Props) {
+export function ForumThread({ forum, selectedArtifactId, onArtifactClick, onSendMessage }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // The typing indicator is visible whenever any agent is working
   const isTyping = forum.status === "active" &&
-    forum.agents.some(a => a.currentAction?.endsWith("…"));
+    (forum.agents || []).some(a => a.currentAction?.endsWith("…"));
 
   // Auto-scroll on new messages OR when typing indicator appears/disappears
   useEffect(() => {
@@ -973,7 +1041,8 @@ export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Prop
           if (msg.kind === "handoff") return <HandoffChip key={msg.id} msg={msg} forum={forum} />;
           if (msg.kind === "vote") return <VoteChip key={msg.id} msg={msg} forum={forum} />;
           if (msg.kind === "question") return <QuestionBubble key={msg.id} msg={msg} forum={forum} />;
-          if (msg.sender === "user") return <UserMessage key={msg.id} msg={msg} />;
+          const firstAgentId = forum.agents?.[0]?.agentId;
+          if (msg.sender === "user") return <UserMessage key={msg.id} msg={msg} agentId={firstAgentId} />;
           return <AgentMessage key={msg.id} msg={msg} forum={forum} />;
         })}
 
@@ -991,7 +1060,7 @@ export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Prop
       />
 
       {/* Input */}
-      <ThreadInput forumId={forum.id} />
+      <ThreadInput forumId={forum.id} onSendMessage={onSendMessage} />
     </div>
   );
 }

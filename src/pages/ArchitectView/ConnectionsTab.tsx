@@ -49,6 +49,21 @@ const AGENT_DISCONNECT_CONFIG: Record<AgentDisconnectKey, {
   },
 };
 
+export const UPGRADE_MAP: Record<string, string> = {
+  "google/gemini-1.5-flash": "google/gemini-3.5-flash",
+  "google/gemini-2.0-flash": "google/gemini-3.5-flash",
+  "google/gemini-2.5-flash": "google/gemini-3.5-flash",
+  "google/gemini-3-flash-preview": "google/gemini-3.5-flash",
+  "google/gemini-2.5-flash-lite": "google/gemini-3.5-flash",
+  "google/gemini-3.1-flash-lite-preview": "google/gemini-3.5-flash",
+  "google/gemini-1.5-pro": "google/gemini-3.5-pro",
+  "google/gemini-2.0-pro": "google/gemini-3.5-pro",
+  "google/gemini-2.5-pro": "google/gemini-3.5-pro",
+  "google/gemini-3.1-pro-preview": "google/gemini-3.5-pro",
+  "anthropic/claude-opus-4-6": "anthropic/claude-opus-4-7",
+  "anthropic/claude-3-opus-20240229": "anthropic/claude-opus-4-7",
+};
+
 export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: AgentData, onOpenTerminal?: (cmd: string) => void }) {
   const fallbackIntegrations = useMemo(() => [], []);
   const fallbackPermissions = useMemo(() => [], []);
@@ -311,9 +326,14 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   // ── Cognitive Engines (LLM) ──
   const [brainModels, setBrainModels] = useState<any[]>([]);
   useEffect(() => {
-    invoke<any[]>("get_available_models")
-      .then(models => setBrainModels(models))
-      .catch(() => { /* gateway not yet up, will retry on next render */ });
+    const fetchModels = () => {
+      invoke<any[]>("get_available_models")
+        .then(models => setBrainModels(models))
+        .catch(() => { /* gateway not yet up, will retry on next render */ });
+    };
+    fetchModels();
+    const interval = setInterval(fetchModels, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const [keys, setKeys] = useState<{ [provider: string]: string }>({
@@ -340,10 +360,16 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
            || brainModels[0];
     }
-    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.1 Flash Lite"} — ${match?.description || "Fastest Gemini 3 model (Preview)"}`, id: match?.id || "google/gemini-3.1-flash-lite-preview" };
+    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.5 Flash"} — ${match?.description || "Stable — speed optimized flagship"}`, id: match?.id || "google/gemini-3.5-flash" };
   };
 
   const defaultModelInfo = getDynamicRecommendedModel();
+
+  const getModelDisplayName = (modelId: string) => {
+    const found = brainModels?.find((m: any) => m.id === modelId);
+    if (found) return found.name;
+    return modelId.split('/').pop() || modelId;
+  };
 
   useEffect(() => {
     if (typeof invoke === 'function') {
@@ -356,7 +382,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     }
   }, [agent.id]);
 
-  const saveOverrides = async () => {
+  const saveOverrides = async (modelIdToSave?: string | unknown) => {
     setLlmSaveStatus("loading");
     try {
       if (typeof invoke === 'function') {
@@ -372,7 +398,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           } catch (err) {}
         }
 
-        const finalModel = selectedModel || defaultModelInfo?.id || "google/gemini-3.1-flash-lite-preview";
+        const modelToSave = typeof modelIdToSave === 'string' ? modelIdToSave : selectedModel;
+        const finalModel = modelToSave || defaultModelInfo?.id || "google/gemini-3.5-flash";
 
         // Synchronize keys to auth-profiles.json for THIS agent only via
         // `sync_agent_api_keys`. The Rust side reads the keychain and applies the
@@ -785,9 +812,59 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
                 ))}
               </optgroup>
+              <optgroup label="xAI">
+                {(brainModels || []).filter((m: any) => m.provider === "xAI").map((m: any) => (
+                  <option key={m.id} value={m.id}>{m.name} — {m.description}</option>
+                ))}
+              </optgroup>
             </select>
           </div>
         </div>
+
+        {/* Model Upgrade Banner */}
+        {(() => {
+          const activeModelInUse = selectedModel || defaultModelInfo?.id;
+          const upgradeTarget = activeModelInUse ? UPGRADE_MAP[activeModelInUse] : undefined;
+          if (!upgradeTarget) return null;
+          const targetName = getModelDisplayName(upgradeTarget);
+          const currentName = getModelDisplayName(activeModelInUse);
+          return (
+            <div style={{ marginTop: 0, marginBottom: 16, padding: 14, background: "rgba(33,131,128,0.08)", border: "1px solid rgba(33,131,128,0.3)", borderRadius: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#218380" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
+                  <polyline points="18 15 12 9 6 15" />
+                </svg>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#218380", marginBottom: 4 }}>Model Upgrade Available</div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                    This agent is using {currentName}. We recommend upgrading to <strong>{targetName}</strong> for better performance and capability.
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setSelectedModel(upgradeTarget);
+                  saveOverrides(upgradeTarget);
+                }}
+                disabled={llmSaveStatus === "loading"}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 6,
+                  border: "none",
+                  cursor: "pointer",
+                  background: "#218380",
+                  color: "white",
+                  fontWeight: 600,
+                  fontSize: 11,
+                  whiteSpace: "nowrap",
+                  transition: "background 0.2s"
+                }}
+              >
+                Upgrade Model
+              </button>
+            </div>
+          );
+        })()}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
           {["OpenAI", "Anthropic", "Gemini", "Grok"].map(prov => (

@@ -54,6 +54,9 @@ pub const ANTHROPIC_CLAUDE_HAIKU: &str = "anthropic/claude-haiku-4-5";
 /// Claude Opus — highest capability, most expensive. Use for complex reasoning only.
 pub const ANTHROPIC_CLAUDE_OPUS: &str = "anthropic/claude-opus-4-6";
 
+/// Claude Opus 4.7 — flagship Anthropic model.
+pub const ANTHROPIC_CLAUDE_OPUS_47: &str = "anthropic/claude-opus-4-7";
+
 // ─── OpenAI / GPT ─────────────────────────────────────────────────────────────
 
 /// GPT-4o — OpenAI's flagship multimodal model.
@@ -85,6 +88,12 @@ pub const GOOGLE_GEMINI_FLASH_LITE_25: &str = "google/gemini-2.5-flash-lite";
 
 /// Gemini 2.5 Pro — stable, GA flagship. Shutdown: June 17, 2026.
 pub const GOOGLE_GEMINI_PRO_25: &str = "google/gemini-2.5-pro";
+
+/// Gemini 3.5 Flash — stable, GA.
+pub const GOOGLE_GEMINI_FLASH_35: &str = "google/gemini-3.5-flash";
+
+/// Gemini 3.5 Pro — preview/GA flagship.
+pub const GOOGLE_GEMINI_PRO_35: &str = "google/gemini-3.5-pro";
 
 // ── Gemini 3.x — PREVIEW (no shutdown date announced) ───────────────────────
 //    Valid model IDs per deprecations page. LiteLLM support inside the
@@ -147,6 +156,7 @@ pub fn all_models() -> Vec<ModelInfo> {
         ModelInfo { id: ANTHROPIC_CLAUDE_SONNET.into(), name: "Claude Sonnet 4.6".into(), provider: "Anthropic".into(), strategy: "heavy".into(), description: "Fast & highly capable".into() },
         ModelInfo { id: ANTHROPIC_CLAUDE_HAIKU.into(),  name: "Claude Haiku 4.5".into(),  provider: "Anthropic".into(), strategy: "light".into(), description: "Fastest Anthropic model".into() },
         ModelInfo { id: ANTHROPIC_CLAUDE_OPUS.into(),   name: "Claude Opus 4.6".into(),   provider: "Anthropic".into(), strategy: "heavy".into(), description: "Most capable Anthropic".into() },
+        ModelInfo { id: ANTHROPIC_CLAUDE_OPUS_47.into(), name: "Claude Opus 4.7".into(),  provider: "Anthropic".into(), strategy: "heavy".into(), description: "Flagship Anthropic model".into() },
         // OpenAI
         ModelInfo { id: OPENAI_GPT4O.into(),     name: "GPT-4o".into(),      provider: "OpenAI".into(), strategy: "heavy".into(), description: "Flagship multimodal".into() },
         ModelInfo { id: OPENAI_GPT4O_MINI.into(), name: "GPT-4o Mini".into(), provider: "OpenAI".into(), strategy: "light".into(), description: "Fast & affordable".into() },
@@ -160,6 +170,9 @@ pub fn all_models() -> Vec<ModelInfo> {
         ModelInfo { id: GOOGLE_GEMINI_FLASH_25.into(),      name: "Gemini 2.5 Flash".into(),       provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — recommended default".into() },
         ModelInfo { id: GOOGLE_GEMINI_FLASH_LITE_25.into(), name: "Gemini 2.5 Flash Lite".into(),  provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — fastest/cheapest option".into() },
         ModelInfo { id: GOOGLE_GEMINI_PRO_25.into(),        name: "Gemini 2.5 Pro".into(),         provider: "Google Gemini".into(), strategy: "heavy".into(), description: "Stable — flagship model".into() },
+        // ── Google Gemini 3.5 ────────────────────────────────────────────────
+        ModelInfo { id: GOOGLE_GEMINI_FLASH_35.into(),      name: "Gemini 3.5 Flash".into(),       provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — speed optimized flagship".into() },
+        ModelInfo { id: GOOGLE_GEMINI_PRO_35.into(),        name: "Gemini 3.5 Pro".into(),         provider: "Google Gemini".into(), strategy: "heavy".into(), description: "Preview — flagship 3.5 model".into() },
         // NOTE: gemini-2.0-flash and gemini-2.0-flash-lite are DEPRECATED (Feb 2025,
         // shutdown June 1 2026). Do not add them back — use 2.5 series instead.
     ]
@@ -336,6 +349,7 @@ const _: () = {
     assert_has_slash!(ANTHROPIC_CLAUDE_SONNET);
     assert_has_slash!(ANTHROPIC_CLAUDE_HAIKU);
     assert_has_slash!(ANTHROPIC_CLAUDE_OPUS);
+    assert_has_slash!(ANTHROPIC_CLAUDE_OPUS_47);
     assert_has_slash!(OPENAI_GPT4O);
     assert_has_slash!(OPENAI_GPT4O_MINI);
     assert_has_slash!(GOOGLE_GEMINI_FLASH_25);
@@ -344,6 +358,8 @@ const _: () = {
     assert_has_slash!(GOOGLE_GEMINI_3_FLASH);
     assert_has_slash!(GOOGLE_GEMINI_31_FLASH_LITE);
     assert_has_slash!(GOOGLE_GEMINI_31_PRO);
+    assert_has_slash!(GOOGLE_GEMINI_FLASH_35);
+    assert_has_slash!(GOOGLE_GEMINI_PRO_35);
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -372,6 +388,9 @@ mod tests {
             GOOGLE_GEMINI_3_FLASH,
             GOOGLE_GEMINI_31_FLASH_LITE,
             GOOGLE_GEMINI_31_PRO,
+            ANTHROPIC_CLAUDE_OPUS_47,
+            GOOGLE_GEMINI_FLASH_35,
+            GOOGLE_GEMINI_PRO_35,
         ] {
             assert!(
                 validate_model_string(constant).is_ok(),
@@ -611,5 +630,14 @@ mod tests {
         // When no keys are present, we return Anthropic so the UI can prompt for it.
         let model = default_model_from_available_keys(false, false, false);
         assert_eq!(model, DEFAULT_ANTHROPIC_MODEL);
+    }
+
+    #[test]
+    fn all_models_catalogue_has_gemini_35_models() {
+        let models = all_models();
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_35),
+            "Catalogue must include stable '{}'", GOOGLE_GEMINI_FLASH_35);
+        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_35),
+            "Catalogue must include '{}'", GOOGLE_GEMINI_PRO_35);
     }
 }

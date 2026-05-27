@@ -14,12 +14,12 @@ pub mod rate_limiter;
 
 mod model_constants; // Single source of truth for model strings, ports, and path helpers
 mod docker;
-mod openclaw;
+pub mod openclaw;
 mod keychain;
 mod bridge;
 mod payment;
 pub mod models;
-mod db;
+pub mod db;
 mod imessage;
 mod audit;
 mod audit_openclaw;
@@ -237,6 +237,7 @@ pub fn run() {
             openclaw::get_openclaw_status_json,
             openclaw::list_workspace_files,
             openclaw::read_workspace_file,
+            openclaw::read_workspace_file_base64,
             openclaw::write_workspace_file,
             openclaw::upload_workspace_file,
             openclaw::copy_file_to_workspace,

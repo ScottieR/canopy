@@ -332,9 +332,14 @@ export function OnboardingWizard() {
   // from model_constants.rs via a Tauri command, so the frontend and backend always agree.
   const [availableModels, setAvailableModels] = useState<any[]>([]);
   useEffect(() => {
-    invoke<any[]>("get_available_models")
-      .then(models => setAvailableModels(models))
-      .catch(err => console.warn("Failed to fetch available models from Rust:", err));
+    const fetchModels = () => {
+      invoke<any[]>("get_available_models")
+        .then(models => setAvailableModels(models))
+        .catch(err => console.warn("Failed to fetch available models from Rust:", err));
+    };
+    fetchModels();
+    const interval = setInterval(fetchModels, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   // Heavy roles get powerful models; light roles get fast models.
@@ -345,15 +350,16 @@ export function OnboardingWizard() {
     const strategy = isHeavy ? "heavy" : "light";
     const match = availableModels.find((m: any) => m.strategy === strategy);
     if (match) return { provider: match.provider, model: `${match.name} — ${match.description}`, id: match.id };
-    return { provider: "Google Gemini", model: "Gemini 3.1 Flash Lite — Fastest Gemini 3 model (Preview)", id: "google/gemini-3.1-flash-lite-preview" };
+    return { provider: "Google Gemini", model: "Gemini 3.5 Flash — Stable — speed optimized flagship", id: "google/gemini-3.5-flash" };
   };
 
   const getProviderRecommendedModel = (role: string, targetProvider: string) => {
     const isHeavy = HEAVY_ROLES.includes(role);
     const strategy = isHeavy ? "heavy" : "light";
-    const options = availableModels.filter((m: any) => m.provider === targetProvider && m.strategy === strategy);
+    const providerName = targetProvider === "xAI Grok" ? "xAI" : targetProvider;
+    const options = availableModels.filter((m: any) => m.provider === providerName && m.strategy === strategy);
     if (options.length > 0) return { model: `${options[0].name} — ${options[0].description}`, id: options[0].id };
-    const fallbacks = availableModels.filter((m: any) => m.provider === targetProvider);
+    const fallbacks = availableModels.filter((m: any) => m.provider === providerName);
     if (fallbacks.length > 0) return { model: `${fallbacks[0].name} — ${fallbacks[0].description}`, id: fallbacks[0].id };
     return { model: "Standard Model", id: "" };
   };
@@ -554,7 +560,15 @@ export function OnboardingWizard() {
             expertise: [],
             guardrails: [],
             custom_instructions: "",
-            active_model: llmProvider === "Anthropic" ? "anthropic/claude-3-7-sonnet-20250219" : llmProvider === "OpenAI" ? "openai/gpt-4o" : llmProvider === "Google Gemini" ? "google/gemini-2.5-pro" : llmProvider === "xAI Grok" ? "xai/grok-2-latest" : "anthropic/claude-3-7-sonnet-20250219",
+            active_model: (() => {
+              const recommended = getProviderRecommendedModel(selectedRole, llmProvider);
+              if (recommended.id) return recommended.id;
+              if (llmProvider === "Anthropic") return "anthropic/claude-sonnet-4-6";
+              if (llmProvider === "OpenAI") return "openai/gpt-4o";
+              if (llmProvider === "Google Gemini") return "google/gemini-3.5-flash";
+              if (llmProvider === "xAI Grok") return "xai/grok-beta";
+              return "google/gemini-3.5-flash";
+            })(),
             soul_template: roleInfo.soul_template,
             identity_template: finalPrompt,
           },
