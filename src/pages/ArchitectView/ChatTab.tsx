@@ -7,6 +7,7 @@ import {
   AlertTriangle
 } from "lucide-react";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
+import { useForumStore } from "../../store/forumStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass } from "../../App";
 import MDEditor from "@uiw/react-md-editor";
@@ -91,7 +92,46 @@ function EmbedPreview({ agentId, refName, title, height }: { agentId: string; re
   );
 }
 
+interface AttachmentThumbnailProps {
+  agentId: string;
+  attachment: { name: string; dataUrl: string };
+}
+
+function AttachmentThumbnail({ agentId, attachment }: AttachmentThumbnailProps) {
+  const [dataUrl, setDataUrl] = useState<string>(attachment.dataUrl || "");
+  const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(attachment.name);
+
+  useEffect(() => {
+    if (!attachment.dataUrl && isImage) {
+      invoke<string>("read_workspace_file_base64", { agentId, filename: attachment.name })
+        .then((url) => {
+          if (url) {
+            setDataUrl(url);
+          }
+        })
+        .catch((err) => {
+          console.warn("Failed to load dynamic attachment thumbnail:", err);
+        });
+    } else if (attachment.dataUrl) {
+      setDataUrl(attachment.dataUrl);
+    }
+  }, [agentId, attachment.name, attachment.dataUrl, isImage]);
+
+  if (isImage && dataUrl) {
+    return (
+      <img src={dataUrl} alt={attachment.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+    );
+  }
+
+  return (
+    <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.1)", fontSize: 10, padding: 4, wordBreak: "break-all", textAlign: "center", lineHeight: 1.2 }}>
+      {attachment.name}
+    </div>
+  );
+}
+
 export // ─── Chat / Communion Component ──────────────────────────────────────────────
+
 
 function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentData; compact?: boolean; hideHeader?: boolean }) {
   const { agents, setAgents, setArchitectTab } = useWorldStore();
@@ -873,7 +913,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   return (
     <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, position: "relative" }}>
       {!compact && !hideHeader && (
-        <div style={{ marginBottom: 12, padding: "0 10px", marginTop: 4 }}>
+        <div style={{ marginBottom: 12, padding: "0 10px", marginTop: 4, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ fontSize: 15, color: "var(--text-sub)", margin: 0 }}>
             {topic ? (
               <>Chat with <strong>{agent.name}</strong> about <strong>{topic}</strong>{startedAt ? ` started ${formatStartedTime(startedAt)}` : ''}</>
@@ -881,6 +921,21 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               <>Chat with <strong>{agent.name}</strong></>
             )}
           </div>
+          {activeConv?.type === "project" && (
+            <button 
+               onClick={() => {
+                 useForumStore.getState().setActiveForumId(activeConv.id);
+                 useWorldStore.getState().setActiveView("forum");
+               }}
+               style={{ 
+                 padding: "4px 10px", background: "rgba(60,102,99,0.15)", color: "#3c6663", 
+                 border: "1px solid rgba(60,102,99,0.3)", borderRadius: 6, fontSize: 12, 
+                 fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 4
+               }}
+            >
+               <Users size={12} /> Open Full Project
+            </button>
+          )}
         </div>
       )}
 
@@ -928,13 +983,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
                     {msg.attachments.map((a, i) => (
                       <div key={i} style={{ width: 80, height: 80, borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)" }}>
-                        {a.dataUrl.startsWith("data:image") ? (
-                           <img src={a.dataUrl} alt={a.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                        ) : (
-                           <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.1)", fontSize: 10, padding: 4, wordBreak: "break-all", textAlign: "center", lineHeight: 1.2 }}>
-                              {a.name}
-                           </div>
-                        )}
+                        <AttachmentThumbnail agentId={agent.id} attachment={a} />
                       </div>
                     ))}
                   </div>
@@ -1501,9 +1550,9 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? "Agents are waking up, please wait..." : undefined}
               style={{
                 padding: "14px 20px", borderRadius: 14, border: "none",
-                background: ((message.trim() || attachments.length > 0) && !gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
-                color: ((message.trim() || attachments.length > 0) && !gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
-                fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && !gatewayReady && !agent.paused) ? "pointer" : "default",
+                background: ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
+                color: ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
+                fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) ? "pointer" : "default",
                 fontFamily: "inherit",
                 transition: "all 0.15s ease",
                 height: "46px"

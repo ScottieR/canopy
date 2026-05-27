@@ -11,6 +11,7 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 
 import { Toggle, ServiceRow, glass } from "../../App";
 import { PersonalityPreview, PersonalityPreviewHandle } from "./PersonalityPreview";
+import { UPGRADE_MAP } from "./ConnectionsTab";
 
 const ROLE_VOICE_MAP: Record<string, string> = {
   "Researcher": "nova",
@@ -144,9 +145,14 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
   // ── Model list for the Brain tab — sourced from Rust, not localhost:3001 ─────
   const [brainModels, setBrainModels] = useState<any[]>([]);
   useEffect(() => {
-    invoke<any[]>("get_available_models")
-      .then(models => setBrainModels(models))
-      .catch(() => { /* gateway not yet up, will retry on next render */ });
+    const fetchModels = () => {
+      invoke<any[]>("get_available_models")
+        .then(models => setBrainModels(models))
+        .catch(() => { /* gateway not yet up, will retry on next render */ });
+    };
+    fetchModels();
+    const interval = setInterval(fetchModels, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
@@ -168,7 +174,7 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
       match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
         || brainModels[0];
     }
-    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.1 Flash Lite"} — ${match?.description || "Fastest Gemini 3 model (Preview)"}`, id: match?.id || "google/gemini-3.1-flash-lite-preview" };
+    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.5 Flash"} — ${match?.description || "Stable — speed optimized flagship"}`, id: match?.id || "google/gemini-3.5-flash" };
   };
 
   const [keys, setKeys] = useState<{ [provider: string]: string }>({
@@ -189,7 +195,7 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
     }
   }, [agent.id]);
 
-  const saveOverrides = async () => {
+  const saveOverrides = async (modelIdToSave?: string | unknown) => {
     setSaveStatus("loading");
     try {
       if (typeof invoke === 'function') {
@@ -208,9 +214,10 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
         }
 
         // Model IDs from get_available_models() are already in "provider/model-name" format
-        // (e.g. "google/gemini-3.1-flash-lite-preview"). No prefix construction needed.
+        // (e.g. "google/gemini-3.5-flash"). No prefix construction needed.
         // Fallback to the Rust-side default if nothing is selected.
-        const finalModel = selectedModel || defaultModelInfo?.id || "google/gemini-3.1-flash-lite-preview";
+        const modelToSave = typeof modelIdToSave === 'string' ? modelIdToSave : selectedModel;
+        const finalModel = modelToSave || defaultModelInfo?.id || "google/gemini-3.5-flash";
 
         // Synchronize updated keys to OpenClaw's auth-profiles.json layer for THIS agent
         // only. We use `sync_agent_api_keys` (which reads keychain + applies the per-agent

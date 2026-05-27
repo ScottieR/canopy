@@ -37,6 +37,7 @@ const card: React.CSSProperties = {
 
 interface Props {
   onClose: () => void;
+  preSelectedAgentId?: string;
 }
 
 type Step = "brief" | "analyzing" | "volunteers";
@@ -195,7 +196,7 @@ function AgentVolunteerCard({
 
 // ─── Main Modal ───────────────────────────────────────────────────────────────
 
-export function ForumBriefModal({ onClose }: Props) {
+export function ForumBriefModal({ onClose, preSelectedAgentId }: Props) {
   injectKeyframes();
 
   const agents = useWorldStore(s => s.agents);
@@ -232,6 +233,9 @@ export function ForumBriefModal({ onClose }: Props) {
       const autoSelect = new Set(
         result.scores.filter(a => !a.isolated && a.volunteers && a.confidence >= 55).slice(0, 4).map(a => a.agentId)
       );
+      if (preSelectedAgentId) {
+        autoSelect.add(preSelectedAgentId);
+      }
       setSelected(autoSelect);
       setStep("volunteers");
     } catch {

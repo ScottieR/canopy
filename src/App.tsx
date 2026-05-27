@@ -753,7 +753,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an OpenAI API Key so your agent can think. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into your OpenAI developer account on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://platform.openai.com/api-keys")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open your OpenAI developer account</a> securely in your browser.</span> },
         { text: "Look for the button that says 'Create new secret key' near the top right, and click it." },
         { text: "In the window that pops up, name it 'Canopy' and click 'Create secret key'." },
         { text: "Awesome! Now copy that long key (it usually starts with 'sk-proj...'), paste it securely below, and hit Save.", input: { key: "OPENAI_API_KEY", placeholder: "sk-proj-..." } }
@@ -764,7 +764,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an xAI API Key so your agent can tap into Grok. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into the xAI Developer Console on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://console.x.ai/")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open the xAI Developer Console</a> securely in your browser.</span> },
         { text: "Click to generate a new API Key and name it something memorable like 'Canopy'." },
         { text: "Perfect! Now securely copy that key, paste it below, and hit Save.", input: { key: "XAI_API_KEY", placeholder: "xai-..." } }
       ]
@@ -774,7 +774,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an Anthropic API Key so your agent can think. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into the Anthropic Console on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://console.anthropic.com/settings/keys")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open the Anthropic Console</a> securely in your browser.</span> },
         { text: "Click the black 'Create Key' button near the top right of the screen." },
         { text: "Name the key 'Canopy' so you remember what it's for, and click 'Create'." },
         { text: "Perfect! Now securely copy that key (it starts with 'sk-ant...'), paste it below, and hit Save.", input: { key: "ANTHROPIC_API_KEY", placeholder: "sk-ant-..." } }
@@ -785,7 +785,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating a Google Gemini API Key so your agent can think. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into Google AI Studio on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://aistudio.google.com/app/apikey")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open Google AI Studio</a> securely in your browser.</span> },
         { text: "Click the blue 'Create API key' button in the center (or top right, depending on your window size)." },
         { text: "Select your project from the dropdown (or create a new one) and generate the key." },
         { text: "Great! Securely copy the generated key, paste it below, and hit Save.", input: { key: "GEMINI_API_KEY", placeholder: "AIzaSy..." } }

@@ -3,6 +3,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useWorldStore, AgentData, Conversation } from "../../store/worldStore";
+import { useForumStore } from "../../store/forumStore";
+import { ForumBriefModal } from "../ForumView/ForumBriefModal";
 import { MessageSquare, Archive, Search, X, ChevronRight, ChevronLeft, ChevronDown, Trash2, Edit2, Users } from "lucide-react";
 
 function formatRelative(unixMs: number): string {
@@ -25,8 +27,8 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
   const [query, setQuery] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [forumsExpanded, setForumsExpanded] = useState(true);
-  const [messagesExpanded, setMessagesExpanded] = useState(true);
+  const [activeTab, setActiveTab] = useState<"messages" | "projects">("messages");
+  const [showProjectModal, setShowProjectModal] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const saveCurrentThread = useWorldStore(s => s.saveCurrentThread);
@@ -60,7 +62,25 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
         return [{ conv: c, matchedMessage: snippet }];
       });
 
-  const forums = filteredConversations.filter(c => c.conv.type === "project");
+  const allForums = useForumStore(s => s.forums);
+  const agentForumsList: FilteredConv[] = allForums
+    .filter(f => f.status !== "archived" && f.agents.some(a => a.agentId === agent.id))
+    .map(f => {
+      const lastActiveAt = f.messages.length > 0 ? f.messages[f.messages.length - 1].timestamp : (f as any).createdAt || Date.now();
+      return {
+        conv: {
+          id: f.id,
+          type: "project",
+          title: f.title || f.brief || "Untitled Project",
+          status: f.status === "archived" ? "archived" : "active",
+          lastActiveAt: lastActiveAt,
+          messages: []
+        }
+      };
+    })
+    .sort((a, b) => b.conv.lastActiveAt - a.conv.lastActiveAt);
+
+  const forums = !q ? agentForumsList : agentForumsList.filter(c => c.conv.title.toLowerCase().includes(q));
   const messages = filteredConversations.filter(c => !c.conv.type || c.conv.type === "dm");
 
   const startRename = (conv: Conversation, e: React.MouseEvent) => {
@@ -215,28 +235,59 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
         </button>
       </div>
 
-      {/* Quick actions */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, padding: "16px 12px 12px" }}>
+      {/* Tabs */}
+      <div style={{ display: "flex", borderBottom: "1px solid var(--border-subtle)" }}>
         <button
-          onClick={() => saveCurrentThread(agent.id)}
+          onClick={() => setActiveTab("messages")}
           style={{
-            padding: "8px", borderRadius: 8, border: "1px solid var(--border-subtle)",
-            background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 600,
-            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+            flex: 1, padding: "10px 0", background: "transparent", border: "none", cursor: "pointer",
+            fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+            color: activeTab === "messages" ? "var(--text-main)" : "var(--text-muted)",
+            borderBottom: activeTab === "messages" ? "2px solid #4A9E96" : "2px solid transparent",
+            transition: "all 0.2s"
           }}
         >
-          <MessageSquare size={11} /> + Message
+          Messages
         </button>
         <button
-          onClick={() => setActiveView("forum")}
+          onClick={() => setActiveTab("projects")}
           style={{
-            padding: "8px", borderRadius: 8, border: "1px solid var(--border-subtle)",
-            background: "var(--surface-sunken)", color: "var(--text-sub)", fontSize: 12, fontWeight: 600,
-            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+            flex: 1, padding: "10px 0", background: "transparent", border: "none", cursor: "pointer",
+            fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+            color: activeTab === "projects" ? "var(--text-main)" : "var(--text-muted)",
+            borderBottom: activeTab === "projects" ? "2px solid #4A9E96" : "2px solid transparent",
+            transition: "all 0.2s"
           }}
         >
-          <Users size={11} /> + Project
+          Projects
         </button>
+      </div>
+
+      {/* Action Button based on Tab */}
+      <div style={{ padding: "12px 12px 8px" }}>
+        {activeTab === "messages" ? (
+          <button
+            onClick={() => saveCurrentThread(agent.id)}
+            style={{
+              width: "100%", padding: "8px", borderRadius: 8, border: "1px solid var(--border-subtle)",
+              background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 600,
+              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+            }}
+          >
+            <MessageSquare size={11} /> + New Message
+          </button>
+        ) : (
+          <button
+            onClick={() => setShowProjectModal(true)}
+            style={{
+              width: "100%", padding: "8px", borderRadius: 8, border: "1px solid var(--border-subtle)",
+              background: "var(--surface-sunken)", color: "var(--text-sub)", fontSize: 12, fontWeight: 600,
+              cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+            }}
+          >
+            <Users size={11} /> + New Project
+          </button>
+        )}
       </div>
 
       {/* Search */}
@@ -272,50 +323,23 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
           <div style={{ display: "flex", flexDirection: "column" }}>
 
             {/* Projects section */}
-            {forums.length > 0 && (
+            {activeTab === "projects" && forums.length > 0 && (
               <div style={{ padding: "0 8px 16px" }}>
-                <div
-                  onClick={() => setForumsExpanded(!forumsExpanded)}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", cursor: "pointer",
-                    color: "var(--text-muted)", fontSize: 10, fontWeight: 700, letterSpacing: "0.05em"
-                  }}
-                >
-                  {forumsExpanded
-                    ? <ChevronDown size={12} style={{ marginLeft: -4 }} />
-                    : <ChevronRight size={12} style={{ marginLeft: -4 }} />}
-                  <span style={{ flex: 1 }}>
-                    PROJECTS · {forums.length}
-                  </span>
-                </div>
-                {forumsExpanded && forums.map(renderRow)}
+                {forums.map(renderRow)}
               </div>
             )}
 
             {/* Messages section */}
-            {messages.length > 0 && (
-              <div>
-                <button
-                  onClick={() => setMessagesExpanded(!messagesExpanded)}
-                  style={{
-                    display: "flex", alignItems: "center", width: "100%", padding: "8px 12px 4px",
-                    background: "none", border: "none", cursor: "pointer", gap: 5,
-                  }}
-                >
-                  {messagesExpanded
-                    ? <ChevronDown size={11} color="var(--text-muted)" />
-                    : <ChevronRight size={11} color="var(--text-muted)" />}
-                  <span style={{ fontSize: 9, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                    Messages · {messages.length}
-                  </span>
-                </button>
-                {messagesExpanded && messages.map(renderRow)}
+            {activeTab === "messages" && messages.length > 0 && (
+              <div style={{ padding: "0 8px 16px" }}>
+                {messages.map(renderRow)}
               </div>
             )}
 
           </div>
         )}
       </div>
+      {showProjectModal && <ForumBriefModal onClose={() => setShowProjectModal(false)} preSelectedAgentId={agent.id} />}
     </div>
   );
 }

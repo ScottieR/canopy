@@ -658,6 +658,38 @@ pub async fn copy_file_to_workspace(db: tauri::State<'_, crate::db::Database>, a
     Ok(())
 }
 
+#[tauri::command]
+pub async fn read_workspace_file_base64(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String) -> Result<String, String> {
+    use base64::Engine;
+    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+        return Err("Invalid filename".into());
+    }
+    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
+    let file_path = workspace.join(&filename);
+    if !file_path.exists() {
+        return Ok("".to_string());
+    }
+    let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    
+    let mime = if filename.ends_with(".png") {
+        "image/png"
+    } else if filename.ends_with(".jpg") || filename.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if filename.ends_with(".gif") {
+        "image/gif"
+    } else if filename.ends_with(".webp") {
+        "image/webp"
+    } else if filename.ends_with(".svg") {
+        "image/svg+xml"
+    } else {
+        "application/octet-stream"
+    };
+    
+    Ok(format!("data:{};base64,{}", mime, encoded))
+}
+
+
 pub fn log_terminal_command_internal(db: &crate::db::Database, agent_id: &str, command: &str, output: &str) {
     let workspace = match get_agent_workspace_dir(db, agent_id) {
         Ok(dir) => dir,
@@ -1768,10 +1800,7 @@ pub async fn get_conversation_history(
 
     // 1. Always fetch from SQLite DB first
     let conv_id = match &session_id {
-        Some(id) => {
-            let _ = db.ensure_conversation(id, &agent_id);
-            id.clone()
-        },
+        Some(id) => id.clone(),
         None => {
             match db.get_or_create_conversation(&agent_id) {
                 Ok(id) => id,

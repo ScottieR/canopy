@@ -162,6 +162,7 @@ export interface ForumState {
   setActiveForumId: (id: string | null) => void;
   /** Adds a message and returns the generated message ID. */
   addForumMessage: (forumId: string, msg: Omit<ForumMessage, "id" | "timestamp">) => string;
+  setMilestones: (forumId: string, milestones: Milestone[]) => void;
   updateMilestone: (forumId: string, milestoneId: string, status: MilestoneStatus) => void;
   updateBlackboard: (forumId: string, content: string, agentId?: string) => void;
   updateAgentAction: (forumId: string, agentId: string, action: string) => void;
@@ -190,10 +191,10 @@ export interface ForumState {
   deleteForum: (forumId: string) => void;
   /** Move an archived forum back to its previous status. */
   unarchiveForum: (forumId: string) => void;
-  /** Replace the forum's milestone list with agent-defined steps. */
-  setMilestones: (forumId: string, milestones: Milestone[]) => void;
   /** Append a new milestone (used by orchestrator to add project-specific steps). */
   addMilestone: (forumId: string, label: string, agentId?: string) => string;
+  /** Remove an agent from an active forum (stops their participation but keeps their history). */
+  removeAgentFromForum: (forumId: string, agentId: string) => void;
 }
 
 function generateId(prefix: string) {
@@ -206,33 +207,10 @@ function deriveTitle(brief: string): string {
 }
 
 function deriveMilestones(brief: string, agents: ForumAgent[]): Milestone[] {
-  // Simple heuristic milestones based on agent roles present
-  const milestones: Milestone[] = [];
-  const hasResearcher = agents.some(a =>
-    a.role.toLowerCase().includes("research") || a.forumRole.toLowerCase().includes("research")
-  );
-  const hasEditor = agents.some(a =>
-    a.role.toLowerCase().includes("edit") || a.forumRole.toLowerCase().includes("edit") || a.forumRole.toLowerCase().includes("prose")
-  );
-  const hasStrategist = agents.some(a =>
-    a.role.toLowerCase().includes("strat") || a.forumRole.toLowerCase().includes("fram")
-  );
-
-  if (hasResearcher) {
-    milestones.push({ id: generateId("ms"), label: "Research & data pull", status: "pending", agentId: agents.find(a => a.role.toLowerCase().includes("research"))?.agentId });
-  }
-  if (hasStrategist) {
-    milestones.push({ id: generateId("ms"), label: "Strategic framing", status: "pending", agentId: agents.find(a => a.role.toLowerCase().includes("strat"))?.agentId });
-  }
-  if (hasEditor) {
-    milestones.push({ id: generateId("ms"), label: "Prose & voice pass", status: "pending", agentId: agents.find(a => a.role.toLowerCase().includes("edit") || a.forumRole.toLowerCase().includes("prose"))?.agentId });
-  }
-  milestones.push({ id: generateId("ms"), label: "Final deliverable ready", status: "pending" });
-
-  // Mark first milestone active
-  if (milestones.length > 0) milestones[0].status = "active";
-
-  return milestones;
+  // Placeholder initial milestone; will be overwritten by dynamic planning phase
+  return [
+    { id: generateId("ms"), label: "Planning project...", status: "active" }
+  ];
 }
 
 export const useForumStore = create<ForumState>()(
@@ -300,6 +278,14 @@ export const useForumStore = create<ForumState>()(
           ),
         }));
         return id;
+      },
+
+      setMilestones: (forumId, milestones) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id === forumId ? { ...f, milestones } : f
+          ),
+        }));
       },
 
       updateMilestone: (forumId, milestoneId, status) => {
@@ -452,6 +438,16 @@ export const useForumStore = create<ForumState>()(
         }));
       },
 
+      removeAgentFromForum: (forumId, agentId) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id === forumId
+              ? { ...f, agents: f.agents.filter(a => a.agentId !== agentId) }
+              : f
+          ),
+        }));
+      },
+
       deleteForum: (forumId) => {
         set(state => ({
           forums: state.forums.filter(f => f.id !== forumId),
@@ -523,14 +519,6 @@ export const useForumStore = create<ForumState>()(
         }));
       },
 
-      setMilestones: (forumId, milestones) => {
-        set(state => ({
-          forums: state.forums.map(f =>
-            f.id === forumId ? { ...f, milestones } : f
-          ),
-        }));
-      },
-
       addMilestone: (forumId, label, agentId) => {
         const id = generateId("ms");
         set(state => ({
@@ -552,7 +540,24 @@ export const useForumStore = create<ForumState>()(
     }),
     {
       name: "canopy-forum-store",
-      partialize: (state) => ({ forums: state.forums }),
+      // Trim large transient data before writing to localStorage to prevent
+      // silent QuotaExceededError failures. blackboardHistory is the main
+      // culprit — 50 snapshots × multi-KB markdown = can easily exceed the
+      // 5-10MB localStorage limit, causing the most recent answers and messages
+      // to never be persisted.
+      partialize: (state) => ({
+        forums: (state.forums || []).map(f => ({
+          ...f,
+          blackboardHistory: (f.blackboardHistory || []).slice(-5),
+          messages: (f.messages || []).map(m => ({
+            ...m,
+            attachments: m.attachments?.map(att => ({
+              ...att,
+              dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
+            }))
+          }))
+        })),
+      }),
     }
   )
 );
