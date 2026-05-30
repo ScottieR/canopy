@@ -41,6 +41,7 @@ import { ExportInterceptModal } from './components/ExportInterceptModal';
 import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
 import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
+import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -1162,9 +1163,16 @@ function GatewayWarmupBanner() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// MAIN APP COMPONENT
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
   const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme, isAutoCloakEnabled, autoCloakTimeout, setIsCloaked, gatewayReady } = useWorldStore();
+  
+  useEffect(() => {
+    initializeGlobalBackgroundOrchestrator();
+  }, []);
+
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
   const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");

@@ -124,6 +124,13 @@ function AgentMessage({ msg, forum, onArtifactClick }: { msg: ForumMessage; foru
     return best;
   }, [forum.artifacts, msg.timestamp, msg.agentId, agent?.role, onArtifactClick]);
 
+  const mentionsBlackboard = React.useMemo(() => {
+    const txt = msg.text.toLowerCase();
+    return txt.includes("blackboard") || txt.includes("deliverable");
+  }, [msg.text]);
+
+  const isClickable = relatedArtifact || mentionsBlackboard;
+
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
       {/* Avatar pip */}
@@ -160,8 +167,12 @@ function AgentMessage({ msg, forum, onArtifactClick }: { msg: ForumMessage; foru
         {/* Bubble */}
         <div 
           onClick={() => {
-            if (relatedArtifact && onArtifactClick) {
+            if (!onArtifactClick) return;
+            if (relatedArtifact) {
               onArtifactClick(relatedArtifact.id);
+            } else if (mentionsBlackboard) {
+              // Clearing selected artifact focuses the blackboard in the main panel
+              onArtifactClick(null as any);
             }
           }}
           style={{
@@ -175,18 +186,18 @@ function AgentMessage({ msg, forum, onArtifactClick }: { msg: ForumMessage; foru
           fontSize: 12,
           lineHeight: 1.6,
           color: isAgentToAgent ? "var(--text-sub, #636E72)" : "var(--text-main, #303330)",
-          cursor: relatedArtifact ? "pointer" : "default",
+          cursor: isClickable ? "pointer" : "default",
           transition: "all 0.15s ease",
-          boxShadow: relatedArtifact ? "0 2px 4px rgba(0,0,0,0.02)" : "none",
+          boxShadow: isClickable ? "0 2px 4px rgba(0,0,0,0.02)" : "none",
         }}
         onMouseEnter={e => {
-          if (relatedArtifact) {
+          if (isClickable) {
             (e.currentTarget as HTMLDivElement).style.borderColor = rgba(color, 0.4);
             (e.currentTarget as HTMLDivElement).style.background = rgba(color, 0.04);
           }
         }}
         onMouseLeave={e => {
-          if (relatedArtifact) {
+          if (isClickable) {
             (e.currentTarget as HTMLDivElement).style.borderColor = isAgentToAgent ? `1px dashed ${rgba(color, 0.25)}` : "var(--border-subtle, rgba(0,0,0,0.06))";
             (e.currentTarget as HTMLDivElement).style.background = isAgentToAgent ? rgba(color, 0.06) : "var(--surface-container-lowest, #fff)";
           }

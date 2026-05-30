@@ -57,7 +57,28 @@ export function ExportForumModal({ onClose, forum }: { onClose: () => void, foru
             background: "transparent", color: "#636E72", cursor: "pointer"
           }}>Cancel</button>
           <button onClick={() => {
-            alert(`Exporting to ${target}...`);
+            if (target === 'local') {
+              const exportContent = `# ${forum.title || forum.brief || "Untitled Project"}
+Status: ${forum.status}
+
+## Blackboard
+${forum.blackboardContent || "No blackboard content"}
+
+## Discussion
+${(forum.messages || []).map((m: any) => `**${m.sender === 'user' ? 'User' : (m.agentName || 'Agent')}**: ${m.text}`).join('\n\n')}
+`;
+              const blob = new Blob([exportContent], { type: 'text/markdown' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `${(forum.title || 'project').replace(/\s+/g, '_').toLowerCase()}.md`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              URL.revokeObjectURL(url);
+            } else {
+              alert('Google Drive export is not yet configured. Please use Local Download.');
+            }
             onClose();
           }} style={{
             padding: "8px 16px", borderRadius: 6, border: "none",
