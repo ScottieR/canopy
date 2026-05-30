@@ -62,7 +62,7 @@ function TopNav() {
   const navItems = [
     { id: "canopy" as const, label: "Canopy" },
     { id: "architect" as const, label: "Agents" },
-    { id: "forum" as const, label: "Projects" },
+    { id: "forum" as const, label: "Forums" },
   ];
 
   const filteredAgents = searchQuery ? agents.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase()) || a.role.toLowerCase().includes(searchQuery.toLowerCase())) : [];

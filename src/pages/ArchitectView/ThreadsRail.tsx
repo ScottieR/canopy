@@ -70,9 +70,10 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
       return {
         conv: {
           id: f.id,
-          type: "project",
+          type: "forum" as const,
           title: f.title || f.brief || "Untitled Project",
-          status: f.status === "archived" ? "archived" : "active",
+          status: (f.status === "archived" ? "archived" : "active") as "archived" | "active",
+          createdAt: (f as any).createdAt || Date.now(),
           lastActiveAt: lastActiveAt,
           messages: []
         }
@@ -104,7 +105,7 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
   const renderRow = ({ conv, matchedMessage }: FilteredConv) => {
     const isActive = conv.id === agent.activeConversationId;
     const isRenaming = renaming === conv.id;
-    const isForum = conv.type === "project";
+    const isForum = conv.type === "forum";
 
     return (
       <div

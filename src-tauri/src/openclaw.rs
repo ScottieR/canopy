@@ -3608,9 +3608,10 @@ pub async fn boot_sync_agents(
                 // an infinite Docker restart loop. This call is safe to run on every boot:
                 // it only writes the file if it's missing or lacks a gateway config block.
                 let state_dir = data_dir.join("isolated").join(id.as_str()).join("state");
-                crate::docker::preflight_write_isolated_openclaw_json(
+                crate::docker::preflight_sanitize_and_merge_config(
                     &state_dir,
-                    crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+                    true,
+                    crate::model_constants::GATEWAY_INTERNAL_TOKEN
                 );
 
                 let container_name = format!("canopy-isolated-{}", id);

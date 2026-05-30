@@ -416,7 +416,7 @@ export function CanopyScene({
     // We only care about syncing the "projects" and "inbox".
     const state = useWorldStore.getState();
     const projects = state.agents.flatMap(a => a.conversations || [])
-      .filter(c => c.type === "project")
+      .filter(c => c.type === "forum")
       .map(c => ({
         id: c.id,
         title: c.title,
