@@ -939,7 +939,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               <>Chat with <strong>{agent.name}</strong></>
             )}
           </div>
-          {activeConv?.type === "project" && (
+          {activeConv?.type === "forum" && (
             <button 
                onClick={() => {
                  useForumStore.getState().setActiveForumId(activeConv.id);
