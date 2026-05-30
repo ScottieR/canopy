@@ -6,7 +6,141 @@ import { useWorldStore } from "../../store/worldStore";
 import { ForumThread } from "./ForumThread";
 import { createForumOrchestrator, createFollowUpOrchestrator, ForumOrchestratorController } from "./forumOrchestrator";
 import { ForumBriefModal } from "./ForumBriefModal";
+import { ExportForumModal } from "./ExportForumModal";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
+
+// ─── Annotation Hook & Overlay ────────────────────────────────────────────────
+
+interface SelectionRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  top: number;
+  left: number;
+}
+
+interface AnnotationState {
+  isActive: boolean;
+  text: string;
+  blockId: string | null;
+  rect: SelectionRect | null;
+}
+
+function useCanvasAnnotation(isAnnotationMode: boolean) {
+  const [annotation, setAnnotation] = useState<AnnotationState>({
+    isActive: false,
+    text: '',
+    blockId: null,
+    rect: null,
+  });
+
+  const handleSelectionChange = useCallback(() => {
+    if (!isAnnotationMode) {
+      setAnnotation((prev) => prev.isActive ? { isActive: false, text: '', blockId: null, rect: null } : prev);
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+      setAnnotation((prev) => prev.isActive ? { isActive: false, text: '', blockId: null, rect: null } : prev);
+      return;
+    }
+
+    const text = selection.toString().trim();
+    if (!text) {
+      setAnnotation((prev) => prev.isActive ? { isActive: false, text: '', blockId: null, rect: null } : prev);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+
+    let blockId = null;
+    let currentNode = selection.anchorNode;
+    
+    if (currentNode && currentNode.nodeType === Node.TEXT_NODE) {
+      currentNode = currentNode.parentNode;
+    }
+
+    while (currentNode && currentNode instanceof Element) {
+      if (currentNode.hasAttribute('data-block-id')) {
+        blockId = currentNode.getAttribute('data-block-id');
+        break;
+      }
+      currentNode = currentNode.parentElement;
+    }
+
+    setAnnotation({
+      isActive: true,
+      text,
+      blockId,
+      rect: {
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        top: rect.top,
+        left: rect.left,
+      },
+    });
+  }, [isAnnotationMode]);
+
+  useEffect(() => {
+    document.addEventListener('selectionchange', handleSelectionChange);
+    document.addEventListener('mouseup', handleSelectionChange);
+    document.addEventListener('keyup', handleSelectionChange);
+    window.addEventListener('resize', handleSelectionChange);
+    document.addEventListener('scroll', handleSelectionChange, true);
+
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      document.removeEventListener('mouseup', handleSelectionChange);
+      document.removeEventListener('keyup', handleSelectionChange);
+      window.removeEventListener('resize', handleSelectionChange);
+      document.removeEventListener('scroll', handleSelectionChange, true);
+    };
+  }, [handleSelectionChange]);
+
+  return annotation;
+}
+
+function CanvasAnnotationOverlay({ annotation }: { annotation: AnnotationState }) {
+  if (!annotation.isActive || !annotation.rect) return null;
+
+  return (
+    <div 
+      style={{
+        position: 'fixed',
+        top: annotation.rect.top - 44, // Position slightly above the selection
+        left: annotation.rect.left + annotation.rect.width / 2, // Center relative to selection width
+        transform: 'translateX(-50%)',
+        zIndex: 9999,
+        background: '#1A1A1A',
+        color: 'white',
+        padding: '6px 12px',
+        borderRadius: '6px',
+        fontSize: '12px',
+        fontWeight: 500,
+        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+        border: '1px solid rgba(255,255,255,0.1)',
+        pointerEvents: 'auto',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px'
+      }}
+      onClick={() => {
+        console.log("Annotation requested for block:", annotation.blockId, "text:", annotation.text);
+      }}
+    >
+      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      Comment {annotation.blockId ? `(Block: ${annotation.blockId})` : ''}
+    </div>
+  );
+}
 
 // ─── Milestone List ───────────────────────────────────────────────────────────
 // Vertical scrollable list of project steps — shows actual agent-defined labels
@@ -61,7 +195,7 @@ function MilestoneList({ milestones, forumStatus }: { milestones: Milestone[]; f
           fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
           color: "var(--text-sub, #636E72)",
         }}>
-          Project Steps
+          Forum Steps
         </span>
         {isRunning && (
           <div style={{
@@ -204,10 +338,12 @@ function useElapsed(changedAt?: number) {
   return `${Math.floor(sec / 60)}m ${sec % 60}s`;
 }
 
-function AgentCard({ agent, forumStatus }: {
+function AgentCard({ agent, forumStatus, onRemove }: {
   agent: ReturnType<typeof useForumStore.getState>["forums"][0]["agents"][0];
   forumStatus: string;
+  onRemove?: () => void;
 }) {
+  const [isHovered, setIsHovered] = useState(false);
   const color = agent.robeColor || "#4A9E96";
   const elapsed = useElapsed(agent.actionChangedAt);
   const isActive = forumStatus === "active";
@@ -240,7 +376,30 @@ function AgentCard({ agent, forumStatus }: {
           : "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
       transition: "all 0.4s ease",
       position: "relative",
-    }}>
+    }}
+    onMouseEnter={() => setIsHovered(true)}
+    onMouseLeave={() => setIsHovered(false)}
+    >
+      {isHovered && onRemove && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            if (confirm(`Remove ${agent.name} from this project? They will no longer actively contribute.`)) {
+              onRemove();
+            }
+          }}
+          style={{
+            position: "absolute", top: -6, right: -6,
+            background: "var(--surface-card, #0F1A15)", color: "#E57373",
+            border: "1px solid rgba(229,115,115,0.3)", borderRadius: "50%",
+            width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", boxShadow: "0 2px 4px rgba(0,0,0,0.1)", zIndex: 10
+          }}
+          title="Remove from project"
+        >
+          <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+        </button>
+      )}
       {/* Avatar + status dot */}
       <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
         <div style={{ position: "relative", flexShrink: 0 }}>
@@ -305,6 +464,7 @@ function AgentCard({ agent, forumStatus }: {
 }
 
 function AgentStatusBar({ forum }: { forum: ReturnType<typeof useForumStore.getState>["forums"][0] }) {
+  const removeAgentFromForum = useForumStore(s => s.removeAgentFromForum);
   return (
     <div style={{
       padding: "10px 16px 10px",
@@ -312,8 +472,13 @@ function AgentStatusBar({ forum }: { forum: ReturnType<typeof useForumStore.getS
       flexShrink: 0,
     }}>
       <div style={{ display: "flex", gap: 8, maxWidth: 900 }}>
-        {forum.agents.map(agent => (
-          <AgentCard key={agent.agentId} agent={agent} forumStatus={forum.status} />
+        {(forum.agents || []).map(agent => (
+          <AgentCard 
+            key={agent.agentId} 
+            agent={agent} 
+            forumStatus={forum.status} 
+            onRemove={() => removeAgentFromForum(forum.id, agent.agentId)}
+          />
         ))}
       </div>
     </div>
@@ -558,7 +723,7 @@ function AddAgentPicker({
   const ref = useRef<HTMLDivElement>(null);
 
   // Agents not already in the forum
-  const existingIds = new Set(forum.agents.map(a => a.agentId));
+  const existingIds = new Set((forum.agents || []).map(a => a.agentId));
   const available = allAgents.filter(a => !existingIds.has(a.id));
 
   useEffect(() => {
@@ -569,20 +734,7 @@ function AddAgentPicker({
     return () => document.removeEventListener("mousedown", handler);
   }, [onClose]);
 
-  if (available.length === 0) {
-    return (
-      <div ref={ref} style={{
-        position: "absolute", top: "calc(100% + 8px)", right: 0,
-        background: "var(--surface-card, #fff)",
-        border: "1px solid var(--border-subtle, rgba(0,0,0,0.08))",
-        borderRadius: 12, boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
-        padding: "14px 16px", zIndex: 50, minWidth: 200,
-        fontSize: 12, color: "var(--text-sub, #636E72)",
-      }}>
-        All agents are already in this project.
-      </div>
-    );
-  }
+
 
   return (
     <div ref={ref} style={{
@@ -593,59 +745,122 @@ function AddAgentPicker({
       zIndex: 50, minWidth: 220, overflow: "hidden",
       padding: "6px 0",
     }}>
-      <div style={{
-        padding: "8px 14px 6px",
-        fontSize: 10, fontWeight: 700, textTransform: "uppercase",
-        letterSpacing: "0.07em", color: "var(--text-sub, #636E72)", opacity: 0.5,
-      }}>
-        Add to project
-      </div>
-      {available.map(agent => {
-        const color = agent.robeColor || "#4A9E96";
-        return (
-          <button
-            key={agent.id}
-            onClick={() => {
-              addAgentToForum(forum.id, {
-                agentId: agent.id,
-                name: agent.name,
-                role: agent.role,
-                robeColor: agent.robeColor,
-                accentColor: agent.accentColor,
-                image: agent.image ?? null,
-                confidence: 50,
-                forumRole: "Added to project",
-                currentAction: "Joining project…",
-              });
-              onClose();
-            }}
-            style={{
-              width: "100%", display: "flex", alignItems: "center", gap: 10,
-              padding: "9px 14px", border: "none", background: "transparent",
-              cursor: "pointer", fontFamily: "inherit", textAlign: "left",
-            }}
-            onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-container-low, #f4f4f0)")}
-            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
-          >
-            <div style={{
-              width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
-              background: `${color}22`, border: `1.5px solid ${color}66`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 10, fontWeight: 700, color,
-            }}>
-              {agent.name.charAt(0).toUpperCase()}
-            </div>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main, #303330)" }}>
-                {agent.name}
+      {available.length > 0 && (
+        <>
+          <div style={{
+            padding: "8px 14px 6px",
+            fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+            letterSpacing: "0.07em", color: "var(--text-sub, #636E72)", opacity: 0.5,
+          }}>
+            Add to project
+          </div>
+          {available.map(agent => {
+            const color = agent.robeColor || "#4A9E96";
+            return (
+              <button
+                key={agent.id}
+                onClick={() => {
+                  addAgentToForum(forum.id, {
+                    agentId: agent.id,
+                    name: agent.name,
+                    role: agent.role,
+                    robeColor: agent.robeColor,
+                    accentColor: agent.accentColor,
+                    image: agent.image ?? null,
+                    confidence: 50,
+                    forumRole: "Added to project",
+                    currentAction: "Joining project…",
+                  });
+                  onClose();
+                }}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", gap: 10,
+                  padding: "9px 14px", border: "none", background: "transparent",
+                  cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                }}
+                onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-container-low, #f4f4f0)")}
+                onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+              >
+                <div style={{
+                  width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
+                  background: `${color}22`, border: `1.5px solid ${color}66`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 10, fontWeight: 700, color,
+                }}>
+                  {agent.name.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main, #303330)" }}>
+                    {agent.name}
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.6 }}>
+                    {agent.role}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </>
+      )}
+
+      {forum.agents && forum.agents.length > 0 && (
+        <>
+          <div style={{
+            padding: "12px 14px 6px", 
+            borderTop: available.length > 0 ? "1px solid var(--border-subtle, rgba(0,0,0,0.08))" : "none",
+            fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+            letterSpacing: "0.07em", color: "var(--text-sub, #636E72)", opacity: 0.5,
+          }}>
+            Active in Project
+          </div>
+          {forum.agents.map(agent => {
+            const color = agent.robeColor || "#4A9E96";
+            return (
+              <div
+                key={agent.agentId}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", gap: 10,
+                  padding: "6px 14px", background: "transparent",
+                }}
+              >
+                <div style={{
+                  width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
+                  background: `${color}22`, border: `1.5px solid ${color}66`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 10, fontWeight: 700, color,
+                }}>
+                  {agent.name.charAt(0).toUpperCase()}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main, #303330)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {agent.name}
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {agent.role}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    if (confirm(`Remove ${agent.name} from this project?`)) {
+                      useForumStore.getState().removeAgentFromForum(forum.id, agent.agentId);
+                    }
+                  }}
+                  style={{
+                    background: "transparent", border: "none", color: "#E57373",
+                    cursor: "pointer", padding: 4, display: "flex", alignItems: "center", justifyContent: "center",
+                    opacity: 0.7,
+                  }}
+                  title="Remove from project"
+                  onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
+                  onMouseLeave={e => (e.currentTarget.style.opacity = "0.7")}
+                >
+                  <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                </button>
               </div>
-              <div style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.6 }}>
-                {agent.role}
-              </div>
-            </div>
-          </button>
-        );
-      })}
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }
@@ -675,6 +890,16 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   li: ({ children }) => (
     <li style={{ fontSize: 13, lineHeight: 1.7, color: "var(--text-main, #303330)", marginBottom: 3 }}>{children}</li>
   ),
+  img: ({ src, alt }) => {
+    return (
+      <img 
+        src={src} 
+        alt={alt} 
+        style={{ maxWidth: "100%", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", margin: "10px 0" }} 
+        data-src={src} // We can query this from the renderer to swap it out with base64 if needed
+      />
+    );
+  },
   blockquote: ({ children }) => (
     <blockquote style={{
       margin: "0 0 12px", padding: "8px 14px",
@@ -725,6 +950,252 @@ const mdComponents: React.ComponentProps<typeof ReactMarkdown>["components"] = {
   ),
 };
 
+// ─── Spatial Workbench Helpers & Sub-Components ────────────────────────────────
+
+function resolveHtmlImages(
+  html: string | null,
+  attachments: Array<{ name: string; dataUrl: string; mimeType: string }>
+): string {
+  if (!html) return "";
+  let resolved = html;
+  if (!attachments || attachments.length === 0) return resolved;
+
+  attachments.forEach(att => {
+    // Escape filename for regex
+    const escapedName = att.name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    
+    // Match src="filename" or src='filename' or src=filename (with optional relative path prefix like ./ or path/)
+    const srcRegex = new RegExp(`src=(["'])(?:(?:\\.?\\/)?[^"']+\\/)?${escapedName}\\1`, 'g');
+    resolved = resolved.replace(srcRegex, `src=$1${att.dataUrl}$1`);
+
+    // Match CSS url("filename") or url('filename') or url(filename)
+    const urlRegex = new RegExp(`url\\((["']?)(?:(?:\\.?\\/)?[^)"']+\\/)?${escapedName}\\1\\)`, 'g');
+    resolved = resolved.replace(urlRegex, `url($1${att.dataUrl}$1)`);
+  });
+
+  return resolved;
+}
+
+interface BoardCard {
+  id: string;
+  title: string;
+  body: string;
+  authors: Array<{ name: string; robeColor: string; role: string }>;
+}
+
+function parseBoardCards(content: string, agents: any[]): BoardCard[] {
+  if (!content) return [];
+  // Split on --- line
+  const parts = content.split(/\n\s*---\s*\n/);
+  const cards: BoardCard[] = [];
+
+  parts.forEach((part, idx) => {
+    const trimmed = part.trim();
+    if (!trimmed) return;
+
+    let title = "Section";
+    let body = trimmed;
+    let authorNames: string[] = [];
+
+    // Check for ## heading at the start of any line
+    const headingMatch = trimmed.match(/^##\s+(.*)/m);
+    if (headingMatch) {
+      title = headingMatch[1].trim();
+      body = trimmed.replace(headingMatch[0], "").trim();
+    } else {
+      const mainTitleMatch = trimmed.match(/^#\s+(.*)/m);
+      if (mainTitleMatch) {
+        title = "Project Brief";
+      }
+    }
+
+    // Match signature: *— Name* or *— Name 1, Name 2* or similar
+    const sigMatch = body.match(/\*—\s*([^*]+)\*/);
+    if (sigMatch) {
+      const namesStr = sigMatch[1];
+      authorNames = namesStr.split(",").map(n => n.trim());
+      body = body.replace(sigMatch[0], "").trim();
+    } else {
+      const dashMatch = body.match(/—\s*([^*_\n\r]+)$/);
+      if (dashMatch) {
+        authorNames = dashMatch[1].split(",").map(n => n.trim());
+        body = body.replace(dashMatch[0], "").trim();
+      }
+    }
+
+    const authors = authorNames.map(name => {
+      const matchedAgent = agents.find(a => a.name.toLowerCase() === name.toLowerCase());
+      return {
+        name,
+        robeColor: matchedAgent?.robeColor || "#4A9E96",
+        role: matchedAgent?.forumRole || "Contributor",
+      };
+    });
+
+    cards.push({
+      id: `card-${idx}-${title.toLowerCase().replace(/[^a-z0-9]/g, "-")}`,
+      title,
+      body,
+      authors,
+    });
+  });
+
+  return cards;
+}
+
+function CoAuthors({ authors }: { authors: Array<{ name: string; robeColor: string; role: string }> }) {
+  if (authors.length === 0) return null;
+  const primary = authors[0];
+  const others = authors.slice(1);
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      {/* Primary Author Pip */}
+      <div 
+        style={{
+          width: 24,
+          height: 24,
+          borderRadius: "50%",
+          background: `${primary.robeColor}22`,
+          border: `1.5px solid ${primary.robeColor}88`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 10,
+          fontWeight: 700,
+          color: primary.robeColor,
+        }}
+        title={`${primary.name} (${primary.role})`}
+      >
+        {primary.name.charAt(0).toUpperCase()}
+      </div>
+
+      {/* Others overlapping */}
+      {others.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center" }}>
+          {others.map((author, i) => (
+            <div
+              key={author.name}
+              style={{
+                width: 18,
+                height: 18,
+                borderRadius: "50%",
+                background: `${author.robeColor}22`,
+                border: `1px solid ${author.robeColor}66`,
+                marginLeft: -6,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 8,
+                fontWeight: 700,
+                color: author.robeColor,
+                zIndex: 10 - i,
+              }}
+              title={`${author.name} (${author.role})`}
+            >
+              {author.name.charAt(0).toUpperCase()}
+            </div>
+          ))}
+        </div>
+      )}
+      <span style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.8, marginLeft: 2 }}>
+        {primary.name} {others.length > 0 ? `+ ${others.length}` : ""}
+      </span>
+    </div>
+  );
+}
+
+function GlassCard({ card, mdComponents }: { card: BoardCard; mdComponents: any }) {
+  const [expanded, setExpanded] = useState(false);
+  
+  return (
+    <div 
+      className="glass-card"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 12,
+        padding: "16px 20px",
+        borderRadius: 16,
+        background: "rgba(255, 255, 255, 0.45)",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+        border: "1px solid rgba(255, 255, 255, 0.5)",
+        boxShadow: "0 8px 32px 0 rgba(31, 38, 135, 0.04)",
+        transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+        overflow: expanded ? "visible" : "hidden",
+        maxHeight: expanded ? "none" : "200px",
+        position: "relative",
+        cursor: expanded ? "default" : "pointer",
+      }}
+      onClick={() => { if (!expanded) setExpanded(true); }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 10, marginBottom: 4 }}>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--text-main, #303330)", letterSpacing: "-0.01em" }}>
+          {card.title}
+        </h3>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <CoAuthors authors={card.authors} />
+          {expanded && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
+              style={{
+                background: "transparent", border: "none", cursor: "pointer",
+                padding: "2px", display: "flex", alignItems: "center", justifyContent: "center",
+                color: "var(--text-sub)", opacity: 0.6
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <polyline points="18 15 12 9 6 15"></polyline>
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div style={{ fontSize: 12.5, lineHeight: 1.6, color: "var(--text-main, #303330)", opacity: expanded ? 1 : 0.8 }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
+          {card.body}
+        </ReactMarkdown>
+      </div>
+      
+      {!expanded && (
+        <div style={{
+          position: "absolute",
+          bottom: 0, left: 0, right: 0,
+          height: 60,
+          background: "linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.9) 80%)",
+          display: "flex", alignItems: "flex-end", justifyContent: "center",
+          paddingBottom: 8,
+          pointerEvents: "none"
+        }}>
+          <span style={{ fontSize: 10, fontWeight: 600, color: "var(--primary, #3c6663)", opacity: 0.8 }}>Click to expand</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SpatialCardsGrid({ cards, mdComponents }: { cards: BoardCard[]; mdComponents: any }) {
+  return (
+    <div 
+      style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))",
+        gap: 20,
+        padding: "20px 24px",
+        overflowY: "auto",
+        height: "100%",
+        width: "100%",
+      }}
+    >
+      {cards.map(card => (
+        <GlassCard key={card.id} card={card} mdComponents={mdComponents} />
+      ))}
+    </div>
+  );
+}
+
 function ForumBlackboard({
   forum,
   selectedArtifactId,
@@ -738,6 +1209,9 @@ function ForumBlackboard({
   const [historyIdx, setHistoryIdx] = useState<number | null>(null); // null = live
   const [locked, setLocked] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [isAnnotationMode, setIsAnnotationMode] = useState(false);
+  const annotation = useCanvasAnnotation(isAnnotationMode);
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -781,6 +1255,22 @@ function ForumBlackboard({
   const isLive = !selectedArtifact && historyIdx === null;
   const isComplete = forum.status === "completed";
   const isRendered = viewMode === "rendered";
+
+  const attachments = React.useMemo(() => forum.messages.flatMap(m => m.attachments || []), [forum.messages]);
+  const resolvedHtmlContent = React.useMemo(() => resolveHtmlImages(htmlContent, attachments), [htmlContent, attachments]);
+  const cards = React.useMemo(() => parseBoardCards(forum.blackboardContent, forum.agents || []), [forum.blackboardContent, forum.agents]);
+
+  const referenceCards = React.useMemo(() => {
+    if (cards.length <= 1) return [];
+    return cards.slice(0, -1);
+  }, [cards]);
+
+  const deliverableCard = React.useMemo(() => {
+    if (cards.length === 0) return null;
+    return cards[cards.length - 1];
+  }, [cards]);
+
+  const hasDeliverable = isHtmlMode || isGenUIMode || (isComplete && deliverableCard !== null);
 
   // When forum first completes, auto-scroll to bottom so deliverable is visible
   useEffect(() => {
@@ -829,6 +1319,36 @@ function ForumBlackboard({
       {children}
     </button>
   );
+
+  // Inject base64 images into the markdown view
+  const localMdComponents = React.useMemo(() => {
+    return {
+      ...mdComponents,
+      img: ({ src, alt }: any) => {
+        let finalSrc = src;
+        // Search through user messages to see if any attachment matches this filename
+        if (src && !src.startsWith("http") && !src.startsWith("data:")) {
+          for (const msg of forum.messages) {
+            if (msg.attachments) {
+              for (const att of msg.attachments) {
+                if (att.name === src || src.endsWith(att.name)) {
+                  finalSrc = att.dataUrl;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        return (
+          <img 
+            src={finalSrc} 
+            alt={alt} 
+            style={{ maxWidth: "100%", maxHeight: 400, objectFit: "contain", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", margin: "10px 0" }} 
+          />
+        );
+      }
+    };
+  }, [forum.messages]);
 
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
@@ -937,6 +1457,18 @@ function ForumBlackboard({
           locked ? "Unlock — agents can edit" : "Lock — agents cannot edit this content"
         )}
 
+        {/* Annotation Mode */}
+        {toolbarBtn(
+          () => setIsAnnotationMode(a => !a), isAnnotationMode, "#EAB308",
+          <>
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            {isAnnotationMode ? "Annotating" : "Annotate"}
+          </>,
+          "Toggle Annotation Mode to select text and comment"
+        )}
+
         {/* Time Machine — hidden when viewing a pinned artifact or HTML/GenUI block */}
         {!selectedArtifact && !isHtmlMode && !isGenUIMode && forum.blackboardHistory.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -984,70 +1516,91 @@ function ForumBlackboard({
           </div>
         )}
 
-        {/* ── HTML preview (iframe) ── */}
-        {isHtmlMode && isRendered && htmlContent && (
-          <iframe
-            key={htmlContent.slice(0, 80)} // remount when content changes
-            srcDoc={htmlContent}
-            sandbox="allow-scripts"
-            style={{
-              width: "100%", height: "100%",
-              border: "none",
-            }}
-            title="Interactive deliverable"
-          />
-        )}
-
-        {/* ── GenUI Rendered View ── */}
-        {isGenUIMode && isRendered && displayContent && (
-          <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
-            <GenUIRenderer 
-              app={JSON.parse(displayContent)} 
-              onEvent={(evt) => {
-                console.log("Canvas GenUI Event:", evt);
-                useForumStore.getState().addForumMessage(forum.id, {
-                  kind: "chat",
-                  sender: "user",
-                  text: `[GenUI Event] User interacted with canvas app: ${JSON.stringify(evt)}`
-                });
-              }} 
-            />
-          </div>
-        )}
-
-        {/* ── HTML/GenUI placeholder when no content yet ── */}
-        {(isHtmlMode || isGenUIMode) && isRendered && !displayContent && (
-          <div style={{
-            height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-            color: "var(--text-sub, #636E72)", opacity: 0.35, fontSize: 13, fontStyle: "italic",
-          }}>
-            Waiting for the team…
-          </div>
-        )}
-
-        {/* ── Rendered markdown view ── */}
-        {!isHtmlMode && !isGenUIMode && isRendered && (
-          <div
-            ref={scrollRef}
-            style={{
-              width: "100%", height: "100%", overflowY: "auto",
-              padding: "20px 28px",
-              opacity: isLive ? 1 : 0.7,
-            }}
-          >
-            {displayContent.trim() ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]} components={mdComponents}>
-                {displayContent}
-              </ReactMarkdown>
-            ) : (
-              <div style={{
-                height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-                color: "var(--text-sub, #636E72)", opacity: 0.35, fontSize: 13, fontStyle: "italic",
-              }}>
-                Waiting for the team…
+        {/* ── Rendered view (Split View or Spatial Grid depending on phase/deliverable status) ── */}
+        {isRendered && (
+          hasDeliverable ? (
+            <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden" }}>
+              {/* Left Panel: Deliverable Preview (60%) */}
+              <div style={{ width: "60%", height: "100%", borderRight: "1px solid var(--border-subtle, rgba(0,0,0,0.07))", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                {isHtmlMode && htmlContent && (
+                  <iframe
+                    key={htmlContent.slice(0, 80)}
+                    srcDoc={resolvedHtmlContent}
+                    sandbox="allow-scripts"
+                    style={{ width: "100%", height: "100%", border: "none" }}
+                    title="Interactive deliverable"
+                  />
+                )}
+                {isGenUIMode && displayContent && (
+                  <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
+                    <GenUIRenderer
+                      app={JSON.parse(displayContent)}
+                      attachments={attachments}
+                      onEvent={(evt) => {
+                        console.log("Canvas GenUI Event:", evt);
+                        useForumStore.getState().addForumMessage(forum.id, {
+                          kind: "chat",
+                          sender: "user",
+                          text: `[GenUI Event] User interacted with canvas app: ${JSON.stringify(evt)}`
+                        });
+                      }}
+                    />
+                  </div>
+                )}
+                {!isHtmlMode && !isGenUIMode && deliverableCard && (
+                  <div
+                    ref={scrollRef}
+                    style={{
+                      width: "100%", height: "100%", overflowY: "auto",
+                      padding: "24px 32px", wordWrap: "break-word", overflowWrap: "break-word",
+                      opacity: isLive ? 1 : 0.7,
+                    }}
+                  >
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={localMdComponents}>
+                      {deliverableCard.body}
+                    </ReactMarkdown>
+                  </div>
+                )}
+                {((isHtmlMode || isGenUIMode) && !displayContent) && (
+                  <div style={{
+                    height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+                    color: "var(--text-sub, #636E72)", opacity: 0.35, fontSize: 13, fontStyle: "italic",
+                  }}>
+                    Waiting for the team…
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+
+              {/* Right Panel: Reference Cards (40%) */}
+              <div style={{ width: "40%", height: "100%", overflowY: "auto", background: "rgba(0,0,0,0.015)", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-sub, #636E72)", opacity: 0.6, marginBottom: 4 }}>
+                  Research & Strategy Reference
+                </div>
+                {referenceCards.length > 0 ? (
+                  referenceCards.map(card => (
+                    <GlassCard key={card.id} card={card} mdComponents={localMdComponents} />
+                  ))
+                ) : (
+                  <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-sub, #636E72)", opacity: 0.5 }}>
+                    No reference cards available.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div style={{ width: "100%", height: "100%", overflow: "hidden" }}>
+              {cards.length > 0 ? (
+                <SpatialCardsGrid cards={cards} mdComponents={localMdComponents} />
+              ) : (
+                <div style={{
+                  height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+                  color: "var(--text-sub, #636E72)", opacity: 0.35, fontSize: 13, fontStyle: "italic",
+                }}>
+                  Waiting for the team…
+                </div>
+              )}
+            </div>
+          )
         )}
 
         {/* ── Source / edit view (works for markdown, HTML, and GenUI JSON source) ── */}
@@ -1072,6 +1625,7 @@ function ForumBlackboard({
             }}
           />
         )}
+        <CanvasAnnotationOverlay annotation={annotation} />
       </div>
     </div>
   );
@@ -1139,7 +1693,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
         flexShrink: 0,
       }}>
         <div>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main, #303330)" }}>Projects</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main, #303330)" }}>Forums</div>
           <div style={{ fontSize: 11, color: "var(--text-sub, #636E72)", marginTop: 2 }}>
             {active.length} project{active.length !== 1 ? "s" : ""}
             {archived.length > 0 && ` · ${archived.length} archived`}
@@ -1161,7 +1715,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
-          New Project
+          New Forum
         </button>
       </div>
 
@@ -1178,7 +1732,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
             </svg>
             <div style={{ fontSize: 14, fontWeight: 600 }}>No projects yet</div>
             <div style={{ fontSize: 12, textAlign: "center" }}>
-              Start a project to assemble your agents<br/>around a goal or task.
+              Start a forum to assemble your agents<br/>around a goal or task.
             </div>
             <button
               onClick={gatewayReady ? onNewForum : undefined}
@@ -1372,7 +1926,7 @@ function ForumCard({
       {/* Bottom row: agent pips + tags + message count */}
       <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ display: "flex" }}>
-          {f.agents.slice(0, 4).map((a, i) => (
+          {(f.agents || []).slice(0, 4).map((a, i) => (
             <div key={a.agentId} style={{
               width: 22, height: 22, borderRadius: "50%",
               background: `${a.robeColor || "#4A9E96"}28`,
@@ -1385,13 +1939,13 @@ function ForumCard({
               {a.name.charAt(0)}
             </div>
           ))}
-          {f.agents.length > 4 && (
+          {(f.agents || []).length > 4 && (
             <div style={{
               width: 22, height: 22, borderRadius: "50%",
               background: "rgba(0,0,0,0.05)", marginLeft: -6,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 8, color: "var(--text-sub, #636E72)",
-            }}>+{f.agents.length - 4}</div>
+            }}>+{(f.agents || []).length - 4}</div>
           )}
         </div>
         <div style={{ display: "flex", gap: 4, flex: 1, flexWrap: "wrap" }}>
@@ -1420,6 +1974,7 @@ export function ForumView() {
   const archiveForum = useForumStore(s => s.archiveForum);
   const deleteForum = useForumStore(s => s.deleteForum);
   const updateForumTags = useForumStore(s => s.updateForumTags);
+  const addForumMessage = useForumStore(s => s.addForumMessage);
   const { activeForumId, setActiveForumId } = useWorldStore();
   const engineRef = useRef<{ stop: () => void } | null>(null);
   const [briefModalOpen, setBriefModalOpen] = useState(false);
@@ -1428,6 +1983,34 @@ export function ForumView() {
 
   // activeForumId === null → show list; !== null → show that forum (or list if not found)
   const forum = activeForumId ? (forums.find(f => f.id === activeForumId) ?? null) : null;
+
+  const handleSendMessage = useCallback((text: string, attachments?: Array<{ name: string; dataUrl: string; mimeType: string }>) => {
+    if (!forum) return;
+
+    // Stop current execution
+    if (engineRef.current) {
+      engineRef.current.stop();
+      engineRef.current = null;
+    }
+
+    // Add user message
+    addForumMessage(forum.id, {
+      kind: "chat",
+      sender: "user",
+      text,
+      attachments: attachments && attachments.length > 0 ? attachments : undefined,
+    });
+
+    // Add steering system notice
+    addForumMessage(forum.id, {
+      kind: "system",
+      sender: "system",
+      text: "⚡ User Steering Intercept: Steering directives injected mid-flight. Adjusting execution plan.",
+    });
+
+    // Resume orchestrator
+    resumeForum(forum.id);
+  }, [forum, addForumMessage, resumeForum]);
 
   // Collaborative work explainer — shown once per project, dismissable
   const eduKey = forum ? `canopy_forum_edu_dismissed_${forum.id}` : null;
@@ -1449,7 +2032,28 @@ export function ForumView() {
     if (document.getElementById(id)) return;
     const el = document.createElement("style");
     el.id = id;
-    el.textContent = `@keyframes forum-fade-in { from { opacity: 0 } to { opacity: 1 } }`;
+    el.textContent = `
+      @keyframes forum-fade-in { from { opacity: 0 } to { opacity: 1 } }
+      @keyframes glass-card-appear {
+        from {
+          opacity: 0;
+          transform: scale(0.96) translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+        }
+      }
+      .glass-card {
+        animation: glass-card-appear 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      .glass-card:hover {
+        transform: scale(1.015) translateY(-2px);
+        background: rgba(255, 255, 255, 0.6) !important;
+        border-color: rgba(255, 255, 255, 0.7) !important;
+        box-shadow: 0 12px 40px 0 rgba(31, 38, 135, 0.08) !important;
+      }
+    `;
     document.head.appendChild(el);
   }, []);
 
@@ -1606,16 +2210,25 @@ export function ForumView() {
           <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
             <polyline points="15 18 9 12 15 6"/>
           </svg>
-          All Projects
+          All Forums
         </button>
 
-        {/* Title */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* Title & Brief */}
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <div style={{
             fontSize: 14, fontWeight: 700, color: "var(--text-main, #303330)",
             overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>
             {forum.title}
+          </div>
+          <div 
+            title={forum.brief}
+            style={{
+              fontSize: 11, color: "var(--text-sub, #636E72)", opacity: 0.8,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              marginTop: 2
+            }}>
+            {forum.brief}
           </div>
         </div>
 
@@ -1630,7 +2243,7 @@ export function ForumView() {
         {/* Agent pips + add agent */}
         <div style={{ display: "flex", alignItems: "center", gap: 4, position: "relative" }}>
           <div style={{ display: "flex" }}>
-            {forum.agents.map((a, i) => (
+            {(forum.agents || []).map((a, i) => (
               <div key={a.agentId} style={{
                 width: 24, height: 24, borderRadius: "50%",
                 background: `${a.robeColor || "#4A9E96"}33`,
@@ -1638,7 +2251,7 @@ export function ForumView() {
                 marginLeft: i > 0 ? -6 : 0,
                 display: "flex", alignItems: "center", justifyContent: "center",
                 fontSize: 9, fontWeight: 700, color: a.robeColor || "#4A9E96",
-                zIndex: forum.agents.length - i,
+                zIndex: (forum.agents || []).length - i,
               }}
               title={a.name}
               >
@@ -1832,6 +2445,7 @@ export function ForumView() {
               forum={forum}
               selectedArtifactId={selectedArtifactId}
               onArtifactClick={id => setSelectedArtifactId(prev => prev === id ? null : id)}
+              onSendMessage={handleSendMessage}
             />
           </div>
 
