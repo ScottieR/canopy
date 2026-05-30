@@ -140,6 +140,8 @@ export type ForumStatus = "drafting" | "active" | "paused" | "completed" | "arch
 
 export interface Forum {
   id: string;
+  totalTokens?: number;
+  totalCost?: number;
   title: string;
   brief: string;            // user's original goal text
   tags: string[];           // extracted from brief (e.g. ["research", "memo", "enterprise"])
@@ -168,6 +170,7 @@ export interface Forum {
 
 export interface ForumState {
   forums: Forum[];
+  incrementTokensAndCost: (forumId: string, tokens: number, cost: number) => void;
   activeForumId: string | null;
 
   // Actions
@@ -276,6 +279,13 @@ export const useForumStore = create<ForumState>()(
       },
 
       setActiveForumId: (id) => set({ activeForumId: id }),
+      incrementTokensAndCost: (forumId, tokens, cost) => set((state) => ({
+        forums: state.forums.map((f) => 
+          f.id === forumId 
+            ? { ...f, totalTokens: (f.totalTokens || 0) + tokens, totalCost: (f.totalCost || 0) + cost } 
+            : f 
+        )
+      })),
 
       addForumMessage: (forumId, msg) => {
         const id = generateId("msg");

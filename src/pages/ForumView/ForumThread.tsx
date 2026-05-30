@@ -93,11 +93,36 @@ function VoteChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   );
 }
 
-function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
+function AgentMessage({ msg, forum, onArtifactClick }: { msg: ForumMessage; forum: Forum; onArtifactClick?: (id: string) => void }) {
   const isHandoffType = msg.toAgentId != null;
   const agent = forum.agents?.find(a => a.agentId === msg.agentId);
   const color = agent?.robeColor || "#4A9E96";
   const isAgentToAgent = isHandoffType;
+
+  const relatedArtifact = React.useMemo(() => {
+    if (!forum.artifacts || !onArtifactClick) return null;
+    // Find artifacts from this agent
+    const agentArtifacts = forum.artifacts.filter(a => a.agentId === msg.agentId || (a.role_id && a.role_id === agent?.role));
+    if (agentArtifacts.length === 0) return null;
+    
+    // Find closest artifact created within 2 minutes of the message
+    let best = null;
+    let minDiff = 120000;
+    for (const a of agentArtifacts) {
+      const diff = Math.abs(a.createdAt - msg.timestamp);
+      if (diff < minDiff) {
+        minDiff = diff;
+        best = a;
+      }
+    }
+    
+    // Fallback: the most recent artifact they created before or around this message
+    if (!best) {
+      const before = agentArtifacts.filter(a => a.createdAt <= msg.timestamp + 5000).sort((a,b) => b.createdAt - a.createdAt);
+      if (before.length > 0) best = before[0];
+    }
+    return best;
+  }, [forum.artifacts, msg.timestamp, msg.agentId, agent?.role, onArtifactClick]);
 
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -133,7 +158,13 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
         </div>
 
         {/* Bubble */}
-        <div style={{
+        <div 
+          onClick={() => {
+            if (relatedArtifact && onArtifactClick) {
+              onArtifactClick(relatedArtifact.id);
+            }
+          }}
+          style={{
           padding: "9px 13px",
           borderRadius: 12,
           borderTopLeftRadius: 4,
@@ -144,7 +175,23 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
           fontSize: 12,
           lineHeight: 1.6,
           color: isAgentToAgent ? "var(--text-sub, #636E72)" : "var(--text-main, #303330)",
-        }}>
+          cursor: relatedArtifact ? "pointer" : "default",
+          transition: "all 0.15s ease",
+          boxShadow: relatedArtifact ? "0 2px 4px rgba(0,0,0,0.02)" : "none",
+        }}
+        onMouseEnter={e => {
+          if (relatedArtifact) {
+            (e.currentTarget as HTMLDivElement).style.borderColor = rgba(color, 0.4);
+            (e.currentTarget as HTMLDivElement).style.background = rgba(color, 0.04);
+          }
+        }}
+        onMouseLeave={e => {
+          if (relatedArtifact) {
+            (e.currentTarget as HTMLDivElement).style.borderColor = isAgentToAgent ? `1px dashed ${rgba(color, 0.25)}` : "var(--border-subtle, rgba(0,0,0,0.06))";
+            (e.currentTarget as HTMLDivElement).style.background = isAgentToAgent ? rgba(color, 0.06) : "var(--surface-container-lowest, #fff)";
+          }
+        }}
+        >
           {msg.text}
           {msg.miniApp && msg.miniApp.target === "inline" && (
             <GenUIRenderer 
@@ -736,7 +783,7 @@ function ThreadInput({ forumId, onSendMessage }: { forumId: string; onSendMessag
 
         <textarea
           value={text}
-          onChange={e => setText(e.target.value)}
+          onChange={handleTextChange}
           onKeyDown={e => {
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
           }}
@@ -924,7 +971,7 @@ export function ForumThread({ forum, selectedArtifactId, onArtifactClick, onSend
           if (msg.kind === "question") return <QuestionBubble key={msg.id} msg={msg} forum={forum} />;
           const firstAgentId = forum.agents?.[0]?.agentId;
           if (msg.sender === "user") return <UserMessage key={msg.id} msg={msg} agentId={firstAgentId} />;
-          return <AgentMessage key={msg.id} msg={msg} forum={forum} />;
+          return <AgentMessage key={msg.id} msg={msg} forum={forum} onArtifactClick={onArtifactClick} />;
         })}
 
         {/* Live typing indicator — shown while any agent call is in-flight */}

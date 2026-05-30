@@ -488,6 +488,22 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     // Keep global state in sync so errors remain when switching tabs.
     // Also mirror chatLog into the active conversation (if any) so switching
     // threads in the dropdown doesn't lose messages added since the switch.
+
+    // BREAK INFINITE LOOP: Check if an update is actually needed before calling setState
+    const currentState = useWorldStore.getState();
+    const currentAgent = currentState.agents.find(a => a.id === agent.id);
+    if (!currentAgent) return;
+    
+    // Determine if we have actual new content
+    const activeConv = currentAgent.conversations?.find(c => c.id === agent.activeConversationId);
+    const isNewContent = !activeConv || chatLog.length !== activeConv.messages.length || 
+                         chatLog[chatLog.length - 1]?.id !== activeConv.messages[activeConv.messages.length - 1]?.id;
+    
+    // If local state perfectly matches the global store, bail out early to prevent an infinite render loop.
+    if (currentAgent.chatLog === chatLog && !isNewContent) {
+      return; 
+    }
+
     useWorldStore.setState(state => ({
       agents: state.agents.map(a => {
         if (a.id !== agent.id) return a;
@@ -495,9 +511,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         if (a.activeConversationId && conversations) {
           conversations = conversations.map(c => {
             if (c.id !== a.activeConversationId) return c;
-            
-            const isNewContent = chatLog.length !== c.messages.length || 
-                                chatLog[chatLog.length - 1]?.id !== c.messages[c.messages.length - 1]?.id;
             
             return {
               ...c, 
@@ -631,6 +644,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         sender: "user",
         text: `I have securely added the credentials for ${authDomain} to your WebVault. Please try your task again.`,
         time: formatMessageTime(new Date()),
+        ts: Date.now(),
       };
       setChatLog(prev => capLog([...prev, sysMsg]));
       
@@ -685,6 +699,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         sender: "user",
         text: `I have granted you access to the existing credentials for ${authDomain}. Please try your task again.`,
         time: formatMessageTime(new Date()),
+        ts: Date.now(),
       };
       setChatLog(prev => capLog([...prev, sysMsg]));
       invoke("send_message", { agentId: agent.id, message: sysMsg.text, sessionId: agent.activeConversationId || null }).catch(e => console.warn("Auto-reply failed:", e));
@@ -796,6 +811,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         sender: "agent",
         text: responseText || "I've sent a credential request to your WebVault.",
         time: formatMessageTime(new Date()),
+        ts: Date.now(),
       };
 
       setChatLog(prev => capLog([...prev, agentMsg]));
@@ -831,6 +847,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             sender: "agent",
             text: retryText,
             time: formatMessageTime(new Date()),
+            ts: Date.now(),
           };
           setChatLog(prev => capLog([...prev, retryMsg]));
           return;
@@ -875,6 +892,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         sender: "agent",
         text: `⚠️ **System Error**: ${friendlyError}\n\n*(Raw Error: ${String(error).substring(0, 80)}...)*`,
         time: formatMessageTime(new Date()),
+        ts: Date.now(),
       };
       
       setChatLog(prev => capLog([...prev, errorMsg]));
@@ -1375,6 +1393,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                       sender: "user",
                       text: `I am denying the request for credentials to ${authDomain}. Please try to find a different approach or skip this step.`,
                       time: formatMessageTime(new Date()),
+                      ts: Date.now(),
                     };
                     setChatLog(prev => capLog([...prev, sysMsg]));
                     invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
@@ -1774,48 +1793,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         </div>
       )}
 
-      {/* Waking Up Overlay */}
-      {(!gatewayReady || agent.status === "deploying") && !agent.paused && (
-        <div style={{
-          position: "absolute",
-          inset: 0,
-          zIndex: 50,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
-          padding: 24,
-          ...glass(0.75),
-        }}>
-          <div style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            maxWidth: 400,
-            gap: 16,
-          }}>
-            <div style={{
-              width: 64,
-              height: 64,
-              borderRadius: "50%",
-              background: "rgba(244, 168, 58, 0.1)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              color: "#F4A83A",
-            }}>
-              <RefreshCw size={32} style={{ animation: "spin 2s linear infinite" }} />
-            </div>
-            <div>
-              <h3 style={{ margin: "0 0 8px 0", fontSize: 18, fontWeight: 700, color: "var(--text-main)" }}>Agent is Waking Up</h3>
-              <p style={{ margin: 0, fontSize: 14, color: "var(--text-sub)", lineHeight: 1.5 }}>
-                The gateway is starting. This takes up to 90 seconds on a cold start — hang tight.
-              </p>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Waking Up Overlay removed to prevent blocking user input. Status is visible in the header. */}
     </div>
   );
 }
