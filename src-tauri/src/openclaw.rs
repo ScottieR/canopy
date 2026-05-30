@@ -1690,7 +1690,12 @@ pub async fn send_message_internal(
     };
     let _ = db.log_audit(agent_id, "chatted", Some("openclaw"), &detail, None);
 
-    Ok(json!({ "response": response_text }))
+    Ok(json!({ 
+        "response": response_text,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "model": model
+    }))
 }
 
 #[tauri::command]

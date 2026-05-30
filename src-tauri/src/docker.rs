@@ -635,6 +635,9 @@ pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isola
     }
 
     if let Some(channels) = cfg.get_mut("channels").and_then(|c| c.as_object_mut()) {
+        // Remove known broken/deprecated channels that cause OpenClaw to crash
+        channels.remove("bluebubbles");
+        
         if let Some(slack) = channels.get_mut("slack").and_then(|s| s.as_object_mut()) {
             slack.remove("botToken");
             slack.remove("appToken");

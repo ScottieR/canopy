@@ -1131,12 +1131,7 @@ function GlassCard({ card, mdComponents }: { card: BoardCard; mdComponents: any 
       onClick={() => { if (!expanded) setExpanded(true); }}
     >
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 10, marginBottom: 4 }}>
-        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--text-main, #303330)", letterSpacing: "-0.01em", wordWrap: "break-word", overflowWrap: "break-word" }}>
-          {/* Filetree SVG Icon Placeholder */}
-          <svg style={{ marginRight: 6, verticalAlign: "middle" }} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-            <polyline points="13 2 13 9 20 9"></polyline>
-          </svg>
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 700, color: "var(--text-main, #303330)", letterSpacing: "-0.01em" }}>
           {card.title}
         </h3>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1447,18 +1442,6 @@ function ForumBlackboard({
           </>
         )}
 
-        {/* Export Forum */}
-        {toolbarBtn(
-          () => setExportModalOpen(true), false, "#4A9E96",
-          <>
-            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-            </svg>
-            Export
-          </>,
-          "Export Forum"
-        )}
-
         {/* Director's Lock */}
         {toolbarBtn(
           () => setLocked(l => !l), locked, "#EF4444",
@@ -1643,7 +1626,6 @@ function ForumBlackboard({
           />
         )}
         <CanvasAnnotationOverlay annotation={annotation} />
-        {exportModalOpen && <ExportForumModal forum={forum} onClose={() => setExportModalOpen(false)} />}
       </div>
     </div>
   );
