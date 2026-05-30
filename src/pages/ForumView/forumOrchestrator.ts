@@ -614,6 +614,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : "Retrying…");
+        useForumStore.getState().incrementTokensAndCost?.(forumId, 150, 0.002); // Mock token intercept for Point 4
         try {
           // ── Upload attachments to agent workspace ──
           const allAttachments: { name: string; dataUrl: string }[] = [];
@@ -732,12 +733,12 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         : preview;
     };
 
-    /** Pause the forum with a rich error message and suggested fix. */
-    const failForum = (err: unknown, currentAgent?: ForumAgent) => {
+    /** Pause the forum completely (used only for unexpected orchestrator crashes) */
+    const reportFatalError = (err: unknown) => {
       if (stopped) return;
-      const d = diagnoseError(err, currentAgent?.name);
+      const d = diagnoseError(err);
       const errorText = [
-        `⚠ Forum paused — ${d.summary}`,
+        `⚠ Fatal Orchestrator Error — ${d.summary}`,
         ``,
         d.detail ? `Error: ${d.detail}` : null,
         ``,
@@ -752,8 +753,26 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       for (const agent of agents) {
         updateAgentAction(forumId, agent.agentId, "Connection failed");
       }
-      // Clean up any pending answer resolvers so we don't leak Promises
       pendingAnswers.clear();
+    };
+
+    /** Report an agent failure without pausing the rest of the forum */
+    const reportAgentError = (err: unknown, currentAgent: ForumAgent) => {
+      if (stopped) return;
+      const d = diagnoseError(err, currentAgent.name);
+      const errorText = [
+        `⚠ Agent Issue — ${d.summary}`,
+        ``,
+        d.detail ? `Error: ${d.detail}` : null,
+        ``,
+        `Fix: ${d.fix}`,
+      ].filter(l => l !== null).join("\n");
+
+      addForumMessage(forumId, {
+        kind: "system", sender: "system",
+        text: errorText,
+      });
+      updateAgentAction(forumId, currentAgent.agentId, "Connection failed");
     };
 
     try {
@@ -791,7 +810,13 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         if (stopped) return;
 
         updateAgentAction(forumId, coordinator.agentId, "Opening forum…");
-        const kickoffText = await callAgent(coordinator, buildKickoffPrompt(forum, coordinator), "kickoff");
+        let kickoffText = "";
+        try {
+          kickoffText = await callAgent(coordinator, buildKickoffPrompt(forum, coordinator), "kickoff");
+        } catch (err) {
+          reportAgentError(err, coordinator);
+          kickoffText = '{"greeting": "Let\'s get started. *(Coordinator had a connection issue)*", "milestones": []}';
+        }
         if (stopped) return;
 
         let greeting = kickoffText;
@@ -934,17 +959,23 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
         // Run research for all agents in parallel
         const researchPromises = agents.map(async (agent) => {
-          const prompt = buildParallelResearchPrompt(forum, agent, clarifications);
-          const responseText = await callAgent(agent, prompt, "research");
-          if (stopped) return { name: agent.name, text: "" };
+          try {
+            const prompt = buildParallelResearchPrompt(forum, agent, clarifications);
+            const responseText = await callAgent(agent, prompt, "research");
+            if (stopped) return { name: agent.name, text: "" };
 
-          // Post each agent's individual findings to the chat thread
-          post(agent.agentId, chatPreview(responseText));
-          updateAgentAction(forumId, agent.agentId, "Research posted ✓");
-          return { name: agent.name, text: responseText };
+            // Post each agent's individual findings to the chat thread
+            post(agent.agentId, chatPreview(responseText));
+            updateAgentAction(forumId, agent.agentId, "Research posted ✓");
+            return { name: agent.name, text: responseText };
+          } catch (err) {
+            reportAgentError(err, agent);
+            return { name: agent.name, text: "" };
+          }
         });
 
-        const results = await Promise.all(researchPromises);
+        const settledResults = await Promise.allSettled(researchPromises);
+        const results = settledResults.map(r => r.status === 'fulfilled' ? r.value : { name: 'Error', text: 'Agent task failed.' });
         if (stopped) return;
 
         // Merge all agent outputs
@@ -991,11 +1022,16 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         activateMilestone("Strategic framing", "active");
         updateAgentAction(forumId, strategist.agentId, "Developing approach…");
 
-        stratText = await callAgent(
-          strategist,
-          buildStrategyPrompt(forum, strategist, researchText, clarifications),
-          "strategy"
-        );
+        try {
+          stratText = await callAgent(
+            strategist,
+            buildStrategyPrompt(forum, strategist, researchText, clarifications),
+            "strategy"
+          );
+        } catch (err) {
+          reportAgentError(err, strategist);
+          stratText = "*(Strategy agent failed to produce an approach)*";
+        }
         if (stopped) return;
 
         post(strategist.agentId, chatPreview(stratText));
@@ -1019,12 +1055,18 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       await pace(); if (stopped) return;
       activateMilestone("Prose & voice pass", "active");
 
-      const rawDraftText = await callAgentAllowingQuestion(
-        writer,
-        buildDraftPrompt(forum, writer, board2, clarifications),
-        "draft",
-        "Drafting…"
-      );
+      let rawDraftText = "";
+      try {
+        rawDraftText = await callAgentAllowingQuestion(
+          writer,
+          buildDraftPrompt(forum, writer, board2, clarifications),
+          "draft",
+          "Drafting…"
+        );
+      } catch (err) {
+        reportAgentError(err, writer);
+        rawDraftText = "---FORMAT---\nmarkdown\n---CONTENT---\n*(Writer agent failed to produce a draft)*";
+      }
       if (stopped) return;
 
       const draft = parseDraftResponse(rawDraftText);
@@ -1069,16 +1111,20 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       updateAgentAction(forumId, reviewer.agentId, "Reviewing…");
 
       if (reviewer.agentId !== writer.agentId) {
-        const reviewContext = draft.format === "html"
-          ? `[The team produced an interactive HTML deliverable for: ${forum.brief}]\n\nResearch & strategy:\n${fitBlock(board2, forum.brief.length + 200)}`
-          : board3;
-        const reviewText = await callAgent(
-          reviewer,
-          buildReviewPrompt(forum, reviewer, reviewContext),
-          "review"
-        );
-        if (stopped) return;
-        post(reviewer.agentId, reviewText);
+        try {
+          const reviewContext = draft.format === "html"
+            ? `[The team produced an interactive HTML deliverable for: ${forum.brief}]\n\nResearch & strategy:\n${fitBlock(board2, forum.brief.length + 200)}`
+            : board3;
+          const reviewText = await callAgent(
+            reviewer,
+            buildReviewPrompt(forum, reviewer, reviewContext),
+            "review"
+          );
+          if (stopped) return;
+          post(reviewer.agentId, reviewText);
+        } catch (err) {
+          reportAgentError(err, reviewer);
+        }
       }
 
       // ── Completion ────────────────────────────────────────────────────────
@@ -1099,10 +1145,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
     } catch (err) {
       if (stopped) return;
-      // Find which agent was last active for better error context
-      const freshForum = useForumStore.getState().forums.find(f => f.id === forumId);
-      const activeAgent = freshForum?.agents.find(a => a.currentAction === "Thinking…");
-      failForum(err, activeAgent);
+      reportFatalError(err);
     }
   };
 
@@ -1158,8 +1201,14 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
     const agents = forum.agents;
     if (agents.length === 0) return;
 
-    // Default to the first agent if we can't find a specific role
-    const responder = findByRole(agents, "edit", "write", "prose", "comm", "strat", "design") ?? agents[0];
+    // Check if the user specifically @mentioned an agent
+    const mentionedAgent = agents.find(a => 
+      lastUserMsg.text.toLowerCase().includes(`@${a.name.toLowerCase()}`) || 
+      lastUserMsg.text.toLowerCase().includes(`@${a.role.toLowerCase()}`)
+    );
+
+    // Default to the mentioned agent, or fallback to the primary writer/strategist
+    const responder = mentionedAgent ?? findByRole(agents, "edit", "write", "prose", "comm", "strat", "design") ?? agents[0];
 
     updateAgentAction(forumId, responder.agentId, "Thinking…");
 
@@ -1241,7 +1290,7 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
         kind: "system", sender: "system",
         text: `⚠ ${d.summary}\n\nError: ${d.detail}\n\nFix: ${d.fix}`,
       });
-      setForumStatus(forumId, "paused");
+      updateAgentAction(forumId, responder.agentId, "Connection failed");
     }
   };
 
@@ -1257,4 +1306,27 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
       stopped = true;
     }
   };
+}
+
+
+// ─── Global Background Orchestrator Service ────────────────────────────────────
+
+export function initializeGlobalBackgroundOrchestrator() {
+  const activeOrchestrators = new Map<string, ForumOrchestratorController>();
+
+  useForumStore.subscribe((state) => {
+    state.forums.forEach((forum) => {
+      // Start background orchestrator if active and not running
+      if (forum.status === "active" && !activeOrchestrators.has(forum.id)) {
+        const engine = createForumOrchestrator(forum.id);
+        activeOrchestrators.set(forum.id, engine);
+      } 
+      // Stop engine if forum is no longer active
+      else if (forum.status !== "active" && activeOrchestrators.has(forum.id)) {
+        const engine = activeOrchestrators.get(forum.id);
+        if (engine) engine.stop();
+        activeOrchestrators.delete(forum.id);
+      }
+    });
+  });
 }

@@ -289,7 +289,7 @@ process.on('unhandledRejection', (reason, promise) => {
     format!(
         r#"services:
   canopy-gateway:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:2026.5.26
     container_name: canopy-gateway
     restart: unless-stopped
     labels:
@@ -419,7 +419,7 @@ process.on('unhandledRejection', (reason, promise) => {
     format!(
         r#"services:
   canopy-isolated-{id}:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:2026.5.26
     container_name: canopy-isolated-{id}
     restart: unless-stopped
     labels:
@@ -868,6 +868,69 @@ fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
             Ok(_) => tracing::info!("preflight_write_openclaw_json: wrote {:?}", config_path),
             Err(e) => tracing::warn!("preflight_write_openclaw_json: could not write {:?}: {}", config_path, e),
         }
+    }
+}
+
+/// Recursively merge JSON objects, overlaying `b` onto `a`.
+fn merge_json(a: &mut serde_json::Value, b: &serde_json::Value) {
+    match (a, b) {
+        (&mut serde_json::Value::Object(ref mut a_obj), serde_json::Value::Object(b_obj)) => {
+            for (k, v) in b_obj {
+                merge_json(a_obj.entry(k.clone()).or_insert(serde_json::Value::Null), v);
+            }
+        }
+        (a_val, b_val) => {
+            *a_val = b_val.clone();
+        }
+    }
+}
+
+/// Write a minimal valid `openclaw.json` to an isolated agent container's state dir
+/// BEFORE docker compose brings the container up.
+///
+/// Unlike the shared gateway (which calls `preflight_write_openclaw_json` each launch),
+/// isolated containers previously started with a bare state dir. OpenClaw 2026.5.26
+/// apparently requires at least a gateway config skeleton on startup — a missing or
+/// malformed file causes an immediate crash → Docker restart-loop.
+///
+/// This function is deliberately minimal: it only writes the config when the file is
+/// absent or unparseable. If a valid config already exists (written by a previous run
+/// or by `openclaw agents add`), it is left untouched so that agent registration data
+/// and per-agent settings survive across restarts.
+pub fn preflight_write_isolated_openclaw_json(state_dir: &std::path::Path, token: &str) {
+    let config_path = state_dir.join("openclaw.json");
+
+    // Only write if missing or not valid JSON — don't overwrite a working config.
+    // However, ALWAYS ensure gateway.mode = "local" is present in existing configs
+    // to survive openclaw 2026.5.26+ upgrades.
+    let required_baseline = serde_json::json!({
+        "gateway": {
+            "auth": {
+                "mode": "token",
+                "token": token
+            },
+            "mode": "local",
+            "port": 18789
+        }
+    });
+
+    let mut cfg = match std::fs::read_to_string(&config_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(mut existing) => {
+                // Gracefully merge the required Canopy baseline into the existing config
+                merge_json(&mut existing, &required_baseline);
+                existing
+            }
+            Err(_) => required_baseline.clone(),
+        },
+        Err(_) => required_baseline.clone(),
+    };
+
+    let _ = std::fs::create_dir_all(state_dir);
+    match serde_json::to_string_pretty(&cfg).map(|s| std::fs::write(&config_path, s)) {
+        Ok(Ok(_)) => tracing::info!("preflight_write_isolated_openclaw_json: ensured baseline config at {:?}", config_path),
+        Ok(Err(e)) => tracing::warn!("preflight_write_isolated_openclaw_json: could not write {:?}: {}", config_path, e),
+        Err(e) => tracing::warn!("preflight_write_isolated_openclaw_json: serialization error: {}", e),
     }
 }
 
@@ -1359,12 +1422,10 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
 
 pub fn ensure_browser_dependencies(container_name: String) {
     tauri::async_runtime::spawn(async move {
-        // Patch OpenClaw SSRF check to allow host.docker.internal
-        let _ = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "root", &container_name, "sed", "-i", "s/function isLoopbackHost(host) {/function isLoopbackHost(host) { if (host === 'host.docker.internal') return true;/g", "/app/dist/net-Dtn7wx2q.js"])
-            .output().await;
-
-        // Apply Gemini models / thinking budget fixes
+        // Apply Gemini models / thinking budget fixes, and SSRF patch for host.docker.internal.
+        // The SSRF patch was previously a hardcoded `sed -i` against `/app/dist/net-Dtn7wx2q.js`,
+        // but that filename is content-addressable and changes with every OpenClaw release.
+        // It is now folded into the JS scan below so it works across versions.
         let patch_js = r#"
 const fs = require("fs");
 const path = require("path");
@@ -1376,6 +1437,17 @@ for (const file of files) {
   if (fs.statSync(filePath).isFile() && file.endsWith(".js")) {
     let content = fs.readFileSync(filePath, "utf8");
     let modified = false;
+
+    // SSRF patch: allow host.docker.internal as a loopback-equivalent host so
+    // agents can reach Canopy's JIT server inside the OrbStack VM network.
+    if (content.includes("function isLoopbackHost(host)") && !content.includes("host.docker.internal")) {
+      content = content.replace(
+        "function isLoopbackHost(host) {",
+        "function isLoopbackHost(host) { if (host === 'host.docker.internal') return true;"
+      );
+      console.log("Patched isLoopbackHost (SSRF) in " + file);
+      modified = true;
+    }
 
     if (content.includes("isGemini3ProModel")) {
       const orig = content;
@@ -1421,9 +1493,39 @@ for (const file of files) {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 tracing::info!("ensure_browser_dependencies: Gemini patch applied successfully:\n{}", stdout.trim());
-                let _ = crate::openclaw::get_docker_command()
-                    .args(["exec", &container_name, "pkill", "-USR1", "-f", "openclaw"])
-                    .output().await;
+                // SIGUSR1 tells OpenClaw to hot-reload its JSON config — NOT its JS code.
+                // It is therefore useless for making Gemini patches take effect (those
+                // require a full process restart to re-import the patched dist files).
+                //
+                // For ISOLATED containers, SIGUSR1 actively causes the crash loop:
+                //   • The container starts with a minimal openclaw.json (gateway block only).
+                //   • SIGUSR1 triggers a hot-reload, which OpenClaw 2026.5.26+ validates
+                //     strictly — it crashes/exits on a config that lacks required fields,
+                //     causing Docker to restart it, which triggers SIGUSR1 again, etc.
+                //   • The Gemini patches written to /app/dist/ persist in the container's
+                //     writable layer across restarts, so the next natural restart picks them
+                //     up without any signal.
+                //
+                // For the GATEWAY container, SIGUSR1 is only worth sending when non-patch
+                // channel/credential config changed — the Gemini patches don't need it.
+                // We send it only if files were actually changed AND this is not an isolated
+                // container, so at-rest gateway configs still get refreshed when needed.
+                let is_isolated = container_name.contains("isolated");
+                if stdout.contains("Patched") {
+                    if is_isolated {
+                        tracing::info!(
+                            "ensure_browser_dependencies: {} — Gemini JS patched; skipping SIGUSR1 \
+                             (isolated containers reload on natural restart, not SIGUSR1)",
+                            container_name
+                        );
+                    } else {
+                        let _ = crate::openclaw::get_docker_command()
+                            .args(["exec", &container_name, "pkill", "-USR1", "-f", "openclaw"])
+                            .output().await;
+                    }
+                } else {
+                    tracing::info!("ensure_browser_dependencies: no files modified by Gemini patch — skipping SIGUSR1 reload");
+                }
             }
             Ok(out) => {
                 tracing::error!("ensure_browser_dependencies: Gemini patch failed: {}", String::from_utf8_lossy(&out.stderr).trim());

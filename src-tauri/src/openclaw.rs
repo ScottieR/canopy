@@ -1572,6 +1572,14 @@ pub async fn send_message_internal(
         }
     };
 
+    // Diagnostic: log the raw stdout so we can verify the --json output shape
+    // for the current OpenClaw version. Remove once shape is confirmed stable.
+    tracing::info!(
+        "send_message_internal: agent={} stdout_preview={:?}",
+        agent_id,
+        stdout.chars().take(500).collect::<String>()
+    );
+
     // ── Extract response text ─────────────────────────────────────────────────
     // OpenClaw's `openclaw agent --json` response shape (confirmed from live run):
     //   { "payloads": [{ "text": "...", "mediaUrl": null }], "meta": { ... } }
@@ -1595,44 +1603,6 @@ pub async fn send_message_internal(
         .or_else(|| body["result"]["content"].as_str().filter(|s| !s.is_empty()).map(String::from))
         .or_else(|| body["content"].as_str().filter(|s| !s.is_empty()).map(String::from))
         .or_else(|| body["text"].as_str().filter(|s| !s.is_empty()).map(String::from))
-        .or_else(|| body["result"]["finalAssistantRawText"].as_str().filter(|s| !s.is_empty()).map(|s| {
-            // Only extract <final> tag content to avoid showing <think> blocks as errors
-            let extracted = if let Some(start) = s.find("<final>") {
-                if let Some(end) = s[start + 7..].find("</final>") {
-                    s[start + 7..start + 7 + end].trim().to_string()
-                } else {
-                    s[start + 7..].trim().to_string()
-                }
-            } else {
-                s.to_string()
-            };
-            extracted
-             .replace("<think>", "")
-             .replace("</think>", "")
-             .replace("<final>", "")
-             .replace("</final>", "")
-             .trim()
-             .to_string()
-        }))
-        .or_else(|| body["finalAssistantRawText"].as_str().filter(|s| !s.is_empty()).map(|s| {
-            // Only extract <final> tag content
-            let extracted = if let Some(start) = s.find("<final>") {
-                if let Some(end) = s[start + 7..].find("</final>") {
-                    s[start + 7..start + 7 + end].trim().to_string()
-                } else {
-                    s[start + 7..].trim().to_string()
-                }
-            } else {
-                s.to_string()
-            };
-            extracted
-             .replace("<think>", "")
-             .replace("</think>", "")
-             .replace("<final>", "")
-             .replace("</final>", "")
-             .trim()
-             .to_string()
-        }))
         .or_else(|| body["error"]["message"].as_str().filter(|s| !s.is_empty()).map(|s| format!("Error: {}", s)))
         .or_else(|| body["error"].as_str().filter(|s| !s.is_empty()).map(|s| format!("Error: {}", s)))
         .or_else(|| body["errorMessage"].as_str().filter(|s| !s.is_empty()).map(|s| format!("Error: {}", s)))
@@ -1829,6 +1799,9 @@ pub async fn get_conversation_history(
                                 
                                 if let Some(msg_obj) = json.get("message") {
                                     let role = msg_obj.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    if role != "user" && role != "assistant" && role != "agent" {
+                                        continue;
+                                    }
                                     
                                     let mut final_content = String::new();
                                     
@@ -1841,26 +1814,7 @@ pub async fn get_conversation_history(
                                                 }
                                             } else if block_type == "text" {
                                                 if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                                    let mut clean_text = text.to_string();
-                                                    
-                                                    // Strip verbose Slack JSON metadata
-                                                    while let Some(start) = clean_text.find("```json") {
-                                                        if let Some(end_offset) = clean_text[start+7..].find("```") {
-                                                            let full_end = start + 7 + end_offset + 3;
-                                                            let mut remove_end = full_end;
-                                                            while remove_end < clean_text.len() && clean_text[remove_end..].starts_with('\n') {
-                                                                remove_end += 1;
-                                                            }
-                                                            clean_text.replace_range(start..remove_end, "");
-                                                        } else {
-                                                            break;
-                                                        }
-                                                    }
-                                                    clean_text = clean_text.replace("Conversation info (untrusted metadata):\n", "");
-                                                    clean_text = clean_text.replace("Sender (untrusted metadata):\n", "");
-                                                    
-                                                    // Clean tags
-                                                    clean_text = clean_text.replace("<final>", "").replace("</final>", "");
+                                                    let clean_text = text.to_string();
 
                                                     final_content.push_str(clean_text.trim());
                                                 }
@@ -3642,22 +3596,66 @@ pub async fn boot_sync_agents(
 
         if agent.isolated {
             tracing::info!("boot_sync_agents: agent {} is isolated — ensuring its dedicated container is running", id);
-            
+
             if let Some(data_dir) = dirs::data_dir().map(|d| d.join("Canopy")) {
                 let port = get_agent_isolated_port(id);
                 let compose_content = crate::docker::generate_isolated_compose(id, &data_dir, port); // using stable port offset
                 let compose_path = data_dir.join(format!("docker-compose-{}.yml", id));
                 let _ = std::fs::write(&compose_path, compose_content);
-        
-                let _ = crate::docker::get_docker_compose_command()
-                    .args(["-f", compose_path.to_str().unwrap(), "up", "-d"])
-                    .output()
-                    .await;
-                    
-                // Sleep briefly to let the container boot up
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                
+
+                // Write a minimal valid openclaw.json to the state dir BEFORE the container
+                // starts. OpenClaw 2026.5.26 crashes at startup with a bare state dir, causing
+                // an infinite Docker restart loop. This call is safe to run on every boot:
+                // it only writes the file if it's missing or lacks a gateway config block.
+                let state_dir = data_dir.join("isolated").join(id.as_str()).join("state");
+                crate::docker::preflight_write_isolated_openclaw_json(
+                    &state_dir,
+                    crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+                );
+
                 let container_name = format!("canopy-isolated-{}", id);
+
+                // `compose up -d` is a no-op when the container already exists (running OR
+                // crash-looping). If the container is stuck in a restart loop from a previous
+                // bad config, we need to force a clean restart so it picks up the preflight
+                // config we just wrote. `docker restart` stops + starts in one step and
+                // preserves the writable layer (patched JS files stay intact).
+                let container_running = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    get_docker_command()
+                        .args(["inspect", "--format", "{{.State.Status}}", &container_name])
+                        .output(),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .map(|o| {
+                    let status = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    tracing::info!("boot_sync_agents: {} container status = {:?}", container_name, status);
+                    // "restarting" means it's in the crash loop; force a clean restart.
+                    // "running" means it may or may not be healthy — restart anyway to ensure
+                    // the fresh preflight config is loaded.
+                    matches!(status.as_str(), "running" | "restarting")
+                })
+                .unwrap_or(false);
+
+                if container_running {
+                    tracing::info!("boot_sync_agents: {} already exists — restarting to pick up fresh config", container_name);
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        get_docker_command().args(["restart", &container_name]).output(),
+                    ).await;
+                } else {
+                    // Container not found → create it via compose.
+                    let _ = crate::docker::get_docker_compose_command()
+                        .args(["-f", compose_path.to_str().unwrap(), "up", "-d"])
+                        .output()
+                        .await;
+                }
+
+                // Wait for the container to be ready after start or restart.
+                tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+
                 crate::docker::ensure_browser_dependencies(container_name.clone());
                 
                 // Add the agent to the isolated container's openclaw runtime
