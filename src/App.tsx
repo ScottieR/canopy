@@ -42,6 +42,7 @@ import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
 import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
 import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
+import { useForumStore } from './store/forumStore';
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -412,26 +413,61 @@ export function CanopyScene({
   const updateAgentAction = useWorldStore(s => s.updateAgentAction);
   const invoke = (window as any)?.__TAURI__?.invoke || (() => Promise.resolve());
 
+  // Subscribe to forumStore so we re-sync when forums change
+  const forums = useForumStore(s => s.forums);
+
   useEffect(() => {
-    // 1. Keep the Rust dispatch bridge synced with our frontend state
-    // We only care about syncing the "projects" and "inbox".
-    const state = useWorldStore.getState();
-    const projects = state.agents.flatMap(a => a.conversations || [])
-      .filter(c => c.type === "forum")
-      .map(c => ({
-        id: c.id,
-        title: c.title,
-        agent_count: state.agents.filter(a => a.conversations?.some(ac => ac.id === c.id)).length,
-        last_active: c.lastActiveAt
-      }));
-    
-    invoke("sync_mobile_state", { 
-      payload: { 
-        projects: projects,
-        inbox: state.inbox
-      } 
+    // 1. Keep the Rust dispatch bridge synced with forum + inbox state.
+    const worldState = useWorldStore.getState();
+    const forumState = useForumStore.getState();
+
+    // Map agents to mobile shape, including the individual chat session ID
+    const mobileAgents = worldState.agents.map((a: any) => ({
+      id: a.id,
+      name: a.name,
+      role: a.role,
+      emoji: a.emoji,
+      color: a.color,
+      image_url: a.image ?? null,
+      // The individual chat session — mobile must use this so it never touches a forum session
+      conversation_id: a.activeConversationId ?? null,
+    }));
+
+    // Map forumStore forums into the mobile Forum shape
+    const mobileForms = forumState.forums
+      .filter(f => f.status !== "archived")
+      .map(f => {
+        const completedMilestones = (f.milestones || []).filter(m => m.status === "done").length;
+        const activeMilestone = (f.milestones || []).find(m => m.status === "active")?.label;
+        return {
+          id: f.id,
+          title: f.title,
+          brief: f.brief,
+          status: f.status,
+          agents: (f.agents || []).map(a => ({
+            agentId: a.agentId,
+            name: a.name,
+            robeColor: a.robeColor,
+            image: a.image ?? null,
+          })),
+          currentPhase: activeMilestone ?? null,
+          completedMilestones,
+          totalMilestones: (f.milestones || []).length,
+          artifactCount: (f.artifacts || []).length,
+          hasDeliverable: (f.artifacts || []).some(a => a.isDeliverable),
+          lastActiveAt: f.lastActiveAt ?? f.createdAt ?? Date.now(),
+        };
+      });
+
+    invoke("sync_mobile_state", {
+      payload: {
+        forums: mobileForms,
+        projects: mobileForms, // backwards compat alias
+        agents: mobileAgents,  // includes conversation_id for session isolation
+        inbox: worldState.inbox ?? [],
+      }
     }).catch((e: any) => console.warn("Failed to sync mobile state:", e));
-  }, [agents, useWorldStore.getState().inbox]);
+  }, [agents, forums, useWorldStore.getState().inbox]);
 
   useEffect(() => {
     // 2. Listen for mobile commands (e.g. Quick Capture)

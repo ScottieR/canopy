@@ -171,23 +171,53 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                 if let Ok(req) = serde_json::from_str::<RpcRequest>(&text) {
                     match req.command.as_str() {
                         "list_agents" => {
-                            if let Ok(agents) = crate::openclaw::list_agents(db_state.clone()).await {
-                                let res = RpcResponse {
-                                    msg_type: "agents_list".to_string(),
-                                    payload: serde_json::json!(agents),
-                                };
-                                if let Ok(json_str) = serde_json::to_string(&res) {
-                                    let _ = write.send(Message::Text(json_str)).await;
+                            // Prefer the richer agent list from mobile_state (includes conversation_id
+                            // and image_url synced by the frontend) over the bare DB list.
+                            let reader = state.mobile_state.read().await;
+                            let agents_payload = if let Some(agents) = reader.get("agents") {
+                                agents.clone()
+                            } else {
+                                drop(reader);
+                                // Fallback: raw DB list without conversation_id
+                                if let Ok(agents) = crate::openclaw::list_agents(db_state.clone()).await {
+                                    serde_json::json!(agents)
+                                } else {
+                                    serde_json::json!([])
                                 }
+                            };
+                            let res = RpcResponse {
+                                msg_type: "agents_list".to_string(),
+                                payload: agents_payload,
+                            };
+                            if let Ok(json_str) = serde_json::to_string(&res) {
+                                let _ = write.send(Message::Text(json_str)).await;
                             }
                         }
                         "get_chat_history" => {
                             if let Some(payload) = req.payload {
                                 if let Some(agent_id) = payload.get("agent_id").and_then(|v| v.as_str()) {
-                                    if let Ok(history) = crate::openclaw::get_conversation_history(db_state.clone(), agent_id.to_string(), None, Some(100)).await {
+                                    // Prefer an explicit session_id (the agent's activeConversationId)
+                                    // so we never accidentally return a forum orchestration session.
+                                    let session_id = payload.get("session_id")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(|s| s.to_string());
+                                    if let Ok(history) = crate::openclaw::get_conversation_history(db_state.clone(), agent_id.to_string(), session_id, Some(100)).await {
+                                        // Filter out forum orchestration prompts — these are the large
+                                        // system prompts sent to agents during forum phases and should
+                                        // never appear in the mobile individual chat thread.
+                                        let filtered: Vec<_> = history.into_iter().filter(|m| {
+                                            let c = m.content.to_lowercase();
+                                            // Drop messages that look like forum phase prompts
+                                            !(c.contains("you are ") && c.contains("participating in a collaborative forum"))
+                                            && !(c.contains("---format---"))
+                                            && !(c.contains("this is the research & discovery phase"))
+                                            && !(c.contains("this is the strategic approach phase"))
+                                            && !(c.contains("producing the final deliverable for a collaborative forum"))
+                                        }).collect();
                                         let res = RpcResponse {
                                             msg_type: "chat_history".to_string(),
-                                            payload: serde_json::json!(history),
+                                            payload: serde_json::json!(filtered),
                                         };
                                         if let Ok(json_str) = serde_json::to_string(&res) {
                                             let _ = write.send(Message::Text(json_str)).await;
@@ -196,16 +226,42 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                                 }
                             }
                         }
+                        "ping" => {
+                            let res = RpcResponse {
+                                msg_type: "pong".to_string(),
+                                payload: serde_json::json!({}),
+                            };
+                            if let Ok(json_str) = serde_json::to_string(&res) {
+                                let _ = write.send(Message::Text(json_str)).await;
+                            }
+                        }
+                        // list_forums: new primary name
+                        "list_forums" => {
+                            let reader = state.mobile_state.read().await;
+                            let forums = reader.get("forums")
+                                .cloned()
+                                .unwrap_or(serde_json::json!([]));
+                            let res = RpcResponse {
+                                msg_type: "forums_list".to_string(),
+                                payload: forums,
+                            };
+                            if let Ok(json_str) = serde_json::to_string(&res) {
+                                let _ = write.send(Message::Text(json_str)).await;
+                            }
+                        }
+                        // list_projects: legacy alias — responds with forums_list for backwards compat
                         "list_projects" => {
                             let reader = state.mobile_state.read().await;
-                            if let Some(projects) = reader.get("projects") {
-                                let res = RpcResponse {
-                                    msg_type: "projects_list".to_string(),
-                                    payload: projects.clone(),
-                                };
-                                if let Ok(json_str) = serde_json::to_string(&res) {
-                                    let _ = write.send(Message::Text(json_str)).await;
-                                }
+                            let forums = reader.get("forums")
+                                .or_else(|| reader.get("projects"))
+                                .cloned()
+                                .unwrap_or(serde_json::json!([]));
+                            let res = RpcResponse {
+                                msg_type: "forums_list".to_string(),
+                                payload: forums,
+                            };
+                            if let Ok(json_str) = serde_json::to_string(&res) {
+                                let _ = write.send(Message::Text(json_str)).await;
                             }
                         }
                         "list_inbox" => {
@@ -232,7 +288,13 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                                             "command": text_msg
                                         }));
                                     } else {
-                                        if let Ok(response_val) = crate::openclaw::send_message_internal(&*db_state, &app_handle, agent_id, text_msg, None).await {
+                                        // Pass the agent's individual chat session ID so forum sessions
+                                        // never receive or contaminate the mobile conversation.
+                                        let session_id = payload.get("session_id")
+                                            .and_then(|v| v.as_str())
+                                            .filter(|s| !s.is_empty())
+                                            .map(|s| s.to_string());
+                                        if let Ok(response_val) = crate::openclaw::send_message_internal(&*db_state, &app_handle, agent_id, text_msg, session_id).await {
                                             let res = RpcResponse {
                                                 msg_type: "chat_response".to_string(),
                                                 payload: serde_json::json!({
@@ -246,6 +308,12 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                                         }
                                     }
                                 }
+                            }
+                        }
+                        "resolve_inbox_item" => {
+                            // Forward to the desktop UI to dismiss/approve the item
+                            if let Some(payload) = req.payload {
+                                let _ = app_handle.emit("mobile_inbox_resolved", payload);
                             }
                         }
                         _ => {

@@ -350,6 +350,7 @@ describe("changeMagnitude", () => {
 
 describe("Namespace validation", () => {
   function isWithinNamespace(connected: string, filePath: string): boolean {
+    if (filePath.includes("..")) return false;
     // Use trailing slash to avoid sibling-folder false positives
     return filePath.startsWith(connected + "/") || filePath === connected;
   }

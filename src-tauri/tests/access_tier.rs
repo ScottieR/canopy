@@ -25,8 +25,10 @@ fn temp_project_folder() -> TempDir {
         .expect("Failed to create temp project folder")
 }
 
-/// Simulate the namespace prefix check performed inside sync_artifact.
 fn is_within_namespace(base: &str, file_path: &str) -> bool {
+    if file_path.contains("/../") || file_path.contains("\\..\\") {
+        return false;
+    }
     file_path.starts_with(base)
 }
 

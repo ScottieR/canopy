@@ -557,6 +557,82 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     const agents = forum.agents;
     if (agents.length === 0) return;
 
+    // ── Progressive forum context writer ──────────────────────────────────────
+    // Writes/updates forum-context-{forumId}.md in every participating agent's
+    // workspace after each milestone. Agents read this when they need to recall
+    // forum context in individual chats, or when they want to reference the
+    // latest state of a long-running forum.
+    //
+    // Also appends a brief milestone entry to each agent's MEMORY.md so that
+    // cross-thread continuity works without manual note-taking.
+    const writeForumContextToAgents = async (phaseName: string, phaseContent: string) => {
+      const freshForum = useForumStore.getState().forums.find(f => f.id === forumId);
+      if (!freshForum) return;
+
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Build the full running forum-context file
+      const completedMilestones = freshForum.milestones.filter(m => m.status === "done").map(m => m.label);
+      const activeMilestone = freshForum.milestones.find(m => m.status === "active")?.label;
+
+      const contextFile = [
+        `# Forum Context: ${freshForum.title}`,
+        ``,
+        `**Brief:** ${freshForum.brief}`,
+        `**Status:** ${freshForum.status}  **Last updated:** ${today}`,
+        `**Team:** ${freshForum.agents.map(a => a.name).join(", ")}`,
+        ``,
+        `## Progress`,
+        completedMilestones.length > 0
+          ? completedMilestones.map(l => `- ✅ ${l}`).join("\n")
+          : "- (no phases complete yet)",
+        activeMilestone ? `- 🔄 ${activeMilestone} *(in progress)*` : "",
+        ``,
+        `## Latest Phase: ${phaseName}`,
+        ``,
+        phaseContent.slice(0, 3000), // cap to avoid huge files
+        phaseContent.length > 3000 ? "\n\n*(truncated — see blackboard for full content)*" : "",
+        ``,
+        `## Blackboard (current)`,
+        ``,
+        freshForum.blackboardContent.slice(0, 2000),
+        freshForum.blackboardContent.length > 2000 ? "\n\n*(truncated)*" : "",
+      ].filter(l => l !== undefined).join("\n");
+
+      // Memory entry for MEMORY.md
+      const memoryEntry = `[${today}] Forum "${freshForum.title}" — ${phaseName} complete. ${phaseContent.slice(0, 150).replace(/\n/g, " ")}…\n`;
+
+      // Write to each agent's workspace
+      for (const agent of freshForum.agents) {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          // Write/replace the forum context file
+          await invoke("write_workspace_file", {
+            agentId: agent.agentId,
+            filename: `forum-context-${forumId}.md`,
+            content: contextFile,
+          });
+          // Append to MEMORY.md (read existing, append, write back)
+          try {
+            const existingMemory = await invoke<string>("read_workspace_file", {
+              agentId: agent.agentId,
+              filename: "MEMORY.md",
+            }).catch(() => "# Memory\n\n");
+            const updatedMemory = (existingMemory ?? "# Memory\n\n") + memoryEntry;
+            await invoke("write_workspace_file", {
+              agentId: agent.agentId,
+              filename: "MEMORY.md",
+              content: updatedMemory,
+            });
+          } catch {
+            // MEMORY.md update is best-effort — don't fail the forum if it errors
+          }
+        } catch (err) {
+          console.warn(`[ForumOrchestrator] Could not write forum context for agent ${agent.agentId}:`, err);
+        }
+      }
+    };
+
     // Role assignment — find best-fit agents for each phase
     const researcher = findByRole(agents, "research", "analyst", "data", "investigat");
     const strategist = findByRole(
@@ -609,14 +685,16 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
      *  failures are transient Node event-loop blips, not permanent failures.
      */
     const callAgent = async (agent: ForumAgent, prompt: string, phase: string): Promise<string> => {
-      const isTimeoutErr = (e: unknown) => {
-        const s = String(e).toLowerCase();
-        return s.includes("timeout") || s.includes("taking a long time");
-      };
+      const isTimeoutErr  = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("timeout") || s.includes("taking a long time"); };
+      const isRateLimitErr = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("rate limit") || s.includes("429") || s.includes("too many request"); };
+      // Quota / billing errors: retrying won't help — surface immediately and let other agents continue
+      const isQuotaErr     = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("quota") || s.includes("billing") || s.includes("credit") || s.includes("insufficient_quota") || s.includes("you've exceeded") || s.includes("has been exceeded"); };
 
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : "Retrying…");
-        useForumStore.getState().incrementTokensAndCost?.(forumId, 150, 0.002); // Mock token intercept for Point 4
+      const MAX_ATTEMPTS = 4;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (stopped) throw new Error("Orchestrator stopped");
+        updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : `Retrying (${attempt})…`);
+        useForumStore.getState().incrementTokensAndCost?.(forumId, 150, 0.002);
         try {
           // ── Upload attachments to agent workspace ──
           const allAttachments: { name: string; dataUrl: string }[] = [];
@@ -652,16 +730,34 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           });
           return extractText(response);
         } catch (err) {
-          if (isTimeoutErr(err) && attempt < 2) {
-            // Transient timeout — wait 5s and retry once before surfacing the error.
-            await new Promise(r => setTimeout(r, 5_000));
-            continue;
+          if (stopped) throw err;
+
+          // Quota/billing errors — don't retry, it won't help. Surface immediately.
+          if (isQuotaErr(err)) {
+            const d = diagnoseError(err, agent.name);
+            throw new Error(`[${d.summary}] ${d.detail} | FIX: ${d.fix}`);
           }
+
+          if (attempt < MAX_ATTEMPTS) {
+            if (isRateLimitErr(err)) {
+              // Exponential backoff with jitter: 4s, 8s, 16s + up to 2s random
+              const base = Math.pow(2, attempt + 1) * 1000;
+              const jitter = Math.random() * 2000;
+              updateAgentAction(forumId, agent.agentId, `Rate limited — waiting ${Math.round((base + jitter) / 1000)}s…`);
+              await new Promise(r => setTimeout(r, base + jitter));
+              continue;
+            }
+            if (isTimeoutErr(err)) {
+              // Transient timeout — short wait then retry
+              await new Promise(r => setTimeout(r, 5_000));
+              continue;
+            }
+          }
+
           const d = diagnoseError(err, agent.name);
           throw new Error(`[${d.summary}] ${d.detail} | FIX: ${d.fix}`);
         }
       }
-      // Unreachable — loop always returns or throws.
       throw new Error("callAgent: unexpected end of retry loop");
     };
 
@@ -845,6 +941,9 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         }
 
         post(coordinator.agentId, greeting);
+        // Seed forum context in each agent's workspace immediately after kickoff.
+        // This means even mid-forum individual chats can reference the brief + team.
+        writeForumContextToAgents("Kickoff", `Brief: ${forum.brief}\n\nTeam: ${forum.agents.map(a => `${a.name} (${a.forumRole})`).join(", ")}\n\n${greeting}`).catch(() => {});
       }
       updateAgentAction(forumId, coordinator.agentId, "Gathering questions…");
 
@@ -959,8 +1058,11 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           updateAgentAction(forumId, agent.agentId, "Researching…");
         }
 
-        // Run research for all agents in parallel
-        const researchPromises = agents.map(async (agent) => {
+        // Run research for all agents in parallel, staggered by 800ms each
+        // to avoid hammering the API simultaneously and triggering rate limits.
+        const researchPromises = agents.map(async (agent, agentIndex) => {
+          if (agentIndex > 0) await new Promise(r => setTimeout(r, agentIndex * 800));
+          if (stopped) return { name: agent.name, text: "" };
           try {
             const prompt = buildParallelResearchPrompt(forum, agent, clarifications);
             const responseText = await callAgent(agent, prompt, "research");
@@ -1012,8 +1114,9 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           agentName: mergedAuthorNames,
           isDeliverable: false,
         });
-        // Seed the scratchpad with research highlights
         appendScratchpad(forumId, `## ${researchFolder} Notes\n${chatPreview(researchText)}\n\n`);
+        // Push forum context to every agent's workspace — enables cross-thread recall
+        writeForumContextToAgents(researchFolder, researchText).catch(() => {});
 
         if (strategist.agentId !== researcher.agentId) {
           postHandoff(
@@ -1071,6 +1174,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           isDeliverable: false,
         });
         appendScratchpad(forumId, `## ${stratFolder} Notes\n${chatPreview(stratText)}\n\n`);
+        writeForumContextToAgents(stratFolder, stratText).catch(() => {});
       }
 
       if (writer.agentId !== strategist.agentId) {
@@ -1129,9 +1233,13 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       const deliverableExt = draft.format === "html" ? "html" : "md";
       const currentMilestones = useForumStore.getState().forums.find(f => f.id === forumId)?.milestones ?? [];
       const deliverableFolder = currentMilestones[currentMilestones.length - 1]?.label ?? "Final Deliverable";
+      // Use the last milestone label as a descriptive title (not the full brief which is too long)
+      const deliverableTitle = deliverableFolder !== "Final Deliverable"
+        ? deliverableFolder
+        : (forum.title.length > 40 ? forum.title.slice(0, 37) + "…" : forum.title);
       addForumArtifact(forumId, {
         type: draft.format,
-        title: forum.title,
+        title: deliverableTitle,
         filename: `deliverable.${deliverableExt}`,
         folder: deliverableFolder,
         content: draft.content,
@@ -1141,6 +1249,12 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       });
       updateAgentAction(forumId, writer.agentId, "Draft posted ✓");
       activateMilestone("Prose & voice pass", "done");
+      writeForumContextToAgents(
+        deliverableFolder,
+        draft.format === "html"
+          ? `[Interactive HTML deliverable created for: ${forum.brief}]`
+          : draft.content
+      ).catch(() => {});
 
       // ── Phase 4: Review ───────────────────────────────────────────────────
       if (stopped) return;
@@ -1178,6 +1292,8 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         kind: "system", sender: "system",
         text: "Forum complete · deliverable ready",
       });
+      // Final context write — ensures every agent's workspace reflects the completed forum
+      writeForumContextToAgents("Forum complete", `Forum "${forum.title}" finished. All milestones complete. Deliverable ready.`).catch(() => {});
 
     } catch (err) {
       if (stopped) return;
@@ -1348,20 +1464,42 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
 // ─── Global Background Orchestrator Service ────────────────────────────────────
 
 export function initializeGlobalBackgroundOrchestrator() {
-  const activeOrchestrators = new Map<string, ForumOrchestratorController>();
+  // Map: forumId → { engine, version }
+  // We track the orchestratorVersion so that retry/resume (which bump the version)
+  // cause us to stop the old engine and start a fresh one.
+  const activeEngines = new Map<string, { engine: ForumOrchestratorController; version: number }>();
 
   useForumStore.subscribe((state) => {
+    const activeForumIds = new Set(state.forums.map(f => f.id));
+
+    // Stop engines for forums that no longer exist
+    for (const [id] of activeEngines) {
+      if (!activeForumIds.has(id)) {
+        activeEngines.get(id)?.engine.stop();
+        activeEngines.delete(id);
+      }
+    }
+
     state.forums.forEach((forum) => {
-      // Start background orchestrator if active and not running
-      if (forum.status === "active" && !activeOrchestrators.has(forum.id)) {
-        const engine = createForumOrchestrator(forum.id);
-        activeOrchestrators.set(forum.id, engine);
-      } 
-      // Stop engine if forum is no longer active
-      else if (forum.status !== "active" && activeOrchestrators.has(forum.id)) {
-        const engine = activeOrchestrators.get(forum.id);
-        if (engine) engine.stop();
-        activeOrchestrators.delete(forum.id);
+      const currentVersion = forum.orchestratorVersion ?? 0;
+      const running = activeEngines.get(forum.id);
+
+      if (forum.status === "active") {
+        if (!running) {
+          // Start fresh engine
+          const engine = createForumOrchestrator(forum.id);
+          activeEngines.set(forum.id, { engine, version: currentVersion });
+        } else if (running.version !== currentVersion) {
+          // orchestratorVersion bumped (retry/resume) — restart engine
+          running.engine.stop();
+          const engine = createForumOrchestrator(forum.id);
+          activeEngines.set(forum.id, { engine, version: currentVersion });
+        }
+        // else: same version, engine already running — do nothing
+      } else if (running) {
+        // Forum no longer active — stop engine
+        running.engine.stop();
+        activeEngines.delete(forum.id);
       }
     });
   });
