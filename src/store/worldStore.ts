@@ -146,6 +146,25 @@ export interface AgentData extends Agent {
   };
 }
 
+
+export interface SecurityAlert {
+    id: string;
+    agent_id: string;
+    timestamp: string;
+    severity: string;
+    description: string;
+    resolved: boolean;
+}
+
+export interface SystemWarning {
+    id: string;
+    agent_id: string;
+    timestamp: string;
+    warning_type: string;
+    message: string;
+    resolved: boolean;
+}
+
 export interface InboxItem {
   id: string;
   type: "voice_note" | "agent_request";
@@ -241,6 +260,14 @@ export interface WorldState {
   addInboxItem: (item: Omit<InboxItem, "id" | "timestamp">) => void;
   removeInboxItem: (id: string) => void;
   // ── Decision Queue ────────────────────────────────────────────────────
+  
+  securityAlerts: SecurityAlert[];
+  systemWarnings: SystemWarning[];
+  setSecurityAlerts: (alerts: SecurityAlert[]) => void;
+  setSystemWarnings: (warnings: SystemWarning[]) => void;
+  resolveSystemWarningState: (id: string) => void;
+  resolveSecurityAlertState: (id: string) => void;
+
   pendingDecisions: PendingDecision[];
   addDecision: (d: PendingDecision) => void;
   resolveDecision: (id: string, answer: string) => void; // user picked an option
@@ -413,6 +440,14 @@ export const useWorldStore = create<WorldState>()(
   })),
 
   // ── Decision Queue ─────────────────────────────────────────────────────
+  
+  securityAlerts: [],
+  systemWarnings: [],
+  setSecurityAlerts: (alerts) => set({ securityAlerts: alerts }),
+  setSystemWarnings: (warnings) => set({ systemWarnings: warnings }),
+  resolveSystemWarningState: (id) => set((state) => ({ systemWarnings: state.systemWarnings.filter(w => w.id !== id) })),
+  resolveSecurityAlertState: (id) => set((state) => ({ securityAlerts: state.securityAlerts.filter(a => a.id !== id) })),
+
   pendingDecisions: [],
   addDecision: (d) => set((state) => ({
     pendingDecisions: [d, ...state.pendingDecisions],

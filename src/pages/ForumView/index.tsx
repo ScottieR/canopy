@@ -7,6 +7,7 @@ import { ForumThread } from "./ForumThread";
 import { createForumOrchestrator, createFollowUpOrchestrator, ForumOrchestratorController } from "./forumOrchestrator";
 import { ForumBriefModal } from "./ForumBriefModal";
 import { ExportForumModal } from "./ExportForumModal";
+import { HistoryPanel } from "./HistoryPanel";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 
 // ─── Annotation Hook & Overlay ────────────────────────────────────────────────
@@ -105,39 +106,568 @@ function useCanvasAnnotation(isAnnotationMode: boolean) {
   return annotation;
 }
 
-function CanvasAnnotationOverlay({ annotation }: { annotation: AnnotationState }) {
+function CanvasAnnotationOverlay({
+  annotation,
+  forumId,
+}: {
+  annotation: AnnotationState;
+  forumId: string;
+}) {
+  const addForumMessage = useForumStore(s => s.addForumMessage);
+  const [open, setOpen] = useState(false);
+  const [comment, setComment] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Reset when annotation changes
+  useEffect(() => {
+    if (!annotation.isActive) { setOpen(false); setComment(""); }
+  }, [annotation.isActive]);
+
+  // Focus textarea when popover opens
+  useEffect(() => {
+    if (open) setTimeout(() => textareaRef.current?.focus(), 50);
+  }, [open]);
+
   if (!annotation.isActive || !annotation.rect) return null;
 
+  const excerpt = annotation.text.length > 60
+    ? annotation.text.slice(0, 60).trim() + "…"
+    : annotation.text;
+
+  const submit = () => {
+    if (!comment.trim()) return;
+    addForumMessage(forumId, {
+      kind: "chat",
+      sender: "user",
+      text: `💬 **Comment on excerpt:** "${excerpt}"\n\n${comment.trim()}`,
+    });
+    setOpen(false);
+    setComment("");
+    window.getSelection()?.removeAllRanges();
+  };
+
+  const anchorTop = annotation.rect.top;
+  const anchorLeft = annotation.rect.left + annotation.rect.width / 2;
+
   return (
-    <div 
-      style={{
-        position: 'fixed',
-        top: annotation.rect.top - 44, // Position slightly above the selection
-        left: annotation.rect.left + annotation.rect.width / 2, // Center relative to selection width
-        transform: 'translateX(-50%)',
-        zIndex: 9999,
-        background: '#1A1A1A',
-        color: 'white',
-        padding: '6px 12px',
-        borderRadius: '6px',
-        fontSize: '12px',
-        fontWeight: 500,
-        boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-        border: '1px solid rgba(255,255,255,0.1)',
-        pointerEvents: 'auto',
-        cursor: 'pointer',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '6px'
-      }}
-      onClick={() => {
-        console.log("Annotation requested for block:", annotation.blockId, "text:", annotation.text);
-      }}
-    >
-      <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-      </svg>
-      Comment {annotation.blockId ? `(Block: ${annotation.blockId})` : ''}
+    <>
+      {/* Trigger chip */}
+      {!open && (
+        <div
+          onClick={() => setOpen(true)}
+          style={{
+            position: 'fixed',
+            top: anchorTop - 36,
+            left: anchorLeft,
+            transform: 'translateX(-50%)',
+            zIndex: 9999,
+            background: '#1A1A1A',
+            color: 'white',
+            padding: '5px 10px',
+            borderRadius: '6px',
+            fontSize: '11px',
+            fontWeight: 600,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+            pointerEvents: 'auto',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+            userSelect: 'none',
+          }}
+        >
+          <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          Comment
+        </div>
+      )}
+
+      {/* Expanded popover */}
+      {open && (
+        <div
+          style={{
+            position: 'fixed',
+            top: Math.max(8, anchorTop - 160),
+            left: Math.min(window.innerWidth - 280, Math.max(8, anchorLeft - 130)),
+            zIndex: 9999,
+            background: '#1A1A1A',
+            color: 'white',
+            padding: '10px',
+            borderRadius: '10px',
+            width: 260,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.28)',
+            border: '1px solid rgba(255,255,255,0.1)',
+            pointerEvents: 'auto',
+          }}
+          onMouseDown={e => e.stopPropagation()}
+        >
+          {/* Excerpt label */}
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.45)', marginBottom: 6, lineHeight: 1.4 }}>
+            On: <em style={{ color: 'rgba(255,255,255,0.65)' }}>"{excerpt}"</em>
+          </div>
+          {/* Comment input */}
+          <textarea
+            ref={textareaRef}
+            value={comment}
+            onChange={e => setComment(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(); if (e.key === 'Escape') setOpen(false); }}
+            placeholder="Add a note for the agents…"
+            rows={3}
+            style={{
+              width: '100%', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.12)',
+              borderRadius: 6, color: 'white', fontSize: 11.5, padding: '6px 8px',
+              resize: 'none', outline: 'none', fontFamily: 'inherit', lineHeight: 1.5,
+              boxSizing: 'border-box',
+            }}
+          />
+          {/* Actions */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 6 }}>
+            <button onClick={() => setOpen(false)} style={{ background: 'transparent', border: 'none', color: 'rgba(255,255,255,0.4)', fontSize: 11, cursor: 'pointer', padding: '3px 6px' }}>
+              Cancel
+            </button>
+            <button
+              onClick={submit}
+              disabled={!comment.trim()}
+              style={{
+                background: comment.trim() ? '#4A9E96' : 'rgba(74,158,150,0.3)',
+                border: 'none', color: 'white', fontSize: 11, fontWeight: 600,
+                padding: '4px 10px', borderRadius: 5, cursor: comment.trim() ? 'pointer' : 'default',
+                transition: 'background 0.15s',
+              }}
+            >
+              Send ⌘↵
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ─── Drawing Overlay (for HTML iframe annotation) ────────────────────────────
+// A transparent canvas rendered over the iframe so user can circle/draw.
+// Toggled by the "Draw" toolbar button in ForumBlackboard.
+
+interface DrawPoint { x: number; y: number; }
+interface Stroke { points: DrawPoint[]; color: string; width: number; }
+
+function DrawingOverlay({
+  active,
+  forumId,
+  onClose,
+}: {
+  active: boolean;
+  forumId: string;
+  onClose: () => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [strokes, setStrokes] = useState<Stroke[]>([]);
+  const [current, setCurrent] = useState<DrawPoint[]>([]);
+  const [drawing, setDrawing] = useState(false);
+  const [note, setNote] = useState("");
+  const [tool, setTool] = useState<"pen" | "circle" | "erase">("pen");
+  const [color, setColor] = useState("#EF4444");
+  const addForumMessage = useForumStore(s => s.addForumMessage);
+
+  // Redraw whenever strokes change
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (const stroke of strokes) {
+      if (stroke.points.length < 2) continue;
+      ctx.beginPath();
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = stroke.width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+      for (const pt of stroke.points.slice(1)) ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
+    }
+    // Draw current stroke in progress
+    if (current.length > 1) {
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = tool === "erase" ? 20 : 3;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.moveTo(current[0].x, current[0].y);
+      for (const pt of current.slice(1)) ctx.lineTo(pt.x, pt.y);
+      ctx.stroke();
+    }
+  }, [strokes, current, color, tool]);
+
+  const getPos = (e: React.MouseEvent<HTMLCanvasElement>): DrawPoint => {
+    const rect = canvasRef.current!.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  };
+
+  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    setDrawing(true);
+    setCurrent([getPos(e)]);
+  };
+
+  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!drawing) return;
+    setCurrent(prev => [...prev, getPos(e)]);
+  };
+
+  const onMouseUp = () => {
+    if (!drawing) return;
+    setDrawing(false);
+    if (current.length > 1) {
+      if (tool === "erase") {
+        // Simple erase: remove strokes whose points are near current path
+        const erasePoints = current;
+        setStrokes(prev => prev.filter(s => !s.points.some(p =>
+          erasePoints.some(ep => Math.hypot(ep.x - p.x, ep.y - p.y) < 15)
+        )));
+      } else {
+        setStrokes(prev => [...prev, { points: current, color, width: 3 }]);
+      }
+    }
+    setCurrent([]);
+  };
+
+  const submit = async () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    try {
+      // 1. Capture the full WKWebView as PNG via Tauri
+      const { invoke } = await import("@tauri-apps/api/core");
+      const fullScreenDataUrl: string = await invoke("capture_viewport");
+
+      // 2. Get the canvas element's screen bounds (= the iframe area we're overlaying)
+      const rect = canvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+
+      // 3. Create composite canvas: crop screenshot to iframe area, then draw strokes on top
+      const composite = document.createElement("canvas");
+      composite.width = Math.round(rect.width * dpr);
+      composite.height = Math.round(rect.height * dpr);
+      const ctx = composite.getContext("2d")!;
+
+      // Draw cropped viewport screenshot as background
+      await new Promise<void>(resolve => {
+        const img = new Image();
+        img.onload = () => {
+          ctx.drawImage(
+            img,
+            Math.round(rect.left * dpr),   // source x
+            Math.round(rect.top * dpr),    // source y
+            composite.width,               // source w
+            composite.height,              // source h
+            0, 0,                          // dest x, y
+            composite.width,               // dest w
+            composite.height               // dest h
+          );
+          resolve();
+        };
+        img.onerror = () => resolve(); // graceful fallback
+        img.src = fullScreenDataUrl;
+      });
+
+      // Draw the annotation strokes on top (already at CSS pixel coords, scale up for dpr)
+      ctx.save();
+      ctx.scale(dpr, dpr);
+      for (const stroke of strokes) {
+        if (stroke.points.length < 2) continue;
+        ctx.beginPath();
+        ctx.strokeStyle = stroke.color;
+        ctx.lineWidth = stroke.width;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+        for (const pt of stroke.points.slice(1)) ctx.lineTo(pt.x, pt.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      const compositeDataUrl = composite.toDataURL("image/png");
+      const text = `🖊️ **Markup on the visual deliverable:**\n\n${note.trim() || "(See annotated screenshot above)"}`;
+      addForumMessage(forumId, {
+        kind: "chat",
+        sender: "user",
+        text,
+        attachments: [{ name: "markup.png", dataUrl: compositeDataUrl, mimeType: "image/png" }],
+      });
+    } catch (err) {
+      // Fallback: send just the drawing canvas if screenshot fails
+      const fallbackCtx = document.createElement("canvas");
+      fallbackCtx.width = canvas.width;
+      fallbackCtx.height = canvas.height;
+      const fCtx = fallbackCtx.getContext("2d")!;
+      fCtx.fillStyle = "#faf9f6";
+      fCtx.fillRect(0, 0, fallbackCtx.width, fallbackCtx.height);
+      fCtx.drawImage(canvas, 0, 0);
+      const dataUrl = fallbackCtx.toDataURL("image/png");
+      addForumMessage(forumId, {
+        kind: "chat",
+        sender: "user",
+        text: `🖊️ **Markup on the visual deliverable:**\n\n${note.trim() || "(See annotated screenshot)"}`,
+        attachments: [{ name: "markup.png", dataUrl, mimeType: "image/png" }],
+      });
+    }
+
+    setStrokes([]);
+    setNote("");
+    onClose();
+  };
+
+  if (!active) return null;
+
+  return (
+    <div style={{ position: "absolute", inset: 0, zIndex: 10, display: "flex", flexDirection: "column" }}>
+      {/* Canvas fills the iframe area */}
+      <canvas
+        ref={canvasRef}
+        width={canvasRef.current?.parentElement?.clientWidth ?? 800}
+        height={canvasRef.current?.parentElement?.clientHeight ? (canvasRef.current.parentElement.clientHeight - 52) : 500}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={onMouseUp}
+        onMouseLeave={onMouseUp}
+        style={{
+          flex: 1,
+          cursor: tool === "erase" ? "cell" : "crosshair",
+          touchAction: "none",
+          background: "rgba(0,0,0,0.04)",
+        }}
+      />
+
+      {/* Toolbar at bottom */}
+      <div style={{
+        height: 52, flexShrink: 0,
+        background: "#1A1A1A",
+        display: "flex", alignItems: "center", gap: 8, padding: "0 12px",
+        borderTop: "1px solid rgba(255,255,255,0.08)",
+      }}>
+        {/* Tool toggles */}
+        {(["pen", "circle", "erase"] as const).map(t => (
+          <button
+            key={t}
+            onClick={() => setTool(t)}
+            title={t === "pen" ? "Freehand" : t === "circle" ? "Highlight" : "Eraser"}
+            style={{
+              background: tool === t ? "rgba(74,158,150,0.3)" : "transparent",
+              border: tool === t ? "1px solid #4A9E96" : "1px solid rgba(255,255,255,0.15)",
+              color: "white", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11,
+            }}
+          >
+            {t === "pen" ? "✏️ Pen" : t === "circle" ? "⭕ Highlight" : "⬜ Erase"}
+          </button>
+        ))}
+
+        {/* Color swatches */}
+        {["#EF4444", "#F59E0B", "#4A9E96", "#818CF8"].map(c => (
+          <button
+            key={c}
+            onClick={() => setColor(c)}
+            style={{
+              width: 18, height: 18, borderRadius: "50%", background: c,
+              border: color === c ? "2px solid white" : "2px solid transparent",
+              cursor: "pointer", flexShrink: 0,
+            }}
+          />
+        ))}
+
+        {/* Undo */}
+        <button
+          onClick={() => setStrokes(prev => prev.slice(0, -1))}
+          disabled={strokes.length === 0}
+          style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.15)", color: "rgba(255,255,255,0.6)", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11 }}
+        >
+          ↩ Undo
+        </button>
+
+        {/* Note input */}
+        <input
+          value={note}
+          onChange={e => setNote(e.target.value)}
+          onKeyDown={e => { if (e.key === "Enter") submit(); }}
+          placeholder="Add a note for agents…"
+          style={{
+            flex: 1, background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)",
+            borderRadius: 6, color: "white", fontSize: 11.5, padding: "5px 8px", outline: "none", fontFamily: "inherit",
+          }}
+        />
+
+        {/* Send */}
+        <button
+          onClick={submit}
+          style={{
+            background: "#4A9E96", border: "none", color: "white", fontWeight: 600,
+            fontSize: 11, padding: "5px 12px", borderRadius: 6, cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          Send to agents
+        </button>
+
+        {/* Close */}
+        <button
+          onClick={onClose}
+          style={{ background: "transparent", border: "none", color: "rgba(255,255,255,0.4)", cursor: "pointer", padding: "4px 6px", fontSize: 13 }}
+        >
+          ✕
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Connect Folder Modal ─────────────────────────────────────────────────────
+
+function ConnectFolderModal({
+  forum,
+  onConnect,
+  onClose,
+}: {
+  forum: { id: string; title: string };
+  onConnect: (path: string, type: "local" | "googledrive", name: string) => void;
+  onClose: () => void;
+}) {
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const pickLocal = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const result: { path: string; name: string } | null = await invoke("connect_forum_folder", {
+        forumId: forum.id,
+        forumTitle: forum.title,
+        folderType: "local",
+        folderPath: null,   // null → Tauri opens the system file picker
+      });
+      if (result) {
+        onConnect(result.path, "local", result.name);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const pickDrive = async () => {
+    setConnecting(true);
+    setError(null);
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      // Starts Google OAuth for Drive; returns folder ID + display name once user picks
+      const result: { path: string; name: string } | null = await invoke("connect_forum_folder", {
+        forumId: forum.id,
+        forumTitle: forum.title,
+        folderType: "googledrive",
+        folderPath: null,
+      });
+      if (result) {
+        onConnect(result.path, "googledrive", result.name);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 3000,
+      background: "rgba(0,0,0,0.45)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background: "var(--bg-main, #faf9f6)", borderRadius: 14,
+        padding: "28px 32px", width: 420, maxWidth: "90vw",
+        boxShadow: "0 24px 60px rgba(0,0,0,0.18)",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main, #303330)", marginBottom: 4 }}>
+              Connect to Project Folder
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub, #636E72)", lineHeight: 1.5 }}>
+              Forum outputs will sync here. The folder also becomes a shared context source — any files you drop in are available to your agents.
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-sub, #636E72)", opacity: 0.4, padding: 4, marginLeft: 12, flexShrink: 0 }}>
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        {/* Options */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+          <button
+            onClick={pickLocal}
+            disabled={connecting}
+            style={{
+              display: "flex", alignItems: "center", gap: 14,
+              padding: "14px 16px", borderRadius: 10,
+              border: "1.5px solid var(--border-subtle, rgba(0,0,0,0.1))",
+              background: "var(--bg-card, #fff)", cursor: connecting ? "default" : "pointer",
+              opacity: connecting ? 0.6 : 1, textAlign: "left",
+            }}
+          >
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={1.8} strokeLinecap="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main, #303330)" }}>Local Folder</div>
+              <div style={{ fontSize: 11, color: "var(--text-sub, #636E72)", marginTop: 2 }}>Pick a folder on this Mac. Works offline, no account needed.</div>
+            </div>
+          </button>
+
+          <button
+            onClick={pickDrive}
+            disabled={connecting}
+            style={{
+              display: "flex", alignItems: "center", gap: 14,
+              padding: "14px 16px", borderRadius: 10,
+              border: "1.5px solid var(--border-subtle, rgba(0,0,0,0.1))",
+              background: "var(--bg-card, #fff)", cursor: connecting ? "default" : "pointer",
+              opacity: connecting ? 0.6 : 1, textAlign: "left",
+            }}
+          >
+            <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={1.8} strokeLinecap="round">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+            </svg>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main, #303330)" }}>Google Drive</div>
+              <div style={{ fontSize: 11, color: "var(--text-sub, #636E72)", marginTop: 2 }}>Sync to a Drive folder. Access files from any device.</div>
+            </div>
+          </button>
+        </div>
+
+        {/* What syncs explainer */}
+        <div style={{
+          background: "rgba(74,158,150,0.05)", borderRadius: 8,
+          border: "1px solid rgba(74,158,150,0.12)", padding: "10px 14px",
+          fontSize: 11, color: "var(--text-sub, #636E72)", lineHeight: 1.6,
+        }}>
+          <strong style={{ color: "var(--text-main, #303330)" }}>What syncs:</strong>{" "}
+          The shared scratchpad syncs automatically. Named files (research, strategy, deliverables) show sync indicators — click any dot to push that file, or "Sync all" to push all pending files. History snapshots are stored in <code style={{ fontSize: 10 }}>.canopy/history/</code> for rollback.
+        </div>
+
+        {error && (
+          <div style={{ marginTop: 12, fontSize: 11, color: "#EF4444", background: "rgba(239,68,68,0.06)", borderRadius: 6, padding: "6px 10px" }}>
+            {error}
+          </div>
+        )}
+
+        {connecting && (
+          <div style={{ marginTop: 14, fontSize: 11, color: "var(--text-sub, #636E72)", textAlign: "center", opacity: 0.6 }}>
+            Connecting…
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -146,26 +676,390 @@ function CanvasAnnotationOverlay({ annotation }: { annotation: AnnotationState }
 // Vertical scrollable list of project steps — shows actual agent-defined labels
 // and auto-scrolls to keep the active step in view.
 
-function MilestoneList({ milestones, forumStatus }: { milestones: Milestone[]; forumStatus: string }) {
+// ─── Artifact type icon ───────────────────────────────────────────────────────
+
+function ArtifactIcon({ type }: { type: string }) {
+  if (type === "html") return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeWidth={2} strokeLinecap="round">
+      <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+    </svg>
+  );
+  if (type === "data") return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2} strokeLinecap="round">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/>
+    </svg>
+  );
+  if (type === "image" || type === "diagram") return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#EC4899" strokeWidth={2} strokeLinecap="round">
+      <rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>
+    </svg>
+  );
+  // markdown / default
+  return (
+    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2} strokeLinecap="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+    </svg>
+  );
+}
+
+// ─── Project File Tree ────────────────────────────────────────────────────────
+
+// ─── Sync state dot ──────────────────────────────────────────────────────────
+
+type SyncState = import("../../store/forumStore").ArtifactSyncState;
+
+function SyncDot({
+  state,
+  lastSyncedAt,
+  isConnected,
+  onSync,
+  size = 8,
+}: {
+  state?: SyncState;
+  lastSyncedAt?: number;
+  isConnected: boolean;
+  onSync?: () => void;
+  size?: number;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  if (!isConnected) return null; // no dot if no folder connected
+
+  const effectiveState: SyncState = state ?? "unsynced";
+
+  const config: Record<SyncState, { color: string; label: string; pulse: boolean }> = {
+    auto:     { color: "#4A9E96", label: "Auto-synced",         pulse: true  },
+    synced:   { color: "#4A9E96", label: "Synced",              pulse: false },
+    stale:    { color: "#F59E0B", label: "Synced, then changed",pulse: false },
+    unsynced: { color: "#CBD5E1", label: "Not yet synced",       pulse: false },
+    syncing:  { color: "#818CF8", label: "Syncing…",            pulse: true  },
+  };
+
+  const { color, label, pulse } = config[effectiveState];
+
+  const timeAgo = lastSyncedAt
+    ? (() => {
+        const s = Math.floor((Date.now() - lastSyncedAt) / 1000);
+        if (s < 60) return `${s}s ago`;
+        if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+        return `${Math.floor(s / 3600)}h ago`;
+      })()
+    : null;
+
+  const tooltip = timeAgo
+    ? `${label} · ${timeAgo}`
+    : label;
+
+  const canSync = (effectiveState === "unsynced" || effectiveState === "stale") && !!onSync;
+
+  const handleClick = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!canSync || syncing) return;
+    setSyncing(true);
+    await onSync?.();
+    setSyncing(false);
+  };
+
+  return (
+    <div
+      style={{ position: "relative", flexShrink: 0, display: "flex", alignItems: "center" }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <div
+        onClick={handleClick}
+        title={tooltip}
+        style={{
+          width: size, height: size, borderRadius: "50%",
+          background: syncing ? "#818CF8" : color,
+          cursor: canSync ? "pointer" : "default",
+          flexShrink: 0,
+          animation: (pulse || syncing) ? "milestone-pulse 1.4s ease-in-out infinite" : "none",
+          transition: "background 0.2s",
+          border: effectiveState === "unsynced" ? "1.5px solid #CBD5E1" : "none",
+          boxSizing: "border-box",
+        }}
+      />
+      {/* Tooltip */}
+      {hovered && (
+        <div style={{
+          position: "absolute", right: size + 6, top: "50%", transform: "translateY(-50%)",
+          background: "#1A1A1A", color: "white", fontSize: 10, fontWeight: 500,
+          padding: "3px 7px", borderRadius: 5, whiteSpace: "nowrap",
+          pointerEvents: "none", zIndex: 100,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+        }}>
+          {canSync ? `Click to sync · ${tooltip}` : tooltip}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Project File Tree ────────────────────────────────────────────────────────
+
+function ProjectFileTree({
+  artifacts,
+  scratchpadContent,
+  scratchpadSyncState,
+  scratchpadLastSyncedAt,
+  isConnected,
+  selectedArtifactId,
+  onSelectArtifact,
+  onSyncArtifact,
+  onSyncScratchpad,
+}: {
+  artifacts: import("../../store/forumStore").ForumArtifact[];
+  scratchpadContent: string;
+  scratchpadSyncState?: SyncState;
+  scratchpadLastSyncedAt?: number;
+  isConnected: boolean;
+  selectedArtifactId: string | null;
+  onSelectArtifact: (id: string | null) => void;
+  onSyncArtifact?: (artifactId: string) => Promise<void>;
+  onSyncScratchpad?: () => Promise<void>;
+}) {
+  // Track which folders are open; default all open
+  const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
+  const scratchpadSelected = selectedArtifactId === "__scratchpad__";
+
+  // Group artifacts by folder
+  const folders = React.useMemo(() => {
+    const map = new Map<string, import("../../store/forumStore").ForumArtifact[]>();
+    for (const a of artifacts) {
+      const key = a.folder || "General";
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(a);
+    }
+    // Sort: Deliverables last, others alphabetical
+    return Array.from(map.entries()).sort(([a], [b]) => {
+      if (a === "Deliverables") return 1;
+      if (b === "Deliverables") return -1;
+      return a.localeCompare(b);
+    });
+  }, [artifacts]);
+
+  const isFolderOpen = (name: string) => openFolders[name] !== false; // default open
+
+  const toggleFolder = (name: string) => {
+    setOpenFolders(prev => ({ ...prev, [name]: !isFolderOpen(name) }));
+  };
+
+  const isEmpty = artifacts.length === 0 && !scratchpadContent;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", minHeight: 0 }}>
+      {/* Section header */}
+      <div style={{
+        padding: "8px 14px 6px",
+        borderTop: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
+        borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
+        display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
+        background: "rgba(0,0,0,0.015)",
+      }}>
+        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2.5} strokeLinecap="round">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+        <span style={{
+          fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+          color: "var(--text-sub, #636E72)", flex: 1,
+        }}>
+          Project Files
+        </span>
+        {/* Sync all stale/unsynced files */}
+        {isConnected && artifacts.some(a => a.syncState === "stale" || a.syncState === "unsynced") && (
+          <button
+            onClick={async () => {
+              for (const a of artifacts) {
+                if (a.syncState === "stale" || a.syncState === "unsynced") {
+                  await onSyncArtifact?.(a.id);
+                }
+              }
+            }}
+            title="Sync all pending files"
+            style={{
+              background: "rgba(74,158,150,0.12)", border: "1px solid rgba(74,158,150,0.25)",
+              color: "#4A9E96", borderRadius: 5, padding: "2px 7px",
+              fontSize: 9.5, fontWeight: 600, cursor: "pointer", letterSpacing: "0.03em",
+            }}
+          >
+            Sync all
+          </button>
+        )}
+      </div>
+
+      {/* File list */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "4px 0" }}>
+
+        {/* Scratchpad — always shown at top if any content */}
+        {(scratchpadContent || true) && (
+          <button
+            onClick={() => onSelectArtifact(scratchpadSelected ? null : "__scratchpad__")}
+            style={{
+              display: "flex", alignItems: "center", gap: 8,
+              width: "100%", padding: "5px 14px", border: "none", cursor: "pointer",
+              background: scratchpadSelected ? "rgba(74,158,150,0.10)" : "transparent",
+              borderLeft: scratchpadSelected ? "2px solid #4A9E96" : "2px solid transparent",
+              textAlign: "left",
+            }}
+          >
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth={2} strokeLinecap="round">
+              <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 500, color: "var(--text-main, #303330)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                shared-scratchpad.md
+              </div>
+              <div style={{ fontSize: 9, color: "var(--text-sub, #636E72)", opacity: 0.6 }}>
+                All agents · auto-sync
+              </div>
+            </div>
+            {!scratchpadContent && (
+              <div style={{ fontSize: 9, color: "var(--text-sub, #636E72)", opacity: 0.4, fontStyle: "italic" }}>empty</div>
+            )}
+            <SyncDot
+              state={scratchpadSyncState ?? "auto"}
+              lastSyncedAt={scratchpadLastSyncedAt}
+              isConnected={isConnected}
+              onSync={onSyncScratchpad}
+            />
+          </button>
+        )}
+
+        {isEmpty && (
+          <div style={{ padding: "16px 14px", fontSize: 11, color: "var(--text-sub, #636E72)", opacity: 0.45, fontStyle: "italic", lineHeight: 1.5 }}>
+            Agents will save files here as they work…
+          </div>
+        )}
+
+        {/* Folder accordions */}
+        {folders.map(([folderName, items]) => (
+          <div key={folderName}>
+            {/* Folder row */}
+            <button
+              onClick={() => toggleFolder(folderName)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                width: "100%", padding: "4px 14px", border: "none", cursor: "pointer",
+                background: "transparent", textAlign: "left",
+              }}
+            >
+              <svg
+                width={9} height={9} viewBox="0 0 24 24" fill="none"
+                stroke="var(--text-sub, #636E72)" strokeWidth={2.5} strokeLinecap="round"
+                style={{
+                  transform: isFolderOpen(folderName) ? "rotate(90deg)" : "rotate(0deg)",
+                  transition: "transform 0.15s ease", flexShrink: 0,
+                }}
+              >
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+              <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2} strokeLinecap="round" style={{ flexShrink: 0 }}>
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              </svg>
+              <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--text-sub, #636E72)", letterSpacing: "0.01em", flex: 1 }}>
+                {folderName}
+              </span>
+              <span style={{ fontSize: 9, color: "var(--text-sub, #636E72)", opacity: 0.5 }}>{items.length}</span>
+            </button>
+
+            {/* Files in folder */}
+            {isFolderOpen(folderName) && items.map(artifact => {
+              const isSelected = selectedArtifactId === artifact.id;
+              const displayName = artifact.filename || artifact.title;
+              const isDeliverable = artifact.isDeliverable;
+              return (
+                <button
+                  key={artifact.id}
+                  onClick={() => onSelectArtifact(isSelected ? null : artifact.id)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    width: "100%", padding: "5px 14px 5px 28px",
+                    border: "none", cursor: "pointer",
+                    background: isSelected ? "rgba(74,158,150,0.10)" : "transparent",
+                    borderLeft: isSelected ? "2px solid #4A9E96" : "2px solid transparent",
+                    textAlign: "left",
+                  }}
+                >
+                  <ArtifactIcon type={artifact.type} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{
+                      fontSize: 11, fontWeight: isDeliverable ? 600 : 400,
+                      color: isDeliverable ? "var(--text-main, #303330)" : "var(--text-sub, #636E72)",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>
+                      {displayName}
+                      {isDeliverable && (
+                        <span style={{ marginLeft: 4, fontSize: 8, background: "#4A9E96", color: "#fff", borderRadius: 3, padding: "1px 4px", fontWeight: 700, letterSpacing: "0.04em" }}>
+                          FINAL
+                        </span>
+                      )}
+                    </div>
+                    {artifact.agentName && (
+                      <div style={{ fontSize: 9, color: "var(--text-sub, #636E72)", opacity: 0.55, marginTop: 1 }}>
+                        {artifact.agentName}
+                      </div>
+                    )}
+                  </div>
+                  <SyncDot
+                    state={artifact.syncState}
+                    lastSyncedAt={artifact.lastSyncedAt}
+                    isConnected={isConnected}
+                    onSync={onSyncArtifact ? () => onSyncArtifact(artifact.id) : undefined}
+                  />
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Progress & Files panel ───────────────────────────────────────────────────
+
+function ProgressAndFiles({
+  milestones,
+  forumStatus,
+  artifacts,
+  scratchpadContent,
+  scratchpadSyncState,
+  scratchpadLastSyncedAt,
+  isConnected,
+  selectedArtifactId,
+  onSelectArtifact,
+  onSyncArtifact,
+  onSyncScratchpad,
+}: {
+  milestones: Milestone[];
+  forumStatus: string;
+  artifacts: import("../../store/forumStore").ForumArtifact[];
+  scratchpadContent: string;
+  scratchpadSyncState?: SyncState;
+  scratchpadLastSyncedAt?: number;
+  isConnected: boolean;
+  selectedArtifactId: string | null;
+  onSelectArtifact: (id: string | null) => void;
+  onSyncArtifact?: (artifactId: string) => Promise<void>;
+  onSyncScratchpad?: () => Promise<void>;
+}) {
   const listRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
+  const [stepsCollapsed, setStepsCollapsed] = useState(false);
 
-  // Auto-scroll active item into the center of the list
   useEffect(() => {
     if (activeRef.current && listRef.current) {
       const container = listRef.current;
       const el = activeRef.current;
-      const containerTop = container.scrollTop;
       const containerH = container.clientHeight;
       const elTop = el.offsetTop;
       const elH = el.clientHeight;
-      // Scroll so the active item is roughly vertically centered
-      const target = elTop - containerH / 2 + elH / 2;
-      container.scrollTo({ top: target, behavior: "smooth" });
+      container.scrollTo({ top: elTop - containerH / 2 + elH / 2, behavior: "smooth" });
     }
   }, [milestones]);
 
-  // Always show "Brief" as a completed first step
   const allSteps: { label: string; status: "done" | "active" | "pending"; id: string }[] = [
     { id: "__brief__", label: "Brief & scope defined", status: "done" },
     ...milestones.map(m => ({ id: m.id, label: m.label, status: m.status as "done" | "active" | "pending" })),
@@ -182,142 +1076,121 @@ function MilestoneList({ milestones, forumStatus }: { milestones: Milestone[]; f
       overflow: "hidden", flexShrink: 0,
       width: 240,
     }}>
-      {/* Section header */}
-      <div style={{
-        padding: "10px 14px 8px",
-        borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
-        display: "flex", alignItems: "center", gap: 6, flexShrink: 0,
-      }}>
-        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2.5} strokeLinecap="round">
-          <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-        </svg>
-        <span style={{
-          fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
-          color: "var(--text-sub, #636E72)",
-        }}>
-          Forum Steps
-        </span>
-        {isRunning && (
-          <div style={{
-            marginLeft: "auto", width: 6, height: 6, borderRadius: "50%",
-            background: "#4A9E96",
-            animation: "milestone-pulse 2s ease-in-out infinite",
-          }} />
-        )}
-      </div>
+      {/* ── Forum Steps section ── */}
+      <div style={{ display: "flex", flexDirection: "column", flexShrink: 0 }}>
+        {/* Header */}
+        <button
+          onClick={() => setStepsCollapsed(c => !c)}
+          style={{
+            padding: "10px 14px 8px", background: "transparent", border: "none", cursor: "pointer",
+            borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.06))",
+            display: "flex", alignItems: "center", gap: 6, width: "100%", textAlign: "left",
+          }}
+        >
+          <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2.5} strokeLinecap="round">
+            <polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+          </svg>
+          <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-sub, #636E72)", flex: 1 }}>
+            Forum Steps
+          </span>
+          {isRunning && !stepsCollapsed && (
+            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4A9E96", animation: "milestone-pulse 2s ease-in-out infinite" }} />
+          )}
+          <svg width={8} height={8} viewBox="0 0 24 24" fill="none" stroke="var(--text-sub,#636E72)" strokeWidth={2.5} strokeLinecap="round" style={{ transform: stepsCollapsed ? "rotate(-90deg)" : "rotate(0deg)", transition: "transform 0.15s ease" }}>
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
 
-      {/* Scrollable list */}
-      <div
-        ref={listRef}
-        style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}
-      >
-        {allSteps.length === 1 && forumStatus !== "active" ? (
-          <div style={{
-            padding: "20px 14px", fontSize: 11, color: "var(--text-sub, #636E72)",
-            opacity: 0.5, fontStyle: "italic", lineHeight: 1.5,
-          }}>
-            Steps will appear as the team builds the work plan…
-          </div>
-        ) : (
-          allSteps.map((step, i) => {
-            const isDone = step.status === "done";
-            const isActive = step.status === "active";
-            const isPending = step.status === "pending";
-            const isNext = i === nextIdx && !isActive;
-
-            return (
-              <div
-                key={step.id}
-                ref={isActive ? activeRef : undefined}
-                style={{
-                  display: "flex", alignItems: "flex-start", gap: 10,
-                  padding: "7px 14px",
-                  background: isActive ? "rgba(74,158,150,0.07)" : "transparent",
-                  transition: "background 0.3s ease",
-                  position: "relative",
-                }}
-              >
-                {/* Vertical line connector */}
-                {i < allSteps.length - 1 && (
-                  <div style={{
-                    position: "absolute", left: 20, top: 22, bottom: -7,
-                    width: 1.5,
-                    background: isDone ? "#4A9E96" : "rgba(0,0,0,0.08)",
-                    transition: "background 0.4s ease",
-                  }} />
-                )}
-
-                {/* Status icon */}
-                <div style={{
-                  width: 18, height: 18, borderRadius: "50%", flexShrink: 0, marginTop: 1,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  background: isDone
-                    ? "#4A9E96"
-                    : isActive
-                      ? "rgba(74,158,150,0.15)"
-                      : "rgba(0,0,0,0.04)",
-                  border: isDone
-                    ? "2px solid #4A9E96"
-                    : isActive
-                      ? "2px solid #4A9E96"
-                      : "2px solid rgba(0,0,0,0.1)",
-                  boxShadow: isActive
-                    ? "0 0 0 3px rgba(74,158,150,0.15), 0 0 10px rgba(74,158,150,0.25)"
-                    : "none",
-                  animation: isActive ? "milestone-pulse 2s ease-in-out infinite" : "none",
-                  transition: "all 0.4s ease",
-                }}>
-                  {isDone ? (
-                    <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={3} strokeLinecap="round">
-                      <polyline points="20 6 9 17 4 12"/>
-                    </svg>
-                  ) : isActive ? (
-                    <div style={{
-                      width: 6, height: 6, borderRadius: "50%",
-                      background: "#4A9E96",
-                      animation: "milestone-pulse 1.4s ease-in-out infinite",
-                    }} />
-                  ) : (
-                    <div style={{
-                      width: 5, height: 5, borderRadius: "50%",
-                      background: isNext ? "rgba(74,158,150,0.4)" : "rgba(0,0,0,0.15)",
-                    }} />
-                  )}
-                </div>
-
-                {/* Label */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: 11.5, lineHeight: 1.4,
-                    fontWeight: isActive ? 600 : isDone ? 400 : 400,
-                    color: isActive
-                      ? "#3c6663"
-                      : isDone
-                        ? "var(--text-sub, #636E72)"
-                        : isPending
-                          ? "var(--text-sub, #636E72)"
-                          : "var(--text-main, #303330)",
-                    opacity: isPending ? 0.45 : isDone ? 0.65 : 1,
-                    transition: "all 0.3s ease",
-                  }}>
-                    {step.label}
-                  </div>
-                  {isActive && (
-                    <div style={{
-                      fontSize: 9, color: "#4A9E96", marginTop: 2,
-                      fontWeight: 500, letterSpacing: "0.02em",
-                      display: "flex", alignItems: "center", gap: 4,
-                    }}>
-                      <span style={{ animation: "milestone-pulse 1.2s ease-in-out infinite" }}>●</span>
-                      In progress
-                    </div>
-                  )}
-                </div>
+        {/* Steps list */}
+        {!stepsCollapsed && (
+          <div ref={listRef} style={{ overflowY: "auto", padding: "8px 0", maxHeight: 280 }}>
+            {allSteps.length === 1 && forumStatus !== "active" ? (
+              <div style={{ padding: "16px 14px", fontSize: 11, color: "var(--text-sub, #636E72)", opacity: 0.5, fontStyle: "italic", lineHeight: 1.5 }}>
+                Steps will appear as the team builds the work plan…
               </div>
-            );
-          })
+            ) : (
+              allSteps.map((step, i) => {
+                const isDone = step.status === "done";
+                const isActive = step.status === "active";
+                const isPending = step.status === "pending";
+                const isNext = i === nextIdx && !isActive;
+
+                return (
+                  <div
+                    key={step.id}
+                    ref={isActive ? activeRef : undefined}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: 10,
+                      padding: "7px 14px",
+                      background: isActive ? "rgba(74,158,150,0.07)" : "transparent",
+                      transition: "background 0.3s ease",
+                      position: "relative",
+                    }}
+                  >
+                    {i < allSteps.length - 1 && (
+                      <div style={{
+                        position: "absolute", left: 20, top: 22, bottom: -7,
+                        width: 1.5,
+                        background: isDone ? "#4A9E96" : "rgba(0,0,0,0.08)",
+                        transition: "background 0.4s ease",
+                      }} />
+                    )}
+                    <div style={{
+                      width: 18, height: 18, borderRadius: "50%", flexShrink: 0, marginTop: 1,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      background: isDone ? "#4A9E96" : isActive ? "rgba(74,158,150,0.15)" : "rgba(0,0,0,0.04)",
+                      border: isDone ? "2px solid #4A9E96" : isActive ? "2px solid #4A9E96" : "2px solid rgba(0,0,0,0.1)",
+                      boxShadow: isActive ? "0 0 0 3px rgba(74,158,150,0.15), 0 0 10px rgba(74,158,150,0.25)" : "none",
+                      animation: isActive ? "milestone-pulse 2s ease-in-out infinite" : "none",
+                      transition: "all 0.4s ease",
+                    }}>
+                      {isDone ? (
+                        <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth={3} strokeLinecap="round">
+                          <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                      ) : isActive ? (
+                        <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4A9E96", animation: "milestone-pulse 1.4s ease-in-out infinite" }} />
+                      ) : (
+                        <div style={{ width: 5, height: 5, borderRadius: "50%", background: isNext ? "rgba(74,158,150,0.4)" : "rgba(0,0,0,0.15)" }} />
+                      )}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 11.5, lineHeight: 1.4,
+                        fontWeight: isActive ? 600 : 400,
+                        color: isActive ? "#3c6663" : isDone ? "var(--text-sub, #636E72)" : "var(--text-main, #303330)",
+                        opacity: isPending ? 0.45 : isDone ? 0.65 : 1,
+                        transition: "all 0.3s ease",
+                      }}>
+                        {step.label}
+                      </div>
+                      {isActive && (
+                        <div style={{ fontSize: 9, color: "#4A9E96", marginTop: 2, fontWeight: 500, letterSpacing: "0.02em", display: "flex", alignItems: "center", gap: 4 }}>
+                          <span style={{ animation: "milestone-pulse 1.2s ease-in-out infinite" }}>●</span>
+                          In progress
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         )}
       </div>
+
+      {/* ── Project Files section ── */}
+      <ProjectFileTree
+        artifacts={artifacts}
+        scratchpadContent={scratchpadContent}
+        scratchpadSyncState={scratchpadSyncState}
+        scratchpadLastSyncedAt={scratchpadLastSyncedAt}
+        isConnected={isConnected}
+        selectedArtifactId={selectedArtifactId}
+        onSelectArtifact={onSelectArtifact}
+        onSyncArtifact={onSyncArtifact}
+        onSyncScratchpad={onSyncScratchpad}
+      />
     </div>
   );
 }
@@ -463,7 +1336,35 @@ function AgentCard({ agent, forumStatus, onRemove }: {
   );
 }
 
-function AgentStatusBar({ forum }: { forum: ReturnType<typeof useForumStore.getState>["forums"][0] }) {
+function AgentStatusBar({ forum }: { forum: Forum }) {
+  const [realForumCost, setRealForumCost] = React.useState<string>("0.000");
+
+  React.useEffect(() => {
+    let isMounted = true;
+    const fetchCost = async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        // Pass conversationId = forum.id to filter token history
+        const records = await invoke<any[]>("get_token_usage_history", { 
+          agentId: null, 
+          conversationId: forum.id, 
+          days: 365 
+        });
+        
+        let cost = 0;
+        for (const r of records) {
+          cost += r.cost_usd || 0;
+        }
+        if (isMounted) setRealForumCost(cost.toFixed(3));
+      } catch (e) {
+        console.error("Failed to fetch real forum token cost", e);
+      }
+    };
+    
+    // Fetch initially and then whenever new messages are added
+    fetchCost();
+  }, [forum.id, forum.messages.length]);
+
   const removeAgentFromForum = useForumStore(s => s.removeAgentFromForum);
   return (
     <div style={{
@@ -472,11 +1373,11 @@ function AgentStatusBar({ forum }: { forum: ReturnType<typeof useForumStore.getS
       flexShrink: 0,
     }}>
       <div style={{ display: "flex", gap: 8, maxWidth: 900 }}>
-        {(forum.agents || []).map(agent => (
-          <AgentCard 
-            key={agent.agentId} 
-            agent={agent} 
-            forumStatus={forum.status} 
+        {(forum.agents || []).map((agent: import("../../store/forumStore").ForumAgent) => (
+          <AgentCard
+            key={agent.agentId}
+            agent={agent}
+            forumStatus={forum.status}
             onRemove={() => removeAgentFromForum(forum.id, agent.agentId)}
           />
         ))}
@@ -1206,13 +2107,14 @@ function ForumBlackboard({
   onClearArtifact: () => void;
 }) {
   const updateBlackboard = useForumStore(s => s.updateBlackboard);
-  const [historyIdx, setHistoryIdx] = useState<number | null>(null); // null = live
   const [locked, setLocked] = useState(false);
   const [copied, setCopied] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [isAnnotationMode, setIsAnnotationMode] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const annotation = useCanvasAnnotation(isAnnotationMode);
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
+  const [drawMode, setDrawMode] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wasCompleted = useRef(false);
@@ -1222,7 +2124,9 @@ function ForumBlackboard({
   const blackboardBlock: ForumBlock | null = ((forum as any).blackboardBlock as ForumBlock | null | undefined) ?? null;
 
   // When an artifact is selected, show it instead of the live blackboard
-  const selectedArtifact = selectedArtifactId
+  // "__scratchpad__" is a virtual artifact for the shared agent scratchpad
+  const isScratchpadView = selectedArtifactId === "__scratchpad__";
+  const selectedArtifact = (selectedArtifactId && !isScratchpadView)
     ? (forum.artifacts ?? []).find(a => a.id === selectedArtifactId) ?? null
     : null;
 
@@ -1244,15 +2148,15 @@ function ForumBlackboard({
     setViewMode("rendered");
   }, [isHtmlMode, isGenUIMode, selectedArtifactId]);
 
-  const displayContent = selectedArtifact
-    ? selectedArtifact.content
-    : historyIdx !== null
-      ? forum.blackboardHistory[historyIdx]?.content ?? forum.blackboardContent
+  const displayContent = isScratchpadView
+    ? ((forum as any).scratchpadContent ?? "*(Shared scratchpad is empty — agents will add notes here as they work.)*")
+    : selectedArtifact
+      ? selectedArtifact.content
       : (isHtmlMode || isGenUIMode)
         ? (blackboardBlock?.content ?? "")
         : forum.blackboardContent;
 
-  const isLive = !selectedArtifact && historyIdx === null;
+  const isLive = !selectedArtifact && !isScratchpadView;
   const isComplete = forum.status === "completed";
   const isRendered = viewMode === "rendered";
 
@@ -1350,8 +2254,23 @@ function ForumBlackboard({
     };
   }, [forum.messages]);
 
+  const handleRestoreBlackboard = (content: string) => {
+    updateBlackboard(forum.id, content);
+  };
+
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div style={{ flex: 1, display: "flex", flexDirection: "row", overflow: "hidden" }}>
+      {/* History panel — slides in from the right */}
+      {historyOpen && (
+        <HistoryPanel
+          forum={forum}
+          onRestoreBlackboard={handleRestoreBlackboard}
+          onClose={() => setHistoryOpen(false)}
+        />
+      )}
+
+      {/* Main blackboard column */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
       {/* Blackboard toolbar */}
       <div style={{
         display: "flex", alignItems: "center", gap: 8, padding: "8px 16px",
@@ -1377,7 +2296,7 @@ function ForumBlackboard({
           <div style={{ fontSize: 11, fontWeight: 600, color: "var(--text-sub, #636E72)", opacity: 0.7, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
             {selectedArtifact
               ? selectedArtifact.title
-              : isComplete ? "Your Deliverable" : "The Blackboard"}
+              : isScratchpadView ? "Shared Scratchpad" : isComplete ? "Your Deliverable" : "The Blackboard"}
             {isHtmlMode && isRendered && !selectedArtifact && (
               <span style={{
                 fontSize: 9, fontWeight: 700, padding: "1px 6px", borderRadius: 10,
@@ -1469,37 +2388,33 @@ function ForumBlackboard({
           "Toggle Annotation Mode to select text and comment"
         )}
 
-        {/* Time Machine — hidden when viewing a pinned artifact or HTML/GenUI block */}
-        {!selectedArtifact && !isHtmlMode && !isGenUIMode && forum.blackboardHistory.length > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="var(--text-sub, #636E72)" strokeWidth={2} strokeLinecap="round" style={{ opacity: 0.5 }}>
+        {/* Draw mode — only available when viewing HTML (overlays the iframe) */}
+        {(isHtmlMode || (selectedArtifact?.type === "html")) && toolbarBtn(
+          () => setDrawMode(d => !d), drawMode, "#EC4899",
+          <>
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+            {drawMode ? "Drawing…" : "Draw"}
+          </>,
+          "Draw directly on the visual — circle things, add notes, send to agents"
+        )}
+
+        {/* History button */}
+        {toolbarBtn(
+          () => setHistoryOpen(h => !h), historyOpen, "#4A9E96",
+          <>
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
               <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
             </svg>
-            <input
-              type="range"
-              min={0}
-              max={forum.blackboardHistory.length}
-              value={historyIdx === null ? forum.blackboardHistory.length : historyIdx}
-              onChange={e => {
-                const v = parseInt(e.target.value);
-                setHistoryIdx(v >= forum.blackboardHistory.length ? null : v);
-              }}
-              style={{ width: 70, accentColor: "#4A9E96", cursor: "pointer" }}
-              title="Time Machine — scrub back through edits"
-            />
-            {!isLive && (
-              <button
-                onClick={() => setHistoryIdx(null)}
-                style={{
-                  fontSize: 10, color: "#4A9E96", background: "rgba(74,158,150,0.1)",
-                  border: "1px solid rgba(74,158,150,0.3)", borderRadius: 6,
-                  padding: "2px 7px", cursor: "pointer", fontFamily: "inherit",
-                }}
-              >
-                Live ↑
-              </button>
+            History
+            {forum.blackboardHistory.length > 0 && (
+              <span style={{ fontSize: 9, background: "rgba(74,158,150,0.2)", borderRadius: 10, padding: "0 5px", marginLeft: 2 }}>
+                {forum.blackboardHistory.length}
+              </span>
             )}
-          </div>
+          </>,
+          "View change history and restore any previous version"
         )}
       </div>
 
@@ -1516,20 +2431,54 @@ function ForumBlackboard({
           </div>
         )}
 
+        {/* ── File viewer: selected artifact or scratchpad (full-width markdown / html) ── */}
+        {isRendered && (isScratchpadView || (selectedArtifact && !isHtmlMode && !isGenUIMode)) && (
+          <div style={{ width: "100%", height: "100%", overflowY: "auto", padding: "24px 32px", wordWrap: "break-word", overflowWrap: "break-word" }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={localMdComponents}>
+              {displayContent}
+            </ReactMarkdown>
+          </div>
+        )}
+
+        {/* ── HTML artifact (full-bleed iframe + optional drawing overlay) ── */}
+        {isRendered && selectedArtifact && isHtmlMode && htmlContent && (
+          <div style={{ position: "relative", width: "100%", height: "100%" }}>
+            <iframe
+              key={htmlContent.slice(0, 80)}
+              srcDoc={resolvedHtmlContent}
+              sandbox="allow-scripts allow-same-origin"
+              style={{ width: "100%", height: "100%", border: "none", pointerEvents: drawMode ? "none" : "auto" }}
+              title={selectedArtifact.title}
+            />
+            <DrawingOverlay
+              active={drawMode}
+              forumId={forum.id}
+              onClose={() => setDrawMode(false)}
+            />
+          </div>
+        )}
+
         {/* ── Rendered view (Split View or Spatial Grid depending on phase/deliverable status) ── */}
-        {isRendered && (
+        {isRendered && !isScratchpadView && !selectedArtifact && (
           hasDeliverable ? (
             <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden" }}>
               {/* Left Panel: Deliverable Preview (60%) */}
               <div style={{ width: "60%", height: "100%", borderRight: "1px solid var(--border-subtle, rgba(0,0,0,0.07))", display: "flex", flexDirection: "column", overflow: "hidden" }}>
                 {isHtmlMode && htmlContent && (
-                  <iframe
-                    key={htmlContent.slice(0, 80)}
-                    srcDoc={resolvedHtmlContent}
-                    sandbox="allow-scripts"
-                    style={{ width: "100%", height: "100%", border: "none" }}
-                    title="Interactive deliverable"
-                  />
+                  <div style={{ position: "relative", width: "100%", height: "100%" }}>
+                    <iframe
+                      key={htmlContent.slice(0, 80)}
+                      srcDoc={resolvedHtmlContent}
+                      sandbox="allow-scripts"
+                      style={{ width: "100%", height: "100%", border: "none", pointerEvents: drawMode ? "none" : "auto" }}
+                      title="Interactive deliverable"
+                    />
+                    <DrawingOverlay
+                      active={drawMode}
+                      forumId={forum.id}
+                      onClose={() => setDrawMode(false)}
+                    />
+                  </div>
                 )}
                 {isGenUIMode && displayContent && (
                   <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
@@ -1593,10 +2542,15 @@ function ForumBlackboard({
                 <SpatialCardsGrid cards={cards} mdComponents={localMdComponents} />
               ) : (
                 <div style={{
-                  height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
-                  color: "var(--text-sub, #636E72)", opacity: 0.35, fontSize: 13, fontStyle: "italic",
+                  height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10,
+                  color: "var(--text-sub, #636E72)", opacity: 0.4,
                 }}>
-                  Waiting for the team…
+                  <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round">
+                    <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+                  </svg>
+                  <div style={{ fontSize: 12, fontStyle: "italic", textAlign: "center", maxWidth: 220, lineHeight: 1.5 }}>
+                    Agents will build the deliverable here — from infographics to interactive apps
+                  </div>
                 </div>
               )}
             </div>
@@ -1609,9 +2563,9 @@ function ForumBlackboard({
             ref={textareaRef}
             value={displayContent}
             onChange={e => {
-              if (!locked && isLive && !isHtmlMode && !isGenUIMode) updateBlackboard(forum.id, e.target.value);
+              if (!locked && isLive && !isHtmlMode && !isGenUIMode && !isScratchpadView && !selectedArtifact) updateBlackboard(forum.id, e.target.value);
             }}
-            readOnly={!isLive || locked || isHtmlMode || isGenUIMode}
+            readOnly={!isLive || locked || isHtmlMode || isGenUIMode || isScratchpadView || !!selectedArtifact}
             style={{
               width: "100%", height: "100%",
               background: "transparent", border: "none", outline: "none",
@@ -1625,8 +2579,9 @@ function ForumBlackboard({
             }}
           />
         )}
-        <CanvasAnnotationOverlay annotation={annotation} />
+        <CanvasAnnotationOverlay annotation={annotation} forumId={forum.id} />
       </div>
+      </div> {/* end main blackboard column */}
     </div>
   );
 }
@@ -1975,11 +2930,16 @@ export function ForumView() {
   const deleteForum = useForumStore(s => s.deleteForum);
   const updateForumTags = useForumStore(s => s.updateForumTags);
   const addForumMessage = useForumStore(s => s.addForumMessage);
+  const updateArtifactSyncState = useForumStore(s => s.updateArtifactSyncState);
+  const connectFolder = useForumStore(s => s.connectFolder);
+  const disconnectFolder = useForumStore(s => s.disconnectFolder);
+  const updateScratchpadSyncState = useForumStore(s => s.updateScratchpadSyncState);
   const { activeForumId, setActiveForumId } = useWorldStore();
   const engineRef = useRef<{ stop: () => void } | null>(null);
   const [briefModalOpen, setBriefModalOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
+  const [connectModalOpen, setConnectModalOpen] = useState(false);
 
   // activeForumId === null → show list; !== null → show that forum (or list if not found)
   const forum = activeForumId ? (forums.find(f => f.id === activeForumId) ?? null) : null;
@@ -2215,11 +3175,19 @@ export function ForumView() {
 
         {/* Title & Brief */}
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          <div style={{
-            fontSize: 14, fontWeight: 700, color: "var(--text-main, #303330)",
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          }}>
-            {forum.title}
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              fontSize: 14, fontWeight: 700, color: "var(--text-main, #303330)",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              {forum.title}
+            </div>
+            <div style={{ 
+              fontSize: 10, fontWeight: 600, color: "#4A9E96", background: "rgba(74,158,150,0.1)", 
+              padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap" 
+            }} title="Tracked token cost for this forum">
+              Cost: ${((forum as any).totalCost ?? 0).toFixed(3)}
+            </div>
           </div>
           <div 
             title={forum.brief}
@@ -2280,7 +3248,46 @@ export function ForumView() {
         </div>
 
         {/* Forum actions (archive / delete) */}
-        <div style={{ flexShrink: 0, marginLeft: "auto" }}>
+        {/* Connect to Project */}
+        <div style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 6 }}>
+          {(forum as any).connectedFolderPath ? (
+            /* Connected state — show folder name + disconnect option */
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+              <div style={{
+                width: 7, height: 7, borderRadius: "50%", background: "#4A9E96",
+                animation: "milestone-pulse 2.5s ease-in-out infinite", flexShrink: 0,
+              }} />
+              <span style={{ fontSize: 10.5, color: "#4A9E96", fontWeight: 600, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {(forum as any).connectedFolderName ?? "Project folder"}
+              </span>
+              <button
+                onClick={() => disconnectFolder(forum.id)}
+                title="Disconnect folder"
+                style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-sub, #636E72)", opacity: 0.4, padding: "1px 2px", lineHeight: 1 }}
+              >
+                ✕
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setConnectModalOpen(true)}
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                background: "rgba(74,158,150,0.08)", border: "1px solid rgba(74,158,150,0.22)",
+                borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "#4A9E96",
+                fontSize: 11, fontWeight: 600,
+              }}
+            >
+              <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+              Connect to Project
+            </button>
+          )}
+        </div>
+
+        <div style={{ flexShrink: 0, marginLeft: 4 }}>
           <ForumActions
             forum={forum}
             onArchive={() => archiveForum(forum.id)}
@@ -2288,6 +3295,18 @@ export function ForumView() {
           />
         </div>
       </div>
+
+      {/* ── Connect to Project modal ── */}
+      {connectModalOpen && (
+        <ConnectFolderModal
+          forum={forum}
+          onConnect={(path, type, name) => {
+            connectFolder(forum.id, path, type, name);
+            setConnectModalOpen(false);
+          }}
+          onClose={() => setConnectModalOpen(false)}
+        />
+      )}
 
       {/* ── Completion banner ── */}
       {forum.status === "completed" && (
@@ -2449,8 +3468,64 @@ export function ForumView() {
             />
           </div>
 
-          {/* ── Project steps — vertical scrollable milestone list ── */}
-          <MilestoneList milestones={forum.milestones} forumStatus={forum.status} />
+          {/* ── Progress spine + Project file tree ── */}
+          <ProgressAndFiles
+            milestones={forum.milestones}
+            forumStatus={forum.status}
+            artifacts={forum.artifacts ?? []}
+            scratchpadContent={(forum as any).scratchpadContent ?? ""}
+            scratchpadSyncState={(forum as any).scratchpadSyncState}
+            scratchpadLastSyncedAt={(forum as any).scratchpadLastSyncedAt}
+            isConnected={!!(forum as any).connectedFolderPath}
+            selectedArtifactId={selectedArtifactId}
+            onSelectArtifact={id => setSelectedArtifactId(prev => prev === id ? null : id)}
+            onSyncArtifact={async (artifactId) => {
+              if (!(forum as any).connectedFolderPath) return;
+              updateArtifactSyncState(forum.id, artifactId, "syncing");
+              try {
+                const { invoke } = await import("@tauri-apps/api/core");
+                const artifact = forum.artifacts.find(a => a.id === artifactId);
+                if (!artifact) return;
+                const result: { syncedAt: number; contentHash: string } = await invoke("sync_artifact", {
+                  forumId: forum.id,
+                  artifactId,
+                  folderPath: (forum as any).connectedFolderPath,
+                  folderType: (forum as any).connectedFolderType ?? "local",
+                  forumTitle: forum.title,
+                  folder: artifact.folder ?? "General",
+                  filename: artifact.filename ?? `${artifact.id}.md`,
+                  content: artifact.content,
+                  contentType: artifact.type,
+                });
+                updateArtifactSyncState(forum.id, artifactId, "synced", result.syncedAt, result.contentHash);
+              } catch (err) {
+                console.error("sync_artifact failed:", err);
+                updateArtifactSyncState(forum.id, artifactId, "stale");
+              }
+            }}
+            onSyncScratchpad={async () => {
+              if (!(forum as any).connectedFolderPath) return;
+              updateScratchpadSyncState(forum.id, "syncing");
+              try {
+                const { invoke } = await import("@tauri-apps/api/core");
+                const result: { syncedAt: number } = await invoke("sync_artifact", {
+                  forumId: forum.id,
+                  artifactId: "__scratchpad__",
+                  folderPath: (forum as any).connectedFolderPath,
+                  folderType: (forum as any).connectedFolderType ?? "local",
+                  forumTitle: forum.title,
+                  folder: "",
+                  filename: "shared-scratchpad.md",
+                  content: (forum as any).scratchpadContent ?? "",
+                  contentType: "markdown",
+                });
+                updateScratchpadSyncState(forum.id, "auto", result.syncedAt);
+              } catch (err) {
+                console.error("sync scratchpad failed:", err);
+                updateScratchpadSyncState(forum.id, "stale");
+              }
+            }}
+          />
 
           {/* ── Blackboard — takes all remaining space ── */}
           <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>

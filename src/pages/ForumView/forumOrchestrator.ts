@@ -459,30 +459,24 @@ ${attachments ? `\n**User uploaded files/attachments (reference these assets dir
 **Work so far (research + strategy):**
 ${safeBoard}
 
-Choose the BEST FORMAT for this deliverable:
+**DEFAULT TO HTML.** The deliverable panel is a living canvas — rich interactive HTML is almost always more valuable than a static document. Choose HTML unless the output is genuinely prose-only (e.g. a cover letter, a recipe, a poem).
 
-**MARKDOWN** — for written documents, memos, action plans, itineraries, recipes, guides, recommendations, or any prose-first output.
+**HTML (strongly preferred)** — infographics, dashboards, interactive tools, comparison tables, timelines, maps, calculators, data visualizations, gallery displays, pricing tables, or any output where visual design conveys meaning. When using HTML:
+- Create a single, fully self-contained HTML file (all CSS and JS inline)
+- Color palette: primary #3c6663, accent #4A9E96, background #faf9f6, text #303330, card bg #ffffff
+- Make it polished, beautiful, responsive — not a placeholder. Think product-quality, not prototype.
+- EMULATE the best-in-class apps in this domain (e.g. Wanderlog for travel; AirDNA for STR pricing; YNAB for budgets; Artfully Walls for gallery layouts; Notion for structured plans). Include interactive elements (sliders, filters, toggles, tabs) where they add value.
+- If referencing uploaded image assets, use their EXACT filenames in src="..." or CSS url(...) (e.g. src="filename.png"). They will be resolved dynamically.
+- Add a subtle "Made with Canopy" watermark (bottom-right, 10px, opacity 0.3).
 
-**HTML** — for interactive tools, dashboards, calculators, visual timelines, comparison tables with filtering, data visualizations, or anything where interactivity or rich visual layout adds genuine value. When choosing HTML:
-- Create a single, fully self-contained HTML file
-- Style using: primary #3c6663, accent #4A9E96, background #faf9f6, text #303330
-- Make it polished, beautiful, responsive, and immediately usable — not a placeholder
-- EMULATE the best-in-class applications in this domain (e.g. Wanderlog/TripIt for itineraries; AirDNA/Airbnb for short term rentals; YNAB for budgets; Framebridge/Artfully Walls for gallery walls; LinkedIn/coaching tools for career moves). Include interactive widgets, sliders, or filters that match their core features.
-- If referencing uploaded image assets, use their EXACT filenames in src="..." attribute or CSS url(...) values (e.g. src="filename.png" or url('filename.jpg')). They will be resolved dynamically.
+**MARKDOWN** — use only for outputs that are inherently prose: memos, letters, recipes, step-by-step guides, or any brief where visual layout adds nothing.
 
-**GENUI** — for complex, native React-like Mini-Apps. Output a structured JSON object representing a GenUI component (e.g. DataTable, ApprovalCard, or Custom Html with embedded logic). 
+**GENUI** — for complex native React-like Mini-Apps requiring structured JSON component definitions.
 
 If you need to confirm ONE thing before drafting, ask as a structured question (nothing else):
 {"__type": "question", "text": "Your question?", "options": ["Option A", "Option B", "Option C"]}
 
 Otherwise, respond with EXACTLY this delimiter structure — nothing before ---FORMAT---, nothing after the content:
-
----FORMAT---
-markdown
----CONTENT---
-[your full markdown content here]
-
-OR:
 
 ---FORMAT---
 html
@@ -492,11 +486,18 @@ html
 OR:
 
 ---FORMAT---
+markdown
+---CONTENT---
+[your full markdown content here]
+
+OR:
+
+---FORMAT---
 genui
 ---CONTENT---
 [your stringified JSON GenUI payload here]
 
-Default to markdown if HTML or GenUI wouldn't genuinely improve this deliverable. When in doubt: if it's words, use markdown; if it's a tool or visualization, use HTML or GenUI. Be specific to the actual brief — no filler.`;
+Be specific to the actual brief content — no filler, no placeholder text. The user's agents worked hard to get here; make the deliverable worth opening.`;
 }
 
 function buildReviewPrompt(forum: Forum, agent: ForumAgent, draftBoard: string): string {
@@ -545,6 +546,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     const {
       addForumMessage,
       addForumArtifact,
+      appendScratchpad,
       updateBlackboard,
       updateMilestone,
       updateAgentAction,
@@ -998,6 +1000,21 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         updateBlackboard(forumId, board1, mergedAuthorIds);
         activateMilestone("Research & data pull", "done");
 
+        // Save research findings as a named artifact — folder = first milestone label (coordinator-defined)
+        const researchFolder = useForumStore.getState().forums.find(f => f.id === forumId)?.milestones[0]?.label ?? "Discovery";
+        addForumArtifact(forumId, {
+          type: "markdown",
+          title: researchFolder,
+          filename: `${researchFolder.toLowerCase().replace(/\s+/g, "-")}.md`,
+          folder: researchFolder,
+          content: researchText,
+          agentId: mergedAuthorIds,
+          agentName: mergedAuthorNames,
+          isDeliverable: false,
+        });
+        // Seed the scratchpad with research highlights
+        appendScratchpad(forumId, `## ${researchFolder} Notes\n${chatPreview(researchText)}\n\n`);
+
         if (strategist.agentId !== researcher.agentId) {
           postHandoff(
             mergedAuthorIds, strategist.agentId,
@@ -1040,6 +1057,20 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         updateBlackboard(forumId, board2, strategist.agentId);
         updateAgentAction(forumId, strategist.agentId, "Approach posted ✓");
         activateMilestone("Strategic framing", "done");
+
+        // Save strategy as a named artifact — folder = second milestone label
+        const stratFolder = useForumStore.getState().forums.find(f => f.id === forumId)?.milestones[1]?.label ?? "Approach";
+        addForumArtifact(forumId, {
+          type: "markdown",
+          title: stratFolder,
+          filename: `${stratFolder.toLowerCase().replace(/\s+/g, "-")}.md`,
+          folder: stratFolder,
+          content: stratText,
+          agentId: strategist.agentId,
+          agentName: strategist.name,
+          isDeliverable: false,
+        });
+        appendScratchpad(forumId, `## ${stratFolder} Notes\n${chatPreview(stratText)}\n\n`);
       }
 
       if (writer.agentId !== strategist.agentId) {
@@ -1094,10 +1125,15 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         : chatPreview(draft.content);
       post(writer.agentId, draftPreview);
 
-      // This is the real deliverable — the thing the user actually asked for.
+      // This is the real deliverable — folder = last milestone label (coordinator-defined)
+      const deliverableExt = draft.format === "html" ? "html" : "md";
+      const currentMilestones = useForumStore.getState().forums.find(f => f.id === forumId)?.milestones ?? [];
+      const deliverableFolder = currentMilestones[currentMilestones.length - 1]?.label ?? "Final Deliverable";
       addForumArtifact(forumId, {
         type: draft.format,
         title: forum.title,
+        filename: `deliverable.${deliverableExt}`,
+        folder: deliverableFolder,
         content: draft.content,
         agentId: writer.agentId,
         agentName: writer.name,

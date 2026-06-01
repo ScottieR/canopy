@@ -17,10 +17,10 @@ export // ═══════════════════════�
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function TopNav() {
-  const { activeView, setActiveView, setActiveForumId, theme, toggleTheme, agents, setSelectedAgent, pendingDecisions } = useWorldStore();
+  const { activeView, setActiveView, setActiveForumId, theme, toggleTheme, agents, setSelectedAgent, pendingDecisions, securityAlerts, systemWarnings, setSecurityAlerts, setSystemWarnings } = useWorldStore();
   const [searchQuery, setSearchQuery] = useState("");
   const [showAlertsFeed, setShowAlertsFeed] = useState(false);
-  const [hasUnreadAlerts, setHasUnreadAlerts] = useState(false);
+  const hasUnreadAlerts = securityAlerts.length > 0 || systemWarnings.length > 0;
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showDecisionQueue, setShowDecisionQueue] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
@@ -30,22 +30,26 @@ function TopNav() {
 
   useEffect(() => {
       let isPolling = false;
-      const checkAlerts = async () => {
+      const checkAlertsAndWarnings = async () => {
           if (isPolling) return;
           isPolling = true;
           try {
-              const data = await invoke<any[]>("get_network_security_alerts");
-              setHasUnreadAlerts(data.length > 0);
+              const [alerts, warnings] = await Promise.all([
+                invoke<any[]>("get_network_security_alerts"),
+                invoke<any[]>("get_system_warnings")
+              ]);
+              setSecurityAlerts(alerts);
+              setSystemWarnings(warnings.filter((w: any) => !w.resolved));
           } catch (e) {
               console.error(e);
           } finally {
               isPolling = false;
           }
       };
-      checkAlerts();
-      const interval = setInterval(checkAlerts, 5000);
+      checkAlertsAndWarnings();
+      const interval = setInterval(checkAlertsAndWarnings, 5000);
       return () => clearInterval(interval);
-  }, []);
+  }, [setSecurityAlerts, setSystemWarnings]);
 
   // Close profile menu on outside click
   useEffect(() => {
@@ -188,15 +192,15 @@ function TopNav() {
                 <div style={{ position: "absolute", top: 5, right: 5, width: 7, height: 7, borderRadius: "50%", background: "#DC2626", border: "2px solid var(--surface-base)" }} />
               )}
             </div>
-            {/* Decision queue inbox — shows count badge when agents need attention */}
+            {/* Unified Inbox — shows count badge for decisions and red dot for security alerts */}
             <div
               onClick={() => setShowDecisionQueue(v => !v)}
-              title="Decision Queue"
+              title="Inbox & Alerts"
               style={{
                 width: 32, height: 32, borderRadius: 8, position: "relative",
                 background: showDecisionQueue ? "rgba(60,102,99,0.15)" : "var(--border-subtle)",
                 display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-                color: showDecisionQueue ? "#3c6663" : actionableDecisions.length > 0 ? "#D4A04A" : "var(--text-sub)",
+                color: showDecisionQueue ? "#3c6663" : hasUnreadAlerts ? "#DC2626" : actionableDecisions.length > 0 ? "#D4A04A" : "var(--text-sub)",
                 transition: "all 0.15s ease",
               }}
             >
@@ -206,28 +210,21 @@ function TopNav() {
                 <path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z" />
               </svg>
               {/* Count badge */}
-              {decisionCount > 0 && (
+              {(decisionCount > 0 || hasUnreadAlerts) && (
                 <div style={{
                   position: "absolute", top: -4, right: -4,
                   minWidth: 16, height: 16, borderRadius: 8, padding: "0 4px",
-                  background: actionableDecisions.length > 0 ? "#D4A04A" : "#4A9E96",
+                  background: hasUnreadAlerts ? "#DC2626" : actionableDecisions.length > 0 ? "#D4A04A" : "#4A9E96",
                   border: "2px solid var(--surface-base)",
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontSize: 9, fontWeight: 800, color: "#fff",
                 }}>
-                  {decisionCount > 9 ? "9+" : decisionCount}
+                  {decisionCount + (hasUnreadAlerts ? 1 : 0) > 9 ? "9+" : decisionCount + (hasUnreadAlerts ? 1 : 0)}
                 </div>
               )}
             </div>
 
-            <div onClick={() => setShowAlertsFeed(true)} style={{
-              width: 32, height: 32, borderRadius: "50%", background: "var(--border-subtle)", position: "relative",
-              display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer",
-              color: hasUnreadAlerts ? "#DC2626" : "var(--text-sub)",
-            }}>
-              <Bell size={16} />
-              {hasUnreadAlerts && <div style={{ position: "absolute", top: 6, right: 6, width: 6, height: 6, borderRadius: "50%", background: "#DC2626", border: "2px solid var(--surface-base)" }} />}
-            </div>
+
             {/* Profile / settings dropdown */}
             <div ref={profileMenuRef} style={{ position: "relative" }}>
               <div

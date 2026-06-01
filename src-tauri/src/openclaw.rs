@@ -1678,6 +1678,53 @@ pub async fn send_message_internal(
     if prompt_tokens > 0 || completion_tokens > 0 {
         if let Ok(Some(mut agent)) = db.get_agent(agent_id) {
             agent.stats.record_usage(model, prompt_tokens, completion_tokens);
+            
+            // Calculate cost for this specific transaction
+            let registry = crate::models::PRICING_REGISTRY.read().unwrap();
+            let (cost_in_per_m, cost_out_per_m) = if let Some(&costs) = registry.get(model) {
+                costs
+            } else {
+                match model {
+                    "claude-sonnet-4-6" => (3.00, 15.00),
+                    "claude-haiku-4-5"  => (0.25, 1.25),
+                    "claude-opus-4-6"   => (15.00, 75.00),
+                    "claude-opus-4-7"   => (5.00, 25.00),
+                    "gpt-4o-mini" => (0.15, 0.60),
+                    "gpt-4o"      => (2.50, 10.00),
+                    "gemini-2.0-flash" => (0.35, 1.05),
+                    "gemini-2.0-pro"   => (3.50, 10.50),
+                    "gemini-3.5-flash" => (0.15, 0.60),
+                    "gemini-3.5-pro"   => (1.25, 5.00),
+                    "grok-beta" => (5.00, 15.00),
+                    _ => (1.00, 5.00)
+                }
+            };
+            let cost_usd = (prompt_tokens as f64 / 1_000_000.0) * cost_in_per_m + (completion_tokens as f64 / 1_000_000.0) * cost_out_per_m;
+            
+            let provider = if model.starts_with("gpt") {
+                "openai"
+            } else if model.starts_with("claude") {
+                "anthropic"
+            } else if model.starts_with("gemini") {
+                "google"
+            } else if model.starts_with("grok") {
+                "xai"
+            } else {
+                "unknown"
+            };
+            
+            let _ = db.insert_token_usage_record(&crate::models::TokenUsageRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                agent_id: agent_id.to_string(),
+                conversation_id: Some(conv_id.clone()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                model: model.to_string(),
+                provider: provider.to_string(),
+                tokens_in: prompt_tokens,
+                tokens_out: completion_tokens,
+                cost_usd,
+            });
+
             let _ = db.update_agent(&agent);
         }
     }

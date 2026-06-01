@@ -16,6 +16,9 @@ export default defineConfig({
     sourcemap: !!process.env.TAURI_DEBUG,
   },
   test: {
+    globals: true,
+    environment: "jsdom",
     exclude: ["node_modules", "dist", ".idea", ".git", ".cache", ".claude/**"],
+    setupFiles: ["./src/test/setup.ts"],
   },
 });
