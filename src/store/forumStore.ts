@@ -96,6 +96,17 @@ export interface ForumComment {
   resolved?: boolean;
 }
 
+/**
+ * Sync state for a file in the project file tree.
+ *
+ * auto     — always kept in sync automatically (scratchpad + user-toggled)
+ * synced   — manually synced, currently up to date with the folder
+ * stale    — was synced before, but the content has changed since last sync
+ * unsynced — never been synced to any folder
+ * syncing  — in-flight write (transient)
+ */
+export type ArtifactSyncState = "auto" | "synced" | "stale" | "unsynced" | "syncing";
+
 export interface ForumArtifact {
   id: string;
   type: ForumArtifactType;
@@ -109,6 +120,16 @@ export interface ForumArtifact {
   /** True only for the final user-facing deliverable — not intermediate research/strategy notes. */
   isDeliverable?: boolean;
   comments?: ForumComment[];
+  /** Folder path for the project file tree, e.g. "Research" | "Strategy" | "Deliverables" | "Tools" */
+  folder?: string;
+  /** Filename to display in the file tree, e.g. "market-research.md" */
+  filename?: string;
+  // ── Sync state ──────────────────────────────────────────────────────────────
+  syncState?: ArtifactSyncState;
+  /** Unix ms of last successful sync to the connected folder */
+  lastSyncedAt?: number;
+  /** Content hash at time of last sync — used to detect staleness */
+  lastSyncedHash?: string;
 }
 
 // ─── Blackboard Block ─────────────────────────────────────────────────────────
@@ -158,6 +179,17 @@ export interface Forum {
   blackboardBlock: ForumBlock | null;
   // Discrete output artifacts produced by the team
   artifacts: ForumArtifact[];
+  /** Shared scratch space — all agents append notes here freely throughout the forum */
+  scratchpadContent: string;
+  // ── Project folder connection ───────────────────────────────────────────────
+  /** Local filesystem path or Google Drive folder ID */
+  connectedFolderPath?: string;
+  connectedFolderType?: "local" | "googledrive";
+  /** Display name of the connected folder shown in UI */
+  connectedFolderName?: string;
+  /** Sync state of the scratchpad (always "auto" when folder is connected) */
+  scratchpadSyncState?: ArtifactSyncState;
+  scratchpadLastSyncedAt?: number;
   createdAt: number;
   lastActiveAt: number;
   // Incremented each time the orchestrator is asked to start/restart — lets the
@@ -189,6 +221,16 @@ export interface ForumState {
   answerForumQuestion: (forumId: string, messageId: string, answer: string) => void;
   /** Add a discrete output artifact to the forum. */
   addForumArtifact: (forumId: string, artifact: Omit<ForumArtifact, "id" | "createdAt">) => void;
+  /** Append text to the shared agent scratchpad. */
+  appendScratchpad: (forumId: string, text: string) => void;
+  /** Update the sync state of a single artifact (e.g. after a sync completes). */
+  updateArtifactSyncState: (forumId: string, artifactId: string, state: ArtifactSyncState, syncedAt?: number, syncedHash?: string) => void;
+  /** Set the connected folder for a forum. */
+  connectFolder: (forumId: string, path: string, type: "local" | "googledrive", name: string) => void;
+  /** Disconnect the folder from a forum. */
+  disconnectFolder: (forumId: string) => void;
+  /** Mark scratchpad sync state. */
+  updateScratchpadSyncState: (forumId: string, state: ArtifactSyncState, syncedAt?: number) => void;
   /** Set the format-aware blackboard block (markdown or HTML deliverable). */
   setBlackboardBlock: (forumId: string, block: ForumBlock) => void;
   setForumDraft: (forumId: string, draft: string) => void;
@@ -269,6 +311,7 @@ export const useForumStore = create<ForumState>()(
           blackboardHistory: [],
           blackboardBlock: null,
           artifacts: [],
+          scratchpadContent: "",
           createdAt: now,
           lastActiveAt: now,
           orchestratorVersion: 0,
@@ -393,9 +436,94 @@ export const useForumStore = create<ForumState>()(
         const createdAt = Date.now();
         set(state => ({
           forums: state.forums.map(f =>
-            f.id === forumId
-              ? { ...f, artifacts: [...f.artifacts, { ...artifact, id, createdAt }] }
-              : f
+            f.id !== forumId ? f : {
+              ...f,
+              artifacts: [...f.artifacts, {
+                ...artifact,
+                id,
+                createdAt,
+                // New artifacts start unsynced; auto if the forum auto-syncs deliverables
+                syncState: artifact.syncState ?? "unsynced" as ArtifactSyncState,
+              }],
+            }
+          ),
+        }));
+      },
+
+      appendScratchpad: (forumId, text) => {
+        set(state => ({
+          forums: state.forums.map(f => {
+            if (f.id !== forumId) return f;
+            const updated = { ...f, scratchpadContent: (f.scratchpadContent ?? "") + text };
+            // Mark scratchpad as stale if it was previously synced
+            if (f.scratchpadSyncState === "synced") {
+              updated.scratchpadSyncState = "stale";
+            }
+            return updated;
+          }),
+        }));
+      },
+
+      updateArtifactSyncState: (forumId, artifactId, state, syncedAt, syncedHash) => {
+        set(s => ({
+          forums: s.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              artifacts: f.artifacts.map(a =>
+                a.id !== artifactId ? a : {
+                  ...a,
+                  syncState: state,
+                  ...(syncedAt !== undefined ? { lastSyncedAt: syncedAt } : {}),
+                  ...(syncedHash !== undefined ? { lastSyncedHash: syncedHash } : {}),
+                }
+              ),
+            }
+          ),
+        }));
+      },
+
+      connectFolder: (forumId, path, type, name) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              connectedFolderPath: path,
+              connectedFolderType: type,
+              connectedFolderName: name,
+              // Scratchpad goes auto when folder is connected
+              scratchpadSyncState: "auto",
+              // All existing artifacts become stale (they exist but haven't been written to this folder yet)
+              artifacts: f.artifacts.map(a => ({
+                ...a,
+                syncState: (a.syncState === "synced" || a.syncState === "auto") ? "stale" : "unsynced",
+              })),
+            }
+          ),
+        }));
+      },
+
+      disconnectFolder: (forumId) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              connectedFolderPath: undefined,
+              connectedFolderType: undefined,
+              connectedFolderName: undefined,
+              scratchpadSyncState: undefined,
+            }
+          ),
+        }));
+      },
+
+      updateScratchpadSyncState: (forumId, state, syncedAt) => {
+        set(s => ({
+          forums: s.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              scratchpadSyncState: state,
+              ...(syncedAt !== undefined ? { scratchpadLastSyncedAt: syncedAt } : {}),
+            }
           ),
         }));
       },

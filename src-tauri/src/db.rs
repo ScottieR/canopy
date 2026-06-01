@@ -305,6 +305,40 @@ impl Database {
         )?;
 
         // Create indexes for common queries
+        
+        let _ = conn.execute("ALTER TABLE token_usage_history ADD COLUMN conversation_id TEXT", []);
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS token_usage_history (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                conversation_id TEXT,
+                timestamp TEXT NOT NULL,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL,
+                tokens_out INTEGER NOT NULL,
+                cost_usd REAL NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage_history(agent_id)", [])?;
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage_history(timestamp)", [])?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS system_warnings (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                warning_type TEXT NOT NULL,
+                message TEXT NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)", [])?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bridges_agent ON bridges(agent_id)", [])?;
@@ -1484,6 +1518,117 @@ impl Database {
         let config = crate::voice::VoiceConfig::from_json(&json_str).map_err(|e| e.to_string())?;
         Ok(Some(config))
     }
+
+    pub fn insert_token_usage_record(&self, record: &crate::models::TokenUsageRecord) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO token_usage_history
+                (id, agent_id, conversation_id, timestamp, model, provider, tokens_in, tokens_out, cost_usd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                &record.id,
+                &record.agent_id,
+                &record.conversation_id,
+                &record.timestamp,
+                &record.model,
+                &record.provider,
+                &record.tokens_in,
+                &record.tokens_out,
+                &record.cost_usd
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_token_usage_history(&self, agent_id: Option<&str>, conversation_id: Option<&str>, days: u32) -> SqlResult<Vec<crate::models::TokenUsageRecord>> {
+        let conn = self.conn.lock().unwrap();
+        
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let mut query = String::from(
+            "SELECT id, agent_id, conversation_id, timestamp, model, provider, tokens_in, tokens_out, cost_usd
+             FROM token_usage_history
+             WHERE timestamp >= ?1"
+        );
+        
+        let mut sql_params: Vec<&dyn rusqlite::ToSql> = vec![&cutoff_str];
+        let mut next_param_idx = 2;
+
+        if let Some(ref a_id) = agent_id {
+            query.push_str(&format!(" AND agent_id = ?{}", next_param_idx));
+            sql_params.push(a_id);
+            next_param_idx += 1;
+        }
+        
+        if let Some(ref c_id) = conversation_id {
+            query.push_str(&format!(" AND conversation_id = ?{}", next_param_idx));
+            sql_params.push(c_id);
+            next_param_idx += 1;
+        }
+
+        query.push_str(" ORDER BY timestamp ASC");
+
+        let mut stmt = conn.prepare(&query)?;
+        
+        let rows = stmt.query_map(rusqlite::params_from_iter(sql_params), |row| {
+            Ok(crate::models::TokenUsageRecord {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                conversation_id: row.get(2)?,
+                timestamp: row.get(3)?,
+                model: row.get(4)?,
+                provider: row.get(5)?,
+                tokens_in: row.get(6)?,
+                tokens_out: row.get(7)?,
+                cost_usd: row.get(8)?,
+            })
+        })?;
+
+        let mut records = Vec::new();
+        for row in rows {
+            records.push(row?);
+        }
+        Ok(records)
+    }
+
+    pub fn get_system_warnings(&self) -> SqlResult<Vec<crate::models::SystemWarning>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, timestamp, warning_type, message, resolved 
+             FROM system_warnings 
+             WHERE resolved = 0 
+             ORDER BY timestamp DESC"
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::models::SystemWarning {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                timestamp: row.get(2)?,
+                warning_type: row.get(3)?,
+                message: row.get(4)?,
+                resolved: row.get(5)?,
+            })
+        })?;
+
+        let mut warnings = Vec::new();
+        for row in rows {
+            warnings.push(row?);
+        }
+        Ok(warnings)
+    }
+
+    pub fn resolve_system_warning(&self, warning_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE system_warnings SET resolved = 1 WHERE id = ?1",
+            rusqlite::params![warning_id],
+        )?;
+        Ok(())
+    }
+
+
 }
 
 // ─── Helper Functions ────────────────────────────────────────────────────────

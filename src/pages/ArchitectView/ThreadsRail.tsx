@@ -49,18 +49,18 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
   const filteredConversations: FilteredConv[] = !q
     ? sortedConversations.map(c => ({ conv: c }))
     : sortedConversations.flatMap(c => {
-        const titleMatch = c.title.toLowerCase().includes(q);
-        const matchedMsg = c.messages.find(m => m.text.toLowerCase().includes(q));
-        if (!titleMatch && !matchedMsg) return [];
-        let snippet: string | undefined;
-        if (matchedMsg && !titleMatch) {
-          const idx = matchedMsg.text.toLowerCase().indexOf(q);
-          const start = Math.max(0, idx - 30);
-          const end = Math.min(matchedMsg.text.length, idx + q.length + 40);
-          snippet = (start > 0 ? "…" : "") + matchedMsg.text.slice(start, end) + (end < matchedMsg.text.length ? "…" : "");
-        }
-        return [{ conv: c, matchedMessage: snippet }];
-      });
+      const titleMatch = c.title.toLowerCase().includes(q);
+      const matchedMsg = c.messages.find(m => m.text.toLowerCase().includes(q));
+      if (!titleMatch && !matchedMsg) return [];
+      let snippet: string | undefined;
+      if (matchedMsg && !titleMatch) {
+        const idx = matchedMsg.text.toLowerCase().indexOf(q);
+        const start = Math.max(0, idx - 30);
+        const end = Math.min(matchedMsg.text.length, idx + q.length + 40);
+        snippet = (start > 0 ? "…" : "") + matchedMsg.text.slice(start, end) + (end < matchedMsg.text.length ? "…" : "");
+      }
+      return [{ conv: c, matchedMessage: snippet }];
+    });
 
   const allForums = useForumStore(s => s.forums);
   const agentForumsList: FilteredConv[] = allForums
@@ -286,7 +286,7 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
               cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
             }}
           >
-            <Users size={11} /> + New Project
+            <Users size={11} /> + New Forum
           </button>
         )}
       </div>

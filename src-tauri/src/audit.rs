@@ -462,3 +462,32 @@ mod tests {
         assert_eq!(alert.severity, AlertSeverity::Medium);
     }
 }
+
+
+#[tauri::command]
+pub async fn get_token_usage_history(
+    db: State<'_, Database>,
+    agent_id: Option<String>,
+    conversation_id: Option<String>,
+    days: u32,
+) -> Result<Vec<crate::models::TokenUsageRecord>, String> {
+    db.get_token_usage_history(agent_id.as_deref(), conversation_id.as_deref(), days)
+        .map_err(|e| format!("Failed to get token usage: {}", e))
+}
+
+#[tauri::command]
+pub async fn get_system_warnings(
+    db: State<'_, Database>,
+) -> Result<Vec<crate::models::SystemWarning>, String> {
+    db.get_system_warnings()
+        .map_err(|e| format!("Failed to get system warnings: {}", e))
+}
+
+#[tauri::command]
+pub async fn resolve_system_warning(
+    db: State<'_, Database>,
+    warning_id: String,
+) -> Result<(), String> {
+    db.resolve_system_warning(&warning_id)
+        .map_err(|e| format!("Failed to resolve warning: {}", e))
+}

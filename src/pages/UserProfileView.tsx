@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, UserProfile, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass } from "../App";
+import { TokenSpendChart } from "./ArchitectView/TokenSpendChart";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // USER PROFILE VIEW
@@ -106,6 +107,12 @@ function UserProfileView() {
             </select>
           </div>
         )}
+      </div>
+
+      
+      <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
+        <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Global Token Spend</h3>
+        <TokenSpendChart />
       </div>
 
       <div style={{ display: "flex", justifyContent: "flex-end" }}>

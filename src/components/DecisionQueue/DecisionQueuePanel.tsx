@@ -13,6 +13,8 @@
 import React, { useMemo } from "react";
 import { useWorldStore, PendingDecision } from "../../store/worldStore";
 import { DecisionCard } from "./DecisionCard";
+import { SecurityAlertCard, SystemWarningCard } from "./AlertCards";
+
 
 function IconInbox() {
   return (
@@ -64,7 +66,7 @@ interface Props {
 }
 
 export function DecisionQueuePanel({ onClose }: Props) {
-  const { pendingDecisions, clearDecisions } = useWorldStore();
+  const { pendingDecisions, clearDecisions, securityAlerts, systemWarnings } = useWorldStore();
 
   const { actionable, completed, errors } = useMemo(() => {
     const urgencyOrder: Record<string, number> = { high: 0, medium: 1, low: 2 };
@@ -82,7 +84,7 @@ export function DecisionQueuePanel({ onClose }: Props) {
     };
   }, [pendingDecisions]);
 
-  const hasAny = pendingDecisions.length > 0;
+  const hasAny = pendingDecisions.length > 0 || securityAlerts.length > 0 || systemWarnings.length > 0;
 
   return (
     <>
@@ -117,7 +119,7 @@ export function DecisionQueuePanel({ onClose }: Props) {
             </div>
             <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 1 }}>
               {hasAny
-                ? `${pendingDecisions.length} item${pendingDecisions.length !== 1 ? "s" : ""} · ${actionable.length} need${actionable.length !== 1 ? "" : "s"} action`
+                ? `${pendingDecisions.length + securityAlerts.length + systemWarnings.length} item${pendingDecisions.length + securityAlerts.length + systemWarnings.length !== 1 ? "s" : ""} · ${actionable.length + securityAlerts.length + systemWarnings.length} need${actionable.length + securityAlerts.length + systemWarnings.length !== 1 ? "" : "s"} action`
                 : "Nothing pending"}
             </div>
           </div>
@@ -152,6 +154,22 @@ export function DecisionQueuePanel({ onClose }: Props) {
             ? <EmptyState />
             : (
               <>
+                {securityAlerts.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#DC2626", paddingBottom: 4, borderBottom: "1px solid var(--border-subtle)" }}>
+                      Security Alerts · {securityAlerts.length}
+                    </div>
+                    {securityAlerts.map(a => <SecurityAlertCard key={a.id} alert={a} />)}
+                  </div>
+                )}
+                {systemWarnings.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "#D97706", paddingBottom: 4, borderBottom: "1px solid var(--border-subtle)" }}>
+                      System Warnings · {systemWarnings.length}
+                    </div>
+                    {systemWarnings.map(w => <SystemWarningCard key={w.id} warning={w} />)}
+                  </div>
+                )}
                 <Section title="Needs your action" decisions={actionable} color="#D4A04A" />
                 <Section title="Errors" decisions={errors} color="#E57373" />
                 <Section title="Completed while away" decisions={completed} color="#4A9E96" />
