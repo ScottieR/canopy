@@ -290,7 +290,7 @@ export // ═══════════════════════�
             }}>
               <Users size={12} strokeWidth={2.5} />
             </div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#FFF" }}>New Project</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#FFF" }}>New Forum</div>
           </div>
         </div>
 

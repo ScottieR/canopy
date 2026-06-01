@@ -41,6 +41,7 @@ urlencoding = "2"             # URL-encode OAuth params
 open = "5"                    # Open browser for OAuth
 lazy_static = "1"             # Global state (Slack listener)
 base64 = "0.22.1"
+png = "0.17"
 async-trait = "0.1.89"
 btleplug = "0.11"
 hex = "0.4"

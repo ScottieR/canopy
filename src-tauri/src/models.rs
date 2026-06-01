@@ -255,12 +255,15 @@ impl AgentStats {
                 "claude-sonnet-4-6" => (3.00, 15.00),
                 "claude-haiku-4-5"  => (0.25, 1.25),
                 "claude-opus-4-6"   => (15.00, 75.00),
+                "claude-opus-4-7"   => (5.00, 25.00),
                 // OpenAI
                 "gpt-4o-mini" => (0.15, 0.60),
                 "gpt-4o"      => (2.50, 10.00),
                 // Google
                 "gemini-2.0-flash" => (0.35, 1.05),
                 "gemini-2.0-pro"   => (3.50, 10.50),
+                "gemini-3.5-flash" => (0.15, 0.60),
+                "gemini-3.5-pro"   => (1.25, 5.00),
                 // xAI
                 "grok-beta" => (5.00, 15.00),
                 // Unknown model — log and use conservative estimate
@@ -502,4 +505,30 @@ impl Default for UserProfile {
             global_directives: "Always cite your sources and optimize for safety.".to_string(),
         }
     }
+}
+
+
+// ─── Telemetry & Warnings ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenUsageRecord {
+    pub id: String,
+    pub agent_id: String,
+    pub conversation_id: Option<String>,
+    pub timestamp: String,
+    pub model: String,
+    pub provider: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemWarning {
+    pub id: String,
+    pub agent_id: String,
+    pub timestamp: String,
+    pub warning_type: String,
+    pub message: String,
+    pub resolved: bool,
 }

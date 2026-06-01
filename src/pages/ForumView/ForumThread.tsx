@@ -2,12 +2,15 @@ import React, { useRef, useEffect, useState } from "react";
 import { Forum, ForumArtifact, ForumMessage, useForumStore } from "../../store/forumStore";
 import { resolveAnswer } from "./forumOrchestrator";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
+import { invoke } from "@tauri-apps/api/core";
 
 interface Props {
   forum: Forum;
   selectedArtifactId: string | null;
   onArtifactClick: (id: string) => void;
+  onSendMessage?: (text: string, attachments?: { name: string; dataUrl: string; mimeType: string }[]) => void;
 }
+
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -39,8 +42,8 @@ function SystemMessage({ msg }: { msg: ForumMessage }) {
 }
 
 function HandoffChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
-  const fromAgent = forum.agents.find(a => a.agentId === msg.agentId);
-  const toAgent = forum.agents.find(a => a.agentId === msg.toAgentId);
+  const fromAgent = forum.agents?.find(a => a.agentId === msg.agentId);
+  const toAgent = forum.agents?.find(a => a.agentId === msg.toAgentId);
   const color = fromAgent?.robeColor || "#4A9E96";
 
   return (
@@ -68,7 +71,7 @@ function HandoffChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
 }
 
 function VoteChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
-  const agent = forum.agents.find(a => a.agentId === msg.agentId);
+  const agent = forum.agents?.find(a => a.agentId === msg.agentId);
   const color = agent?.robeColor || "#4A9E96";
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "3px 0" }}>
@@ -90,11 +93,43 @@ function VoteChip({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   );
 }
 
-function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
+function AgentMessage({ msg, forum, onArtifactClick }: { msg: ForumMessage; forum: Forum; onArtifactClick?: (id: string) => void }) {
   const isHandoffType = msg.toAgentId != null;
-  const agent = forum.agents.find(a => a.agentId === msg.agentId);
+  const agent = forum.agents?.find(a => a.agentId === msg.agentId);
   const color = agent?.robeColor || "#4A9E96";
   const isAgentToAgent = isHandoffType;
+
+  const relatedArtifact = React.useMemo(() => {
+    if (!forum.artifacts || !onArtifactClick) return null;
+    // Find artifacts from this agent
+    const agentArtifacts = forum.artifacts.filter(a => a.agentId === msg.agentId || (a.role_id && a.role_id === agent?.role));
+    if (agentArtifacts.length === 0) return null;
+    
+    // Find closest artifact created within 2 minutes of the message
+    let best = null;
+    let minDiff = 120000;
+    for (const a of agentArtifacts) {
+      const diff = Math.abs(a.createdAt - msg.timestamp);
+      if (diff < minDiff) {
+        minDiff = diff;
+        best = a;
+      }
+    }
+    
+    // Fallback: the most recent artifact they created before or around this message
+    if (!best) {
+      const before = agentArtifacts.filter(a => a.createdAt <= msg.timestamp + 5000).sort((a,b) => b.createdAt - a.createdAt);
+      if (before.length > 0) best = before[0];
+    }
+    return best;
+  }, [forum.artifacts, msg.timestamp, msg.agentId, agent?.role, onArtifactClick]);
+
+  const mentionsBlackboard = React.useMemo(() => {
+    const txt = msg.text.toLowerCase();
+    return txt.includes("blackboard") || txt.includes("deliverable");
+  }, [msg.text]);
+
+  const isClickable = relatedArtifact || mentionsBlackboard;
 
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -120,7 +155,7 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
             <>
               <span style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.4 }}>→</span>
               <span style={{ fontSize: 11, color: "var(--text-sub, #636E72)", opacity: 0.7 }}>
-                {forum.agents.find(a => a.agentId === msg.toAgentId)?.name ?? "Agent"}
+                {forum.agents?.find(a => a.agentId === msg.toAgentId)?.name ?? "Agent"}
               </span>
             </>
           )}
@@ -130,7 +165,17 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
         </div>
 
         {/* Bubble */}
-        <div style={{
+        <div 
+          onClick={() => {
+            if (!onArtifactClick) return;
+            if (relatedArtifact) {
+              onArtifactClick(relatedArtifact.id);
+            } else if (mentionsBlackboard) {
+              // Clearing selected artifact focuses the blackboard in the main panel
+              onArtifactClick(null as any);
+            }
+          }}
+          style={{
           padding: "9px 13px",
           borderRadius: 12,
           borderTopLeftRadius: 4,
@@ -141,11 +186,28 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
           fontSize: 12,
           lineHeight: 1.6,
           color: isAgentToAgent ? "var(--text-sub, #636E72)" : "var(--text-main, #303330)",
-        }}>
+          cursor: isClickable ? "pointer" : "default",
+          transition: "all 0.15s ease",
+          boxShadow: isClickable ? "0 2px 4px rgba(0,0,0,0.02)" : "none",
+        }}
+        onMouseEnter={e => {
+          if (isClickable) {
+            (e.currentTarget as HTMLDivElement).style.borderColor = rgba(color, 0.4);
+            (e.currentTarget as HTMLDivElement).style.background = rgba(color, 0.04);
+          }
+        }}
+        onMouseLeave={e => {
+          if (isClickable) {
+            (e.currentTarget as HTMLDivElement).style.borderColor = isAgentToAgent ? `1px dashed ${rgba(color, 0.25)}` : "var(--border-subtle, rgba(0,0,0,0.06))";
+            (e.currentTarget as HTMLDivElement).style.background = isAgentToAgent ? rgba(color, 0.06) : "var(--surface-container-lowest, #fff)";
+          }
+        }}
+        >
           {msg.text}
           {msg.miniApp && msg.miniApp.target === "inline" && (
             <GenUIRenderer 
-              app={msg.miniApp} 
+              app={msg.miniApp}
+              attachments={forum.messages.flatMap(m => m.attachments || [])} 
               onEvent={(evt) => {
                 console.log("GenUI Event emitted:", evt);
                 // In a real implementation, this would trigger an invoke("send_message", ...)
@@ -164,7 +226,73 @@ function AgentMessage({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   );
 }
 
-function UserMessage({ msg }: { msg: ForumMessage }) {
+interface ForumAttachmentThumbnailProps {
+  agentId?: string;
+  attachment: { name: string; dataUrl: string };
+  onExpand: (url: string) => void;
+}
+
+function ForumAttachmentThumbnail({ agentId, attachment, onExpand }: ForumAttachmentThumbnailProps) {
+  const [dataUrl, setDataUrl] = useState<string>(attachment.dataUrl || "");
+  const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(attachment.name);
+
+  useEffect(() => {
+    if (!attachment.dataUrl && isImage && agentId) {
+      invoke<string>("read_workspace_file_base64", { agentId, filename: attachment.name })
+        .then((url) => {
+          if (url) {
+            setDataUrl(url);
+          }
+        })
+        .catch((err) => {
+          console.warn("Failed to load dynamic forum attachment:", err);
+        });
+    } else if (attachment.dataUrl) {
+      setDataUrl(attachment.dataUrl);
+    }
+  }, [agentId, attachment.name, attachment.dataUrl, isImage]);
+
+  if (isImage && dataUrl) {
+    return (
+      <img
+        src={dataUrl}
+        alt={attachment.name}
+        title={attachment.name}
+        onClick={() => onExpand(dataUrl)}
+        style={{
+          width: 80,
+          height: 80,
+          objectFit: "cover",
+          borderRadius: 8,
+          cursor: "pointer",
+          border: "1.5px solid rgba(60,102,99,0.2)",
+        }}
+      />
+    );
+  }
+
+  return (
+    <div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 5,
+      padding: "5px 9px",
+      borderRadius: 8,
+      background: "rgba(60,102,99,0.08)",
+      border: "1px solid rgba(60,102,99,0.18)",
+      fontSize: 11,
+      color: "var(--text-sub, #636E72)",
+    }}>
+      <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+        <polyline points="14 2 14 8 20 8"/>
+      </svg>
+      {attachment.name}
+    </div>
+  );
+}
+
+function UserMessage({ msg, agentId }: { msg: ForumMessage; agentId?: string }) {
   const [expandedImg, setExpandedImg] = useState<string | null>(null);
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start", flexDirection: "row-reverse" }}>
@@ -188,16 +316,10 @@ function UserMessage({ msg }: { msg: ForumMessage }) {
             {msg.attachments.map((att, i) => (
               att.mimeType.startsWith("image/") ? (
                 <div key={i} style={{ position: "relative" }}>
-                  <img
-                    src={att.dataUrl}
-                    alt={att.name}
-                    title={att.name}
-                    onClick={() => setExpandedImg(att.dataUrl)}
-                    style={{
-                      width: 80, height: 80, objectFit: "cover",
-                      borderRadius: 8, cursor: "pointer",
-                      border: "1.5px solid rgba(60,102,99,0.2)",
-                    }}
+                  <ForumAttachmentThumbnail
+                    agentId={agentId}
+                    attachment={att}
+                    onExpand={setExpandedImg}
                   />
                 </div>
               ) : (
@@ -257,7 +379,7 @@ function QuestionBubble({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   const [freeText, setFreeText] = useState("");
   const answerQuestion = useForumStore(s => s.answerForumQuestion);
 
-  const agent = forum.agents.find(a => a.agentId === msg.agentId);
+  const agent = forum.agents?.find(a => a.agentId === msg.agentId);
   const color = agent?.robeColor || "#4A9E96";
   const answered = msg.questionAnswered;
 
@@ -528,159 +650,44 @@ function ArtifactShelf({
   selectedArtifactId: string | null;
   onArtifactClick: (id: string) => void;
 }) {
-  // Only show deliverable artifacts — intermediate research/strategy notes are
-  // already visible on the blackboard and don't need separate cards here.
-  const allArtifacts = forum.artifacts ?? [];
-  let deliverables = allArtifacts.filter(a => a.isDeliverable);
-
-  // Backwards-compat: forums produced before the isDeliverable field was added
-  // have no flagged deliverables. In that case, show only the last artifact
-  // (the final output) rather than flooding the shelf with intermediate notes.
-  if (deliverables.length === 0 && allArtifacts.length > 0) {
-    deliverables = [allArtifacts[allArtifacts.length - 1]];
-  }
-
-  // Hide the shelf entirely when there's nothing to show.
-  if (deliverables.length === 0) return null;
-
-  return (
-    <div style={{
-      borderTop: "1px solid rgba(74,158,150,0.2)",
-      background: "rgba(74,158,150,0.04)",
-      flexShrink: 0,
-      padding: "10px 14px 12px",
-    }}>
-      {/* Header */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 6, marginBottom: 8,
-      }}>
-        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2.5} strokeLinecap="round">
-          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-          <polyline points="22 4 12 14.01 9 11.01"/>
-        </svg>
-        <span style={{
-          fontSize: 10, fontWeight: 700, textTransform: "uppercase",
-          letterSpacing: "0.07em", color: "#4A9E96",
-        }}>
-          {deliverables.length === 1 ? "Deliverable" : `Deliverables · ${deliverables.length}`}
-        </span>
-      </div>
-
-      {/* Cards — vertical stack in the thread column, not a horizontal scroll */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {deliverables.map(artifact => {
-          const meta = ARTIFACT_META[artifact.type] ?? ARTIFACT_META.markdown;
-          const isSelected = artifact.id === selectedArtifactId;
-          const preview = artifact.preview ?? derivePreview(artifact.content, artifact.type);
-          const agent = forum.agents.find(a => a.agentId === artifact.agentId);
-
-          return (
-            <button
-              key={artifact.id}
-              onClick={() => onArtifactClick(artifact.id)}
-              style={{
-                width: "100%",
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "10px 12px",
-                borderRadius: 10,
-                background: isSelected ? `${meta.color}12` : "var(--surface-card, #fff)",
-                border: isSelected
-                  ? `1.5px solid ${meta.color}55`
-                  : "1.5px solid rgba(74,158,150,0.18)",
-                cursor: "pointer", textAlign: "left",
-                fontFamily: "inherit",
-                transition: "all 0.15s ease",
-                boxShadow: isSelected ? `0 2px 10px ${meta.color}20` : "0 1px 3px rgba(0,0,0,0.04)",
-              }}
-              onMouseEnter={e => {
-                if (!isSelected) (e.currentTarget as HTMLButtonElement).style.borderColor = `${meta.color}44`;
-              }}
-              onMouseLeave={e => {
-                if (!isSelected) (e.currentTarget as HTMLButtonElement).style.borderColor = "rgba(74,158,150,0.18)";
-              }}
-            >
-              {/* Type icon */}
-              <div style={{
-                width: 30, height: 30, borderRadius: 8, flexShrink: 0,
-                background: `${meta.color}15`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                color: meta.color,
-              }}>
-                {meta.icon}
-              </div>
-
-              {/* Text */}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{
-                  fontSize: 12, fontWeight: 700,
-                  color: "var(--text-main, #303330)",
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                  marginBottom: 2,
-                }}>
-                  {artifact.title}
-                </div>
-                <div style={{
-                  fontSize: 10.5, lineHeight: 1.4,
-                  color: "var(--text-sub, #636E72)", opacity: 0.7,
-                  overflow: "hidden", display: "-webkit-box",
-                  WebkitLineClamp: 1, WebkitBoxOrient: "vertical",
-                } as React.CSSProperties}>
-                  {preview}
-                </div>
-              </div>
-
-              {/* Selected indicator or open arrow */}
-              <div style={{ flexShrink: 0, color: isSelected ? meta.color : "rgba(0,0,0,0.2)" }}>
-                {isSelected ? (
-                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                ) : (
-                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-                    <polyline points="9 18 15 12 9 6"/>
-                  </svg>
-                )}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Made with Canopy watermark — subtle, single instance */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 4,
-        marginTop: 8, opacity: 0.3,
-      }}>
-        <img src="/app-icon.png" alt="" style={{ width: 9, height: 9, objectFit: "contain" }} />
-        <span style={{ fontSize: 9, color: "var(--text-sub, #636E72)", letterSpacing: "0.02em" }}>
-          Made with Canopy
-        </span>
-      </div>
-    </div>
-  );
+  return null; // The Artifact Shelf is deprecated and has been merged into the right-hand filetree panel per user directive.
 }
 
 // ─── Input bar ────────────────────────────────────────────────────────────────
 
 interface Attachment { name: string; dataUrl: string; mimeType: string }
 
-function ThreadInput({ forumId }: { forumId: string }) {
-  const [text, setText] = useState("");
+function ThreadInput({ forumId, onSendMessage }: { forumId: string; onSendMessage?: (text: string, attachments: Attachment[]) => void }) {
+  const forum = useForumStore(s => s.forums.find(f => f.id === forumId));
+  const setForumDraft = useForumStore(s => s.setForumDraft);
+  
+  const [text, setText] = useState(forum?.draftMessage || "");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const addMsg = useForumStore(s => s.addForumMessage);
+
+  // Sync draft message when typing
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement | HTMLInputElement>) => {
+    setText(e.target.value);
+    setForumDraft(forumId, e.target.value);
+  };
 
   const canSend = text.trim().length > 0 || attachments.length > 0;
 
   const send = () => {
     if (!canSend) return;
-    addMsg(forumId, {
-      kind: "chat",
-      sender: "user",
-      text: text.trim(),
-      attachments: attachments.length > 0 ? attachments : undefined,
-    });
+    if (onSendMessage) {
+      onSendMessage(text.trim(), attachments);
+    } else {
+      addMsg(forumId, {
+        kind: "chat",
+        sender: "user",
+        text: text.trim(),
+        attachments: attachments.length > 0 ? attachments : undefined,
+      });
+    }
     setText("");
+    setForumDraft(forumId, "");
     setAttachments([]);
   };
 
@@ -787,7 +794,7 @@ function ThreadInput({ forumId }: { forumId: string }) {
 
         <textarea
           value={text}
-          onChange={e => setText(e.target.value)}
+          onChange={handleTextChange}
           onKeyDown={e => {
             if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
           }}
@@ -856,7 +863,7 @@ const TYPING_ACTIONS = ["…"];
 function TypingBubble({ forum }: { forum: Forum }) {
   const [elapsed, setElapsed] = useState(0);
 
-  const activeAgent = forum.agents.find(a =>
+  const activeAgent = (forum.agents || []).find(a =>
     a.currentAction && TYPING_ACTIONS.some(suffix => a.currentAction!.endsWith(suffix))
   );
 
@@ -937,12 +944,12 @@ function TypingBubble({ forum }: { forum: Forum }) {
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Props) {
+export function ForumThread({ forum, selectedArtifactId, onArtifactClick, onSendMessage }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // The typing indicator is visible whenever any agent is working
   const isTyping = forum.status === "active" &&
-    forum.agents.some(a => a.currentAction?.endsWith("…"));
+    (forum.agents || []).some(a => a.currentAction?.endsWith("…"));
 
   // Auto-scroll on new messages OR when typing indicator appears/disappears
   useEffect(() => {
@@ -973,8 +980,9 @@ export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Prop
           if (msg.kind === "handoff") return <HandoffChip key={msg.id} msg={msg} forum={forum} />;
           if (msg.kind === "vote") return <VoteChip key={msg.id} msg={msg} forum={forum} />;
           if (msg.kind === "question") return <QuestionBubble key={msg.id} msg={msg} forum={forum} />;
-          if (msg.sender === "user") return <UserMessage key={msg.id} msg={msg} />;
-          return <AgentMessage key={msg.id} msg={msg} forum={forum} />;
+          const firstAgentId = forum.agents?.[0]?.agentId;
+          if (msg.sender === "user") return <UserMessage key={msg.id} msg={msg} agentId={firstAgentId} />;
+          return <AgentMessage key={msg.id} msg={msg} forum={forum} onArtifactClick={onArtifactClick} />;
         })}
 
         {/* Live typing indicator — shown while any agent call is in-flight */}
@@ -991,7 +999,7 @@ export function ForumThread({ forum, selectedArtifactId, onArtifactClick }: Prop
       />
 
       {/* Input */}
-      <ThreadInput forumId={forum.id} />
+      <ThreadInput forumId={forum.id} onSendMessage={onSendMessage} />
     </div>
   );
 }

@@ -632,8 +632,7 @@ mod tests {
         }
 
         let app = tauri::test::mock_app();
-        let handle = app.handle();
-        let db = crate::db::Database::init(&handle).unwrap();
+        let db = crate::db::Database::init_in_memory().unwrap();
         app.manage(db);
         let state = app.state::<crate::db::Database>();
 

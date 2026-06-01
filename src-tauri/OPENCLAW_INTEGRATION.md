@@ -4,7 +4,7 @@ This document captures every non-obvious configuration detail that has caused Ca
 to stop communicating. Read this before modifying anything in `openclaw.rs`, `audit_openclaw.rs`,
 `slack.rs`, `docker.rs`, or `model_constants.rs`.
 
-Last verified against: **OpenClaw 2026.4.14 / Node 24.14.0** inside OrbStack (arm64)
+Last verified against: **OpenClaw 2026.5.26 / Node 24.14.0** inside OrbStack (arm64)
 
 ---
 

@@ -224,6 +224,12 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
         </div>
       )}
 
+      
+      {/* ── Token Spend Chart ── */}
+      <div style={{ ...glass(0.5), padding: "20px 24px", borderRadius: 16, display: "flex", flexDirection: "column", minHeight: 220 }}>
+        <TokenSpendChart agentId={agent.id} />
+      </div>
+
       {/* ── Work Log — full width, the main reading surface on this tab ── */}
       <div style={{ ...glass(0.5), padding: "20px 24px", borderRadius: 16, display: "flex", flexDirection: "column", minHeight: 320 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>

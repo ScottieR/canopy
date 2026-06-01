@@ -289,7 +289,7 @@ process.on('unhandledRejection', (reason, promise) => {
     format!(
         r#"services:
   canopy-gateway:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:2026.5.26
     container_name: canopy-gateway
     restart: unless-stopped
     labels:
@@ -419,7 +419,7 @@ process.on('unhandledRejection', (reason, promise) => {
     format!(
         r#"services:
   canopy-isolated-{id}:
-    image: ghcr.io/openclaw/openclaw:latest
+    image: ghcr.io/openclaw/openclaw:2026.5.26
     container_name: canopy-isolated-{id}
     restart: unless-stopped
     labels:
@@ -564,312 +564,144 @@ fn preflight_sanitize_auth_profiles(data_dir: &PathBuf) {
 /// operational state (trustedProxies, plugin sub-configs, etc.) on first startup.
 /// User credentials live in keychain + keychain-backed env vars in docker-compose —
 /// not in openclaw.json — so they are not lost by this fresh-write approach.
-fn preflight_write_openclaw_json(data_dir: &PathBuf, token: &str) {
-    let config_path = data_dir.join("openclaw-state").join("openclaw.json");
 
-    // Start mostly clean, but carry forward the few fields that are legitimately
-    // dynamic per-user state — anything that's already a snapshot of keychain-backed
-    // credentials we wrote in a previous session and want the gateway to boot up
-    // with directly, instead of forcing a mid-boot restart from boot_sync_agents.
-    //
-    // What we copy and why:
-    //   • meta — OpenClaw fires a "missing-meta-vs-last-good" anomaly and enters
-    //     a recovery loop if this field is dropped.
-    //   • channels.{slack,gmail,googleCalendar,googleDrive} — per-agent account
-    //     maps written by sync_gateway_channels_internal from keychain on a
-    //     previous run. Wiping these meant the container booted with the
-    //     channel DISABLED until boot_sync_agents rewrote and restarted it,
-    //     which surfaced as "Slack bot token missing for account X" runtime
-    //     errors. The defensive scrub a few lines below still removes the
-    //     dangerous single-tenant `botToken`/`appToken` fields (they're the
-    //     cross-agent leak vector — see slack.rs::get_bot_token for the
-    //     matching guard).
-    //   • bindings — agent ↔ account routing. Must travel with the account
-    //     maps; orphaned bindings or orphaned accounts both break dispatch.
-    //   • plugins.entries.{slack,google}.enabled — mirrors the plugin-on/off
-    //     state that goes with the accounts. Without this the channels are
-    //     populated but the plugin is off.
-    //
-    // What we deliberately do NOT carry forward (handled by overrides below):
-    //   • agents.defaults.model — overwritten with the current keychain-key-
-    //     derived default, so any stale/deprecated model string in the file
-    //     gets blown away regardless.
-    //   • gateway.* — fully overwritten from constants.
-    //   • agents.list — cleared further down to keep the ".openclaw-applied"
-    //     comparison deterministic; restored after preflight by start_gateway.
-    let mut cfg: JsonValue = serde_json::json!({});
-
-    if let Ok(content) = std::fs::read_to_string(&config_path) {
-        if let Ok(existing_cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(meta) = existing_cfg.get("meta") {
-                cfg["meta"] = meta.clone();
-            }
-
-            // Per-agent channel state. Built atomically by
-            // sync_gateway_channels_internal from keychain — never hand-edited
-            // — so carrying it forward is safe and is what makes Slack work on
-            // boot for users with existing per-agent connections.
-            for ch in ["slack", "gmail", "googleCalendar", "googleDrive"] {
-                if let Some(ch_cfg) = existing_cfg.pointer(&format!("/channels/{}", ch)) {
-                    cfg["channels"][ch] = ch_cfg.clone();
-                }
-            }
-            if let Some(bindings) = existing_cfg.get("bindings") {
-                cfg["bindings"] = bindings.clone();
-            }
-            for plugin in ["slack", "google"] {
-                if let Some(enabled) = existing_cfg.pointer(
-                    &format!("/plugins/entries/{}/enabled", plugin)
-                ) {
-                    cfg["plugins"]["entries"][plugin]["enabled"] = enabled.clone();
-                }
+fn merge_json(a: &mut serde_json::Value, b: &serde_json::Value) {
+    match (a, b) {
+        (&mut serde_json::Value::Object(ref mut a_obj), serde_json::Value::Object(b_obj)) => {
+            for (k, v) in b_obj {
+                merge_json(a_obj.entry(k.clone()).or_insert(serde_json::Value::Null), v);
             }
         }
-    }
-
-    // ── Gateway auth — always set to our token ────────────────────────────────
-    //
-    // gateway.auth.token  — SERVER-SIDE: the gateway validates incoming requests against
-    //                       this value. Any CLI invocation or HTTP request that doesn't
-    //                       present this token is rejected.
-    //
-    // ⚠️  Do NOT add a top-level `gateway.token` field here. OpenClaw 2026.4.14's schema
-    // does not recognise it and will reject the entire config with:
-    //   "Config invalid — gateway: Unrecognized key: 'token'"
-    // causing the container to crash-loop indefinitely.
-    //
-    // The CLI authenticates to the local gateway by reading `gateway.auth.token` from the
-    // same openclaw.json it shares with the server process. No separate client field is needed
-    // — the presence of auth.mode="token" + auth.token=<value> is sufficient for both sides.
-    cfg["gateway"]["auth"]["mode"] = serde_json::json!("token");
-    cfg["gateway"]["auth"]["token"] = serde_json::json!(token);
-    cfg["gateway"]["mode"] = serde_json::json!("local");
-    cfg["gateway"]["port"] = serde_json::json!(18789);
-
-    // ── Slack channel — strictly per-agent isolation ────────────────────────────
-    //
-    // The only Slack fields that are dangerous to carry forward are the GLOBAL
-    // single-tenant `botToken` / `appToken`. Those create the cross-agent
-    // contamination problem: any agent missing its own per-agent token would
-    // silently fall back to whatever was in the global slot. They're never
-    // written by the per-agent path; if we see them in the file at all it's
-    // leftover from the legacy `start_slack_listener` path and must be removed.
-    //
-    // The per-agent `channels.slack.accounts.{agent_id}` map and its sibling
-    // bindings were preserved above from the existing file (when present). They
-    // came from keychain via sync_gateway_channels_internal and let the
-    // gateway boot up with Slack already working, without needing an
-    // expensive mid-boot restart.
-    //
-    // If we have accounts, enable the plugin so it picks them up. If we have
-    // none, force enabled=false so OpenClaw doesn't try to start Socket Mode
-    // with nothing to connect.
-    {
-        if let Some(slack) = cfg["channels"]["slack"].as_object_mut() {
-            slack.remove("botToken");
-            slack.remove("appToken");
-            // groupPolicy must always be "open" — see audit_openclaw::repair_openclaw_config.
-            // If a previous file had "allowlist" or similar this flips it back.
-            slack.insert("groupPolicy".to_string(), serde_json::json!("open"));
-            slack.insert("mode".to_string(), serde_json::json!("socket"));
-
-            let has_accounts = slack
-                .get("accounts")
-                .and_then(|v| v.as_object())
-                .map(|m| !m.is_empty())
-                .unwrap_or(false);
-            slack.insert("enabled".to_string(), serde_json::json!(has_accounts));
-
-            if has_accounts {
-                tracing::info!(
-                    "preflight: preserved {} per-agent Slack account(s) — gateway will boot with Slack ENABLED",
-                    slack.get("accounts").and_then(|v| v.as_object()).map(|m| m.len()).unwrap_or(0)
-                );
-                cfg["plugins"]["entries"]["slack"]["enabled"] = serde_json::json!(true);
-            } else {
-                tracing::info!("preflight: no per-agent Slack accounts in existing config — gateway will boot with Slack DISABLED");
-            }
-        }
-    }
-
-    // ── Surgically remove ONLY the schema-rejected key ───────────────────────
-    // OpenClaw validates openclaw.json on startup. Any unrecognized key under
-    // `gateway` triggers an infinite `openclaw doctor --fix` loop that permanently
-    // blocks the Node.js event loop.
-    //
-    // IMPORTANT: Do NOT use gw.retain() or otherwise strip the gateway object to
-    // a fixed allow-list. OpenClaw writes back to the bind-mount openclaw.json
-    // during normal operation (adding agent state, channel config, etc.) and tracks
-    // a "last-good" config size. If we strip the file from ~1500 bytes to ~600 bytes,
-    // OpenClaw fires a "size-drop-vs-last-good" anomaly on next startup and enters
-    // a recovery loop that spirals to 1000+ PIDs.
-    //
-    // Instead: only remove the ONE key we know is invalid. Everything else OpenClaw
-    // legitimately wrote (trustedProxies, controlUi origins, channel state, etc.)
-    // must be preserved so the config size stays stable across sessions.
-    if let Some(gw) = cfg["gateway"].as_object_mut() {
-        gw.remove("bonjour"); // schema-rejected; causes doctor --fix loop if present
-    }
-
-    // ── Workspace path — Removed ──────────────────────────────────────────────
-    // Do NOT set agents.defaults.workspace to the root /home/node/.openclaw/workspace
-    // This causes OpenClaw to recursively index all agents' folders on startup, leading
-    // to an exponential memory leak and PID exhaustion. Each agent gets its workspace
-    // explicitly defined via `--workspace` in `openclaw agents add` instead.
-
-    // ── Force-set a known-good default model ─────────────────────────────────
-    // When a PID spiral corrupts the openclaw.json (e.g. writing "openai/gpt-5.4",
-    // a phantom model that doesn't exist), ACPX's embedded runtime tries to initialize
-    // the OpenAI client for that model on every startup. The client hangs for 4-8
-    // minutes trying to connect/validate, which blocks the entire Node.js event loop —
-    // IPC never responds even though the gateway reports "ready".
-    //
-    // Always override to a known-good model chosen based on which API keys are in the
-    // macOS Keychain at boot time. Priority: Anthropic → OpenAI → Gemini. This is safe
-    // because:
-    //   • Each agent gets its own model set via `openclaw agents add --model X`
-    //   • agents.defaults.model is only the fallback for agents with no explicit model
-    //   • We select from keys the user has actually configured — no mismatch possible
-    //
-    // ⚠️  CRITICAL: OpenClaw requires model to be an OBJECT `{"primary": "..."}`, NOT a
-    // bare string. A plain string is silently ignored — the agent has no model and every
-    // openclaw agent --message call returns "OpenClaw: model not found" (or times out).
-    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
-    let has_openai    = crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
-    let has_gemini    = crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
-    let default_model = crate::model_constants::default_model_from_available_keys(has_anthropic, has_openai, has_gemini);
-    tracing::info!(
-        "preflight: selecting gateway default model '{}' (anthropic={}, openai={}, gemini={})",
-        default_model, has_anthropic, has_openai, has_gemini
-    );
-    cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": default_model });
-    // Register the model in the models map so ACPX knows it is a valid selection.
-    // The empty-object value tells OpenClaw to use global defaults for that model.
-    cfg["agents"]["defaults"]["models"][default_model] = serde_json::json!({});
-
-    // ── Enable memory search with ChromaDB (for long-term RAG memory) ─────────
-    cfg["agents"]["defaults"]["memorySearch"]["enabled"] = serde_json::json!(true);
-    cfg["agents"]["defaults"]["memorySearch"]["provider"] = serde_json::json!("chroma");
-    cfg["agents"]["defaults"]["memorySearch"]["remote"] = serde_json::json!({
-        "baseUrl": "http://canopy-chroma:8000"
-    });
-
-    // ── Default skills baseline (read-only, lightweight) ─────────────────────
-    //
-    // `agents.defaults.skills` is the FALLBACK applied to any agent that doesn't have
-    // its own `agents.list[i].skills` array. Per-agent skills (browser, vision, canvas,
-    // proxy, coding, etc.) are populated by `sync_agent_skills` from the user's
-    // capability toggles — the per-agent list is the source of truth.
-    //
-    // We keep the default minimal so:
-    //   1. A brand-new agent without a per-agent override doesn't accidentally inherit
-    //      heavy/risky skills (code execution, browser navigation) until explicitly opted in.
-    //   2. OpenClaw doesn't default to "unrestricted" mode, which loads all 15+ installed
-    //      plugins (voice, vision, proxy, canvas, etc.) and OOMs the container.
-    //
-    // `gog` (search) and `summarize` are the read-only baseline — every agent can search
-    // the web and condense documents; nothing else is granted unless toggled per-agent.
-    cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize"]);
-
-    // ── Plugin enable/disable defaults ────────────────────────────────────────
-    //
-    // Plugin IDs from gateway log: "ready (5 plugins: acpx, browser, device-pair,
-    // phone-control, talk-voice)". The acpx plugin is always enabled (built-in core).
-    //
-    // Defaults below reflect a tested-stable configuration:
-    //   • browser     — REQUIRED. ACPX co-initializes with browser via a shared internal
-    //                   event (observed: both register at the exact same moment after
-    //                   Bonjour announces). Disabling leaves ACPX stuck waiting forever.
-    //   • talk-voice  — enabled. Voice support is a first-class feature; the audio codec
-    //                   sidecars (~20–40 PIDs) are within budget for prosumer Mac
-    //                   hardware now that gateway is on a dedicated container.
-    //   • google      — enabled. Required for Gemini API via ACPX.
-    //   • device-pair — DISABLED. Bluetooth/LAN device discovery retry-loops in Docker's
-    //                   bridge network and blocks the Node.js event loop. Re-enable
-    //                   only if/when Canopy adds device-pairing UX.
-    //   • phone-control — DISABLED. iMessage relay process hangs in Docker (no macOS IPC
-    //                   from inside the container). Canopy uses host-side iMessage
-    //                   integration instead.
-    //
-    // Per-agent overrides for these plugins should NOT be set here — they're global to
-    // the gateway. Agent-level capability toggles (browser/vision/canvas/etc.) live in
-    // `agents.list[i].skills` and are managed by `sync_agent_skills`.
-    cfg["plugins"]["entries"]["browser"]["enabled"]       = serde_json::json!(true);
-    cfg["browser"]["noSandbox"]                           = serde_json::json!(true);
-    cfg["plugins"]["entries"]["talk-voice"]["enabled"]    = serde_json::json!(true);
-    cfg["plugins"]["entries"]["google"]["enabled"]        = serde_json::json!(true);
-    cfg["plugins"]["entries"]["device-pair"]["enabled"]   = serde_json::json!(false);
-    cfg["plugins"]["entries"]["phone-control"]["enabled"] = serde_json::json!(false);
-
-    // ── Browser bridge — attach to the host-side Chrome via the JIT proxy ────
-    //
-    // Why this matters: OpenClaw's `browser` tool, by default, tries to LAUNCH
-    // `/usr/bin/chromium` INSIDE the container in headed mode. There is no display
-    // server in Docker's bridge network, so the launch hangs and every browser tool
-    // call times out with "Restart the OpenClaw gateway."
-    //
-    // Setting `browser.attachOnly = true` tells OpenClaw not to launch its own
-    // browser. Setting `browser.cdpUrl` tells it where to connect instead — pointed
-    // at our host-side JIT proxy on a fixed port. The JIT proxy:
-    //   • rewrites the `Host:` header to `127.0.0.1:<chrome_port>` so Chrome's
-    //     DNS-rebinding defence doesn't reject the upgrade,
-    //   • spawns a real Chrome on the host (via Canopy's BrowserManager) on first
-    //     connection — real Chrome on macOS preserves the anti-bot fingerprint that
-    //     in-container headless Chromium would lose.
-    //
-    // Architecture: ONE shared Chrome instance for the whole gateway. Each agent
-    // session gets its own Playwright BrowserContext, which OpenClaw creates per
-    // chat — so cookies, storage, and login state stay isolated between agents
-    // even though the Chrome process is shared. Profile-per-process isolation was
-    // overkill; BrowserContext-per-agent gives us the security property we need
-    // with one moving part instead of N.
-    //
-    // The port (19800) is fixed (not per-agent-hashed) because `browser.cdpUrl` is
-    // a single global value, not a per-agent override. If we ever need per-agent
-    // ports we'd need OpenClaw to grow `agents.list[i].browser.cdpUrl` first.
-    cfg["browser"]["attachOnly"] = serde_json::json!(true);
-    cfg["browser"]["cdpUrl"]     = serde_json::json!(format!(
-        "http://host.docker.internal:{}",
-        crate::browser_manager::SHARED_BRIDGE_PORT
-    ));
-    // Force OpenClaw's browser tool to default to the `openclaw` profile (our
-    // bridge-attached Chrome) instead of letting the LLM pick.
-    //
-    // Why this matters: the browser tool's doc string ships with this line —
-    //   "Use only when existing logins/cookies matter and the user is present"
-    // — which biases the LLM toward calling the tool with `profile="user"`
-    // whenever a task touches anything that *sounds* like a logged-in session.
-    // `profile="user"` attempts an in-container attach to Chrome's default
-    // user-data-dir (`/home/node/.config/google-chrome`) which doesn't exist in
-    // our setup, so every such call fails with "Chrome MCP existing-session
-    // attach… DevToolsActivePort not found".
-    //
-    // `browser.defaultProfile` is read by browser-doctor.js and applied when
-    // the agent omits the `profile` parameter. Setting it to "openclaw" means
-    // every default-shaped tool call routes through the bridge we built, no
-    // per-prompt nudging required.
-    cfg["browser"]["defaultProfile"] = serde_json::json!("openclaw");
-
-    // ── Clear the registered agents list ─────────────────────────────────────
-    // This produces a stable, deterministic config that start_gateway() can compare
-    // against the ".openclaw-applied" marker to decide whether a container restart
-    // is needed. Including agents.list would make the config dynamic (agents are
-    // added/removed during normal use) and cause spurious restart decisions.
-    //
-    // start_gateway() saves the existing agents list BEFORE calling this function
-    // and restores it to openclaw.json after writing (but only when NOT recreating
-    // the container), so OpenClaw boots with known agents on normal restarts.
-    // On container recreate, the agents list stays cleared to prevent hangs when
-    // OpenClaw tries to load agents whose dirs were just wiped.
-    cfg["agents"]["list"] = serde_json::json!([]);
-
-    if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-        match std::fs::write(&config_path, updated) {
-            Ok(_) => tracing::info!("preflight_write_openclaw_json: wrote {:?}", config_path),
-            Err(e) => tracing::warn!("preflight_write_openclaw_json: could not write {:?}: {}", config_path, e),
+        (a_val, b_val) => {
+            *a_val = b_val.clone();
         }
     }
 }
+
+pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isolated: bool, token: &str) {
+    let config_path = state_dir.join("openclaw.json");
+
+    // ── 1. Delete OpenClaw's backup configs to prevent "size-drop" anomaly ──────
+    if let Ok(entries) = std::fs::read_dir(state_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let is_backup = name.starts_with("openclaw.json.bak")
+                    || name.starts_with("openclaw.json.clobbered")
+                    || name.starts_with("openclaw.json.last-good")
+                    || name.starts_with(".openclaw-last-good");
+                if is_backup {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+
+    // ── 2. Build from Scratch (Whitelist Preservation) ─────────────────────────
+    let mut cfg = match std::fs::read_to_string(&config_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(existing) => {
+                let mut base = serde_json::json!({});
+                // Preserve crucial state to avoid anomaly loops and keep integrations
+                if let Some(meta) = existing.get("meta") { base["meta"] = meta.clone(); }
+                if let Some(channels) = existing.get("channels") { base["channels"] = channels.clone(); }
+                if let Some(bindings) = existing.get("bindings") { base["bindings"] = bindings.clone(); }
+                
+                // For plugins, preserve the enabled flags of specific integrations
+                if let Some(plugins) = existing.pointer("/plugins/entries") {
+                    if let Some(slack) = plugins.get("slack") { base["plugins"]["entries"]["slack"] = slack.clone(); }
+                    if let Some(google) = plugins.get("google") { base["plugins"]["entries"]["google"] = google.clone(); }
+                }
+
+                // For isolated containers, we must preserve their agents.list and full plugins
+                if is_isolated {
+                    if let Some(agents_list) = existing.pointer("/agents/list") {
+                        base["agents"]["list"] = agents_list.clone();
+                    }
+                    if let Some(plugins) = existing.get("plugins") {
+                        base["plugins"] = plugins.clone();
+                    }
+                }
+                base
+            }
+            Err(_) => serde_json::json!({}),
+        },
+        Err(_) => serde_json::json!({}),
+    };
+
+    // ── 3. Forceful Sanitization (Protects against known OpenClaw bugs) ─────────
+    if let Some(gw) = cfg.get_mut("gateway").and_then(|g| g.as_object_mut()) {
+        gw.remove("bonjour");
+    }
+
+    if let Some(channels) = cfg.get_mut("channels").and_then(|c| c.as_object_mut()) {
+        // Remove known broken/deprecated channels that cause OpenClaw to crash
+        channels.remove("bluebubbles");
+        
+        if let Some(slack) = channels.get_mut("slack").and_then(|s| s.as_object_mut()) {
+            slack.remove("botToken");
+            slack.remove("appToken");
+        }
+    }
+
+    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").is_ok();
+    let has_openai = crate::keychain::get_secret("OPENAI_API_KEY").is_ok();
+    let has_gemini = crate::keychain::get_secret("GEMINI_API_KEY").is_ok();
+    let default_model = crate::model_constants::default_model_from_available_keys(has_anthropic, has_openai, has_gemini);
+    
+    cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": default_model });
+    cfg["agents"]["defaults"]["models"][default_model] = serde_json::json!({});
+    cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize"]);
+
+    // ── 4. Build Required Baseline ─────────────────────────────────────────────
+    let mut required_baseline = serde_json::json!({
+        "gateway": {
+            "auth": {
+                "mode": "token",
+                "token": token
+            },
+            "mode": "local",
+            "port": 18789
+        }
+    });
+
+    // ── 5. Context-Aware Injections (Main Gateway Only) ────────────────────────
+    if !is_isolated {
+        required_baseline["agents"]["defaults"]["memorySearch"] = serde_json::json!({
+            "enabled": true,
+            "provider": "chroma",
+            "remote": {
+                "baseUrl": "http://canopy-chroma:8000"
+            }
+        });
+
+        required_baseline["plugins"]["entries"]["browser"]["enabled"] = serde_json::json!(true);
+        required_baseline["browser"] = serde_json::json!({
+            "noSandbox": true,
+            "attachOnly": true,
+            "cdpUrl": format!("http://host.docker.internal:{}", crate::browser_manager::SHARED_BRIDGE_PORT),
+            "defaultProfile": "openclaw"
+        });
+
+        required_baseline["plugins"]["entries"]["talk-voice"]["enabled"] = serde_json::json!(true);
+        required_baseline["plugins"]["entries"]["google"]["enabled"] = serde_json::json!(true);
+        required_baseline["plugins"]["entries"]["device-pair"]["enabled"] = serde_json::json!(false);
+        required_baseline["plugins"]["entries"]["phone-control"]["enabled"] = serde_json::json!(false);
+
+        cfg["agents"]["list"] = serde_json::json!([]);
+    }
+
+    // ── 6. Graceful Deep Merge ─────────────────────────────────────────────────
+    merge_json(&mut cfg, &required_baseline);
+
+    // ── 7. Write back ──────────────────────────────────────────────────────────
+    let _ = std::fs::create_dir_all(state_dir);
+    if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+        let _ = std::fs::write(&config_path, updated);
+        tracing::info!("preflight_sanitize_and_merge_config (isolated={}): ensured safe baseline config at {:?}", is_isolated, config_path);
+    }
+}
+
 
 #[tauri::command]
 pub async fn start_gateway(app_handle: tauri::AppHandle) -> Result<String, String> {
@@ -953,49 +785,6 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         }
     }
 
-    // ── Delete OpenClaw's backup configs to prevent "size-drop" anomaly ──────
-    // OpenClaw keeps numbered rotating backups (openclaw.json.bak.1, .bak.2, …)
-    // and saves every config we write as openclaw.json.clobbered.<timestamp> before
-    // overwriting it with a restore. Discovered by listing openclaw-state/:
-    //
-    //   openclaw.json.bak.1   (383 bytes — most recent, Apr 25)
-    //   openclaw.json.bak.2   (1305 bytes — Apr 24)
-    //   openclaw.json.bak.3   (1305 bytes — Apr 24)
-    //   openclaw.json.bak.4   (1791 bytes — Apr 23, the oldest/largest)
-    //   openclaw.json.clobbered.2026-04-25T18-07-09-893Z  (749 bytes)
-    //   … (many more clobbered files)
-    //
-    // On startup, OpenClaw reads the highest-numbered backup to get its "last-good"
-    // baseline size and compares it to the current config. If our config shrank
-    // (because we cleared agents.list in a previous run), it fires:
-    //
-    //   Config observe anomaly: openclaw.json (size-drop-vs-last-good:1540->749)
-    //   Config overwrite: openclaw.json (backup=openclaw.json.bak)
-    //
-    // It then RESTORES from the backup — overwriting our sanitized config with a
-    // corrupt one that may have the phantom model or bonjour key. Either blocks IPC.
-    //
-    // Delete ALL backup and clobbered files on every boot so OpenClaw has no baseline
-    // to compare against. Safe: it regenerates them on first clean startup, so the
-    // NEXT boot has a fresh, accurate baseline that matches our config.
-    if let Ok(entries) = std::fs::read_dir(&state_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                let is_backup = name.starts_with("openclaw.json.bak")
-                    || name.starts_with("openclaw.json.clobbered")
-                    || name.starts_with("openclaw.json.last-good")
-                    || name.starts_with(".openclaw-last-good");
-                if is_backup {
-                    match std::fs::remove_file(&path) {
-                        Ok(_) => tracing::info!("start_gateway: deleted OpenClaw state file '{}'", name),
-                        Err(e) => tracing::warn!("start_gateway: could not delete '{}': {}", name, e),
-                    }
-                }
-            }
-        }
-    }
-
     // ── Save agents.list BEFORE preflight overwrites openclaw.json ───────────────────────────
     // preflight_write_openclaw_json always clears agents.list so that the resulting config
     // is deterministic and stable — suitable for comparing against the ".openclaw-applied"
@@ -1033,7 +822,7 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
     // of openclaw.json that was in place when the container was last (re)started.
     // If the marker differs from what we want now → the running container has stale config
     // → stop it so compose-up recreates it fresh with the new file.
-    preflight_write_openclaw_json(&data_dir, crate::model_constants::GATEWAY_INTERNAL_TOKEN);
+    preflight_sanitize_and_merge_config(&state_dir, false, crate::model_constants::GATEWAY_INTERNAL_TOKEN);
     let openclaw_path = state_dir.join("openclaw.json");
     let desired_config = std::fs::read_to_string(&openclaw_path).unwrap_or_default();
 
@@ -1359,12 +1148,10 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
 
 pub fn ensure_browser_dependencies(container_name: String) {
     tauri::async_runtime::spawn(async move {
-        // Patch OpenClaw SSRF check to allow host.docker.internal
-        let _ = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "root", &container_name, "sed", "-i", "s/function isLoopbackHost(host) {/function isLoopbackHost(host) { if (host === 'host.docker.internal') return true;/g", "/app/dist/net-Dtn7wx2q.js"])
-            .output().await;
-
-        // Apply Gemini models / thinking budget fixes
+        // Apply Gemini models / thinking budget fixes, and SSRF patch for host.docker.internal.
+        // The SSRF patch was previously a hardcoded `sed -i` against `/app/dist/net-Dtn7wx2q.js`,
+        // but that filename is content-addressable and changes with every OpenClaw release.
+        // It is now folded into the JS scan below so it works across versions.
         let patch_js = r#"
 const fs = require("fs");
 const path = require("path");
@@ -1376,6 +1163,17 @@ for (const file of files) {
   if (fs.statSync(filePath).isFile() && file.endsWith(".js")) {
     let content = fs.readFileSync(filePath, "utf8");
     let modified = false;
+
+    // SSRF patch: allow host.docker.internal as a loopback-equivalent host so
+    // agents can reach Canopy's JIT server inside the OrbStack VM network.
+    if (content.includes("function isLoopbackHost(host)") && !content.includes("host.docker.internal")) {
+      content = content.replace(
+        "function isLoopbackHost(host) {",
+        "function isLoopbackHost(host) { if (host === 'host.docker.internal') return true;"
+      );
+      console.log("Patched isLoopbackHost (SSRF) in " + file);
+      modified = true;
+    }
 
     if (content.includes("isGemini3ProModel")) {
       const orig = content;
@@ -1421,9 +1219,39 @@ for (const file of files) {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 tracing::info!("ensure_browser_dependencies: Gemini patch applied successfully:\n{}", stdout.trim());
-                let _ = crate::openclaw::get_docker_command()
-                    .args(["exec", &container_name, "pkill", "-USR1", "-f", "openclaw"])
-                    .output().await;
+                // SIGUSR1 tells OpenClaw to hot-reload its JSON config — NOT its JS code.
+                // It is therefore useless for making Gemini patches take effect (those
+                // require a full process restart to re-import the patched dist files).
+                //
+                // For ISOLATED containers, SIGUSR1 actively causes the crash loop:
+                //   • The container starts with a minimal openclaw.json (gateway block only).
+                //   • SIGUSR1 triggers a hot-reload, which OpenClaw 2026.5.26+ validates
+                //     strictly — it crashes/exits on a config that lacks required fields,
+                //     causing Docker to restart it, which triggers SIGUSR1 again, etc.
+                //   • The Gemini patches written to /app/dist/ persist in the container's
+                //     writable layer across restarts, so the next natural restart picks them
+                //     up without any signal.
+                //
+                // For the GATEWAY container, SIGUSR1 is only worth sending when non-patch
+                // channel/credential config changed — the Gemini patches don't need it.
+                // We send it only if files were actually changed AND this is not an isolated
+                // container, so at-rest gateway configs still get refreshed when needed.
+                let is_isolated = container_name.contains("isolated");
+                if stdout.contains("Patched") {
+                    if is_isolated {
+                        tracing::info!(
+                            "ensure_browser_dependencies: {} — Gemini JS patched; skipping SIGUSR1 \
+                             (isolated containers reload on natural restart, not SIGUSR1)",
+                            container_name
+                        );
+                    } else {
+                        let _ = crate::openclaw::get_docker_command()
+                            .args(["exec", &container_name, "pkill", "-USR1", "-f", "openclaw"])
+                            .output().await;
+                    }
+                } else {
+                    tracing::info!("ensure_browser_dependencies: no files modified by Gemini patch — skipping SIGUSR1 reload");
+                }
             }
             Ok(out) => {
                 tracing::error!("ensure_browser_dependencies: Gemini patch failed: {}", String::from_utf8_lossy(&out.stderr).trim());

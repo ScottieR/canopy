@@ -182,7 +182,7 @@ function extractText(response: unknown): string {
   // extended thinking is enabled (lines 1773-1775). Strip them so downstream
   // parsers (parseDraftResponse, question detection, etc.) only see the
   // actual agent response text.
-  const text = raw.replace(/\[THOUGHT_PROCESS\][\s\S]*?\[\/THOUGHT_PROCESS\]\n*/g, "").trim();
+  const text = raw.replace(/<think>[\s\S]*?<\/think>\n*/g, "").trim();
   if (!text) throw new Error("Empty response — no text extracted from agent reply");
   return text;
 }
@@ -223,7 +223,7 @@ function parseAgentQuestion(response: string): AgentQuestion | null {
 /** Hard cap on any single message to send_message.
  *  128 KB is the Rust-side limit. We stay comfortably below it so prompt
  *  template overhead never causes a surprise truncation. */
-const MAX_PROMPT_CHARS = 24_000;
+const MAX_PROMPT_CHARS = 180_000;
 
 /**
  * Trim a block of text that is embedded inside a larger prompt so the whole
@@ -238,6 +238,29 @@ function fitBlock(block: string, reservedForRest: number): string {
 }
 
 // ─── Agent role detection ─────────────────────────────────────────────────────
+
+function getAttachmentsContext(forum: Forum): string {
+  const attachments: { name: string; mimeType: string }[] = [];
+  forum.messages.forEach(m => {
+    if (m.attachments) {
+      m.attachments.forEach(att => {
+        if (!attachments.some(a => a.name === att.name)) {
+          attachments.push({ name: att.name, mimeType: att.mimeType });
+        }
+      });
+    }
+  });
+  if (attachments.length === 0) return "";
+  return attachments.map(att => `- "${att.name}" (${att.mimeType})`).join("\n");
+}
+
+function getSteeringDirectives(forum: Forum): string {
+  const userMessages = forum.messages.filter(
+    m => m.sender === "user" && m.kind === "chat" && !m.text.startsWith("[GenUI Event]")
+  );
+  if (userMessages.length === 0) return "";
+  return userMessages.map(m => `- "${m.text}"`).join("\n");
+}
 
 function findByRole(agents: ForumAgent[], ...terms: string[]): ForumAgent {
   return (
@@ -265,7 +288,13 @@ function buildKickoffPrompt(forum: Forum, agent: ForumAgent): string {
 **Your forum role:** ${agent.forumRole}
 ${teamList ? `**Also in this forum:** ${teamList}` : ""}
 
-Open the forum with a brief acknowledgement (2–3 sentences). Read the brief carefully, name the core challenge or goal, and indicate what you specifically will contribute. Keep it crisp — this is just the opening.`;
+Open the forum with a brief acknowledgement (2–3 sentences). Then, based on the brief, propose a high-level project plan with 2 to 4 actionable milestones for the team to complete. 
+
+You MUST output your response in EXACTLY this JSON format (no markdown fences, just the raw JSON object):
+{
+  "greeting": "Your brief 2-3 sentence acknowledgement...",
+  "milestones": ["First step name", "Second step name", "Final step name"]
+}`;
 }
 
 function buildClarifyPrompt(forum: Forum, agent: ForumAgent): string {
@@ -298,15 +327,49 @@ Rules:
 - If the brief is already clear enough, return: {"questions": []}`;
 }
 
+function buildParallelResearchPrompt(
+  forum: Forum,
+  agent: ForumAgent,
+  clarifications: string
+): string {
+  const steering = getSteeringDirectives(forum);
+  const attachments = getAttachmentsContext(forum);
+  const teamList = forum.agents
+    .filter(a => a.agentId !== agent.agentId)
+    .map(a => `${a.name} (${a.forumRole})`)
+    .join(", ");
+
+  return `You are ${agent.name}, ${agent.role}, participating in a collaborative forum.
+
+**Brief:** "${forum.brief}"
+${clarifications ? `\n**User clarifications:**\n${clarifications}\n` : ""}
+${steering ? `\n**User steering directives (incorporate these instructions directly):**\n${steering}\n` : ""}
+${attachments ? `\n**User uploaded files/attachments (reference these assets):**\n${attachments}\n` : ""}
+**Your forum role:** ${agent.forumRole}
+${teamList ? `**Other team members:** ${teamList}` : ""}
+
+This is the parallel RESEARCH & DISCOVERY phase. Using your specific expertise as ${agent.role}, provide substantive findings relevant to this brief. 
+Please focus on:
+1. Identify 2-3 best-in-class professional applications or software experiences in the real world related to this domain (e.g. Wanderlog/TripIt for itineraries; AirDNA/Airbnb for short term rentals; YNAB for budgets; Framebridge/Artfully Walls for gallery walls; LinkedIn/coaching tools for career moves) and deconstruct their core UX paradigms.
+2. State key facts, principles, or constraints that apply.
+3. Suggest options or layouts worth evaluating.
+
+Return your research as clear markdown with headers. Be specific to the actual brief — not generic filler. Aim for 200–400 words.`;
+}
+
 function buildResearchPrompt(
   forum: Forum,
   agent: ForumAgent,
   clarifications: string
 ): string {
+  const steering = getSteeringDirectives(forum);
+  const attachments = getAttachmentsContext(forum);
   return `You are ${agent.name}, ${agent.role}, participating in a collaborative forum.
 
 **Brief:** "${forum.brief}"
 ${clarifications ? `\n**User clarifications:**\n${clarifications}\n` : ""}
+${steering ? `\n**User steering directives:**\n${steering}\n` : ""}
+${attachments ? `\n**User uploaded files/attachments:**\n${attachments}\n` : ""}
 **Your forum role:** ${agent.forumRole}
 
 This is the RESEARCH & DISCOVERY phase. Using your expertise as ${agent.role}, provide substantive findings relevant to this brief. Include:
@@ -322,13 +385,16 @@ Otherwise, return your research as clear markdown with headers. Be specific to t
 }
 
 function buildStrategyPrompt(forum: Forum, agent: ForumAgent, researchText: string, clarifications: string): string {
-  // ~600 chars of fixed template; reserve that + clarification overhead
-  const reserved = 700 + clarifications.length + forum.brief.length;
+  const steering = getSteeringDirectives(forum);
+  const attachments = getAttachmentsContext(forum);
+  const reserved = 900 + clarifications.length + steering.length + attachments.length + forum.brief.length;
   const safeResearch = fitBlock(researchText, reserved);
   return `You are ${agent.name}, ${agent.role}, participating in a collaborative forum.
 
 **Brief:** "${forum.brief}"
 ${clarifications ? `\n**User clarifications:**\n${clarifications}\n` : ""}
+${steering ? `\n**User steering directives (incorporate these instructions directly):**\n${steering}\n` : ""}
+${attachments ? `\n**User uploaded files/attachments (reference these assets):**\n${attachments}\n` : ""}
 **Your forum role:** ${agent.forumRole}
 
 **Research findings from your team:**
@@ -336,6 +402,7 @@ ${safeResearch}
 
 This is the STRATEGIC APPROACH phase. Based on the research and your expertise as ${agent.role}, develop the recommended path forward:
 - Clear recommended direction with rationale
+- Deconstruct the UX paradigms of the best-in-class applications identified in the research phase and explain how we will emulate them
 - Key decisions the user needs to make
 - How to sequence the work
 - What to prioritise and why
@@ -350,10 +417,6 @@ interface DraftResponse {
   content: string;
 }
 
-/**
- * Parses the delimiter-based format/content response from the draft agent.
- * Falls back to HTML detection, then defaults to markdown.
- */
 function parseDraftResponse(raw: string): DraftResponse {
   const match = raw.match(/---FORMAT---\s*(markdown|html|genui)\s*---CONTENT---\s*([\s\S]*)/i);
   if (match) {
@@ -371,52 +434,49 @@ function parseDraftResponse(raw: string): DraftResponse {
     return { format: "html", content: trimmed };
   }
   if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    // Basic heuristic: if it's pure JSON, assume it's a genui payload
     try {
       JSON.parse(trimmed);
       return { format: "genui", content: trimmed };
     } catch {
-      // Not valid JSON, fall back
     }
   }
   return { format: "markdown", content: trimmed };
 }
 
 function buildDraftPrompt(forum: Forum, agent: ForumAgent, boardSoFar: string, clarifications: string): string {
-  const reserved = 1200 + clarifications.length + forum.brief.length;
+  const steering = getSteeringDirectives(forum);
+  const attachments = getAttachmentsContext(forum);
+  const reserved = 1500 + clarifications.length + steering.length + attachments.length + forum.brief.length;
   const safeBoard = fitBlock(boardSoFar, reserved);
   return `You are ${agent.name}, ${agent.role}, producing the final deliverable for a collaborative forum.
 
 **Brief:** "${forum.brief}"
 ${clarifications ? `\n**User clarifications:**\n${clarifications}\n` : ""}
+${steering ? `\n**User steering directives (MUST incorporate these instructions):**\n${steering}\n` : ""}
+${attachments ? `\n**User uploaded files/attachments (reference these assets directly):**\n${attachments}\n` : ""}
 **Your forum role:** ${agent.forumRole}
 
 **Work so far (research + strategy):**
 ${safeBoard}
 
-Choose the BEST FORMAT for this deliverable:
+**DEFAULT TO HTML.** The deliverable panel is a living canvas — rich interactive HTML is almost always more valuable than a static document. Choose HTML unless the output is genuinely prose-only (e.g. a cover letter, a recipe, a poem).
 
-**MARKDOWN** — for written documents, memos, action plans, itineraries, recipes, guides, recommendations, or any prose-first output.
+**HTML (strongly preferred)** — infographics, dashboards, interactive tools, comparison tables, timelines, maps, calculators, data visualizations, gallery displays, pricing tables, or any output where visual design conveys meaning. When using HTML:
+- Create a single, fully self-contained HTML file (all CSS and JS inline)
+- Color palette: primary #3c6663, accent #4A9E96, background #faf9f6, text #303330, card bg #ffffff
+- Make it polished, beautiful, responsive — not a placeholder. Think product-quality, not prototype.
+- EMULATE the best-in-class apps in this domain (e.g. Wanderlog for travel; AirDNA for STR pricing; YNAB for budgets; Artfully Walls for gallery layouts; Notion for structured plans). Include interactive elements (sliders, filters, toggles, tabs) where they add value.
+- If referencing uploaded image assets, use their EXACT filenames in src="..." or CSS url(...) (e.g. src="filename.png"). They will be resolved dynamically.
+- Add a subtle "Made with Canopy" watermark (bottom-right, 10px, opacity 0.3).
 
-**HTML** — for interactive tools, dashboards, calculators, visual timelines, comparison tables with filtering, data visualizations, or anything where interactivity or rich visual layout adds genuine value. When choosing HTML:
-- Create a single, fully self-contained HTML file
-- Style using: primary #3c6663, accent #4A9E96, background #faf9f6, text #303330
-- You may import Chart.js from https://cdn.jsdelivr.net/npm/chart.js or D3.js from https://d3js.org/d3.v7.min.js
-- Make it polished, beautiful, and immediately usable — not a demo
+**MARKDOWN** — use only for outputs that are inherently prose: memos, letters, recipes, step-by-step guides, or any brief where visual layout adds nothing.
 
-**GENUI** — for complex, native React-like Mini-Apps. Output a structured JSON object representing a GenUI component (e.g. DataTable, ApprovalCard, or Custom Html with embedded logic). 
+**GENUI** — for complex native React-like Mini-Apps requiring structured JSON component definitions.
 
 If you need to confirm ONE thing before drafting, ask as a structured question (nothing else):
 {"__type": "question", "text": "Your question?", "options": ["Option A", "Option B", "Option C"]}
 
 Otherwise, respond with EXACTLY this delimiter structure — nothing before ---FORMAT---, nothing after the content:
-
----FORMAT---
-markdown
----CONTENT---
-[your full markdown content here]
-
-OR:
 
 ---FORMAT---
 html
@@ -426,19 +486,30 @@ html
 OR:
 
 ---FORMAT---
+markdown
+---CONTENT---
+[your full markdown content here]
+
+OR:
+
+---FORMAT---
 genui
 ---CONTENT---
 [your stringified JSON GenUI payload here]
 
-Default to markdown if HTML or GenUI wouldn't genuinely improve this deliverable. When in doubt: if it's words, use markdown; if it's a tool or visualization, use HTML or GenUI. Be specific to the actual brief — no filler.`;
+Be specific to the actual brief content — no filler, no placeholder text. The user's agents worked hard to get here; make the deliverable worth opening.`;
 }
 
 function buildReviewPrompt(forum: Forum, agent: ForumAgent, draftBoard: string): string {
-  const reserved = 400 + forum.brief.length;
+  const steering = getSteeringDirectives(forum);
+  const attachments = getAttachmentsContext(forum);
+  const reserved = 500 + steering.length + attachments.length + forum.brief.length;
   const safeBoard = fitBlock(draftBoard, reserved);
   return `You are ${agent.name}, ${agent.role}. Your forum has produced a deliverable.
 
 **Original brief:** "${forum.brief}"
+${steering ? `\n**User steering directives:**\n${steering}\n` : ""}
+${attachments ? `\n**User uploaded files/attachments:**\n${attachments}\n` : ""}
 
 **Deliverable:**
 ${safeBoard}
@@ -475,6 +546,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     const {
       addForumMessage,
       addForumArtifact,
+      appendScratchpad,
       updateBlackboard,
       updateMilestone,
       updateAgentAction,
@@ -484,6 +556,82 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
     const agents = forum.agents;
     if (agents.length === 0) return;
+
+    // ── Progressive forum context writer ──────────────────────────────────────
+    // Writes/updates forum-context-{forumId}.md in every participating agent's
+    // workspace after each milestone. Agents read this when they need to recall
+    // forum context in individual chats, or when they want to reference the
+    // latest state of a long-running forum.
+    //
+    // Also appends a brief milestone entry to each agent's MEMORY.md so that
+    // cross-thread continuity works without manual note-taking.
+    const writeForumContextToAgents = async (phaseName: string, phaseContent: string) => {
+      const freshForum = useForumStore.getState().forums.find(f => f.id === forumId);
+      if (!freshForum) return;
+
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Build the full running forum-context file
+      const completedMilestones = freshForum.milestones.filter(m => m.status === "done").map(m => m.label);
+      const activeMilestone = freshForum.milestones.find(m => m.status === "active")?.label;
+
+      const contextFile = [
+        `# Forum Context: ${freshForum.title}`,
+        ``,
+        `**Brief:** ${freshForum.brief}`,
+        `**Status:** ${freshForum.status}  **Last updated:** ${today}`,
+        `**Team:** ${freshForum.agents.map(a => a.name).join(", ")}`,
+        ``,
+        `## Progress`,
+        completedMilestones.length > 0
+          ? completedMilestones.map(l => `- ✅ ${l}`).join("\n")
+          : "- (no phases complete yet)",
+        activeMilestone ? `- 🔄 ${activeMilestone} *(in progress)*` : "",
+        ``,
+        `## Latest Phase: ${phaseName}`,
+        ``,
+        phaseContent.slice(0, 3000), // cap to avoid huge files
+        phaseContent.length > 3000 ? "\n\n*(truncated — see blackboard for full content)*" : "",
+        ``,
+        `## Blackboard (current)`,
+        ``,
+        freshForum.blackboardContent.slice(0, 2000),
+        freshForum.blackboardContent.length > 2000 ? "\n\n*(truncated)*" : "",
+      ].filter(l => l !== undefined).join("\n");
+
+      // Memory entry for MEMORY.md
+      const memoryEntry = `[${today}] Forum "${freshForum.title}" — ${phaseName} complete. ${phaseContent.slice(0, 150).replace(/\n/g, " ")}…\n`;
+
+      // Write to each agent's workspace
+      for (const agent of freshForum.agents) {
+        try {
+          const { invoke } = await import("@tauri-apps/api/core");
+          // Write/replace the forum context file
+          await invoke("write_workspace_file", {
+            agentId: agent.agentId,
+            filename: `forum-context-${forumId}.md`,
+            content: contextFile,
+          });
+          // Append to MEMORY.md (read existing, append, write back)
+          try {
+            const existingMemory = await invoke<string>("read_workspace_file", {
+              agentId: agent.agentId,
+              filename: "MEMORY.md",
+            }).catch(() => "# Memory\n\n");
+            const updatedMemory = (existingMemory ?? "# Memory\n\n") + memoryEntry;
+            await invoke("write_workspace_file", {
+              agentId: agent.agentId,
+              filename: "MEMORY.md",
+              content: updatedMemory,
+            });
+          } catch {
+            // MEMORY.md update is best-effort — don't fail the forum if it errors
+          }
+        } catch (err) {
+          console.warn(`[ForumOrchestrator] Could not write forum context for agent ${agent.agentId}:`, err);
+        }
+      }
+    };
 
     // Role assignment — find best-fit agents for each phase
     const researcher = findByRole(agents, "research", "analyst", "data", "investigat");
@@ -537,14 +685,44 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
      *  failures are transient Node event-loop blips, not permanent failures.
      */
     const callAgent = async (agent: ForumAgent, prompt: string, phase: string): Promise<string> => {
-      const isTimeoutErr = (e: unknown) => {
-        const s = String(e).toLowerCase();
-        return s.includes("timeout") || s.includes("taking a long time");
-      };
+      const isTimeoutErr  = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("timeout") || s.includes("taking a long time"); };
+      const isRateLimitErr = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("rate limit") || s.includes("429") || s.includes("too many request"); };
+      // Quota / billing errors: retrying won't help — surface immediately and let other agents continue
+      const isQuotaErr     = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("quota") || s.includes("billing") || s.includes("credit") || s.includes("insufficient_quota") || s.includes("you've exceeded") || s.includes("has been exceeded"); };
 
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : "Retrying…");
+      const MAX_ATTEMPTS = 4;
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        if (stopped) throw new Error("Orchestrator stopped");
+        updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : `Retrying (${attempt})…`);
+        useForumStore.getState().incrementTokensAndCost?.(forumId, 150, 0.002);
         try {
+          // ── Upload attachments to agent workspace ──
+          const allAttachments: { name: string; dataUrl: string }[] = [];
+          const currentForum = useForumStore.getState().forums.find(f => f.id === forumId);
+          if (currentForum) {
+            currentForum.messages.forEach(m => {
+              if (m.attachments) {
+                m.attachments.forEach(att => {
+                  if (!allAttachments.some(a => a.name === att.name)) {
+                    allAttachments.push({ name: att.name, dataUrl: att.dataUrl });
+                  }
+                });
+              }
+            });
+          }
+          for (const att of allAttachments) {
+            try {
+              const safeFilename = att.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+              await invoke("upload_workspace_file", {
+                agentId: agent.agentId,
+                filename: safeFilename,
+                base64Data: att.dataUrl,
+              });
+            } catch (uploadErr) {
+              console.warn("Failed to upload attachment to agent workspace:", att.name, uploadErr);
+            }
+          }
+
           const response = await invoke<unknown>("send_message", {
             agentId: agent.agentId,
             message: prompt,
@@ -552,16 +730,34 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           });
           return extractText(response);
         } catch (err) {
-          if (isTimeoutErr(err) && attempt < 2) {
-            // Transient timeout — wait 5s and retry once before surfacing the error.
-            await new Promise(r => setTimeout(r, 5_000));
-            continue;
+          if (stopped) throw err;
+
+          // Quota/billing errors — don't retry, it won't help. Surface immediately.
+          if (isQuotaErr(err)) {
+            const d = diagnoseError(err, agent.name);
+            throw new Error(`[${d.summary}] ${d.detail} | FIX: ${d.fix}`);
           }
+
+          if (attempt < MAX_ATTEMPTS) {
+            if (isRateLimitErr(err)) {
+              // Exponential backoff with jitter: 4s, 8s, 16s + up to 2s random
+              const base = Math.pow(2, attempt + 1) * 1000;
+              const jitter = Math.random() * 2000;
+              updateAgentAction(forumId, agent.agentId, `Rate limited — waiting ${Math.round((base + jitter) / 1000)}s…`);
+              await new Promise(r => setTimeout(r, base + jitter));
+              continue;
+            }
+            if (isTimeoutErr(err)) {
+              // Transient timeout — short wait then retry
+              await new Promise(r => setTimeout(r, 5_000));
+              continue;
+            }
+          }
+
           const d = diagnoseError(err, agent.name);
           throw new Error(`[${d.summary}] ${d.detail} | FIX: ${d.fix}`);
         }
       }
-      // Unreachable — loop always returns or throws.
       throw new Error("callAgent: unexpected end of retry loop");
     };
 
@@ -635,12 +831,12 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         : preview;
     };
 
-    /** Pause the forum with a rich error message and suggested fix. */
-    const failForum = (err: unknown, currentAgent?: ForumAgent) => {
+    /** Pause the forum completely (used only for unexpected orchestrator crashes) */
+    const reportFatalError = (err: unknown) => {
       if (stopped) return;
-      const d = diagnoseError(err, currentAgent?.name);
+      const d = diagnoseError(err);
       const errorText = [
-        `⚠ Forum paused — ${d.summary}`,
+        `⚠ Fatal Orchestrator Error — ${d.summary}`,
         ``,
         d.detail ? `Error: ${d.detail}` : null,
         ``,
@@ -655,77 +851,184 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       for (const agent of agents) {
         updateAgentAction(forumId, agent.agentId, "Connection failed");
       }
-      // Clean up any pending answer resolvers so we don't leak Promises
       pendingAnswers.clear();
     };
 
-    try {
-      // ── Phase 0: Kickoff ──────────────────────────────────────────────────
-      for (const agent of agents) {
-        updateAgentAction(forumId, agent.agentId, "Reading brief…");
-      }
-
-      await new Promise<void>(r => setTimeout(r, 800));
+    /** Report an agent failure without pausing the rest of the forum */
+    const reportAgentError = (err: unknown, currentAgent: ForumAgent) => {
       if (stopped) return;
+      const d = diagnoseError(err, currentAgent.name);
+      const errorText = [
+        `⚠ Agent Issue — ${d.summary}`,
+        ``,
+        d.detail ? `Error: ${d.detail}` : null,
+        ``,
+        `Fix: ${d.fix}`,
+      ].filter(l => l !== null).join("\n");
+
+      addForumMessage(forumId, {
+        kind: "system", sender: "system",
+        text: errorText,
+      });
+      updateAgentAction(forumId, currentAgent.agentId, "Connection failed");
+    };
+
+    try {
+      // ── Resume detection ────────────────────────────────────────────────────
+      // When the orchestrator starts on a forum that has partial progress (e.g. the user
+      // navigated away, an agent failed mid-run, or the app restarted), we skip phases
+      // that already completed and recover answered questions rather than re-asking them.
+      const milestoneIsDone = (label: string) =>
+        forum.milestones.some(m => m.label === label && m.status === "done");
+      const kickoffDone = forum.messages.some(m => m.sender === "agent" && m.kind === "chat");
+      const researchDone = milestoneIsDone("Research & data pull");
+      const strategyDone = milestoneIsDone("Strategic framing");
+
+      // Questions already asked in a previous run
+      const existingAnsweredQ = forum.messages.filter(
+        m => m.kind === "question" && m.questionAnswered && m.questionAnswer
+      );
+      const existingUnansweredQ = forum.messages.filter(
+        m => m.kind === "question" && !m.questionAnswered
+      );
+      const hasExistingQuestions = existingAnsweredQ.length > 0 || existingUnansweredQ.length > 0;
+
+      // For skipped phases: the blackboard already contains each phase's output
+      // (it's appended as phases complete), so it's the best source to reconstruct context.
 
       const coordinator = agents[0];
-      updateAgentAction(forumId, coordinator.agentId, "Opening forum…");
 
-      const kickoffText = await callAgent(coordinator, buildKickoffPrompt(forum, coordinator), "kickoff");
-      if (stopped) return;
+      // ── Phase 0: Kickoff ──────────────────────────────────────────────────
+      // Skip if kickoff already ran (there are existing agent chat messages).
+      if (!kickoffDone) {
+        for (const agent of agents) {
+          updateAgentAction(forumId, agent.agentId, "Reading brief…");
+        }
+        await new Promise<void>(r => setTimeout(r, 800));
+        if (stopped) return;
 
-      post(coordinator.agentId, kickoffText);
+        updateAgentAction(forumId, coordinator.agentId, "Opening forum…");
+        let kickoffText = "";
+        try {
+          kickoffText = await callAgent(coordinator, buildKickoffPrompt(forum, coordinator), "kickoff");
+        } catch (err) {
+          reportAgentError(err, coordinator);
+          kickoffText = '{"greeting": "Let\'s get started. *(Coordinator had a connection issue)*", "milestones": []}';
+        }
+        if (stopped) return;
+
+        let greeting = kickoffText;
+        let dynamicMilestones: string[] = [];
+
+        try {
+          const cleaned = kickoffText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+          const parsed = JSON.parse(cleaned);
+          if (parsed.greeting && Array.isArray(parsed.milestones)) {
+            greeting = parsed.greeting;
+            dynamicMilestones = parsed.milestones.filter((m: any) => typeof m === "string");
+          }
+        } catch {
+          // Fallback if agent failed to output JSON
+        }
+
+        if (dynamicMilestones.length > 0) {
+          const newMilestones = dynamicMilestones.map((label, index) => ({
+            id: `ms_${Date.now()}_${Math.random().toString(36).slice(2,8)}`,
+            label,
+            status: index === 0 ? ("active" as const) : ("pending" as const),
+          }));
+          store.setMilestones(forumId, newMilestones);
+        }
+
+        post(coordinator.agentId, greeting);
+        // Seed forum context in each agent's workspace immediately after kickoff.
+        // This means even mid-forum individual chats can reference the brief + team.
+        writeForumContextToAgents("Kickoff", `Brief: ${forum.brief}\n\nTeam: ${forum.agents.map(a => `${a.name} (${a.forumRole})`).join(", ")}\n\n${greeting}`).catch(() => {});
+      }
       updateAgentAction(forumId, coordinator.agentId, "Gathering questions…");
 
       // ── Phase 0.5: Clarify ────────────────────────────────────────────────
       // Coordinator generates 0–3 upfront questions from the brief. Each is
       // posted to the thread one at a time; the next appears after the user answers.
+      //
+      // On RESUME: if questions were already asked (from a previous run), we
+      // recover the answers rather than re-asking. For unanswered questions, we
+      // re-register their message IDs in pendingAnswers so clicking the existing
+      // buttons in the thread resolves the new Promise — no duplicate questions posted.
       const clarificationLines: string[] = [];
 
-      try {
-        updateAgentAction(forumId, coordinator.agentId, "Clarifying…");
-        const clarifyResponse = await callAgent(coordinator, buildClarifyPrompt(forum, coordinator), "clarify");
-        if (!stopped) {
-          // Parse questions JSON
-          const cleaned = clarifyResponse.trim()
-            .replace(/^```(?:json)?\s*/i, "")
-            .replace(/\s*```$/, "");
-          const parsed = JSON.parse(cleaned);
-          const questions: { text: string; options: string[] }[] =
-            Array.isArray(parsed.questions) ? parsed.questions.slice(0, 3) : [];
+      if (hasExistingQuestions) {
+        // Recover answers from already-answered questions
+        for (const q of existingAnsweredQ) {
+          clarificationLines.push(`- ${q.text}: ${q.questionAnswer}`);
+        }
 
-          for (const q of questions) {
-            if (stopped) break;
-            if (!q.text || !Array.isArray(q.options) || q.options.length < 2) continue;
-
+        // Re-wire any questions that were unanswered when the orchestrator was interrupted.
+        for (const q of existingUnansweredQ) {
+          // Check if there is a subsequent user message that could serve as the answer
+          const qIndex = forum.messages.findIndex(m => m.id === q.id);
+          const subsequentUserMsg = forum.messages.slice(qIndex + 1).find(m => m.sender === "user");
+          
+          if (subsequentUserMsg) {
+            clarificationLines.push(`- ${q.text}: ${subsequentUserMsg.text}`);
+            useForumStore.getState().answerForumQuestion(forumId, q.id, subsequentUserMsg.text);
+          } else {
             updateAgentAction(forumId, coordinator.agentId, "Waiting for your answer…");
-            const msgId = addForumMessage(forumId, {
-              kind: "question",
-              sender: "agent",
-              agentId: coordinator.agentId,
-              agentName: coordinator.name,
-              text: q.text,
-              questionOptions: q.options.slice(0, 4),
-              questionAllowFreeText: true,
-              questionAnswered: false,
-            });
-
             const answer = await new Promise<string>(resolve => {
-              pendingAnswers.set(msgId, resolve);
+              pendingAnswers.set(q.id, resolve);   // re-register the same message ID
             });
             if (stopped) return;
 
-            // Echo answer as a user bubble
-            addForumMessage(forumId, {
-              kind: "answer",
-              sender: "user",
-              text: answer,
-            });
             clarificationLines.push(`- ${q.text}: ${answer}`);
           }
         }
-      } catch {
-        // Clarify phase is best-effort — if it fails we proceed without questions
+      } else {
+        // Fresh run — ask coordinator to generate clarifying questions
+        try {
+          updateAgentAction(forumId, coordinator.agentId, "Clarifying…");
+          const clarifyResponse = await callAgent(coordinator, buildClarifyPrompt(forum, coordinator), "clarify");
+          if (!stopped) {
+            // Parse questions JSON
+            const cleaned = clarifyResponse.trim()
+              .replace(/^```(?:json)?\s*/i, "")
+              .replace(/\s*```$/, "");
+            const parsed = JSON.parse(cleaned);
+            const questions: { text: string; options: string[] }[] =
+              Array.isArray(parsed.questions) ? parsed.questions.slice(0, 3) : [];
+
+            for (const q of questions) {
+              if (stopped) break;
+              if (!q.text || !Array.isArray(q.options) || q.options.length < 2) continue;
+
+              updateAgentAction(forumId, coordinator.agentId, "Waiting for your answer…");
+              const msgId = addForumMessage(forumId, {
+                kind: "question",
+                sender: "agent",
+                agentId: coordinator.agentId,
+                agentName: coordinator.name,
+                text: q.text,
+                questionOptions: q.options.slice(0, 4),
+                questionAllowFreeText: true,
+                questionAnswered: false,
+              });
+
+              const answer = await new Promise<string>(resolve => {
+                pendingAnswers.set(msgId, resolve);
+              });
+              if (stopped) return;
+
+              // Echo answer as a user bubble
+              addForumMessage(forumId, {
+                kind: "answer",
+                sender: "user",
+                text: answer,
+              });
+              clarificationLines.push(`- ${q.text}: ${answer}`);
+            }
+          }
+        } catch {
+          // Clarify phase is best-effort — if it fails we proceed without questions
+        }
       }
 
       if (stopped) return;
@@ -737,60 +1040,142 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       const pace = () => new Promise<void>(r => setTimeout(r, 1200));
 
       // ── Phase 1: Research ─────────────────────────────────────────────────
-      if (stopped) return;
-      await pace(); if (stopped) return;
-      activateMilestone("Research & data pull", "active");
+      let researchText = "";
+      let board1 = forum.blackboardContent;
 
-      const researchText = await callAgentAllowingQuestion(
-        researcher,
-        buildResearchPrompt(forum, researcher, clarifications),
-        "research",
-        "Researching…"
-      );
-      if (stopped) return;
+      if (researchDone) {
+        researchText = forum.blackboardContent;  // blackboard already has research section
+        for (const agent of agents) {
+          updateAgentAction(forumId, agent.agentId, "Research complete ✓");
+        }
+      } else {
+        if (stopped) return;
+        await pace(); if (stopped) return;
+        activateMilestone("Research & data pull", "active");
 
-      post(researcher.agentId, chatPreview(researchText));
+        // Concurrently set all agents' actions to "Researching..."
+        for (const agent of agents) {
+          updateAgentAction(forumId, agent.agentId, "Researching…");
+        }
 
-      const board1 = appendSection(
-        `# ${forum.title}\n\n> **Brief:** ${forum.brief}\n\n`,
-        "Research & Discovery",
-        researchText,
-        researcher.name
-      );
-      updateBlackboard(forumId, board1, researcher.agentId);
-      // Research findings are intermediate work — they go on the blackboard but are
-      // not surfaced as a separate artifact card. Only the final deliverable is.
-      updateAgentAction(forumId, researcher.agentId, "Research posted ✓");
-      activateMilestone("Research & data pull", "done");
+        // Run research for all agents in parallel, staggered by 800ms each
+        // to avoid hammering the API simultaneously and triggering rate limits.
+        const researchPromises = agents.map(async (agent, agentIndex) => {
+          if (agentIndex > 0) await new Promise(r => setTimeout(r, agentIndex * 800));
+          if (stopped) return { name: agent.name, text: "" };
+          try {
+            const prompt = buildParallelResearchPrompt(forum, agent, clarifications);
+            const responseText = await callAgent(agent, prompt, "research");
+            if (stopped) return { name: agent.name, text: "" };
 
-      if (strategist.agentId !== researcher.agentId) {
-        postHandoff(
-          researcher.agentId, strategist.agentId,
-          "Research findings",
-          "Findings are on the board — ready for your pass."
+            // Post each agent's individual findings to the chat thread
+            post(agent.agentId, chatPreview(responseText));
+            updateAgentAction(forumId, agent.agentId, "Research posted ✓");
+            return { name: agent.name, text: responseText };
+          } catch (err) {
+            reportAgentError(err, agent);
+            return { name: agent.name, text: "" };
+          }
+        });
+
+        const settledResults = await Promise.allSettled(researchPromises);
+        const results = settledResults.map(r => r.status === 'fulfilled' ? r.value : { name: 'Error', text: 'Agent task failed.' });
+        if (stopped) return;
+
+        // Merge all agent outputs
+        const mergedResearch = results
+          .filter(r => r.text.trim().length > 0)
+          .map(r => `### Discovery & UX Insights by ${r.name}\n\n${r.text}`)
+          .join("\n\n---\n\n");
+
+        researchText = mergedResearch;
+
+        const mergedAuthorNames = agents.map(a => a.name).join(", ");
+        const mergedAuthorIds = agents.map(a => a.agentId).join(",");
+
+        board1 = appendSection(
+          `# ${forum.title}\n\n> **Brief:** ${forum.brief}\n\n`,
+          "Research & Discovery",
+          researchText,
+          mergedAuthorNames
         );
+        updateBlackboard(forumId, board1, mergedAuthorIds);
+        activateMilestone("Research & data pull", "done");
+
+        // Save research findings as a named artifact — folder = first milestone label (coordinator-defined)
+        const researchFolder = useForumStore.getState().forums.find(f => f.id === forumId)?.milestones[0]?.label ?? "Discovery";
+        addForumArtifact(forumId, {
+          type: "markdown",
+          title: researchFolder,
+          filename: `${researchFolder.toLowerCase().replace(/\s+/g, "-")}.md`,
+          folder: researchFolder,
+          content: researchText,
+          agentId: mergedAuthorIds,
+          agentName: mergedAuthorNames,
+          isDeliverable: false,
+        });
+        appendScratchpad(forumId, `## ${researchFolder} Notes\n${chatPreview(researchText)}\n\n`);
+        // Push forum context to every agent's workspace — enables cross-thread recall
+        writeForumContextToAgents(researchFolder, researchText).catch(() => {});
+
+        if (strategist.agentId !== researcher.agentId) {
+          postHandoff(
+            mergedAuthorIds, strategist.agentId,
+            "Research findings",
+            "Findings from our parallel research are on the board — ready for your strategic pass."
+          );
+        }
       }
 
       // ── Phase 2: Strategy ─────────────────────────────────────────────────
-      if (stopped) return;
-      await pace(); if (stopped) return;
-      activateMilestone("Strategic framing", "active");
-      updateAgentAction(forumId, strategist.agentId, "Developing approach…");
+      // Skip if strategy milestone is already "done".
+      let stratText = "";
+      let board2 = board1;
 
-      const stratText = await callAgent(
-        strategist,
-        buildStrategyPrompt(forum, strategist, researchText, clarifications),
-        "strategy"
-      );
-      if (stopped) return;
+      if (strategyDone) {
+        stratText = forum.blackboardContent;
+        board2 = forum.blackboardContent;
+        updateAgentAction(forumId, strategist.agentId, "Strategy complete ✓");
+      } else {
+        if (stopped) return;
+        await pace(); if (stopped) return;
+        activateMilestone("Strategic framing", "active");
+        updateAgentAction(forumId, strategist.agentId, "Developing approach…");
 
-      post(strategist.agentId, chatPreview(stratText));
+        try {
+          stratText = await callAgent(
+            strategist,
+            buildStrategyPrompt(forum, strategist, researchText, clarifications),
+            "strategy"
+          );
+        } catch (err) {
+          reportAgentError(err, strategist);
+          stratText = "*(Strategy agent failed to produce an approach)*";
+        }
+        if (stopped) return;
 
-      const board2 = appendSection(board1, "Recommended Approach", stratText, strategist.name);
-      updateBlackboard(forumId, board2, strategist.agentId);
-      // Strategy is intermediate framing — lives on the blackboard, not as an artifact card.
-      updateAgentAction(forumId, strategist.agentId, "Approach posted ✓");
-      activateMilestone("Strategic framing", "done");
+        post(strategist.agentId, chatPreview(stratText));
+
+        board2 = appendSection(board1, "Recommended Approach", stratText, strategist.name);
+        updateBlackboard(forumId, board2, strategist.agentId);
+        updateAgentAction(forumId, strategist.agentId, "Approach posted ✓");
+        activateMilestone("Strategic framing", "done");
+
+        // Save strategy as a named artifact — folder = second milestone label
+        const stratFolder = useForumStore.getState().forums.find(f => f.id === forumId)?.milestones[1]?.label ?? "Approach";
+        addForumArtifact(forumId, {
+          type: "markdown",
+          title: stratFolder,
+          filename: `${stratFolder.toLowerCase().replace(/\s+/g, "-")}.md`,
+          folder: stratFolder,
+          content: stratText,
+          agentId: strategist.agentId,
+          agentName: strategist.name,
+          isDeliverable: false,
+        });
+        appendScratchpad(forumId, `## ${stratFolder} Notes\n${chatPreview(stratText)}\n\n`);
+        writeForumContextToAgents(stratFolder, stratText).catch(() => {});
+      }
 
       if (writer.agentId !== strategist.agentId) {
         postHandoff(
@@ -805,12 +1190,18 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       await pace(); if (stopped) return;
       activateMilestone("Prose & voice pass", "active");
 
-      const rawDraftText = await callAgentAllowingQuestion(
-        writer,
-        buildDraftPrompt(forum, writer, board2, clarifications),
-        "draft",
-        "Drafting…"
-      );
+      let rawDraftText = "";
+      try {
+        rawDraftText = await callAgentAllowingQuestion(
+          writer,
+          buildDraftPrompt(forum, writer, board2, clarifications),
+          "draft",
+          "Drafting…"
+        );
+      } catch (err) {
+        reportAgentError(err, writer);
+        rawDraftText = "---FORMAT---\nmarkdown\n---CONTENT---\n*(Writer agent failed to produce a draft)*";
+      }
       if (stopped) return;
 
       const draft = parseDraftResponse(rawDraftText);
@@ -838,10 +1229,19 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         : chatPreview(draft.content);
       post(writer.agentId, draftPreview);
 
-      // This is the real deliverable — the thing the user actually asked for.
+      // This is the real deliverable — folder = last milestone label (coordinator-defined)
+      const deliverableExt = draft.format === "html" ? "html" : "md";
+      const currentMilestones = useForumStore.getState().forums.find(f => f.id === forumId)?.milestones ?? [];
+      const deliverableFolder = currentMilestones[currentMilestones.length - 1]?.label ?? "Final Deliverable";
+      // Use the last milestone label as a descriptive title (not the full brief which is too long)
+      const deliverableTitle = deliverableFolder !== "Final Deliverable"
+        ? deliverableFolder
+        : (forum.title.length > 40 ? forum.title.slice(0, 37) + "…" : forum.title);
       addForumArtifact(forumId, {
         type: draft.format,
-        title: forum.title,
+        title: deliverableTitle,
+        filename: `deliverable.${deliverableExt}`,
+        folder: deliverableFolder,
         content: draft.content,
         agentId: writer.agentId,
         agentName: writer.name,
@@ -849,22 +1249,32 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       });
       updateAgentAction(forumId, writer.agentId, "Draft posted ✓");
       activateMilestone("Prose & voice pass", "done");
+      writeForumContextToAgents(
+        deliverableFolder,
+        draft.format === "html"
+          ? `[Interactive HTML deliverable created for: ${forum.brief}]`
+          : draft.content
+      ).catch(() => {});
 
       // ── Phase 4: Review ───────────────────────────────────────────────────
       if (stopped) return;
       updateAgentAction(forumId, reviewer.agentId, "Reviewing…");
 
       if (reviewer.agentId !== writer.agentId) {
-        const reviewContext = draft.format === "html"
-          ? `[The team produced an interactive HTML deliverable for: ${forum.brief}]\n\nResearch & strategy:\n${fitBlock(board2, forum.brief.length + 200)}`
-          : board3;
-        const reviewText = await callAgent(
-          reviewer,
-          buildReviewPrompt(forum, reviewer, reviewContext),
-          "review"
-        );
-        if (stopped) return;
-        post(reviewer.agentId, reviewText);
+        try {
+          const reviewContext = draft.format === "html"
+            ? `[The team produced an interactive HTML deliverable for: ${forum.brief}]\n\nResearch & strategy:\n${fitBlock(board2, forum.brief.length + 200)}`
+            : board3;
+          const reviewText = await callAgent(
+            reviewer,
+            buildReviewPrompt(forum, reviewer, reviewContext),
+            "review"
+          );
+          if (stopped) return;
+          post(reviewer.agentId, reviewText);
+        } catch (err) {
+          reportAgentError(err, reviewer);
+        }
       }
 
       // ── Completion ────────────────────────────────────────────────────────
@@ -882,13 +1292,12 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         kind: "system", sender: "system",
         text: "Forum complete · deliverable ready",
       });
+      // Final context write — ensures every agent's workspace reflects the completed forum
+      writeForumContextToAgents("Forum complete", `Forum "${forum.title}" finished. All milestones complete. Deliverable ready.`).catch(() => {});
 
     } catch (err) {
       if (stopped) return;
-      // Find which agent was last active for better error context
-      const freshForum = useForumStore.getState().forums.find(f => f.id === forumId);
-      const activeAgent = freshForum?.agents.find(a => a.currentAction === "Thinking…");
-      failForum(err, activeAgent);
+      reportFatalError(err);
     }
   };
 
@@ -944,8 +1353,14 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
     const agents = forum.agents;
     if (agents.length === 0) return;
 
-    // Default to the first agent if we can't find a specific role
-    const responder = findByRole(agents, "edit", "write", "prose", "comm", "strat", "design") ?? agents[0];
+    // Check if the user specifically @mentioned an agent
+    const mentionedAgent = agents.find(a => 
+      lastUserMsg.text.toLowerCase().includes(`@${a.name.toLowerCase()}`) || 
+      lastUserMsg.text.toLowerCase().includes(`@${a.role.toLowerCase()}`)
+    );
+
+    // Default to the mentioned agent, or fallback to the primary writer/strategist
+    const responder = mentionedAgent ?? findByRole(agents, "edit", "write", "prose", "comm", "strat", "design") ?? agents[0];
 
     updateAgentAction(forumId, responder.agentId, "Thinking…");
 
@@ -1027,7 +1442,7 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
         kind: "system", sender: "system",
         text: `⚠ ${d.summary}\n\nError: ${d.detail}\n\nFix: ${d.fix}`,
       });
-      setForumStatus(forumId, "paused");
+      updateAgentAction(forumId, responder.agentId, "Connection failed");
     }
   };
 
@@ -1043,4 +1458,49 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
       stopped = true;
     }
   };
+}
+
+
+// ─── Global Background Orchestrator Service ────────────────────────────────────
+
+export function initializeGlobalBackgroundOrchestrator() {
+  // Map: forumId → { engine, version }
+  // We track the orchestratorVersion so that retry/resume (which bump the version)
+  // cause us to stop the old engine and start a fresh one.
+  const activeEngines = new Map<string, { engine: ForumOrchestratorController; version: number }>();
+
+  useForumStore.subscribe((state) => {
+    const activeForumIds = new Set(state.forums.map(f => f.id));
+
+    // Stop engines for forums that no longer exist
+    for (const [id] of activeEngines) {
+      if (!activeForumIds.has(id)) {
+        activeEngines.get(id)?.engine.stop();
+        activeEngines.delete(id);
+      }
+    }
+
+    state.forums.forEach((forum) => {
+      const currentVersion = forum.orchestratorVersion ?? 0;
+      const running = activeEngines.get(forum.id);
+
+      if (forum.status === "active") {
+        if (!running) {
+          // Start fresh engine
+          const engine = createForumOrchestrator(forum.id);
+          activeEngines.set(forum.id, { engine, version: currentVersion });
+        } else if (running.version !== currentVersion) {
+          // orchestratorVersion bumped (retry/resume) — restart engine
+          running.engine.stop();
+          const engine = createForumOrchestrator(forum.id);
+          activeEngines.set(forum.id, { engine, version: currentVersion });
+        }
+        // else: same version, engine already running — do nothing
+      } else if (running) {
+        // Forum no longer active — stop engine
+        running.engine.stop();
+        activeEngines.delete(forum.id);
+      }
+    });
+  });
 }

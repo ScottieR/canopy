@@ -41,6 +41,8 @@ import { ExportInterceptModal } from './components/ExportInterceptModal';
 import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
 import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
+import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
+import { useForumStore } from './store/forumStore';
 let gatewayBootPromise: Promise<any> | null = null;
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
@@ -411,26 +413,61 @@ export function CanopyScene({
   const updateAgentAction = useWorldStore(s => s.updateAgentAction);
   const invoke = (window as any)?.__TAURI__?.invoke || (() => Promise.resolve());
 
+  // Subscribe to forumStore so we re-sync when forums change
+  const forums = useForumStore(s => s.forums);
+
   useEffect(() => {
-    // 1. Keep the Rust dispatch bridge synced with our frontend state
-    // We only care about syncing the "projects" and "inbox".
-    const state = useWorldStore.getState();
-    const projects = state.agents.flatMap(a => a.conversations || [])
-      .filter(c => c.type === "project")
-      .map(c => ({
-        id: c.id,
-        title: c.title,
-        agent_count: state.agents.filter(a => a.conversations?.some(ac => ac.id === c.id)).length,
-        last_active: c.lastActiveAt
-      }));
-    
-    invoke("sync_mobile_state", { 
-      payload: { 
-        projects: projects,
-        inbox: state.inbox
-      } 
+    // 1. Keep the Rust dispatch bridge synced with forum + inbox state.
+    const worldState = useWorldStore.getState();
+    const forumState = useForumStore.getState();
+
+    // Map agents to mobile shape, including the individual chat session ID
+    const mobileAgents = worldState.agents.map((a: any) => ({
+      id: a.id,
+      name: a.name,
+      role: a.role,
+      emoji: a.emoji,
+      color: a.color,
+      image_url: a.image ?? null,
+      // The individual chat session — mobile must use this so it never touches a forum session
+      conversation_id: a.activeConversationId ?? null,
+    }));
+
+    // Map forumStore forums into the mobile Forum shape
+    const mobileForms = forumState.forums
+      .filter(f => f.status !== "archived")
+      .map(f => {
+        const completedMilestones = (f.milestones || []).filter(m => m.status === "done").length;
+        const activeMilestone = (f.milestones || []).find(m => m.status === "active")?.label;
+        return {
+          id: f.id,
+          title: f.title,
+          brief: f.brief,
+          status: f.status,
+          agents: (f.agents || []).map(a => ({
+            agentId: a.agentId,
+            name: a.name,
+            robeColor: a.robeColor,
+            image: a.image ?? null,
+          })),
+          currentPhase: activeMilestone ?? null,
+          completedMilestones,
+          totalMilestones: (f.milestones || []).length,
+          artifactCount: (f.artifacts || []).length,
+          hasDeliverable: (f.artifacts || []).some(a => a.isDeliverable),
+          lastActiveAt: f.lastActiveAt ?? f.createdAt ?? Date.now(),
+        };
+      });
+
+    invoke("sync_mobile_state", {
+      payload: {
+        forums: mobileForms,
+        projects: mobileForms, // backwards compat alias
+        agents: mobileAgents,  // includes conversation_id for session isolation
+        inbox: worldState.inbox ?? [],
+      }
     }).catch((e: any) => console.warn("Failed to sync mobile state:", e));
-  }, [agents, useWorldStore.getState().inbox]);
+  }, [agents, forums, useWorldStore.getState().inbox]);
 
   useEffect(() => {
     // 2. Listen for mobile commands (e.g. Quick Capture)
@@ -452,7 +489,7 @@ export function CanopyScene({
           // Find an orchestrator or default agent to create it under
           const firstAgent = useWorldStore.getState().agents[0];
           if (firstAgent) {
-            useWorldStore.getState().createProjectSpace(firstAgent.id);
+            useWorldStore.getState().createForumSpace(firstAgent.id);
             useWorldStore.getState().setActiveView("canopy");
           }
         } else if (cmd.startsWith("COMMAND: DISMISS_INBOX_ITEM:")) {
@@ -468,7 +505,7 @@ export function CanopyScene({
             if (item.type === "voice_note") {
               const firstAgent = useWorldStore.getState().agents[0];
               if (firstAgent) {
-                useWorldStore.getState().createProjectSpace(firstAgent.id);
+                useWorldStore.getState().createForumSpace(firstAgent.id);
               }
             }
           }
@@ -753,7 +790,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an OpenAI API Key so your agent can think. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into your OpenAI developer account on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://platform.openai.com/api-keys")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open your OpenAI developer account</a> securely in your browser.</span> },
         { text: "Look for the button that says 'Create new secret key' near the top right, and click it." },
         { text: "In the window that pops up, name it 'Canopy' and click 'Create secret key'." },
         { text: "Awesome! Now copy that long key (it usually starts with 'sk-proj...'), paste it securely below, and hit Save.", input: { key: "OPENAI_API_KEY", placeholder: "sk-proj-..." } }
@@ -764,7 +801,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an xAI API Key so your agent can tap into Grok. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into the xAI Developer Console on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://console.x.ai/")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open the xAI Developer Console</a> securely in your browser.</span> },
         { text: "Click to generate a new API Key and name it something memorable like 'Canopy'." },
         { text: "Perfect! Now securely copy that key, paste it below, and hit Save.", input: { key: "XAI_API_KEY", placeholder: "xai-..." } }
       ]
@@ -774,7 +811,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating an Anthropic API Key so your agent can think. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into the Anthropic Console on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://console.anthropic.com/settings/keys")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open the Anthropic Console</a> securely in your browser.</span> },
         { text: "Click the black 'Create Key' button near the top right of the screen." },
         { text: "Name the key 'Canopy' so you remember what it's for, and click 'Create'." },
         { text: "Perfect! Now securely copy that key (it starts with 'sk-ant...'), paste it below, and hit Save.", input: { key: "ANTHROPIC_API_KEY", placeholder: "sk-ant-..." } }
@@ -785,7 +822,7 @@ export function CompanionGuide({ type }: { type: string }) {
       avatar: "/app-icon.png",
       intro: "Hi! I'm Canopy's setup assistant. I'll walk you through creating a Google Gemini API Key so your agent can think. Let's get started!",
       steps: [
-        { text: "First, make sure you are securely logged into Google AI Studio on the left." },
+        { text: <span key="1">First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open("https://aistudio.google.com/app/apikey")).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open Google AI Studio</a> securely in your browser.</span> },
         { text: "Click the blue 'Create API key' button in the center (or top right, depending on your window size)." },
         { text: "Select your project from the dropdown (or create a new one) and generate the key." },
         { text: "Great! Securely copy the generated key, paste it below, and hit Save.", input: { key: "GEMINI_API_KEY", placeholder: "AIzaSy..." } }
@@ -1162,9 +1199,16 @@ function GatewayWarmupBanner() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// MAIN APP COMPONENT
+// ═══════════════════════════════════════════════════════════════════════════════
 
 export default function App() {
   const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme, isAutoCloakEnabled, autoCloakTimeout, setIsCloaked, gatewayReady } = useWorldStore();
+  
+  useEffect(() => {
+    initializeGlobalBackgroundOrchestrator();
+  }, []);
+
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
   const [initialized, setInitialized] = useState(false);
   const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");

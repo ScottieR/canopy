@@ -86,6 +86,27 @@ export type ForumArtifactType =
   | "diagram"    // flowchart / architecture
   | "data";      // spreadsheet / structured data
 
+export interface ForumComment {
+  id: string;
+  authorId: string;
+  authorName: string;
+  content: string;
+  createdAt: number;
+  blockId?: string; // block-level anchoring for comments
+  resolved?: boolean;
+}
+
+/**
+ * Sync state for a file in the project file tree.
+ *
+ * auto     — always kept in sync automatically (scratchpad + user-toggled)
+ * synced   — manually synced, currently up to date with the folder
+ * stale    — was synced before, but the content has changed since last sync
+ * unsynced — never been synced to any folder
+ * syncing  — in-flight write (transient)
+ */
+export type ArtifactSyncState = "auto" | "synced" | "stale" | "unsynced" | "syncing";
+
 export interface ForumArtifact {
   id: string;
   type: ForumArtifactType;
@@ -94,9 +115,21 @@ export interface ForumArtifact {
   preview?: string;       // optional short excerpt (auto-derived if absent)
   agentId?: string;
   agentName?: string;
+  role_id?: string;
   createdAt: number;
   /** True only for the final user-facing deliverable — not intermediate research/strategy notes. */
   isDeliverable?: boolean;
+  comments?: ForumComment[];
+  /** Folder path for the project file tree, e.g. "Research" | "Strategy" | "Deliverables" | "Tools" */
+  folder?: string;
+  /** Filename to display in the file tree, e.g. "market-research.md" */
+  filename?: string;
+  // ── Sync state ──────────────────────────────────────────────────────────────
+  syncState?: ArtifactSyncState;
+  /** Unix ms of last successful sync to the connected folder */
+  lastSyncedAt?: number;
+  /** Content hash at time of last sync — used to detect staleness */
+  lastSyncedHash?: string;
 }
 
 // ─── Blackboard Block ─────────────────────────────────────────────────────────
@@ -128,6 +161,8 @@ export type ForumStatus = "drafting" | "active" | "paused" | "completed" | "arch
 
 export interface Forum {
   id: string;
+  totalTokens?: number;
+  totalCost?: number;
   title: string;
   brief: string;            // user's original goal text
   tags: string[];           // extracted from brief (e.g. ["research", "memo", "enterprise"])
@@ -144,17 +179,30 @@ export interface Forum {
   blackboardBlock: ForumBlock | null;
   // Discrete output artifacts produced by the team
   artifacts: ForumArtifact[];
+  /** Shared scratch space — all agents append notes here freely throughout the forum */
+  scratchpadContent: string;
+  // ── Project folder connection ───────────────────────────────────────────────
+  /** Local filesystem path or Google Drive folder ID */
+  connectedFolderPath?: string;
+  connectedFolderType?: "local" | "googledrive";
+  /** Display name of the connected folder shown in UI */
+  connectedFolderName?: string;
+  /** Sync state of the scratchpad (always "auto" when folder is connected) */
+  scratchpadSyncState?: ArtifactSyncState;
+  scratchpadLastSyncedAt?: number;
   createdAt: number;
   lastActiveAt: number;
   // Incremented each time the orchestrator is asked to start/restart — lets the
   // useEffect distinguish a fresh run from one that already ran for this version.
   orchestratorVersion: number;
+  draftMessage?: string;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
 export interface ForumState {
   forums: Forum[];
+  incrementTokensAndCost: (forumId: string, tokens: number, cost: number) => void;
   activeForumId: string | null;
 
   // Actions
@@ -162,6 +210,7 @@ export interface ForumState {
   setActiveForumId: (id: string | null) => void;
   /** Adds a message and returns the generated message ID. */
   addForumMessage: (forumId: string, msg: Omit<ForumMessage, "id" | "timestamp">) => string;
+  setMilestones: (forumId: string, milestones: Milestone[]) => void;
   updateMilestone: (forumId: string, milestoneId: string, status: MilestoneStatus) => void;
   updateBlackboard: (forumId: string, content: string, agentId?: string) => void;
   updateAgentAction: (forumId: string, agentId: string, action: string) => void;
@@ -172,8 +221,19 @@ export interface ForumState {
   answerForumQuestion: (forumId: string, messageId: string, answer: string) => void;
   /** Add a discrete output artifact to the forum. */
   addForumArtifact: (forumId: string, artifact: Omit<ForumArtifact, "id" | "createdAt">) => void;
+  /** Append text to the shared agent scratchpad. */
+  appendScratchpad: (forumId: string, text: string) => void;
+  /** Update the sync state of a single artifact (e.g. after a sync completes). */
+  updateArtifactSyncState: (forumId: string, artifactId: string, state: ArtifactSyncState, syncedAt?: number, syncedHash?: string) => void;
+  /** Set the connected folder for a forum. */
+  connectFolder: (forumId: string, path: string, type: "local" | "googledrive", name: string) => void;
+  /** Disconnect the folder from a forum. */
+  disconnectFolder: (forumId: string) => void;
+  /** Mark scratchpad sync state. */
+  updateScratchpadSyncState: (forumId: string, state: ArtifactSyncState, syncedAt?: number) => void;
   /** Set the format-aware blackboard block (markdown or HTML deliverable). */
   setBlackboardBlock: (forumId: string, block: ForumBlock) => void;
+  setForumDraft: (forumId: string, draft: string) => void;
   /** Reset a paused/errored forum back to "active" so the orchestrator can retry. */
   retryForum: (forumId: string) => void;
   /** Resume a paused forum without clearing messages or blackboard — increments
@@ -190,10 +250,10 @@ export interface ForumState {
   deleteForum: (forumId: string) => void;
   /** Move an archived forum back to its previous status. */
   unarchiveForum: (forumId: string) => void;
-  /** Replace the forum's milestone list with agent-defined steps. */
-  setMilestones: (forumId: string, milestones: Milestone[]) => void;
-  /** Append a new milestone (used by orchestrator to add project-specific steps). */
+  /** Append a new milestone (used by orchestrator to add forum-specific steps). */
   addMilestone: (forumId: string, label: string, agentId?: string) => string;
+  /** Remove an agent from an active forum (stops their participation but keeps their history). */
+  removeAgentFromForum: (forumId: string, agentId: string) => void;
 }
 
 function generateId(prefix: string) {
@@ -206,33 +266,10 @@ function deriveTitle(brief: string): string {
 }
 
 function deriveMilestones(brief: string, agents: ForumAgent[]): Milestone[] {
-  // Simple heuristic milestones based on agent roles present
-  const milestones: Milestone[] = [];
-  const hasResearcher = agents.some(a =>
-    a.role.toLowerCase().includes("research") || a.forumRole.toLowerCase().includes("research")
-  );
-  const hasEditor = agents.some(a =>
-    a.role.toLowerCase().includes("edit") || a.forumRole.toLowerCase().includes("edit") || a.forumRole.toLowerCase().includes("prose")
-  );
-  const hasStrategist = agents.some(a =>
-    a.role.toLowerCase().includes("strat") || a.forumRole.toLowerCase().includes("fram")
-  );
-
-  if (hasResearcher) {
-    milestones.push({ id: generateId("ms"), label: "Research & data pull", status: "pending", agentId: agents.find(a => a.role.toLowerCase().includes("research"))?.agentId });
-  }
-  if (hasStrategist) {
-    milestones.push({ id: generateId("ms"), label: "Strategic framing", status: "pending", agentId: agents.find(a => a.role.toLowerCase().includes("strat"))?.agentId });
-  }
-  if (hasEditor) {
-    milestones.push({ id: generateId("ms"), label: "Prose & voice pass", status: "pending", agentId: agents.find(a => a.role.toLowerCase().includes("edit") || a.forumRole.toLowerCase().includes("prose"))?.agentId });
-  }
-  milestones.push({ id: generateId("ms"), label: "Final deliverable ready", status: "pending" });
-
-  // Mark first milestone active
-  if (milestones.length > 0) milestones[0].status = "active";
-
-  return milestones;
+  // Placeholder initial milestone; will be overwritten by dynamic planning phase
+  return [
+    { id: generateId("ms"), label: "Planning forum...", status: "active" }
+  ];
 }
 
 export const useForumStore = create<ForumState>()(
@@ -274,6 +311,7 @@ export const useForumStore = create<ForumState>()(
           blackboardHistory: [],
           blackboardBlock: null,
           artifacts: [],
+          scratchpadContent: "",
           createdAt: now,
           lastActiveAt: now,
           orchestratorVersion: 0,
@@ -284,6 +322,13 @@ export const useForumStore = create<ForumState>()(
       },
 
       setActiveForumId: (id) => set({ activeForumId: id }),
+      incrementTokensAndCost: (forumId, tokens, cost) => set((state) => ({
+        forums: state.forums.map((f) => 
+          f.id === forumId 
+            ? { ...f, totalTokens: (f.totalTokens || 0) + tokens, totalCost: (f.totalCost || 0) + cost } 
+            : f 
+        )
+      })),
 
       addForumMessage: (forumId, msg) => {
         const id = generateId("msg");
@@ -300,6 +345,14 @@ export const useForumStore = create<ForumState>()(
           ),
         }));
         return id;
+      },
+
+      setMilestones: (forumId, milestones) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id === forumId ? { ...f, milestones } : f
+          ),
+        }));
       },
 
       updateMilestone: (forumId, milestoneId, status) => {
@@ -383,9 +436,94 @@ export const useForumStore = create<ForumState>()(
         const createdAt = Date.now();
         set(state => ({
           forums: state.forums.map(f =>
-            f.id === forumId
-              ? { ...f, artifacts: [...f.artifacts, { ...artifact, id, createdAt }] }
-              : f
+            f.id !== forumId ? f : {
+              ...f,
+              artifacts: [...f.artifacts, {
+                ...artifact,
+                id,
+                createdAt,
+                // New artifacts start unsynced; auto if the forum auto-syncs deliverables
+                syncState: artifact.syncState ?? "unsynced" as ArtifactSyncState,
+              }],
+            }
+          ),
+        }));
+      },
+
+      appendScratchpad: (forumId, text) => {
+        set(state => ({
+          forums: state.forums.map(f => {
+            if (f.id !== forumId) return f;
+            const updated = { ...f, scratchpadContent: (f.scratchpadContent ?? "") + text };
+            // Mark scratchpad as stale if it was previously synced
+            if (f.scratchpadSyncState === "synced") {
+              updated.scratchpadSyncState = "stale";
+            }
+            return updated;
+          }),
+        }));
+      },
+
+      updateArtifactSyncState: (forumId, artifactId, state, syncedAt, syncedHash) => {
+        set(s => ({
+          forums: s.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              artifacts: f.artifacts.map(a =>
+                a.id !== artifactId ? a : {
+                  ...a,
+                  syncState: state,
+                  ...(syncedAt !== undefined ? { lastSyncedAt: syncedAt } : {}),
+                  ...(syncedHash !== undefined ? { lastSyncedHash: syncedHash } : {}),
+                }
+              ),
+            }
+          ),
+        }));
+      },
+
+      connectFolder: (forumId, path, type, name) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              connectedFolderPath: path,
+              connectedFolderType: type,
+              connectedFolderName: name,
+              // Scratchpad goes auto when folder is connected
+              scratchpadSyncState: "auto",
+              // All existing artifacts become stale (they exist but haven't been written to this folder yet)
+              artifacts: f.artifacts.map(a => ({
+                ...a,
+                syncState: (a.syncState === "synced" || a.syncState === "auto") ? "stale" : "unsynced",
+              })),
+            }
+          ),
+        }));
+      },
+
+      disconnectFolder: (forumId) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              connectedFolderPath: undefined,
+              connectedFolderType: undefined,
+              connectedFolderName: undefined,
+              scratchpadSyncState: undefined,
+            }
+          ),
+        }));
+      },
+
+      updateScratchpadSyncState: (forumId, state, syncedAt) => {
+        set(s => ({
+          forums: s.forums.map(f =>
+            f.id !== forumId ? f : {
+              ...f,
+              scratchpadSyncState: state,
+              ...(syncedAt !== undefined ? { scratchpadLastSyncedAt: syncedAt } : {}),
+            }
           ),
         }));
       },
@@ -394,6 +532,14 @@ export const useForumStore = create<ForumState>()(
         set(state => ({
           forums: state.forums.map(f =>
             f.id === forumId ? { ...f, blackboardBlock: block } : f
+          ),
+        }));
+      },
+
+      setForumDraft: (forumId, draft) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id === forumId ? { ...f, draftMessage: draft } : f
           ),
         }));
       },
@@ -449,6 +595,16 @@ export const useForumStore = create<ForumState>()(
             const hasContent = f.messages.some(m => m.sender === "agent");
             return { ...f, status: hasContent ? "completed" : "active" };
           }),
+        }));
+      },
+
+      removeAgentFromForum: (forumId, agentId) => {
+        set(state => ({
+          forums: state.forums.map(f =>
+            f.id === forumId
+              ? { ...f, agents: f.agents.filter(a => a.agentId !== agentId) }
+              : f
+          ),
         }));
       },
 
@@ -508,7 +664,7 @@ export const useForumStore = create<ForumState>()(
               id: generateId("msg"),
               kind: "system",
               sender: "system",
-              text: "↺ Resuming project…",
+              text: "↺ Resuming forum…",
               timestamp: now,
             };
             return {
@@ -520,14 +676,6 @@ export const useForumStore = create<ForumState>()(
               orchestratorVersion: (f.orchestratorVersion ?? 0) + 1,
             };
           }),
-        }));
-      },
-
-      setMilestones: (forumId, milestones) => {
-        set(state => ({
-          forums: state.forums.map(f =>
-            f.id === forumId ? { ...f, milestones } : f
-          ),
         }));
       },
 
@@ -552,7 +700,24 @@ export const useForumStore = create<ForumState>()(
     }),
     {
       name: "canopy-forum-store",
-      partialize: (state) => ({ forums: state.forums }),
+      // Trim large transient data before writing to localStorage to prevent
+      // silent QuotaExceededError failures. blackboardHistory is the main
+      // culprit — 50 snapshots × multi-KB markdown = can easily exceed the
+      // 5-10MB localStorage limit, causing the most recent answers and messages
+      // to never be persisted.
+      partialize: (state) => ({
+        forums: (state.forums || []).map(f => ({
+          ...f,
+          blackboardHistory: (f.blackboardHistory || []).slice(-5),
+          messages: (f.messages || []).map(m => ({
+            ...m,
+            attachments: m.attachments?.map(att => ({
+              ...att,
+              dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
+            }))
+          }))
+        })),
+      }),
     }
   )
 );

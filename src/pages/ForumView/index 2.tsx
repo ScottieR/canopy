@@ -797,33 +797,6 @@ function SyncDot({
   );
 }
 
-// ─── Artifact share/export ────────────────────────────────────────────────────
-
-const CANOPY_WATERMARK_MD = "\n\n---\n*Made with [Canopy](https://canopy.app) · AI-powered collaborative workspaces*";
-const CANOPY_WATERMARK_HTML = `\n<!-- Made with Canopy · https://canopy.app -->\n<div style="position:fixed;bottom:12px;right:16px;z-index:9999;pointer-events:none;font-family:-apple-system,sans-serif;font-size:10px;color:rgba(0,0,0,0.28);">Made with <a href="https://canopy.app" style="color:rgba(74,158,150,0.7);text-decoration:none;pointer-events:auto;" target="_blank">Canopy</a></div>`;
-
-function shareArtifact(artifact: import("../../store/forumStore").ForumArtifact) {
-  const isHtml = artifact.type === "html";
-  const safeName = (artifact.filename || artifact.title.replace(/\s+/g, "-").toLowerCase()) + "";
-  const filename = safeName.includes(".") ? safeName : `${safeName}.${isHtml ? "html" : "md"}`;
-
-  let content = artifact.content;
-  if (isHtml) {
-    content = content.includes("</body>")
-      ? content.replace("</body>", `${CANOPY_WATERMARK_HTML}\n</body>`)
-      : content + CANOPY_WATERMARK_HTML;
-  } else if (artifact.type === "markdown") {
-    content = content + CANOPY_WATERMARK_MD;
-  }
-
-  const blob = new Blob([content], { type: isHtml ? "text/html" : "text/markdown" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
-}
-
 // ─── Project File Tree ────────────────────────────────────────────────────────
 
 function ProjectFileTree({
@@ -836,7 +809,6 @@ function ProjectFileTree({
   onSelectArtifact,
   onSyncArtifact,
   onSyncScratchpad,
-  onUploadFile,
 }: {
   artifacts: import("../../store/forumStore").ForumArtifact[];
   scratchpadContent: string;
@@ -847,9 +819,7 @@ function ProjectFileTree({
   onSelectArtifact: (id: string | null) => void;
   onSyncArtifact?: (artifactId: string) => Promise<void>;
   onSyncScratchpad?: () => Promise<void>;
-  onUploadFile?: (file: File) => void;
 }) {
-  const uploadInputRef = useRef<HTMLInputElement>(null);
   // Track which folders are open; default all open
   const [openFolders, setOpenFolders] = useState<Record<string, boolean>>({});
   const scratchpadSelected = selectedArtifactId === "__scratchpad__";
@@ -897,31 +867,6 @@ function ProjectFileTree({
         }}>
           Project Files
         </span>
-        {/* Upload file to project */}
-        <input
-          ref={uploadInputRef}
-          type="file"
-          multiple
-          style={{ display: "none" }}
-          onChange={e => {
-            const files = Array.from(e.target.files ?? []);
-            files.forEach(f => onUploadFile?.(f));
-            e.target.value = "";
-          }}
-        />
-        <button
-          onClick={() => uploadInputRef.current?.click()}
-          title="Upload a file to this project"
-          style={{
-            background: "transparent", border: "none", cursor: "pointer",
-            color: "var(--text-sub, #636E72)", padding: "1px 4px", borderRadius: 4,
-            fontSize: 14, lineHeight: 1, opacity: 0.5,
-          }}
-          onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
-          onMouseLeave={e => (e.currentTarget.style.opacity = "0.5")}
-        >
-          +
-        </button>
         {/* Sync all stale/unsynced files */}
         {isConnected && artifacts.some(a => a.syncState === "stale" || a.syncState === "unsynced") && (
           <button
@@ -1022,11 +967,7 @@ function ProjectFileTree({
             {/* Files in folder */}
             {isFolderOpen(folderName) && items.map(artifact => {
               const isSelected = selectedArtifactId === artifact.id;
-              // filename is the canonical display name; title is a human description
-              const primaryName = artifact.filename || artifact.title;
-              // Show title as subtitle only when it's different and meaningful (not the filename without extension)
-              const filenameBase = artifact.filename?.replace(/\.[^.]+$/, "");
-              const showSubtitle = artifact.title && artifact.title !== artifact.filename && artifact.title !== filenameBase;
+              const displayName = artifact.filename || artifact.title;
               const isDeliverable = artifact.isDeliverable;
               return (
                 <button
@@ -1048,18 +989,13 @@ function ProjectFileTree({
                       color: isDeliverable ? "var(--text-main, #303330)" : "var(--text-sub, #636E72)",
                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                     }}>
-                      {primaryName}
+                      {displayName}
                       {isDeliverable && (
                         <span style={{ marginLeft: 4, fontSize: 8, background: "#4A9E96", color: "#fff", borderRadius: 3, padding: "1px 4px", fontWeight: 700, letterSpacing: "0.04em" }}>
                           FINAL
                         </span>
                       )}
                     </div>
-                    {showSubtitle && (
-                      <div style={{ fontSize: 9, color: "var(--text-sub, #636E72)", opacity: 0.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                        {artifact.title}
-                      </div>
-                    )}
                     {artifact.agentName && (
                       <div style={{ fontSize: 9, color: "var(--text-sub, #636E72)", opacity: 0.55, marginTop: 1 }}>
                         {artifact.agentName}
@@ -1072,25 +1008,6 @@ function ProjectFileTree({
                     isConnected={isConnected}
                     onSync={onSyncArtifact ? () => onSyncArtifact(artifact.id) : undefined}
                   />
-                  {/* Share / download button */}
-                  {(artifact.type === "html" || artifact.type === "markdown") && (
-                    <button
-                      onClick={e => { e.stopPropagation(); shareArtifact(artifact); }}
-                      title="Download with Made with Canopy watermark"
-                      style={{
-                        background: "transparent", border: "none", cursor: "pointer",
-                        color: "var(--text-sub, #636E72)", padding: "1px 3px",
-                        borderRadius: 4, opacity: 0.4, flexShrink: 0,
-                      }}
-                      onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
-                      onMouseLeave={e => (e.currentTarget.style.opacity = "0.4")}
-                    >
-                      <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                      </svg>
-                    </button>
-                  )}
                 </button>
               );
             })}
@@ -1115,7 +1032,6 @@ function ProgressAndFiles({
   onSelectArtifact,
   onSyncArtifact,
   onSyncScratchpad,
-  onUploadFile,
 }: {
   milestones: Milestone[];
   forumStatus: string;
@@ -1128,7 +1044,6 @@ function ProgressAndFiles({
   onSelectArtifact: (id: string | null) => void;
   onSyncArtifact?: (artifactId: string) => Promise<void>;
   onSyncScratchpad?: () => Promise<void>;
-  onUploadFile?: (file: File) => void;
 }) {
   const listRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLDivElement>(null);
@@ -1275,7 +1190,6 @@ function ProgressAndFiles({
         onSelectArtifact={onSelectArtifact}
         onSyncArtifact={onSyncArtifact}
         onSyncScratchpad={onSyncScratchpad}
-        onUploadFile={onUploadFile}
       />
     </div>
   );
@@ -1366,16 +1280,13 @@ function AgentCard({ agent, forumStatus, onRemove }: {
             width: 32, height: 32, borderRadius: "50%",
             background: `${color}22`,
             border: `2px solid ${color}${isThinking ? "88" : "33"}`,
-            display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
+            display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 12, fontWeight: 700, color,
             transition: "all 0.3s ease",
             boxShadow: isThinking ? `0 0 0 3px ${color}18, 0 0 14px ${color}22` : "none",
             animation: isThinking ? "typing-avatar-pulse 2s ease-in-out infinite" : "none",
           }}>
-            {agent.image
-              ? <img src={agent.image} alt={agent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-              : agent.name.charAt(0).toUpperCase()
-            }
+            {agent.name.charAt(0).toUpperCase()}
           </div>
           <div style={{
             position: "absolute", bottom: -1, right: -1,
@@ -2196,6 +2107,7 @@ function ForumBlackboard({
   onClearArtifact: () => void;
 }) {
   const updateBlackboard = useForumStore(s => s.updateBlackboard);
+  const [locked, setLocked] = useState(false);
   const [copied, setCopied] = useState(false);
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [isAnnotationMode, setIsAnnotationMode] = useState(false);
@@ -2449,29 +2361,31 @@ function ForumBlackboard({
           </>
         )}
 
-        {/* Share / download — shown when viewing an artifact */}
-        {selectedArtifact && (selectedArtifact.type === "html" || selectedArtifact.type === "markdown") && toolbarBtn(
-          () => shareArtifact(selectedArtifact), false, "#818CF8",
+        {/* Director's Lock */}
+        {toolbarBtn(
+          () => setLocked(l => !l), locked, "#EF4444",
           <>
             <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-              <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+              {locked
+                ? <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>
+                : <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></>
+              }
             </svg>
-            Export
+            {locked ? "Locked" : "Lock"}
           </>,
-          "Download with Made with Canopy watermark"
+          locked ? "Unlock — agents can edit" : "Lock — agents cannot edit this content"
         )}
 
-        {/* Comment mode — highlight text to send a note to agents */}
-        {!isHtmlMode && !isGenUIMode && !isScratchpadView && toolbarBtn(
+        {/* Annotation Mode */}
+        {toolbarBtn(
           () => setIsAnnotationMode(a => !a), isAnnotationMode, "#EAB308",
           <>
             <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
             </svg>
-            {isAnnotationMode ? "Commenting…" : "Comment"}
+            {isAnnotationMode ? "Annotating" : "Annotate"}
           </>,
-          "Select any text to comment on it — agents will see your note"
+          "Toggle Annotation Mode to select text and comment"
         )}
 
         {/* Draw mode — only available when viewing HTML (overlays the iframe) */}
@@ -2506,6 +2420,16 @@ function ForumBlackboard({
 
       {/* Content area */}
       <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        {locked && isLive && (
+          <div style={{
+            position: "absolute", top: 8, right: 12, zIndex: 2,
+            fontSize: 10, color: "#EF4444", background: "rgba(239,68,68,0.1)",
+            border: "1px solid rgba(239,68,68,0.2)", borderRadius: 6,
+            padding: "3px 8px",
+          }}>
+            Director's Lock · agents cannot edit
+          </div>
+        )}
 
         {/* ── File viewer: selected artifact or scratchpad (full-width markdown / html) ── */}
         {isRendered && (isScratchpadView || (selectedArtifact && !isHtmlMode && !isGenUIMode)) && (
@@ -2639,9 +2563,9 @@ function ForumBlackboard({
             ref={textareaRef}
             value={displayContent}
             onChange={e => {
-              if (isLive && !isHtmlMode && !isGenUIMode && !isScratchpadView && !selectedArtifact) updateBlackboard(forum.id, e.target.value);
+              if (!locked && isLive && !isHtmlMode && !isGenUIMode && !isScratchpadView && !selectedArtifact) updateBlackboard(forum.id, e.target.value);
             }}
-            readOnly={!isLive || isHtmlMode || isGenUIMode || isScratchpadView || !!selectedArtifact}
+            readOnly={!isLive || locked || isHtmlMode || isGenUIMode || isScratchpadView || !!selectedArtifact}
             style={{
               width: "100%", height: "100%",
               background: "transparent", border: "none", outline: "none",
@@ -2963,14 +2887,11 @@ function ForumCard({
               background: `${a.robeColor || "#4A9E96"}28`,
               border: `1.5px solid ${a.robeColor || "#4A9E96"}66`,
               marginLeft: i > 0 ? -6 : 0,
-              display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden",
+              display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 8, fontWeight: 700, color: a.robeColor || "#4A9E96",
               flexShrink: 0,
             }} title={a.name}>
-              {a.image
-                ? <img src={a.image} alt={a.name} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "50%" }} />
-                : a.name.charAt(0)
-              }
+              {a.name.charAt(0)}
             </div>
           ))}
           {(f.agents || []).length > 4 && (
@@ -3039,28 +2960,6 @@ export function ForumView() {
       text,
       attachments: attachments && attachments.length > 0 ? attachments : undefined,
     });
-
-    // Auto-add uploaded files as project artifacts so they appear in the file tree
-    if (attachments && attachments.length > 0) {
-      const { addForumArtifact: addArt } = useForumStore.getState();
-      for (const att of attachments) {
-        const ext = att.name.split(".").pop()?.toLowerCase() ?? "";
-        const type: import("../../store/forumStore").ForumArtifactType =
-          ["jpg","jpeg","png","gif","webp","svg"].includes(ext) ? "image"
-          : att.mimeType.includes("html") ? "html"
-          : "markdown";
-        addArt(forum.id, {
-          type,
-          title: att.name,
-          filename: att.name,
-          folder: "User Uploads",
-          content: att.dataUrl,
-          agentName: "You",
-          isDeliverable: false,
-          syncState: "unsynced" as import("../../store/forumStore").ArtifactSyncState,
-        });
-      }
-    }
 
     // Add steering system notice
     addForumMessage(forum.id, {
@@ -3291,10 +3190,7 @@ export function ForumView() {
               }}
               title={a.name}
               >
-                {a.image
-                  ? <img src={a.image} alt={a.name} style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
-                  : <span style={{ fontSize: 9, fontWeight: 700 }}>{a.name.charAt(0)}</span>
-                }
+                {a.name.charAt(0)}
               </div>
             ))}
           </div>
@@ -3595,36 +3491,6 @@ export function ForumView() {
                 console.error("sync scratchpad failed:", err);
                 updateScratchpadSyncState(forum.id, "stale");
               }
-            }}
-            onUploadFile={(file) => {
-              // Read the file and add it as a project artifact + attach to a user message
-              const reader = new FileReader();
-              reader.onload = (e) => {
-                const dataUrl = e.target?.result as string;
-                const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-                const type: import("../../store/forumStore").ForumArtifactType =
-                  ["jpg","jpeg","png","gif","webp","svg"].includes(ext) ? "image"
-                  : file.type.includes("html") ? "html"
-                  : "markdown";
-                useForumStore.getState().addForumArtifact(forum.id, {
-                  type,
-                  title: file.name,
-                  filename: file.name,
-                  folder: "User Uploads",
-                  content: dataUrl,
-                  agentName: "You",
-                  isDeliverable: false,
-                  syncState: "unsynced" as import("../../store/forumStore").ArtifactSyncState,
-                });
-                // Surface it in the thread so agents know it's available
-                addForumMessage(forum.id, {
-                  kind: "chat",
-                  sender: "user",
-                  text: `📎 Added **${file.name}** to project files`,
-                  attachments: [{ name: file.name, dataUrl, mimeType: file.type }],
-                });
-              };
-              reader.readAsDataURL(file);
             }}
           />
 

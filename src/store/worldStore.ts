@@ -96,7 +96,7 @@ export interface Conversation {
   messages: ChatMessage[];
   createdAt: number;       // unix ms
   lastActiveAt: number;    // unix ms — for sort order
-  type?: "dm" | "project";
+  type?: "dm" | "forum";
   status?: "active" | "archived";
 }
 
@@ -144,6 +144,25 @@ export interface AgentData extends Agent {
     color?: string;
     habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; };
   };
+}
+
+
+export interface SecurityAlert {
+    id: string;
+    agent_id: string;
+    timestamp: string;
+    severity: string;
+    description: string;
+    resolved: boolean;
+}
+
+export interface SystemWarning {
+    id: string;
+    agent_id: string;
+    timestamp: string;
+    warning_type: string;
+    message: string;
+    resolved: boolean;
 }
 
 export interface InboxItem {
@@ -231,7 +250,7 @@ export interface WorldState {
   // there's anything worth saving, then clears chatLog. Returns the new
   // conv id (or null if nothing was saved). Used by "New conversation".
   saveCurrentThread: (agentId: string) => string | null;
-  createProjectSpace: (agentId: string) => string | null;
+  createForumSpace: (agentId: string) => string | null;
   // switchConversation saves the current thread first (idempotent — no-op if
   // empty), then loads the target conversation's messages into chatLog.
   switchConversation: (agentId: string, convId: string) => void;
@@ -241,6 +260,14 @@ export interface WorldState {
   addInboxItem: (item: Omit<InboxItem, "id" | "timestamp">) => void;
   removeInboxItem: (id: string) => void;
   // ── Decision Queue ────────────────────────────────────────────────────
+  
+  securityAlerts: SecurityAlert[];
+  systemWarnings: SystemWarning[];
+  setSecurityAlerts: (alerts: SecurityAlert[]) => void;
+  setSystemWarnings: (warnings: SystemWarning[]) => void;
+  resolveSystemWarningState: (id: string) => void;
+  resolveSecurityAlertState: (id: string) => void;
+
   pendingDecisions: PendingDecision[];
   addDecision: (d: PendingDecision) => void;
   resolveDecision: (id: string, answer: string) => void; // user picked an option
@@ -413,6 +440,14 @@ export const useWorldStore = create<WorldState>()(
   })),
 
   // ── Decision Queue ─────────────────────────────────────────────────────
+  
+  securityAlerts: [],
+  systemWarnings: [],
+  setSecurityAlerts: (alerts) => set({ securityAlerts: alerts }),
+  setSystemWarnings: (warnings) => set({ systemWarnings: warnings }),
+  resolveSystemWarningState: (id) => set((state) => ({ systemWarnings: state.systemWarnings.filter(w => w.id !== id) })),
+  resolveSecurityAlertState: (id) => set((state) => ({ securityAlerts: state.securityAlerts.filter(a => a.id !== id) })),
+
   pendingDecisions: [],
   addDecision: (d) => set((state) => ({
     pendingDecisions: [d, ...state.pendingDecisions],
@@ -456,8 +491,11 @@ export const useWorldStore = create<WorldState>()(
         // they're preserved when the user switches back later.
         const existing = conversations.find(c => c.id === agent.activeConversationId);
         if (existing) {
+          const isNewContent = (agent.chatLog || []).length !== existing.messages.length ||
+            (agent.chatLog || [])[(agent.chatLog || []).length - 1]?.id !== existing.messages[existing.messages.length - 1]?.id;
+
           conversations = conversations.map(c => c.id === agent.activeConversationId
-            ? { ...c, messages: [...(agent.chatLog || [])], lastActiveAt: Date.now() }
+            ? { ...c, messages: [...(agent.chatLog || [])], lastActiveAt: isNewContent ? Date.now() : c.lastActiveAt }
             : c);
         } else {
           // Fallback: If it was active but missing from the array, push it anew.
@@ -504,7 +542,7 @@ export const useWorldStore = create<WorldState>()(
           conversations,
           chatLog: [],
           draftMessage: "",
-          activeConversationId: null,
+          activeConversationId: `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           chatClearedAt: Date.now(),
         } : a),
       };
@@ -518,7 +556,7 @@ export const useWorldStore = create<WorldState>()(
     return savedId;
   },
 
-  createProjectSpace: (agentId) => {
+  createForumSpace: (agentId) => {
     let savedId: string | null = null;
     set((state) => {
       const agent = state.agents.find(a => a.id === agentId);
@@ -529,17 +567,17 @@ export const useWorldStore = create<WorldState>()(
       const now = Date.now();
       const newConv: Conversation = {
         id: `proj_${now}_${Math.random().toString(36).slice(2, 8)}`,
-        title: "New Project Space",
+        title: "New Forum Space",
         messages: [],
         createdAt: now,
         lastActiveAt: now,
-        type: "project",
+        type: "forum",
         status: "active"
       };
       conversations.push(newConv);
       savedId = newConv.id;
 
-      // We don't automatically clear the active chat log if it was a DM, but we DO switch into the project space.
+      // We don't automatically clear the active chat log if it was a DM, but we DO switch into the forum space.
       // Wait, let's just create it and let switchConversation handle the switch.
       return {
         agents: state.agents.map(a => a.id === agentId ? {
@@ -554,7 +592,21 @@ export const useWorldStore = create<WorldState>()(
   switchConversation: (agentId, convId) => set((state) => {
     const agent = state.agents.find(a => a.id === agentId);
     if (!agent) return state;
-    const target = (agent.conversations || []).find(c => c.id === convId);
+    
+    // Inject a stub for forums if missing, so we can switch to them
+    let target = (agent.conversations || []).find(c => c.id === convId);
+    if (!target && convId.startsWith("forum_")) {
+      target = {
+        id: convId,
+        type: "forum",
+        title: "Forum",
+        messages: [],
+        status: "active",
+        createdAt: Date.now(),
+        lastActiveAt: Date.now()
+      };
+      agent.conversations = [...(agent.conversations || []), target];
+    }
     if (!target) return state;
 
     // Snapshot the current chatLog into its own conversation before swapping,
@@ -570,8 +622,13 @@ export const useWorldStore = create<WorldState>()(
       // (i.e. activeConversationId is set), update that thread's messages
       // rather than creating a duplicate.
       if (agent.activeConversationId) {
+        const existing = conversations.find(c => c.id === agent.activeConversationId);
+        const isNewContent = !existing ||
+          agent.chatLog.length !== existing.messages.length ||
+          agent.chatLog[agent.chatLog.length - 1]?.id !== existing.messages[existing.messages.length - 1]?.id;
+
         conversations = conversations.map(c => c.id === agent.activeConversationId
-          ? { ...c, messages: [...agent.chatLog], lastActiveAt: Date.now() }
+          ? { ...c, messages: [...agent.chatLog], lastActiveAt: isNewContent ? Date.now() : c.lastActiveAt }
           : c);
       } else {
         const now = Date.now();
@@ -611,8 +668,10 @@ export const useWorldStore = create<WorldState>()(
     agents: state.agents.map(a => a.id === agentId ? {
       ...a,
       conversations: (a.conversations || []).filter(c => c.id !== convId),
-      // If we deleted the active conversation, clear the active marker.
-      activeConversationId: a.activeConversationId === convId ? null : a.activeConversationId,
+      // If we deleted the active conversation, clear the active marker with a new unique session ID.
+      activeConversationId: a.activeConversationId === convId 
+        ? `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}` 
+        : a.activeConversationId,
     } : a),
   })),
 
@@ -631,7 +690,26 @@ export const useWorldStore = create<WorldState>()(
 {
   name: "canopy-world-store",
   partialize: (state) => ({ 
-    agents: state.agents, 
+    agents: state.agents.map((a) => ({
+      ...a,
+      chatLog: a.chatLog?.map((m) => ({
+        ...m,
+        attachments: m.attachments?.map((att) => ({
+          ...att,
+          dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
+        }))
+      })),
+      conversations: a.conversations?.map((c) => ({
+        ...c,
+        messages: c.messages?.map((m) => ({
+          ...m,
+          attachments: m.attachments?.map((att) => ({
+            ...att,
+            dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
+          }))
+        }))
+      }))
+    })),
     inbox: state.inbox,
     isAutoCloakEnabled: state.isAutoCloakEnabled, 
     autoCloakTimeout: state.autoCloakTimeout 
