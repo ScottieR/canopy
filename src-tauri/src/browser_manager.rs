@@ -1533,62 +1533,104 @@ async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, 
     use tokio_tungstenite::connect_async;
     use futures_util::{SinkExt, StreamExt};
     use tauri::Emitter;
-    use tokio::time::{sleep, Duration};
+    use tokio::time::{sleep, timeout, Duration};
 
-    let mut retry_count = 0;
-    let max_retries = 5;
-    
-    let (mut ws_stream, _) = loop {
-        match connect_async(&cdp_url).await {
-            Ok(ws) => break ws,
-            Err(e) => {
-                retry_count += 1;
-                if retry_count >= max_retries {
-                    tracing::error!("Failed to connect to CDP websocket for visual streaming: {}", e);
+    // Outer reconnect loop. Each iteration attempts one full connect-and-stream cycle.
+    // On mid-stream disconnect we fall through to the top and reconnect; on persistent
+    // connect failures we back off and eventually give up (Chrome was intentionally stopped).
+    let mut connect_failures = 0u32;
+
+    'reconnect: loop {
+        let ws = timeout(Duration::from_secs(5), connect_async(&cdp_url)).await;
+        let mut ws_stream = match ws {
+            Ok(Ok((stream, _))) => {
+                connect_failures = 0;
+                stream
+            }
+            Ok(Err(e)) => {
+                connect_failures += 1;
+                tracing::debug!("stream_browser_visuals: CDP connect failed for {} (attempt {}): {}", agent_id, connect_failures, e);
+                if connect_failures >= 20 {
+                    tracing::warn!("stream_browser_visuals: giving up for {} after {} failures", agent_id, connect_failures);
+                    return;
+                }
+                // Fast retries first, then slow — avoids hammering a starting Chrome.
+                sleep(Duration::from_millis(if connect_failures <= 5 { 500 } else { 3_000 })).await;
+                continue 'reconnect;
+            }
+            Err(_) => {
+                // connect_async itself timed out
+                connect_failures += 1;
+                if connect_failures >= 10 {
+                    tracing::warn!("stream_browser_visuals: connect timed out too many times for {}", agent_id);
                     return;
                 }
                 sleep(Duration::from_millis(500)).await;
+                continue 'reconnect;
             }
-        }
-    };
+        };
 
-    let mut msg_id = 1;
-    let mut interval = tokio::time::interval(Duration::from_millis(500)); // 2 FPS
+        let mut msg_id = 1i64;
+        let mut interval = tokio::time::interval(Duration::from_millis(500)); // 2 FPS
 
-    loop {
-        interval.tick().await;
+        'stream: loop {
+            interval.tick().await;
 
-        let req = serde_json::json!({
-            "id": msg_id,
-            "method": "Page.captureScreenshot",
-            "params": {
-                "format": "jpeg",
-                "quality": 50
+            let req = serde_json::json!({
+                "id": msg_id,
+                "method": "Page.captureScreenshot",
+                "params": { "format": "jpeg", "quality": 50 }
+            });
+
+            if ws_stream
+                .send(tokio_tungstenite::tungstenite::Message::Text(req.to_string().into()))
+                .await
+                .is_err()
+            {
+                // Send failed — WebSocket dropped. Sleep briefly then let 'reconnect
+                // try a fresh connection.
+                sleep(Duration::from_millis(500)).await;
+                break 'stream;
             }
-        });
 
-        if ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(req.to_string().into())).await.is_err() {
-            break;
-        }
-
-        // Wait for response
-        while let Some(msg) = ws_stream.next().await {
-            if let Ok(tokio_tungstenite::tungstenite::Message::Text(text)) = msg {
-                if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&text) {
-                    if resp.get("id").and_then(|id| id.as_i64()) == Some(msg_id) {
-                        if let Some(data) = resp.pointer("/result/data").and_then(|d| d.as_str()) {
-                            let _ = app_handle.emit("browser_stream_frame", serde_json::json!({
-                                "agent_id": agent_id,
-                                "frame": data
-                            }));
+            // Wait for the screenshot response. Bound by a timeout so a frozen Chrome
+            // (page hang, renderer crash) doesn't block this task forever.
+            'response: loop {
+                match timeout(Duration::from_secs(10), ws_stream.next()).await {
+                    Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => {
+                        if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&text) {
+                            if resp.get("id").and_then(|id| id.as_i64()) == Some(msg_id) {
+                                if let Some(data) = resp.pointer("/result/data").and_then(|d| d.as_str()) {
+                                    let _ = app_handle.emit("browser_stream_frame", serde_json::json!({
+                                        "agent_id": agent_id,
+                                        "frame": data
+                                    }));
+                                }
+                                break 'response;
+                            }
+                            // Non-matching id (CDP event) — keep waiting for our response.
                         }
-                        break;
+                    }
+                    Ok(Some(Ok(_))) => {
+                        // Non-text frame (ping/pong/binary) — keep waiting.
+                    }
+                    Ok(Some(Err(_))) | Ok(None) => {
+                        // WebSocket error or clean close — reconnect.
+                        sleep(Duration::from_millis(500)).await;
+                        break 'stream;
+                    }
+                    Err(_) => {
+                        // 10s timeout: Chrome is unresponsive (hung page or renderer crash).
+                        tracing::warn!("stream_browser_visuals: screenshot response timed out for {}", agent_id);
+                        sleep(Duration::from_millis(500)).await;
+                        break 'stream;
                     }
                 }
             }
+
+            msg_id += 1;
         }
-        
-        msg_id += 1;
+        // 'stream ended — 'reconnect loops back to try a fresh connection.
     }
 }
 
