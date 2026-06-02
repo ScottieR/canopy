@@ -1530,6 +1530,24 @@ fn compute_offscreen_position() -> (i32, i32) {
 }
 
 async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, cdp_url: String) {
+    let mut retries = 0;
+    loop {
+        match try_stream_browser_visuals(&app_handle, &agent_id, &cdp_url).await {
+            Ok(_) => break,
+            Err(e) if retries < 5 => {
+                retries += 1;
+                eprintln!("Browser stream disconnected, reconnecting in 3s (attempt {}/5): {}", retries, e);
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+            }
+            Err(e) => {
+                eprintln!("Browser stream failed after 5 retries: {}", e);
+                break;
+            }
+        }
+    }
+}
+
+async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &str, cdp_url: &str) -> Result<(), String> {
     use tokio_tungstenite::connect_async;
     use futures_util::{SinkExt, StreamExt};
     use tauri::Emitter;

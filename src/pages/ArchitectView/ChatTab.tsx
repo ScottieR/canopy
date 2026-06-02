@@ -939,7 +939,11 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         friendlyError = "The gateway was restarted and agents re-initialized. Please try sending your message again!";
       } else if (friendlyError.includes("taking a long time") || friendlyError.includes("Gateway Timeout")) {
         const { invoke: inv } = await import('@tauri-apps/api/core');
-        inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
+        const now = Date.now();
+        if (now - lastBootSync.current > 5 * 60 * 1000) {
+          lastBootSync.current = now;
+          inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
+        }
         friendlyError = "The agent is taking a while to respond. Registration is being refreshed — please try again in 30 seconds.";
       } else if (friendlyError.includes("No API key found for provider")) {
         const match = friendlyError.match(/No API key found for provider "([^"]+)"/);

@@ -21,7 +21,6 @@ import { PersonalityTab } from './PersonalityTab';
 
 import { SpendTab } from './SpendTab';
 import { ActivityTab } from './ActivityTab';
-import { ChatTab } from './ChatTab';
 import { BrowserTab } from './BrowserTab';
 import { DiagnosticsTab } from './DiagnosticsTab';
 import { MobilePairingModal } from '../../components/Companion/MobilePairingModal';
@@ -92,12 +91,6 @@ export // ═══════════════════════�
     setShowDiagnosticsPane(true);
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-
-      // Always re-run boot_sync_agents during diagnostics — it's idempotent and handles
-      // the case where the agent dir never got created (agents add timed out on a previous boot).
-      // sync_credentials silently skips agents whose dir doesn't exist yet, so this is the
-      // only path that will actually fix an unregistered agent.
-      await invoke("boot_sync_agents").catch((e: any) => console.warn("boot_sync in diag:", e));
 
       const anthropic = await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "");
       const openai = await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "");
