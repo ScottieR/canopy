@@ -262,6 +262,11 @@ pub async fn send_voice_message(
 ) -> Result<VoiceMessageResponse, String> {
     tracing::info!("Processing voice message for agent: {}", agent_id);
 
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::VOICE_TRANSCRIBE_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
+
     // Validate agent exists
     if !agent_exists(&db_state, &agent_id).await? {
         return Err(format!("Agent not found: {}", agent_id));
@@ -398,6 +403,11 @@ pub async fn cleanup_voice_cache() -> Result<u32, String> {
 /// Transcribe audio file using local Whisper.cpp (Tier 2 stub)
 #[tauri::command]
 pub async fn transcribe_audio(audio_path: String) -> Result<String, String> {
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::VOICE_TRANSCRIBE_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
+
     // TODO: Tier 2 implementation - integrate with whisper.cpp
     // For now, return error indicating frontend should use Web Speech API
     tracing::warn!("Local STT not configured; falling back to Web Speech API");
@@ -407,6 +417,11 @@ pub async fn transcribe_audio(audio_path: String) -> Result<String, String> {
 /// Synthesize speech using local Piper (Tier 2 stub)
 #[tauri::command]
 pub async fn synthesize_speech(text: String, voice: String) -> Result<String, String> {
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::VOICE_TRANSCRIBE_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
+
     // TODO: Tier 2 implementation - integrate with piper binary
     // Would return path to generated audio file
     // For now, return error indicating frontend should use Web Speech API

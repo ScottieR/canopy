@@ -147,6 +147,10 @@ struct ConnectionsOpenResponse {
 pub async fn start_slack_oauth(
     _app: tauri::AppHandle,
 ) -> Result<String, String> {
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::OAUTH_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
     // SECURITY: Try keychain first for secrets (secure storage)
     // Fall back to environment variables for development/backward compatibility
     let client_id = crate::keychain::get_secret("SLACK_CLIENT_ID")

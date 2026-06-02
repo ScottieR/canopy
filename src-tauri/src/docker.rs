@@ -709,6 +709,11 @@ pub async fn start_gateway(app_handle: tauri::AppHandle) -> Result<String, Strin
 }
 
 pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Result<String, String> {
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::DOCKER_EXEC_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
+
     // Helper to emit progress securely
     let emit_progress = |msg: &str| {
         if let Some(ref app) = app_handle {
@@ -1297,6 +1302,11 @@ for (const file of files) {
 
 #[tauri::command]
 pub async fn stop_gateway() -> Result<String, String> {
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::DOCKER_EXEC_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
+
     let data_dir = dirs::data_dir()
         .ok_or("Could not find data directory")?
         .join("Canopy");
@@ -1326,6 +1336,11 @@ pub async fn stop_gateway() -> Result<String, String> {
 
 #[tauri::command]
 pub async fn hard_reset_infrastructure() -> Result<String, String> {
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::DOCKER_EXEC_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
+
     tracing::info!("Starting Hard-Reset infrastructure safety protocol...");
 
     let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;

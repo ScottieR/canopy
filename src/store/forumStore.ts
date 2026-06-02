@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { applyForumBudgetIncrement } from "./forumBudget";
 
 // ─── Message Types ────────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ export interface ForumBlock {
 // ─── Trust Budget ─────────────────────────────────────────────────────────────
 
 export interface TrustBudget {
-  tokenLimit: number;       // max tokens for this forum
+  tokenLimit?: number;      // deprecated/unused
   tokensUsed: number;
   usdLimit: number;         // max $ spend
   usdUsed: number;
@@ -324,8 +325,8 @@ export const useForumStore = create<ForumState>()(
       setActiveForumId: (id) => set({ activeForumId: id }),
       incrementTokensAndCost: (forumId, tokens, cost) => set((state) => ({
         forums: state.forums.map((f) => 
-          f.id === forumId 
-            ? { ...f, totalTokens: (f.totalTokens || 0) + tokens, totalCost: (f.totalCost || 0) + cost } 
+          f.id === forumId
+            ? { ...f, ...applyForumBudgetIncrement(f, tokens, cost) }
             : f 
         )
       })),

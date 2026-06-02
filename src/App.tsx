@@ -411,7 +411,11 @@ export function CanopyScene({
   
   const setAgents = useWorldStore(s => s.setAgents);
   const updateAgentAction = useWorldStore(s => s.updateAgentAction);
-  const invoke = (window as any)?.__TAURI__?.invoke || (() => Promise.resolve());
+  // CRITICAL: use the proper Tauri v2 invoke. The earlier `(window as any).__TAURI__.invoke`
+  // shadowed `tauriInvoke` with `undefined` (the v1 global doesn't exist in v2), falling back
+  // to `() => Promise.resolve()`. Every sync_mobile_state call became a silent no-op — which
+  // is why mobile saw empty forums even after the projects → forums rename was done correctly.
+  const invoke = tauriInvoke;
 
   // Subscribe to forumStore so we re-sync when forums change
   const forums = useForumStore(s => s.forums);

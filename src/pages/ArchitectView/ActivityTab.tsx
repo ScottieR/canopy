@@ -10,6 +10,7 @@ import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMes
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass, ProgressBar } from "../../App";
 import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
+import { TokenSpendChart } from "../../components/agents/TokenSpendChart";
 import { detectCurrentTier } from "./accessTiers";
 import { DecisionCard } from "../../components/DecisionQueue/DecisionCard";
 

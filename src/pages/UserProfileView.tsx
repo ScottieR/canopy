@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, UserProfile, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass } from "../App";
-import { TokenSpendChart } from "./ArchitectView/TokenSpendChart";
+import { TokenSpendChart } from "../components/agents/TokenSpendChart";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // USER PROFILE VIEW

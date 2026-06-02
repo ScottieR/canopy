@@ -366,3 +366,20 @@ cd canopy && npm test -- forumCoordinator.test
 **Last Updated:** May 20, 2026
 **Test Coverage:** Phase 1 Critical Path (100%) · Phase 2 specs documented, implementation pending
 **Next Phase:** Phase 2 — system_assess unit tests, forum coordinator tests, multi-agent handoff
+# Refactor Regression Gate
+
+For behavior-preserving refactors, run the repeatable gate from the Canopy app directory:
+
+```bash
+cd canopy
+./scripts/refactor_regression_check.sh
+```
+
+This runs frontend Vitest tests, the production build, Rust `cargo check`, Rust `cargo test`, and the mobile TypeScript check. Browser journeys are optional because they require the local dev server and Playwright browsers:
+
+```bash
+cd canopy
+RUN_E2E=1 ./scripts/refactor_regression_check.sh
+```
+
+Workspace-file integration tests use `CANOPY_DATA_DIR` in tests so they can write to temp directories instead of the real app data directory.

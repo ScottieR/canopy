@@ -28,6 +28,10 @@ pub async fn start_google_oauth(
     read_only: Option<bool>,
     granular_drive: Option<bool>,
 ) -> Result<GoogleTokenResponse, String> {
+    // ── RATE LIMITING ──
+    crate::rate_limiter::limiters::OAUTH_LIMITER
+        .check("local-user")
+        .map_err(|e| e.to_string())?;
     // SECURITY: Prefer keychain for client secret (most secure)
     // Then environment variable for dev/testing
     // Finally fall back to embedded constants for production builds

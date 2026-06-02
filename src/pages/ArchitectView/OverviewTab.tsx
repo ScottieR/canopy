@@ -6,7 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity as ActivityIcon, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp } from "../../store/worldStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Environment } from "@react-three/drei";
@@ -20,7 +20,88 @@ import { Toggle, ServiceRow, glass } from "../../App";
 import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
 import { WorkspaceFilesDrawer } from "./WorkspaceFilesDrawer";
 import { ThreadsRail } from "./ThreadsRail";
+import { LiveVoiceOverlay } from "./LiveVoiceOverlay";
 // ProjectSpaceView removed — multi-agent collaboration now lives in ForumView
+
+// ─── Mini Apps Drawer ─────────────────────────────────────────────────────────
+
+function MiniAppsDrawer({ agent, open, onClose }: { agent: AgentData; open: boolean; onClose: () => void }) {
+  const deleteMiniApp = useWorldStore(s => s.deleteMiniApp);
+  const [selectedApp, setSelectedApp] = React.useState<MiniApp | null>(null);
+  const apps = agent.miniApps ?? [];
+
+  if (!open) return null;
+
+  const download = (app: MiniApp) => {
+    const blob = new Blob([app.htmlContent], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `${app.name.replace(/\s+/g, "-").toLowerCase()}.html`;
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={{
+      position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 200,
+      width: 400, maxHeight: 540,
+      background: "var(--surface-card, #fff)",
+      border: "1px solid var(--border-subtle)",
+      borderRadius: 14,
+      boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+      display: "flex", flexDirection: "column",
+      overflow: "hidden",
+    }}>
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 8 }}>
+        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2.5} strokeLinecap="round">
+          <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+        </svg>
+        <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-main)", flex: 1 }}>Mini Apps · {agent.name}</span>
+        {selectedApp && <button onClick={() => setSelectedApp(null)} style={{ fontSize: 11, color: "var(--text-sub)", background: "transparent", border: "none", cursor: "pointer" }}>← Back</button>}
+        <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 2 }}>✕</button>
+      </div>
+      {selectedApp ? (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+          <div style={{ padding: "7px 12px", background: "rgba(129,140,248,0.06)", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, flex: 1, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedApp.name}</span>
+            <button onClick={() => download(selectedApp)} style={{ fontSize: 10, color: "#818CF8", background: "transparent", border: "none", cursor: "pointer", fontWeight: 600 }}>↓ Download</button>
+          </div>
+          <iframe srcDoc={selectedApp.htmlContent} sandbox="allow-scripts allow-same-origin" style={{ flex: 1, border: "none", minHeight: 400 }} title={selectedApp.name} />
+        </div>
+      ) : (
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {apps.length === 0 ? (
+            <div style={{ padding: "32px 20px", textAlign: "center" }}>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>🧩</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>No mini-apps yet</div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.6, maxWidth: 260, margin: "0 auto" }}>
+                Ask {agent.name} to build a tool and click "Pin to shelf" on any HTML response to save it here.
+              </div>
+            </div>
+          ) : (
+            apps.map(app => (
+              <div key={app.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(129,140,248,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2} strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{app.name}</div>
+                  {app.description && <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{app.description}</div>}
+                </div>
+                <button onClick={() => setSelectedApp(app)} style={{ fontSize: 11, color: "#818CF8", background: "rgba(129,140,248,0.1)", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontWeight: 600, flexShrink: 0 }}>Open</button>
+                <button onClick={() => download(app)} title="Download" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 4, flexShrink: 0 }}>
+                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                </button>
+                <button onClick={() => deleteMiniApp(agent.id, app.id)} title="Remove" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 4, opacity: 0.45, flexShrink: 0 }}>
+                  <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
@@ -47,8 +128,7 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
   const [emailNeedsConnection, setEmailNeedsConnection] = useState(false);
   const [calendarNeedsConnection, setCalendarNeedsConnection] = useState(false);
 
-  // Workspace files popover open/closed. Triggered from the Files pill in
-  // the quick-actions row. Outside-click closes via a useEffect below.
+  // Workspace files popover open/closed.
   const [filesOpen, setFilesOpen] = useState(false);
   const filesPopoverRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -62,12 +142,30 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
     return () => document.removeEventListener("mousedown", onDown);
   }, [filesOpen]);
 
+  // Mini Apps popover open/closed.
+  const [appsOpen, setAppsOpen] = useState(false);
+  const appsPopoverRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!appsOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (appsPopoverRef.current && !appsPopoverRef.current.contains(e.target as Node)) {
+        setAppsOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [appsOpen]);
+
   // Voice toggle — V1 uses the browser Web Speech API (single-turn: agent reply
   // text → spoken). Persisted in sessionStorage so the choice survives agent
   // switches within a session. ChatTab subscribes to `canopy:voice-toggle` to
   // know when to speak; we also pre-seed the same storage key for the
   // initial-mount read in ChatTab.
   const [voiceOn, setVoiceOn] = useState<boolean>(() => sessionStorage.getItem("canopy:voice-on") === "1");
+  // Live voice — bidirectional duplex via OpenClaw realtime brain. Distinct
+  // from the single-turn voice toggle above (TTS-only playback of agent
+  // replies). Live is modal: it takes over the screen while active.
+  const [liveOpen, setLiveOpen] = useState(false);
   const flipVoice = useCallback((next: boolean) => {
     setVoiceOn(next);
     sessionStorage.setItem("canopy:voice-on", next ? "1" : "0");
@@ -631,15 +729,43 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
           <WorkspaceFilesDrawer agent={agent} open={filesOpen} onClose={() => setFilesOpen(false)} />
         </div>
 
-        {/* Voice toggle — when on, agent replies are spoken via the browser's
-            Web Speech API. The tooltip surfaces the live-mode roadmap so the
-            user knows what's coming. Pushed to the right via marginLeft auto. */}
+        {/* Mini Apps — HTML tools saved from chat */}
+        <div ref={appsPopoverRef} style={{ position: "relative" }}>
+          <button
+            onClick={() => setAppsOpen(o => !o)}
+            title="Mini apps saved from your chats with this agent"
+            style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+              background: appsOpen ? "rgba(129,140,248,0.1)" : "var(--surface-card)",
+              border: appsOpen ? "1px solid #818CF8" : "1px solid var(--border-subtle)",
+              borderRadius: 12, fontSize: 13, fontWeight: 600,
+              color: appsOpen ? "#818CF8" : "var(--text-main)",
+              cursor: "pointer", fontFamily: "inherit",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+            </svg>
+            Apps
+            {(agent.miniApps?.length ?? 0) > 0 && (
+              <span style={{ fontSize: 10, background: "#818CF8", color: "#fff", borderRadius: 10, padding: "0 5px", marginLeft: 2, fontWeight: 700 }}>
+                {agent.miniApps!.length}
+              </span>
+            )}
+          </button>
+          <MiniAppsDrawer agent={agent} open={appsOpen} onClose={() => setAppsOpen(false)} />
+        </div>
+
+        {/* Voice toggle — single-turn TTS playback of agent replies via the
+            browser Web Speech API. The "Go live" button next to it is a
+            different gesture: full bidirectional duplex voice. */}
         <button
           onClick={() => flipVoice(!voiceOn)}
           title={
             voiceOn
-              ? `Voice on — ${agent.name}'s replies will be spoken aloud. Live duplex mode (Gemini Live) coming soon.`
-              : `Voice off — turn on to hear ${agent.name}'s replies. Live duplex mode (Gemini Live) coming soon.`
+              ? `Voice on — ${agent.name}'s replies will be spoken aloud.`
+              : `Voice off — turn on to hear ${agent.name}'s replies.`
           }
           style={{
             display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
@@ -657,13 +783,38 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
           )}
           Voice {voiceOn ? "on" : "off"}
-          <span style={{ fontSize: 9, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: "0.02em" }}>
-            LIVE SOON
-          </span>
         </button>
+
+        {/* Go live — opens the modal overlay and starts a real-time duplex
+            voice session via OpenClaw's realtime brain endpoint (Gemini Live).
+            This is conceptually distinct from the voice toggle: that's
+            "speak agent replies", this is "have a live conversation". */}
+        <button
+          onClick={() => setLiveOpen(true)}
+          title={`Start a live voice call with ${agent.name}. Requires OpenClaw 2026.4.24 or newer.`}
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
+            background: "linear-gradient(135deg, #3c6663, #609995)",
+            border: "1px solid #3c6663", color: "#fff",
+            borderRadius: 12, fontSize: 13, fontWeight: 700,
+            cursor: "pointer", fontFamily: "inherit",
+            boxShadow: "0 2px 8px rgba(60,102,99,0.25)",
+            transition: "all 0.15s ease",
+          }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+          Go live
+        </button>
+
         {/* "New conversation" used to live here — moved into the ThreadsRail
             as a more prominent "+ New chat" button at the top of the rail. */}
       </div>
+
+      {/* Live voice overlay — only mounted while open. Mounting/unmounting
+          aligns the audio session lifecycle with the user's intent. */}
+      {liveOpen && <LiveVoiceOverlay agent={agent} onClose={() => setLiveOpen(false)} />}
 
       {/* ── Empty-state intro card ──────────────────────────────────────────
           Rendered above the chat when there's no conversation yet. Suggestion

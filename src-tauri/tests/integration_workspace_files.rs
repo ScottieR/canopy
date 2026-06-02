@@ -7,6 +7,9 @@ use tauri::Manager;
 
 #[tokio::test]
 async fn test_workspace_file_upload_and_read_base64() {
+    let ctx = common::TestContext::new();
+    std::env::set_var("CANOPY_DATA_DIR", ctx.temp_dir.path());
+
     let app = tauri::test::mock_app();
     let handle = app.handle();
     

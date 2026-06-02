@@ -60,8 +60,6 @@ function DataTable({ props }: { props: any }) {
 
 // 3. The "Propose New Component" fallback: Custom HTML
 function CustomHtml({ props, attachments }: { props: any, attachments?: any[] }) {
-  // Danger zone: in production this needs DOMPurify or to run in an iframe.
-  // For the GenUI spec, this demonstrates the capability.
   let html = props.html || "";
   
   // Inject base64 image data for local attachments
@@ -69,15 +67,25 @@ function CustomHtml({ props, attachments }: { props: any, attachments?: any[] })
     attachments.forEach(att => {
       // Replace instances of the filename with its base64 dataUrl
       // This handles cases like <img src="photo.jpg">
-      const regex = new RegExp(`src=["']?([^"'>]*${att.name})["']?`, 'g');
+      const escapedName = String(att.name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(`src=["']?([^"'>]*${escapedName})["']?`, 'g');
       html = html.replace(regex, `src="${att.dataUrl}"`);
     });
   }
 
   return (
-    <div 
-      style={{ marginTop: 8, padding: 8, background: "#fff", border: "1px dashed #ccc", borderRadius: 8 }}
-      dangerouslySetInnerHTML={{ __html: html }} 
+    <iframe
+      title="Generated mini-app"
+      srcDoc={html}
+      sandbox="allow-scripts"
+      style={{
+        marginTop: 8,
+        width: "100%",
+        minHeight: 260,
+        background: "#fff",
+        border: "1px dashed #ccc",
+        borderRadius: 8,
+      }}
     />
   );
 }

@@ -689,12 +689,33 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       const isRateLimitErr = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("rate limit") || s.includes("429") || s.includes("too many request"); };
       // Quota / billing errors: retrying won't help — surface immediately and let other agents continue
       const isQuotaErr     = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("quota") || s.includes("billing") || s.includes("credit") || s.includes("insufficient_quota") || s.includes("you've exceeded") || s.includes("has been exceeded"); };
+      const estimatedTokens = Math.max(150, Math.ceil(prompt.length / 4));
+      const estimatedCost = Math.max(0.002, estimatedTokens * 0.00001);
+
+      const assertBudgetAvailable = () => {
+        const freshForum = useForumStore.getState().forums.find(f => f.id === forumId);
+        if (!freshForum) return;
+        const budget = freshForum.trustBudget;
+        if (!budget) return;
+        const wouldUseUsd = (budget.usdUsed || 0) + estimatedCost;
+        if (budget.circuitBreakerFired || wouldUseUsd > budget.usdLimit) {
+          useForumStore.getState().updateTrustBudget(forumId, { circuitBreakerFired: true });
+          setForumStatus(forumId, "paused");
+          addForumMessage(forumId, {
+            kind: "circuit_breaker",
+            sender: "system",
+            text: `Trust budget reached. Estimated usage would be $${wouldUseUsd.toFixed(2)}, over the configured forum limit.`,
+          });
+          throw new Error("Forum trust budget reached");
+        }
+      };
 
       const MAX_ATTEMPTS = 4;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (stopped) throw new Error("Orchestrator stopped");
+        assertBudgetAvailable();
         updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : `Retrying (${attempt})…`);
-        useForumStore.getState().incrementTokensAndCost?.(forumId, 150, 0.002);
+        useForumStore.getState().incrementTokensAndCost?.(forumId, estimatedTokens, estimatedCost);
         try {
           // ── Upload attachments to agent workspace ──
           const allAttachments: { name: string; dataUrl: string }[] = [];

@@ -508,6 +508,12 @@ pub async fn fetch_github_repos(token: String) -> Result<Vec<GithubRepo>, String
 // `gh` CLI wrapper that injects the token into the agent's workspace. So this function
 // does not call `patch_channel_config`. The wrapper is the integration point.
 
+fn is_safe_github_token_value(token: &str) -> bool {
+    let has_known_prefix =
+        token.starts_with("ghp_") || token.starts_with("github_pat_") || token.starts_with("gho_");
+    has_known_prefix && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+}
+
 #[tauri::command]
 pub async fn configure_github(
     db: tauri::State<'_, crate::db::Database>,
@@ -515,9 +521,11 @@ pub async fn configure_github(
     personal_access_token: String,
     username: Option<String>,
 ) -> Result<String, String> {
+    crate::validators::agent::validate_id(&agent_id)
+        .map_err(|e| format!("Invalid agent ID: {}", e))?;
     let token = personal_access_token.trim().to_string();
 
-    if !token.starts_with("ghp_") && !token.starts_with("github_pat_") && !token.starts_with("gho_") {
+    if !is_safe_github_token_value(&token) {
         return Err(
             "Invalid GitHub token format. Classic PATs start with 'ghp_', \
              fine-grained PATs start with 'github_pat_'. \
@@ -565,15 +573,18 @@ EOF
             .output()
     ).await;
 
-    // Inject the token securely into the agent's workspace and configure git helper
-    let node_setup_script = format!(
-        "echo 'GITHUB_TOKEN={token}' > /home/node/.openclaw/workspace/{agent_id}/.github_env; \
-         git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
+    // Inject the token via the host bind-mount instead of interpolating secrets into sh -c.
+    let workspace = crate::openclaw::get_agent_workspace_dir(&db, &agent_id)
+        .map_err(|e| format!("Workspace error: {}", e))?;
+    std::fs::create_dir_all(&workspace)
+        .map_err(|e| format!("Workspace create error: {}", e))?;
+    std::fs::write(workspace.join(".github_env"), format!("GITHUB_TOKEN={}\n", token))
+        .map_err(|e| format!("Failed to write GitHub token file: {}", e))?;
+
+    let node_setup_script =
+        "git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
          git config --global url.\"https://github.com/\".insteadOf \"git@github.com:\"; \
-         git config --global url.\"https://github.com/\".insteadOf \"ssh://git@github.com/\"",
-        token = token,
-        agent_id = agent_id
-    );
+         git config --global url.\"https://github.com/\".insteadOf \"ssh://git@github.com/\"";
     
     let _ = get_docker_command()
         .args(["exec", "-u", "node", &container_name, "sh", "-c", &node_setup_script])
@@ -617,7 +628,7 @@ pub async fn disconnect_github(db: tauri::State<'_, crate::db::Database>, agent_
 }
 
 #[cfg(test)]
-mod tests {
+mod github_token_validation_tests {
     use super::*;
     use tauri::Manager;
 
@@ -996,4 +1007,24 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
     }
 
     Ok(diagnostics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn github_token_validation_accepts_known_safe_prefixes() {
+        assert!(is_safe_github_token_value("ghp_abcdefghijklmnopqrstuvwxyz123456"));
+        assert!(is_safe_github_token_value("gho_abcdefghijklmnopqrstuvwxyz123456"));
+        assert!(is_safe_github_token_value("github_pat_11AA.BB-cc_22"));
+    }
+
+    #[test]
+    fn github_token_validation_rejects_unknown_or_injectable_values() {
+        assert!(!is_safe_github_token_value("sk-not-a-github-token"));
+        assert!(!is_safe_github_token_value("ghp_valid;rm -rf"));
+        assert!(!is_safe_github_token_value("ghp_valid$(whoami)"));
+        assert!(!is_safe_github_token_value("ghp_valid\nGITHUB_TOKEN=other"));
+    }
 }

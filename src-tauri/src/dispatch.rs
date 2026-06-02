@@ -11,6 +11,9 @@ use std::process::Command;
 use uuid::Uuid;
 use tracing::{info, warn, error};
 
+const MAX_MOBILE_MESSAGE_CHARS: usize = 64_000;
+const MAX_MOBILE_SYSTEM_COMMAND_CHARS: usize = 4_096;
+
 // State to hold the current valid pairing token
 pub struct DispatchState {
     pub current_token: RwLock<Option<String>>,
@@ -21,7 +24,12 @@ impl DispatchState {
     pub fn new() -> Self {
         Self {
             current_token: RwLock::new(None),
+            // Initial empty payload — both "forums" and "projects" keys are
+            // pre-seeded so mobile's `list_forums` returns [] (not the older
+            // "projects" leftover that caused empty Forums tabs on cold boot
+            // before any desktop sync had run).
             mobile_state: RwLock::new(serde_json::json!({
+                "forums": [],
                 "projects": [],
                 "inbox": []
             })),
@@ -122,6 +130,28 @@ struct RpcResponse {
     #[serde(rename = "type")]
     msg_type: String,
     payload: serde_json::Value,
+}
+
+fn is_allowed_mobile_system_command(text: &str) -> bool {
+    if text.len() > MAX_MOBILE_SYSTEM_COMMAND_CHARS {
+        return false;
+    }
+
+    if text == "COMMAND: CREATE_PROJECT_SPACE_AUTO" {
+        return true;
+    }
+
+    [
+        "COMMAND: CAPTURE_NOTE:",
+        "COMMAND: DISMISS_INBOX_ITEM:",
+        "COMMAND: APPROVE_INBOX_ITEM:",
+    ]
+    .iter()
+    .any(|prefix| text.starts_with(prefix) && text.len() > prefix.len())
+}
+
+fn is_valid_mobile_message_text(text: &str) -> bool {
+    !text.trim().is_empty() && text.len() <= MAX_MOBILE_MESSAGE_CHARS
 }
 
 async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<DispatchState>, app_handle: tauri::AppHandle) {
@@ -235,10 +265,14 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                                 let _ = write.send(Message::Text(json_str)).await;
                             }
                         }
-                        // list_forums: new primary name
+                        // list_forums: new primary name. Falls back to the
+                        // legacy "projects" key the same way list_projects
+                        // does — so if a future code path or older client
+                        // writes only "projects", mobile still gets data.
                         "list_forums" => {
                             let reader = state.mobile_state.read().await;
                             let forums = reader.get("forums")
+                                .or_else(|| reader.get("projects"))
                                 .cloned()
                                 .unwrap_or(serde_json::json!([]));
                             let res = RpcResponse {
@@ -283,11 +317,31 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                                     payload.get("text").and_then(|v| v.as_str())
                                 ) {
                                     if agent_id == "system" {
-                                        // Forward system commands directly to Desktop UI via Tauri Event
-                                        let _ = app_handle.emit("mobile_system_command", serde_json::json!({
-                                            "command": text_msg
-                                        }));
+                                        // Only forward known mobile shortcut commands to the desktop UI.
+                                        if is_allowed_mobile_system_command(text_msg) {
+                                            let _ = app_handle.emit("mobile_system_command", serde_json::json!({
+                                                "command": text_msg
+                                            }));
+                                        } else {
+                                            warn!("Rejected mobile system command from {}", peer_addr);
+                                            let _ = write.send(Message::Text("{\"error\":\"unauthorized_system_command\"}".to_string())).await;
+                                        }
                                     } else {
+                                        if let Err(e) = crate::validators::agent::validate_id(agent_id) {
+                                            warn!("Rejected mobile send_message with invalid agent id from {}: {}", peer_addr, e);
+                                            let _ = write.send(Message::Text("{\"error\":\"invalid_agent_id\"}".to_string())).await;
+                                            continue;
+                                        }
+                                        if !is_valid_mobile_message_text(text_msg) {
+                                            warn!("Rejected mobile send_message with invalid message size from {}", peer_addr);
+                                            let _ = write.send(Message::Text("{\"error\":\"invalid_message\"}".to_string())).await;
+                                            continue;
+                                        }
+                                        if let Err(e) = crate::rate_limiter::limiters::AGENT_COMMAND_LIMITER.check(agent_id) {
+                                            warn!("Rate limited mobile send_message for agent {} from {}: {}", agent_id, peer_addr, e);
+                                            let _ = write.send(Message::Text("{\"error\":\"rate_limited\"}".to_string())).await;
+                                            continue;
+                                        }
                                         // Pass the agent's individual chat session ID so forum sessions
                                         // never receive or contaminate the mobile conversation.
                                         let session_id = payload.get("session_id")
@@ -333,4 +387,33 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
     }
     
     info!("Connection closed: {}", peer_addr);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mobile_system_command_allowlist_accepts_known_commands() {
+        assert!(is_allowed_mobile_system_command("COMMAND: CAPTURE_NOTE:Remember the demo notes"));
+        assert!(is_allowed_mobile_system_command("COMMAND: CREATE_PROJECT_SPACE_AUTO"));
+        assert!(is_allowed_mobile_system_command("COMMAND: DISMISS_INBOX_ITEM:item_123"));
+        assert!(is_allowed_mobile_system_command("COMMAND: APPROVE_INBOX_ITEM:item_123"));
+    }
+
+    #[test]
+    fn mobile_system_command_allowlist_rejects_unknown_or_oversized_commands() {
+        assert!(!is_allowed_mobile_system_command("COMMAND: DELETE_AGENT:agent-alpha"));
+        assert!(!is_allowed_mobile_system_command("COMMAND: CAPTURE_NOTE:"));
+        assert!(!is_allowed_mobile_system_command(&format!("COMMAND: CAPTURE_NOTE:{}", "x".repeat(MAX_MOBILE_SYSTEM_COMMAND_CHARS))));
+    }
+
+    #[test]
+    fn mobile_agent_message_validation_rejects_bad_ids_and_empty_messages() {
+        assert!(crate::validators::agent::validate_id("agent-alpha").is_ok());
+        assert!(is_valid_mobile_message_text("hello"));
+        assert!(crate::validators::agent::validate_id("agent-alpha;rm -rf").is_err());
+        assert!(!is_valid_mobile_message_text("   "));
+        assert!(!is_valid_mobile_message_text(&"x".repeat(MAX_MOBILE_MESSAGE_CHARS + 1)));
+    }
 }

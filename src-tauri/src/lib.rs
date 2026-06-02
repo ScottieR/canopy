@@ -24,6 +24,7 @@ mod imessage;
 mod audit;
 mod audit_openclaw;
 mod voice;
+mod live_voice;
 mod slack;
 mod google;
 mod channels;
@@ -516,6 +517,9 @@ pub fn run() {
             // Initialize voice session manager
             handle.manage(voice::VoiceSessionManager::new());
 
+            // Initialize live voice (bidirectional WS to OpenClaw realtime brain).
+            handle.manage(live_voice::LiveVoiceState::default());
+
             // Initialize Machine Browser manager
             handle.manage(browser_manager::BrowserManager::new());
 
@@ -677,11 +681,11 @@ pub fn run() {
             openclaw::get_library_books,
             openclaw::get_openclaw_status_json,
             openclaw::list_workspace_files,
-            openclaw::read_workspace_file,
-            openclaw::read_workspace_file_base64,
-            openclaw::write_workspace_file,
-            openclaw::upload_workspace_file,
-            openclaw::copy_file_to_workspace,
+            openclaw::workspace_files::read_workspace_file,
+            openclaw::workspace_files::read_workspace_file_base64,
+            openclaw::workspace_files::write_workspace_file,
+            openclaw::workspace_files::upload_workspace_file,
+            openclaw::workspace_files::copy_file_to_workspace,
             openclaw::set_preferences_template,
             openclaw::fetch_apple_health_data,
             openclaw::system_assess,
@@ -770,6 +774,12 @@ pub fn run() {
             voice::cleanup_voice_cache,
             voice::transcribe_audio,
             voice::synthesize_speech,
+            // Live voice — bidirectional realtime audio bridge to OpenClaw's
+            // realtime brain WS endpoint (OpenClaw v2026.4.24+).
+            live_voice::start_live_voice_session,
+            live_voice::send_live_voice_audio,
+            live_voice::end_live_voice_turn,
+            live_voice::end_live_voice_session,
             // Audit logging
             audit::get_audit_log,
             audit::get_audit_summary,

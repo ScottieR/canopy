@@ -20,6 +20,10 @@ pub fn evaluate_purchase(
     request: PurchaseRequest,
     budget: AgentBudget,
 ) -> Result<PurchaseDecision> {
+    // ── RATE LIMITING ──
+    #[cfg(not(test))]
+    crate::rate_limiter::limiters::PAYMENT_EVAL_LIMITER.check("local-user")?;
+
     // ── Gate 0: Are payments even enabled for this agent? ──
     if !budget.payments_enabled {
         return Ok(PurchaseDecision::Denied {
@@ -178,6 +182,10 @@ pub async fn issue_virtual_card(
     amount_cents: u64,
     category: String,
 ) -> Result<String> {
+    // ── RATE LIMITING ──
+    #[cfg(not(test))]
+    crate::rate_limiter::limiters::PAYMENT_EVAL_LIMITER.check("local-user")?;
+
     // Validate inputs
     crate::validators::agent::validate_id(&agent_id)?;
     crate::validators::budget::validate_amount(amount_cents as i64)?;

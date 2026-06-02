@@ -15,6 +15,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, State};
 
+pub mod workspace_files;
+pub use workspace_files::{
+    copy_file_to_workspace,
+    read_workspace_file,
+    read_workspace_file_base64,
+    upload_workspace_file,
+    write_workspace_file,
+};
+
 // Cache of the most recent gateway-channels config hash. Used by
 // `sync_gateway_channels_internal` to detect "nothing actually changed" and skip the
 // docker restart that previously fired on every call. The previous behaviour bounced
@@ -575,7 +584,11 @@ pub async fn list_workspace_files(agent_id: String) -> Result<Vec<WorkspaceFileE
 // Helper to resolve workspace directory (isolated vs shared)
 pub fn get_agent_workspace_dir(db: &crate::db::Database, agent_id: &str) -> Result<std::path::PathBuf, String> {
     let is_isolated = db.get_agent(agent_id).ok().flatten().map(|a| a.isolated).unwrap_or(false);
-    let mut path = dirs::data_dir().ok_or("No data dir")?.join("Canopy");
+    let data_dir = std::env::var_os("CANOPY_DATA_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(dirs::data_dir)
+        .ok_or("No data dir")?;
+    let mut path = data_dir.join("Canopy");
     if is_isolated {
         path.push("isolated");
         path.push(agent_id);
@@ -598,97 +611,6 @@ pub fn get_agent_container_name(db: &crate::db::Database, agent_id: &str) -> Str
         "canopy-gateway".to_string()
     }
 }
-
-#[tauri::command]
-pub async fn read_workspace_file(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String) -> Result<String, String> {
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err("Invalid filename".into());
-    }
-    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
-    let file_path = workspace.join(&filename);
-    if !file_path.exists() {
-        return Ok("".to_string());
-    }
-    std::fs::read_to_string(&file_path).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn write_workspace_file(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String, content: String) -> Result<(), String> {
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err("Invalid filename".into());
-    }
-    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
-    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
-    let file_path = workspace.join(&filename);
-    std::fs::write(&file_path, content).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn upload_workspace_file(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String, base64_data: String) -> Result<(), String> {
-    use base64::Engine;
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err("Invalid filename".into());
-    }
-    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
-
-    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
-    let file_path = workspace.join(&filename);
-    
-    let clean_base64 = if let Some(idx) = base64_data.find(',') {
-        &base64_data[idx + 1..]
-    } else {
-        &base64_data
-    };
-    
-    let decoded = base64::engine::general_purpose::STANDARD.decode(clean_base64).map_err(|e| format!("Base64 decode error: {}", e))?;
-    std::fs::write(&file_path, decoded).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn copy_file_to_workspace(db: tauri::State<'_, crate::db::Database>, agent_id: String, source_path: String, target_filename: String) -> Result<(), String> {
-    if target_filename.contains("..") || target_filename.contains('/') || target_filename.contains('\\') {
-        return Err("Invalid filename".into());
-    }
-    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
-
-    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
-    let file_path = workspace.join(&target_filename);
-    
-    std::fs::copy(&source_path, &file_path).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn read_workspace_file_base64(db: tauri::State<'_, crate::db::Database>, agent_id: String, filename: String) -> Result<String, String> {
-    use base64::Engine;
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
-        return Err("Invalid filename".into());
-    }
-    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
-    let file_path = workspace.join(&filename);
-    if !file_path.exists() {
-        return Ok("".to_string());
-    }
-    let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
-    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    
-    let mime = if filename.ends_with(".png") {
-        "image/png"
-    } else if filename.ends_with(".jpg") || filename.ends_with(".jpeg") {
-        "image/jpeg"
-    } else if filename.ends_with(".gif") {
-        "image/gif"
-    } else if filename.ends_with(".webp") {
-        "image/webp"
-    } else if filename.ends_with(".svg") {
-        "image/svg+xml"
-    } else {
-        "application/octet-stream"
-    };
-    
-    Ok(format!("data:{};base64,{}", mime, encoded))
-}
-
 
 pub fn log_terminal_command_internal(db: &crate::db::Database, agent_id: &str, command: &str, output: &str) {
     let workspace = match get_agent_workspace_dir(db, agent_id) {

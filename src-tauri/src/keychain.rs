@@ -92,8 +92,58 @@ pub fn get_agent_api_key(agent_id: &str, provider_id: &str) -> Result<String> {
 
 // ─── Tauri Commands (take owned Strings for IPC deserialization) ────────────
 
+fn validate_secret_key_for_ipc(key: &str) -> Result<()> {
+    if key.is_empty() {
+        return Err(CanopyError::Validation("Secret key cannot be empty".into()));
+    }
+    if key.len() > 256 {
+        return Err(CanopyError::Validation("Secret key is too long".into()));
+    }
+    if key.chars().any(|c| c.is_control() || c == '/' || c == '\\') {
+        return Err(CanopyError::Validation("Secret key contains invalid characters".into()));
+    }
+
+    let allowed_literal = matches!(
+        key,
+        "ANTHROPIC_API_KEY"
+            | "OPENAI_API_KEY"
+            | "GEMINI_API_KEY"
+            | "XAI_API_KEY"
+            | "GROK_API_KEY"
+            | "PRIVACY_API_KEY"
+            | "SLACK_CLIENT_ID"
+            | "SLACK_CLIENT_SECRET"
+            | "GOOGLE_CLIENT_ID"
+            | "GOOGLE_CLIENT_SECRET"
+            | "GITHUB_TOKEN"
+            | "telegram-bot-token"
+            | "discord-bot-token"
+            | "slack-bot-token"
+            | "slack-app-token"
+    );
+
+    let allowed_prefix = key.starts_with("agent_")
+        || key.starts_with("github-access-token-")
+        || key.starts_with("github-username-")
+        || key.starts_with("google_refresh_")
+        || key.starts_with("google_access_")
+        || key.starts_with("web_");
+
+    let allowed_suffix = key.ends_with("_TOKEN");
+
+    if allowed_literal || allowed_prefix || allowed_suffix {
+        Ok(())
+    } else {
+        Err(CanopyError::Validation(format!(
+            "Secret key '{}' is not an allowed IPC key",
+            key
+        )))
+    }
+}
+
 #[tauri::command]
 pub fn store_secret_cmd(key: String, value: String) -> Result<()> {
+    validate_secret_key_for_ipc(&key)?;
     store_secret(&key, &value)
 }
 
@@ -105,6 +155,7 @@ pub fn store_batch_secrets_cmd(secrets: std::collections::HashMap<String, String
 
     let mut vault = get_vault();
     for (key, value) in secrets {
+        validate_secret_key_for_ipc(&key)?;
         if key.is_empty() || value.is_empty() {
             return Err(CanopyError::Validation(
                 "Secret key and value cannot be empty".into()
@@ -119,11 +170,13 @@ pub fn store_batch_secrets_cmd(secrets: std::collections::HashMap<String, String
 
 #[tauri::command]
 pub fn get_secret_cmd(key: String) -> Result<String> {
+    validate_secret_key_for_ipc(&key)?;
     get_secret(&key)
 }
 
 #[tauri::command]
 pub fn delete_secret_cmd(key: String) -> Result<()> {
+    validate_secret_key_for_ipc(&key)?;
     delete_secret_internal(&key)
 }
 
@@ -311,4 +364,25 @@ pub fn get_web_credentials_cmd() -> Result<Vec<serde_json::Value>> {
         }
     }
     Ok(creds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ipc_secret_key_validation_allows_known_scoped_keys() {
+        assert!(validate_secret_key_for_ipc("OPENAI_API_KEY").is_ok());
+        assert!(validate_secret_key_for_ipc("agent_agent-alpha_slack_bot_token").is_ok());
+        assert!(validate_secret_key_for_ipc("github-access-token-agent-alpha").is_ok());
+        assert!(validate_secret_key_for_ipc("web_example.com_user@example.com").is_ok());
+    }
+
+    #[test]
+    fn ipc_secret_key_validation_rejects_unknown_or_unsafe_keys() {
+        assert!(validate_secret_key_for_ipc("").is_err());
+        assert!(validate_secret_key_for_ipc("../../../OPENAI_API_KEY").is_err());
+        assert!(validate_secret_key_for_ipc("unknown-global-secret").is_err());
+        assert!(validate_secret_key_for_ipc("agent_agent-alpha_slack_bot_token\nOPENAI_API_KEY").is_err());
+    }
 }

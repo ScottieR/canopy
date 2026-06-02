@@ -88,6 +88,16 @@ export interface ChatMessage {
   ts?: number;
 }
 
+/** A saved mini-app — an HTML tool produced by an agent and pinned for reuse. */
+export interface MiniApp {
+  id: string;
+  name: string;
+  description?: string;
+  htmlContent: string;       // complete self-contained HTML
+  createdAt: number;
+  sourceMessageId?: string;  // which chat message it came from, for dedup
+}
+
 // A saved conversation thread for an agent. Titles are auto-derived from the
 // first user message (~40 chars) unless the user renames the thread.
 export interface Conversation {
@@ -131,6 +141,8 @@ export interface AgentData extends Agent {
   conversations?: Conversation[];
   activeConversationId?: string | null;
   chatClearedAt?: number;
+  /** HTML mini-apps saved from this agent's chat messages — the agent's "app shelf". */
+  miniApps?: MiniApp[];
   memories: Array<{ type: string; text: string; when: string; confidence: number }>;
   browser_status?: BrowserStatus | null;
   personalityPrompt: string;
@@ -259,6 +271,9 @@ export interface WorldState {
   // ── Inbox ─────────────────────────────────────────────────────────────
   addInboxItem: (item: Omit<InboxItem, "id" | "timestamp">) => void;
   removeInboxItem: (id: string) => void;
+  // ── Mini Apps ─────────────────────────────────────────────────────────────
+  addMiniApp: (agentId: string, app: Omit<MiniApp, "id" | "createdAt">) => void;
+  deleteMiniApp: (agentId: string, appId: string) => void;
   // ── Decision Queue ────────────────────────────────────────────────────
   
   securityAlerts: SecurityAlert[];
@@ -685,6 +700,28 @@ export const useWorldStore = create<WorldState>()(
   })),
   removeInboxItem: (id) => set((state) => ({
     inbox: state.inbox.filter(i => i.id !== id)
+  })),
+
+  // ── Mini Apps ─────────────────────────────────────────────────────────────
+  addMiniApp: (agentId, app) => set((state) => ({
+    agents: state.agents.map(a => {
+      if (a.id !== agentId) return a;
+      const existing = a.miniApps ?? [];
+      // Deduplicate by sourceMessageId if provided
+      if (app.sourceMessageId && existing.some(m => m.sourceMessageId === app.sourceMessageId)) return a;
+      const newApp: MiniApp = {
+        ...app,
+        id: `miniapp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        createdAt: Date.now(),
+      };
+      return { ...a, miniApps: [newApp, ...existing] };
+    }),
+  })),
+
+  deleteMiniApp: (agentId, appId) => set((state) => ({
+    agents: state.agents.map(a =>
+      a.id !== agentId ? a : { ...a, miniApps: (a.miniApps ?? []).filter(m => m.id !== appId) }
+    ),
   })),
 }),
 {

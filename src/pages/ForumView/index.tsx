@@ -9,6 +9,7 @@ import { ForumBriefModal } from "./ForumBriefModal";
 import { ExportForumModal } from "./ExportForumModal";
 import { HistoryPanel } from "./HistoryPanel";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
+import { LiveVoiceOverlay } from "../ArchitectView/LiveVoiceOverlay";
 
 // ─── Annotation Hook & Overlay ────────────────────────────────────────────────
 
@@ -667,6 +668,109 @@ function ConnectFolderModal({
             Connecting…
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function EditBudgetModal({
+  forum,
+  onSave,
+  onClose,
+}: {
+  forum: { id: string; trustBudget?: { usdLimit: number } };
+  onSave: (usdLimit: number) => void;
+  onClose: () => void;
+}) {
+  const [usdLimit, setUsdLimit] = useState<string>(
+    String(forum.trustBudget?.usdLimit ?? 5.0)
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSave = () => {
+    setError(null);
+    const usd = parseFloat(usdLimit);
+
+    if (isNaN(usd) || usd < 0) {
+      setError("Please enter a valid, positive USD limit.");
+      return;
+    }
+
+    onSave(usd);
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 3000,
+      background: "rgba(0,0,0,0.45)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{
+        background: "var(--bg-main, #faf9f6)", borderRadius: 14,
+        padding: "24px 28px", width: 360, maxWidth: "90vw",
+        boxShadow: "0 24px 60px rgba(0,0,0,0.18)",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main, #303330)" }}>
+            Edit Forum Spend Limit
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-sub, #636E72)", opacity: 0.4, padding: 4 }}>
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        {/* Inputs */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 14, marginBottom: 20 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--text-sub, #636E72)", marginBottom: 6 }}>
+              USD Spend Limit ($)
+            </label>
+            <input
+              type="number"
+              step="0.01"
+              value={usdLimit}
+              onChange={e => setUsdLimit(e.target.value)}
+              style={{
+                width: "100%", padding: "10px 12px", borderRadius: 8,
+                border: "1px solid var(--border-subtle, rgba(0,0,0,0.12))",
+                background: "var(--bg-card, #fff)", color: "var(--text-main, #303330)",
+                fontSize: 13, fontFamily: "inherit", boxSizing: "border-box",
+              }}
+              placeholder="e.g. 5.00"
+            />
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ marginBottom: 16, fontSize: 11, color: "#EF4444", background: "rgba(239,68,68,0.06)", borderRadius: 6, padding: "6px 10px" }}>
+            {error}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+          <button
+            onClick={onClose}
+            style={{
+              padding: "8px 14px", borderRadius: 8, border: "1px solid var(--border-subtle, rgba(0,0,0,0.1))",
+              background: "transparent", cursor: "pointer", fontSize: 12, color: "var(--text-sub, #636E72)",
+              fontFamily: "inherit", fontWeight: 600,
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: "none",
+              background: "#4A9E96", color: "#fff", cursor: "pointer", fontSize: 12,
+              fontFamily: "inherit", fontWeight: 600,
+            }}
+          >
+            Save Limit
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1481,10 +1585,12 @@ function ForumActions({
   forum,
   onArchive,
   onDelete,
+  onEditBudget,
 }: {
   forum: Forum;
   onArchive: () => void;
   onDelete: () => void;
+  onEditBudget: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1527,6 +1633,25 @@ function ForumActions({
           borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.1)",
           minWidth: 160, zIndex: 50, overflow: "hidden", padding: "4px 0",
         }}>
+          {/* Edit Budget */}
+          <button
+            onClick={() => { onEditBudget(); setOpen(false); }}
+            style={{
+              width: "100%", display: "flex", alignItems: "center", gap: 9,
+              padding: "9px 14px", border: "none", background: "transparent",
+              cursor: "pointer", fontSize: 12, color: "var(--text-main, #303330)",
+              fontFamily: "inherit", textAlign: "left",
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = "var(--surface-container-low, #f4f4f0)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+          >
+            <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+            Edit budget
+          </button>
+
           {/* Archive */}
           {forum.status !== "archived" && (
             <button
@@ -2522,7 +2647,7 @@ function ForumBlackboard({
             <iframe
               key={htmlContent.slice(0, 80)}
               srcDoc={resolvedHtmlContent}
-              sandbox="allow-scripts allow-same-origin"
+              sandbox="allow-scripts"
               style={{ width: "100%", height: "100%", border: "none", pointerEvents: drawMode ? "none" : "auto" }}
               title={selectedArtifact.title}
             />
@@ -2786,6 +2911,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
             onClick={() => setActiveForumId(f.id)}
             onArchive={() => archiveForum(f.id)}
             onDelete={() => deleteForum(f.id)}
+            onEditBudget={(f) => setEditingForum(f)}
             formatDate={formatDate}
           />
         ))}
@@ -2895,12 +3021,14 @@ function ForumCard({
   onClick,
   onArchive,
   onDelete,
+  onEditBudget,
   formatDate,
 }: {
   forum: Forum;
   onClick: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  onEditBudget: () => void;
   formatDate: (ts: number) => string;
 }) {
   return (
@@ -2941,6 +3069,7 @@ function ForumCard({
             forum={f}
             onArchive={onArchive}
             onDelete={onDelete}
+            onEditBudget={onEditBudget}
           />
         </div>
       </div>
@@ -3013,12 +3142,22 @@ export function ForumView() {
   const connectFolder = useForumStore(s => s.connectFolder);
   const disconnectFolder = useForumStore(s => s.disconnectFolder);
   const updateScratchpadSyncState = useForumStore(s => s.updateScratchpadSyncState);
+  const updateTrustBudget = useForumStore(s => s.updateTrustBudget);
   const { activeForumId, setActiveForumId } = useWorldStore();
   const engineRef = useRef<{ stop: () => void } | null>(null);
   const [briefModalOpen, setBriefModalOpen] = useState(false);
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(null);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [connectModalOpen, setConnectModalOpen] = useState(false);
+  const [editingForum, setEditingForum] = useState<Forum | null>(null);
+  // Live voice in forums: addresses ONE agent at a time. Picker shows the
+  // forum's roster; clicking an agent opens the overlay scoped to them.
+  // To switch agents mid-conversation, end the call and pick another.
+  const [livePickerOpen, setLivePickerOpen] = useState(false);
+  const [liveAgentId, setLiveAgentId] = useState<string | null>(null);
+  // Live voice needs full AgentData (role + accent colors) which ForumAgent
+  // doesn't carry; we join against the global agent roster.
+  const allAgents = useWorldStore(s => s.agents);
 
   // activeForumId === null → show list; !== null → show that forum (or list if not found)
   const forum = activeForumId ? (forums.find(f => f.id === activeForumId) ?? null) : null;
@@ -3250,11 +3389,27 @@ export function ForumView() {
             }}>
               {forum.title}
             </div>
-            <div style={{ 
-              fontSize: 10, fontWeight: 600, color: "#4A9E96", background: "rgba(74,158,150,0.1)", 
-              padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap" 
-            }} title="Tracked token cost for this forum">
-              Cost: ${((forum as any).totalCost ?? 0).toFixed(3)}
+            <div 
+              onClick={() => setEditingForum(forum)}
+              style={{ 
+                fontSize: 10, fontWeight: 600, 
+                color: forum.trustBudget?.circuitBreakerFired ? "#EF4444" : "#4A9E96", 
+                background: forum.trustBudget?.circuitBreakerFired ? "rgba(239,68,68,0.1)" : "rgba(74,158,150,0.1)", 
+                padding: "2px 6px", borderRadius: 4, whiteSpace: "nowrap",
+                cursor: "pointer", transition: "all 0.2s ease",
+                border: "1px solid transparent",
+              }}
+              onMouseEnter={e => {
+                e.currentTarget.style.borderColor = forum.trustBudget?.circuitBreakerFired ? "#EF444488" : "#4A9E9688";
+                e.currentTarget.style.background = forum.trustBudget?.circuitBreakerFired ? "rgba(239,68,68,0.15)" : "rgba(74,158,150,0.15)";
+              }}
+              onMouseLeave={e => {
+                e.currentTarget.style.borderColor = "transparent";
+                e.currentTarget.style.background = forum.trustBudget?.circuitBreakerFired ? "rgba(239,68,68,0.1)" : "rgba(74,158,150,0.1)";
+              }}
+              title={`Spent: $${(forum.trustBudget?.usdUsed ?? 0).toFixed(2)} / $${(forum.trustBudget?.usdLimit ?? 5.00).toFixed(2)} USD. Click to edit budget.`}
+            >
+              Cost: ${((forum as any).totalCost ?? 0).toFixed(3)} (Limit: ${forum.trustBudget?.usdLimit ? `$${forum.trustBudget.usdLimit.toFixed(2)}` : "None"})
             </div>
           </div>
           <div 
@@ -3298,6 +3453,101 @@ export function ForumView() {
               </div>
             ))}
           </div>
+          {/* Talk live — one-on-one realtime voice with a chosen forum agent.
+              Gemini Live can't multiplex multiple speakers, so live mode picks
+              one agent at a time. Async blackboard contributions from other
+              agents continue normally — the live channel just elevates one
+              agent's voice while it's open. */}
+          {(forum.agents || []).length > 0 && (
+            <div style={{ position: "relative", marginLeft: 4 }}>
+              <button
+                onClick={() => setLivePickerOpen(o => !o)}
+                title="Start a live voice call with one of the project agents"
+                style={{
+                  display: "flex", alignItems: "center", gap: 5,
+                  height: 24, padding: "0 9px", borderRadius: 12,
+                  border: "none",
+                  background: livePickerOpen
+                    ? "linear-gradient(135deg,#2d524f,#4f8581)"
+                    : "linear-gradient(135deg,#3c6663,#609995)",
+                  color: "#fff", fontSize: 10.5, fontWeight: 700,
+                  cursor: "pointer", fontFamily: "inherit",
+                  boxShadow: "0 1px 4px rgba(60,102,99,0.25)",
+                }}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+                </svg>
+                Talk live
+              </button>
+              {livePickerOpen && (() => {
+                // Join forum agents with full AgentData so the overlay has
+                // the role + accent color it needs for the avatar pulse ring.
+                const liveCandidates = (forum.agents || [])
+                  .map(fa => ({
+                    forumAgent: fa,
+                    full: allAgents.find(a => a.id === fa.agentId),
+                  }))
+                  .filter(x => !!x.full);
+                return (
+                  <>
+                    {/* Click-catcher so clicking outside closes the picker. */}
+                    <div onClick={() => setLivePickerOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90 }} />
+                    <div style={{
+                      position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 100,
+                      minWidth: 220, background: "var(--surface-card, #fff)",
+                      border: "1px solid var(--border-subtle)", borderRadius: 12,
+                      boxShadow: "0 12px 32px rgba(0,0,0,0.14)", overflow: "hidden",
+                    }}>
+                      <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--border-subtle)", fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-sub)" }}>
+                        Talk live with…
+                      </div>
+                      {liveCandidates.length === 0 ? (
+                        <div style={{ padding: "12px 14px", fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+                          No agents available right now.
+                        </div>
+                      ) : (
+                        liveCandidates.map(({ forumAgent: fa, full }) => (
+                          <button
+                            key={fa.agentId}
+                            onClick={() => { setLiveAgentId(fa.agentId); setLivePickerOpen(false); }}
+                            style={{
+                              width: "100%", display: "flex", alignItems: "center", gap: 10,
+                              padding: "8px 12px", border: "none", background: "transparent",
+                              cursor: "pointer", textAlign: "left", fontFamily: "inherit",
+                            }}
+                            onMouseEnter={e => e.currentTarget.style.background = "var(--surface-base)"}
+                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                          >
+                            <div style={{
+                              width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
+                              background: `${fa.robeColor || "#4A9E96"}22`,
+                              border: `1.5px solid ${fa.robeColor || "#4A9E96"}66`,
+                              overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center",
+                              fontSize: 10, fontWeight: 700, color: fa.robeColor || "#4A9E96",
+                            }}>
+                              {fa.image
+                                ? <img src={fa.image} alt={fa.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                : fa.name.charAt(0)}
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {fa.name}
+                              </div>
+                              <div style={{ fontSize: 10, color: "var(--text-sub)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {full?.role || fa.forumRole || "Agent"}
+                              </div>
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
           {/* Add agent button */}
           <button
             onClick={() => setAddAgentOpen(o => !o)}
@@ -3363,6 +3613,7 @@ export function ForumView() {
             forum={forum}
             onArchive={() => archiveForum(forum.id)}
             onDelete={() => deleteForum(forum.id)}
+            onEditBudget={() => setEditingForum(forum)}
           />
         </div>
       </div>
@@ -3378,6 +3629,36 @@ export function ForumView() {
           onClose={() => setConnectModalOpen(false)}
         />
       )}
+
+      {/* ── Edit Budget modal ── */}
+      {editingForum && (
+        <EditBudgetModal
+          forum={editingForum}
+          onSave={(usd) => {
+            updateTrustBudget(editingForum.id, { usdLimit: usd, circuitBreakerFired: false });
+            setEditingForum(null);
+          }}
+          onClose={() => setEditingForum(null)}
+        />
+      )}
+
+      {/* ── Live voice overlay (scoped to one forum agent) ── */}
+      {liveAgentId && (() => {
+        const liveAgent = allAgents.find(a => a.id === liveAgentId);
+        if (!liveAgent) {
+          // Stale id — agent was removed while picker was open. Just clear.
+          setTimeout(() => setLiveAgentId(null), 0);
+          return null;
+        }
+        return (
+          <LiveVoiceOverlay
+            agent={liveAgent}
+            forumId={forum.id}
+            subtitle={`In ${forum.title || "this project"}`}
+            onClose={() => setLiveAgentId(null)}
+          />
+        );
+      })()}
 
       {/* ── Completion banner ── */}
       {forum.status === "completed" && (

@@ -6,7 +6,8 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip,
   AlertTriangle
 } from "lucide-react";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp } from "../../store/worldStore";
+import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { useForumStore } from "../../store/forumStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, glass } from "../../App";
@@ -14,7 +15,78 @@ import MDEditor from "@uiw/react-md-editor";
 import { invoke } from "@tauri-apps/api/core";
 import { PasswordInput } from "../../components/shared/PasswordInput";
 
-// Cap on per-agent in-memory chat history. Beyond this we drop the *oldest* messages.
+// ─── Format-aware message parsing ────────────────────────────────────────────
+// Agents can return ---FORMAT--- html/markdown/genui ---CONTENT--- blocks in both
+// forum phases and individual chat. We detect these here and render accordingly.
+
+type ParsedFormat = { format: "html" | "markdown" | "genui"; content: string } | null;
+
+function parseFormatBlock(text: string): ParsedFormat {
+  const m = text.match(/---FORMAT---\s*(html|markdown|genui)\s*---CONTENT---\s*([\s\S]*)/i);
+  if (!m) return null;
+  return { format: m[1].toLowerCase() as "html" | "markdown" | "genui", content: m[2].trim() };
+}
+
+// In-chat HTML app bubble — sandboxed iframe with Save and Download actions
+function HtmlAppBubble({
+  content,
+  messageId,
+  agentId,
+  onSave,
+}: {
+  content: string;
+  messageId: string;
+  agentId: string;
+  onSave: (html: string, msgId: string) => void;
+}) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [saved, setSaved] = React.useState(false);
+
+  const download = () => {
+    const blob = new Blob([content], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "canopy-app.html";
+    a.click(); URL.revokeObjectURL(url);
+  };
+
+  const save = () => {
+    onSave(content, messageId);
+    setSaved(true);
+  };
+
+  return (
+    <div style={{ marginTop: 6, border: "1px solid rgba(74,158,150,0.25)", borderRadius: 10, overflow: "hidden", background: "var(--surface-card, #fff)" }}>
+      {/* Header bar */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", background: "rgba(74,158,150,0.06)", borderBottom: expanded ? "1px solid rgba(74,158,150,0.12)" : "none" }}>
+        <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#4A9E96" strokeWidth={2} strokeLinecap="round">
+          <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+        </svg>
+        <span style={{ fontSize: 11, fontWeight: 600, color: "#4A9E96", flex: 1 }}>Interactive App</span>
+        <button onClick={save} disabled={saved} style={{ fontSize: 10, fontWeight: 600, color: saved ? "#10b981" : "#4A9E96", background: "transparent", border: "none", cursor: saved ? "default" : "pointer" }}>
+          {saved ? "✓ Saved" : "Pin to shelf"}
+        </button>
+        <button onClick={download} style={{ fontSize: 10, color: "var(--text-sub, #636E72)", background: "transparent", border: "none", cursor: "pointer" }}>
+          ↓ Download
+        </button>
+        <button onClick={() => setExpanded(e => !e)} style={{ fontSize: 10, color: "var(--text-sub, #636E72)", background: "transparent", border: "none", cursor: "pointer" }}>
+          {expanded ? "Collapse" : "Preview"}
+        </button>
+      </div>
+      {/* Iframe — only mounted when expanded to avoid loading all inline */}
+      {expanded && (
+        <iframe
+          srcDoc={content}
+          sandbox="allow-scripts allow-same-origin"
+          style={{ width: "100%", height: 400, border: "none", display: "block" }}
+          title="Agent-generated app"
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Cap on per-agent in-memory chat history. Beyond this we drop the *oldest* messages.
 // Unbounded growth of `chatLog` was implicated in white-screen-while-idle crashes —
 // the React tree would slow to a crawl and eventually OOM the webview on long sessions.
 // The full conversation history still lives in the gateway DB; this only trims what
@@ -135,6 +207,7 @@ export // ─── Chat / Communion Component ───────────
 
 function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentData; compact?: boolean; hideHeader?: boolean }) {
   const { agents, setAgents, setArchitectTab } = useWorldStore();
+  const addMiniApp = useWorldStore(s => s.addMiniApp);
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const [repairLog, setRepairLog] = useState<string | null>(null);
   const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);
@@ -1012,6 +1085,34 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                   let dumpTitle = "System Output";
 
                   if (msg.sender === "agent") {
+                      // ── GenUI JSON payload detection — must happen before generic JSON dump ─
+                      // If the payload has a "component" key it's a GenUI mini-app, not a dump.
+                      if (textTrimmed.startsWith("{") && textTrimmed.includes('"component"')) {
+                          try {
+                              const payload = JSON.parse(textTrimmed);
+                              if (payload.component) {
+                                  return (
+                                    <GenUIRenderer
+                                      app={payload}
+                                      onEvent={(evt) => {
+                                        const t = `[GenUI Event] ${JSON.stringify(evt)}`;
+                                        useWorldStore.setState(state => ({
+                                          agents: state.agents.map(a => a.id !== agent.id ? a : {
+                                            ...a,
+                                            chatLog: [...a.chatLog, {
+                                              id: `genui_${Date.now()}`, sender: "user",
+                                              text: t, time: new Date().toLocaleTimeString(), ts: Date.now(),
+                                            }]
+                                          })
+                                        }));
+                                      }}
+                                      attachments={msg.attachments}
+                                    />
+                                  );
+                              }
+                          } catch {}
+                      }
+
                       if ((textTrimmed.startsWith("{") && textTrimmed.endsWith("}")) || (textTrimmed.startsWith("[") && textTrimmed.endsWith("]"))) {
                           try {
                               JSON.parse(textTrimmed);
@@ -1038,7 +1139,58 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                       );
                   }
 
-                  let text = msg.text.replace(/<think>/gi, "[THOUGHT_PROCESS]").replace(/<\/think>/gi, "[/THOUGHT_PROCESS]");
+                  // ── Format-aware block detection (HTML / GenUI from agent) ─────────
+                  // Agents can return ---FORMAT--- html/markdown/genui ---CONTENT--- responses
+                  // in individual chat, the same way forum orchestrator drafts work.
+                  const formatBlock = parseFormatBlock(msg.text);
+
+                  if (formatBlock && formatBlock.format === "html") {
+                    return (
+                      <HtmlAppBubble
+                        content={formatBlock.content}
+                        messageId={msg.id}
+                        agentId={agent.id}
+                        onSave={(html, msgId) => addMiniApp(agent.id, {
+                          name: `App from ${msg.time}`,
+                          description: `Generated in chat on ${msg.time}`,
+                          htmlContent: html,
+                          sourceMessageId: msgId,
+                        })}
+                      />
+                    );
+                  }
+
+                  if (formatBlock && formatBlock.format === "genui") {
+                    try {
+                      const payload = JSON.parse(formatBlock.content);
+                      if (payload.component) {
+                        return (
+                          <GenUIRenderer
+                            app={payload}
+                            onEvent={(evt) => {
+                              const text = `[GenUI Event] ${JSON.stringify(evt)}`;
+                              useWorldStore.setState(state => ({
+                                agents: state.agents.map(a =>
+                                  a.id !== agent.id ? a : {
+                                    ...a,
+                                    chatLog: [...a.chatLog, {
+                                      id: `genui_${Date.now()}`, sender: "user",
+                                      text, time: new Date().toLocaleTimeString(), ts: Date.now(),
+                                    }]
+                                  }
+                                )
+                              }));
+                            }}
+                            attachments={msg.attachments}
+                          />
+                        );
+                      }
+                    } catch {}
+                  }
+
+                  // format === "markdown" falls through to normal text rendering below
+                  let text = (formatBlock?.format === "markdown" ? formatBlock.content : msg.text)
+                    .replace(/<think>/gi, "[THOUGHT_PROCESS]").replace(/<\/think>/gi, "[/THOUGHT_PROCESS]");
 
                   text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/gi, "");
                   text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\][^\.\n]+\.\s*/gi, "");
