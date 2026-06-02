@@ -1,0 +1,3748 @@
+{
+  "items": {
+    "/accessories/accessories_set_1_item_01.png": {
+      "isVisible": true,
+      "name": "Sunglasses",
+      "description": "Black rimmed sunglasses",
+      "labels": [
+        "Cool",
+        "Sunglasses",
+        "Outdoors"
+      ],
+      "offset": [
+        -0.8656884785641923,
+        -2.8102223442144316,
+        -3.8130139979751765
+      ],
+      "rotation": [
+        -0.6158195133694404,
+        0.01763758960876175,
+        -0.014939816799382328
+      ],
+      "scale": 60,
+      "type": "both",
+      "bone": "Head",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_1_item_02.png": {
+      "isVisible": true,
+      "name": "Artist Beret",
+      "description": "A stylish red beret for creative minds.",
+      "labels": [
+        "Art",
+        "Style",
+        "Headwear"
+      ],
+      "offset": [
+        -1.0194448090986694,
+        2.5947589410586733,
+        -8.821361250965987
+      ],
+      "rotation": [
+        -2.657625460321122,
+        1.2148790509511973,
+        2.142973561214775
+      ],
+      "scale": 75,
+      "type": "wearable",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_1_item_03.png": {
+      "isVisible": true,
+      "name": "Digital Tablet",
+      "description": "A high-performance tablet for on-the-go productivity.",
+      "labels": [
+        "Tech",
+        "Design",
+        "Tool"
+      ],
+      "offset": [
+        -28.645679195544876,
+        36.0088196333197,
+        -39.16680882807124
+      ],
+      "rotation": [
+        2.898207327560263,
+        3.141592653589793,
+        0
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_L",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_1_item_04.png": {
+      "isVisible": true,
+      "name": "Logic Cube",
+      "description": "A colorful 3D puzzle for sharpening the mind.",
+      "labels": [
+        "Game",
+        "Logic",
+        "Toy"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -2.1044633482084505,
+        0.6220361591581396,
+        -0.35459784417301066
+      ],
+      "rotation": [
+        -0.2217935264888366,
+        0.0553733687293018,
+        0.06065708003793604
+      ],
+      "scale": 75,
+      "decorRotation": [
+        -0.2217935264888366,
+        0.0553733687293018,
+        0.06065708003793604
+      ]
+    },
+    "/accessories/accessories_set_1_item_05.png": {
+      "isVisible": true,
+      "name": "Paint Palette",
+      "description": "A wooden palette with a spectrum of vibrant oil paints.",
+      "labels": [
+        "Art",
+        "Painting",
+        "Creative"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        16.619024921957504,
+        51.079257357983536,
+        27.18133356185599
+      ],
+      "rotation": [
+        -2.045374604303124,
+        -1.418900185625458,
+        -0.15945409190854615
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_06.png": {
+      "isVisible": true,
+      "name": "Classical Cello",
+      "description": "A handcrafted wooden cello for musical depth.",
+      "labels": [
+        "Music",
+        "Instrument",
+        "Classy"
+      ],
+      "type": "both",
+      "bone": "Head",
+      "offset": [
+        -43.60604039750952,
+        -98.87789891447474,
+        71.24592219027299
+      ],
+      "rotation": [
+        0,
+        1.1976701580369595,
+        0
+      ],
+      "scale": 100,
+      "decorRotation": [
+        0,
+        1.1976701580369595,
+        0
+      ]
+    },
+    "/accessories/accessories_set_1_item_07.png": {
+      "isVisible": true,
+      "name": "Chef's Pot",
+      "description": "A stainless steel pot for culinary excellence.",
+      "labels": [
+        "Cooking",
+        "Chef",
+        "Kitchen"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -36.49183066002925,
+        72.3679461579765,
+        3.6237450073029684
+      ],
+      "rotation": [
+        -2.0421014879802577,
+        0.589286777295486,
+        -0.36564509753194085
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_08.png": {
+      "isVisible": true,
+      "name": "World Globe",
+      "description": "A vintage-style globe for global explorers.",
+      "labels": [
+        "Travel",
+        "Education",
+        "Explorer"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_09.png": {
+      "isVisible": true,
+      "name": "Pretzel Heart",
+      "description": "A heart-shaped snack full of salty love.",
+      "labels": [
+        "Food",
+        "Love",
+        "Snack"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_1_item_10.png": {
+      "isVisible": true,
+      "name": "Golden Ring",
+      "description": "A simple but elegant gold band.",
+      "labels": [
+        "Jewelry",
+        "Elegance",
+        "Accessory"
+      ],
+      "type": "wearable",
+      "bone": "Hand_L",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 40
+    },
+    "/accessories/accessories_set_1_item_11.png": {
+      "isVisible": true,
+      "name": "Tea Pot",
+      "description": "A calming tea pot",
+      "labels": [
+        "Tea",
+        "Threapist",
+        "Calm"
+      ],
+      "offset": [
+        -8.592882058306067,
+        78.11859647069305,
+        27.121542426948263
+      ],
+      "rotation": [
+        -2.418063487147215,
+        1.0080987514155069,
+        0.38757334471676597
+      ],
+      "scale": 75,
+      "bone": "Hand_R",
+      "type": "both"
+    },
+    "/accessories/accessories_set_1_item_12.png": {
+      "isVisible": true,
+      "name": "Color Swatches",
+      "description": "A fan of color samples for design decisions.",
+      "labels": [
+        "Design",
+        "Art",
+        "Samples"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 40,
+      "bone": "Head",
+      "type": "decor"
+    },
+    "/accessories/accessories_set_1_item_13.png": {
+      "isVisible": true,
+      "name": "Architect Blueprint",
+      "description": "Detailed plans for complex structures.",
+      "labels": [
+        "Architecture",
+        "Engineering",
+        "Plans"
+      ],
+      "offset": [
+        -20.17919247639242,
+        43.53746095919745,
+        -39.1180312554219
+      ],
+      "rotation": [
+        0.04709359628109482,
+        0.08319387184699713,
+        -2.939738326324474
+      ],
+      "scale": 75,
+      "bone": "Hand_L",
+      "type": "both",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_1_item_14.png": {
+      "isVisible": true,
+      "name": "Lounge Armchair",
+      "description": "A comfortable chair for deep thinking.",
+      "labels": [
+        "Furniture",
+        "Comfort",
+        "Office"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_15.png": {
+      "isVisible": true,
+      "name": "Gift Box",
+      "description": "A wrapped present with a red ribbon.",
+      "labels": [
+        "Holiday",
+        "Gift",
+        "Surprise"
+      ],
+      "offset": [
+        -1.6895265848433152,
+        0,
+        2.7200970050672235
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_1_item_16.png": {
+      "isVisible": true,
+      "name": "Retro Television",
+      "description": "A classic TV set for media consumption.",
+      "labels": [
+        "Media",
+        "Retro",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_17.png": {
+      "isVisible": true,
+      "name": "Microscope",
+      "description": "High-power optics for scientific discovery.",
+      "labels": [
+        "Science",
+        "Research",
+        "Lab"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_18.png": {
+      "isVisible": true,
+      "name": "Wrench",
+      "description": "A heavy-duty tool for mechanical repairs.",
+      "labels": [
+        "Tool",
+        "Engineering",
+        "Fix"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -7.739480709309707,
+        35.654737610452955,
+        10.435858830048767
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_19.png": {
+      "isVisible": true,
+      "name": "Sewing Machine",
+      "description": "Vintage machine for tailoring and design.",
+      "labels": [
+        "Craft",
+        "Design",
+        "Textile"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_20.png": {
+      "isVisible": true,
+      "name": "Office Calculator",
+      "description": "A precise tool for financial calculations.",
+      "labels": [
+        "Finance",
+        "Math",
+        "Tool"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        7.598814063830531,
+        59.350004232717204,
+        0.6831791055988248
+      ],
+      "rotation": [
+        1.4015609541036635,
+        0.8620410414639385,
+        2.79326640806111
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_21.png": {
+      "isVisible": true,
+      "name": "Balance Scale",
+      "description": "Brass scales for weighing justice or assets.",
+      "labels": [
+        "Law",
+        "Finance",
+        "Justice"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_22.png": {
+      "isVisible": true,
+      "name": "Zen Garden Stones",
+      "description": "Smooth stones for mindfulness and balance.",
+      "labels": [
+        "Peace",
+        "Zen",
+        "Nature"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_23.png": {
+      "isVisible": true,
+      "name": "Professional Camera",
+      "description": "High-end DSLR for capturing moments.",
+      "labels": [
+        "Photography",
+        "Media",
+        "Travel"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -23.890904548711394,
+        50.5613970561081,
+        -28.464332795802374
+      ],
+      "rotation": [
+        -2.170640330140837,
+        0.01734964196902207,
+        -0.37439399285901004
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_1_item_24.png": {
+      "isVisible": true,
+      "name": "Chef Knives",
+      "description": "A set of sharp blades for the master chef.",
+      "labels": [
+        "Cooking",
+        "Chef",
+        "Kitchen"
+      ],
+      "type": "decor",
+      "bone": "Hand_R",
+      "offset": [
+        -2.9756763422883687,
+        0,
+        1.9468465147640974
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_1_item_25.png": {
+      "isVisible": true,
+      "name": "Vintage Typewriter",
+      "description": "Mechanical keys for the dedicated writer.",
+      "labels": [
+        "Writing",
+        "Retro",
+        "Author"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_01.png": {
+      "isVisible": true,
+      "name": "Astronomer Telescope",
+      "description": "Look into the far reaches of the universe.",
+      "labels": [
+        "Science",
+        "Astronomy",
+        "Discovery"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_02.png": {
+      "isVisible": true,
+      "name": "Chef Hat",
+      "description": "A tall, puffy white chef's hat",
+      "labels": [
+        "Hat"
+      ],
+      "offset": [
+        0.39152746254753046,
+        13.751310601170433,
+        -15.269385826814108
+      ],
+      "rotation": [
+        -0.5688164592825824,
+        0.4726341973697414,
+        -0.016590122431044588
+      ],
+      "scale": 75,
+      "type": "wearable",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_2_item_03.png": {
+      "isVisible": true,
+      "name": "Postal Letter",
+      "description": "An envelope sealed with care.",
+      "labels": [
+        "Communication",
+        "Mail",
+        "Secret"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_04.png": {
+      "isVisible": true,
+      "name": "Dice",
+      "description": "A 20-sided die for high-stakes decisions.",
+      "labels": [
+        "Game",
+        "Luck",
+        "Roleplay"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "bone": "Head",
+      "type": "decor"
+    },
+    "/accessories/accessories_set_2_item_05.png": {
+      "isVisible": true,
+      "name": "Jazz Saxophone",
+      "description": "Brass instrument for soulful melodies.",
+      "labels": [
+        "Music",
+        "Jazz",
+        "Classy"
+      ],
+      "offset": [
+        -12.447398370344771,
+        25.514952553276842,
+        95.9700118235732
+      ],
+      "rotation": [
+        -1.3706949495795007,
+        0.10647704993941338,
+        -0.1270759998406368
+      ],
+      "scale": 120,
+      "type": "both",
+      "bone": "Hand_R"
+    },
+    "/accessories/accessories_set_2_item_06.png": {
+      "isVisible": true,
+      "name": "Safety Lighthouse",
+      "description": "A beacon of light in the storm.",
+      "labels": [
+        "Safety",
+        "Navigation",
+        "Hope"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_2_item_07.png": {
+      "isVisible": true,
+      "name": "Studio Microphone",
+      "description": "Capture crystal clear audio.",
+      "labels": [
+        "Media",
+        "Audio",
+        "Voice"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_08.png": {
+      "isVisible": true,
+      "name": "Boxing Gloves",
+      "description": "Heavy padding for the ring.",
+      "labels": [
+        "Sport",
+        "Power",
+        "Defense"
+      ],
+      "type": "decor",
+      "bone": "Hand_R",
+      "offset": [
+        -2.9756763422883687,
+        0,
+        1.9468465147640974
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_2_item_09.png": {
+      "isVisible": true,
+      "name": "Retro Calculator",
+      "description": "Old-school math on your desk.",
+      "labels": [
+        "Math",
+        "Retro",
+        "Tool"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        36.78842994651255,
+        45.39887645162552,
+        25.540174899233957
+      ],
+      "rotation": [
+        0,
+        0,
+        -3.137843199717253
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_10.png": {
+      "isVisible": true,
+      "name": "Drafting Pencils",
+      "description": "Sharp leads for technical drawings.",
+      "labels": [
+        "Design",
+        "Art",
+        "Drawing"
+      ],
+      "type": "decor",
+      "bone": "Hand_R",
+      "offset": [
+        -1.6895265848433152,
+        0,
+        2.7200970050672235
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_2_item_11.png": {
+      "isVisible": true,
+      "name": "Wind Turbine",
+      "description": "Sustainable energy for the future.",
+      "labels": [
+        "Green",
+        "Energy",
+        "Science"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_12.png": {
+      "isVisible": true,
+      "name": "Building Blocks",
+      "description": "Simple shapes for complex foundations.",
+      "labels": [
+        "Game",
+        "Education",
+        "Logic"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_13.png": {
+      "isVisible": true,
+      "name": "Audio Headphones",
+      "description": "Immersive sound for focused work.",
+      "labels": [
+        "Media",
+        "Audio",
+        "Focus"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        -0.521313396493478,
+        -7.150026634822608,
+        1.3647604692752102
+      ],
+      "rotation": [
+        -0.7950902265149907,
+        -0.021854428083246547,
+        0.039974735930787604
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_14.png": {
+      "isVisible": true,
+      "name": "Penrose Stairs",
+      "description": "An impossible geometric puzzle.",
+      "labels": [
+        "Logic",
+        "Mind",
+        "Art"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_2_item_15.png": {
+      "isVisible": true,
+      "name": "Adventure Boots",
+      "description": "Sturdy footwear for long journeys.",
+      "labels": [
+        "Travel",
+        "Nature",
+        "Adventure"
+      ],
+      "type": "wearable",
+      "bone": "Foot_L",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_16.png": {
+      "isVisible": true,
+      "name": "Navigation Compass",
+      "description": "Never lose your way.",
+      "labels": [
+        "Travel",
+        "Navigation",
+        "Tool"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -17.40974186652751,
+        58.100086743092234,
+        -10.129423758428036
+      ],
+      "rotation": [
+        1.5635513793911178,
+        -1.1115645626279098,
+        -2.0395814587062278
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_17.png": {
+      "isVisible": true,
+      "name": "Emerald Ring",
+      "description": "A silver band with a green stone.",
+      "labels": [
+        "Jewelry",
+        "Elegance",
+        "Style"
+      ],
+      "type": "wearable",
+      "bone": "Hand_L",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 40
+    },
+    "/accessories/accessories_set_2_item_18.png": {
+      "isVisible": true,
+      "name": "The Thinker",
+      "description": "Iconic statue of deep contemplation.",
+      "labels": [
+        "Mind",
+        "Philosophy",
+        "Art"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_2_item_19.png": {
+      "isVisible": true,
+      "name": "Smooth River Stones",
+      "description": "Stackable stones for meditative focus.",
+      "labels": [
+        "Peace",
+        "Zen",
+        "Nature"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_20.png": {
+      "isVisible": true,
+      "name": "Precious Jewels",
+      "description": "A collection of cut gemstones.",
+      "labels": [
+        "Wealth",
+        "Jewelry",
+        "Status"
+      ],
+      "type": "wearable",
+      "bone": "Hand_R",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_21.png": {
+      "isVisible": true,
+      "name": "Industrial Robot Arm",
+      "description": "Precision automation for complex tasks.",
+      "labels": [
+        "Tech",
+        "Robotics",
+        "Future"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_22.png": {
+      "isVisible": true,
+      "name": "Classic Typewriter",
+      "description": "The author's best friend.",
+      "labels": [
+        "Writing",
+        "Retro",
+        "Media"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_23.png": {
+      "isVisible": true,
+      "name": "Victory Trophies",
+      "description": "Symbols of peak achievement.",
+      "labels": [
+        "Status",
+        "Power",
+        "Award"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_24.png": {
+      "isVisible": true,
+      "name": "Volcanic Rocks",
+      "description": "Raw geological samples.",
+      "labels": [
+        "Science",
+        "Nature",
+        "Geology"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_2_item_25.png": {
+      "isVisible": true,
+      "name": "Leather Journal",
+      "description": "A place for private thoughts.",
+      "labels": [
+        "Writing",
+        "Memory",
+        "Classy"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -5.8029480645275475,
+        62.07403857961414,
+        -4.489749618783238
+      ],
+      "rotation": [
+        0.4335875145965331,
+        0.8092953259900274,
+        1.0017403966883085
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_01.png": {
+      "isVisible": true,
+      "name": "Sandcastle",
+      "description": "A beach sandcastle",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_3_item_02.png": {
+      "isVisible": true,
+      "name": "VR Goggles",
+      "description": "Virtual reality headset",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "offset": [
+        1.0381104045944627,
+        -3.638358394457537,
+        4.37995746135964
+      ],
+      "rotation": [
+        -0.3542059994237666,
+        -0.3014633716807729,
+        0.11595384167311336
+      ],
+      "scale": 75,
+      "type": "wearable",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_3_item_03.png": {
+      "isVisible": true,
+      "name": "Laptop",
+      "description": "A modern silver laptop",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "offset": [
+        -32.84748715881794,
+        59.065451020177804,
+        -16.685366933360196
+      ],
+      "rotation": [
+        1.1411947114616385,
+        -0.9443437362493199,
+        -3.0352713581583943
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_L",
+      "decorRotation": [
+        1.1411947114616385,
+        -0.9443437362493199,
+        -3.0352713581583943
+      ]
+    },
+    "/accessories/accessories_set_3_item_04.png": {
+      "isVisible": true,
+      "name": "Keyboard",
+      "description": "A mechanical keyboard",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -6.000202796928809,
+        58.374303499516365,
+        -14.834103049185705
+      ],
+      "rotation": [
+        0.4221378050861724,
+        -0.4020786607038657,
+        -2.998656593094611
+      ],
+      "scale": 100
+    },
+    "/accessories/accessories_set_3_item_05.png": {
+      "isVisible": true,
+      "name": "Steaming Mug",
+      "description": "A hot cup of coffee with a radiation symbol",
+      "labels": [
+        "Coffee",
+        "Work"
+      ],
+      "offset": [
+        -3.21077935410898,
+        66.7222156562352,
+        0.7917811018818757
+      ],
+      "rotation": [
+        -0.9583195450513123,
+        1.292705924734976,
+        -1.176820446218387
+      ],
+      "scale": 60,
+      "type": "both",
+      "bone": "Hand_L"
+    },
+    "/accessories/accessories_set_3_item_06.png": {
+      "isVisible": true,
+      "name": "Server Rack",
+      "description": "A computer server rack tower",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_07.png": {
+      "isVisible": true,
+      "name": "Leather Journal",
+      "description": "A brown leather-bound journal",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -17.694799505674602,
+        27.153542720578997,
+        10.435214754107069
+      ],
+      "rotation": [
+        -0.33491515001496364,
+        -0.9916458139432401,
+        -0.20933470403234578
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_08.png": {
+      "isVisible": true,
+      "name": "Chess Knight",
+      "description": "A wooden chess knight piece",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        9.037231145341458,
+        40.01756768389058,
+        12.800791879486834
+      ],
+      "rotation": [
+        -2.7632551408463892,
+        1.4005992409754024,
+        0.8202991380485724
+      ],
+      "scale": 45,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_3_item_09.png": {
+      "isVisible": true,
+      "name": "Crystal Ball",
+      "description": "A glowing crystal ball on a wooden stand",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_10.png": {
+      "isVisible": true,
+      "name": "Pocket Watch",
+      "description": "A vintage gold pocket watch",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        25.677948429089835,
+        28.717648495262942,
+        9.75859149838044
+      ],
+      "rotation": [
+        2.355631338711638,
+        -0.37338723775225063,
+        2.4874245472399563
+      ],
+      "scale": 40
+    },
+    "/accessories/accessories_set_3_item_11.png": {
+      "isVisible": true,
+      "name": "Flowchart",
+      "description": "A diagram with interconnected nodes",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_12.png": {
+      "isVisible": true,
+      "name": "Abacus",
+      "description": "A wooden abacus with colorful beads",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -27.655923969549484,
+        44.64579526614557,
+        -8.805347170481255
+      ],
+      "rotation": [
+        -2.3390108680767914,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_3_item_13.png": {
+      "isVisible": true,
+      "name": "Magnifying Glass",
+      "description": "A classic magnifying glass",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -16.71422467493355,
+        36.45161664344305,
+        -15.620901517952266
+      ],
+      "rotation": [
+        -0.8837265103477969,
+        -0.7326968644366723,
+        -0.9422947077591273
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_14.png": {
+      "isVisible": true,
+      "name": "Flask",
+      "description": "An Erlenmeyer flask with green liquid",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        9.330118266867236,
+        40.07020722546649,
+        9.451663730070925
+      ],
+      "rotation": [
+        1.4166310199902883,
+        0.17083989941033909,
+        -3.1151795070684924
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_15.png": {
+      "isVisible": true,
+      "name": "Stack of Books",
+      "description": "A neat stack of hardcover books",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -11.992226568725993,
+        57.97216091543123,
+        -29.818157411408645
+      ],
+      "rotation": [
+        -2.6053377168857774,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_16.png": {
+      "isVisible": true,
+      "name": "Telescope",
+      "description": "A brass telescope on a tripod",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_17.png": {
+      "isVisible": true,
+      "name": "DNA Helix",
+      "description": "A double helix DNA model",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -21.67119245851164,
+        65.65847473632256,
+        -0.31119744517187886
+      ],
+      "rotation": [
+        1.2728035126508734,
+        -0.7833126808024812,
+        -2.3373291434162735
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_3_item_18.png": {
+      "isVisible": true,
+      "name": "Globe",
+      "description": "A desktop world globe",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_19.png": {
+      "isVisible": true,
+      "name": "Paint Palette",
+      "description": "A wooden artist's palette with paint",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -2.7313288094958743,
+        49.91676289540465,
+        -0.5751438464651688
+      ],
+      "rotation": [
+        -2.129369301515255,
+        0.38183680813251236,
+        0.01460897716910471
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_20.png": {
+      "isVisible": true,
+      "name": "Pantone Swatches",
+      "description": "A fan of color swatches",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -25.768285407295416,
+        45.894614633602934,
+        -14.073554265821935
+      ],
+      "rotation": [
+        -2.367556618215702,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_21.png": {
+      "isVisible": true,
+      "name": "Red Beret",
+      "description": "A classic red beret hat",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_22.png": {
+      "isVisible": true,
+      "name": "Polaroid Camera",
+      "description": "An instant Polaroid-style camera",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -28.141182897103874,
+        37.57744086710791,
+        -7.8927154281832035
+      ],
+      "rotation": [
+        -1.8634903061705521,
+        -0.2808450141351723,
+        -0.33309459597419294
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_3_item_23.png": {
+      "isVisible": true,
+      "name": "Roman Bust",
+      "description": "A roman stone carved bust",
+      "labels": [
+        "History"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        -1.6895265848433152,
+        0,
+        2.7200970050672235
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_3_item_24.png": {
+      "isVisible": true,
+      "name": "Rotary Phone",
+      "description": "A vintage rotary dial telephone",
+      "labels": [
+        "Accessory",
+        "Set 3",
+        "Music"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -6.225726221740754,
+        57.6647146326773,
+        -31.34488602929134
+      ],
+      "rotation": [
+        -2.8326941435191353,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_3_item_25.png": {
+      "isVisible": true,
+      "name": "Clipboard",
+      "description": "A clipboard with a checklist",
+      "labels": [
+        "Clipboard"
+      ],
+      "bone": "Hand_R",
+      "scale": 75,
+      "offset": [
+        19.655531937042703,
+        31.563480927248264,
+        42.158607666133875
+      ],
+      "rotation": [
+        -1.5707963267948966,
+        3.141592653589793,
+        0
+      ],
+      "type": "accessory"
+    },
+    "/accessories/accessories_set_4_item_01.png": {
+      "isVisible": true,
+      "name": "Radiation Mug",
+      "description": "A white mug with a radiation hazard symbol",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "offset": [
+        15.450185011774785,
+        43.857963718856666,
+        24.19627451782952
+      ],
+      "rotation": [
+        1.506884753793749,
+        0.4611139972472337,
+        -3.1225619214040607
+      ],
+      "scale": 40,
+      "type": "both",
+      "bone": "Hand_R"
+    },
+    "/accessories/accessories_set_4_item_02.png": {
+      "isVisible": true,
+      "name": "Leather Satchel",
+      "description": "A brown leather messenger bag",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Head",
+      "offset": [
+        -34.374861966167416,
+        -68.30450730268728,
+        57.475784261074466
+      ],
+      "rotation": [
+        -0.6557781433340588,
+        -0.7036377951890391,
+        -0.06399535894932391
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_03.png": {
+      "isVisible": true,
+      "name": "Envelopes",
+      "description": "A stack of paper envelopes",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_04.png": {
+      "isVisible": true,
+      "name": "Calculator",
+      "description": "A classic electronic calculator",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -3.027493261657895,
+        49.46773451633968,
+        -23.4415272415262
+      ],
+      "rotation": [
+        -0.24098614587691877,
+        -0.21862477889862802,
+        2.2471049833782852
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_05.png": {
+      "isVisible": true,
+      "name": "Gold Coins",
+      "description": "A stack of shiny gold coins",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -7.698316698850607,
+        51.759704042735024,
+        21.838758438597683
+      ],
+      "rotation": [
+        -2.1231457439005785,
+        -0.9301987890863399,
+        -0.18286767689731742
+      ],
+      "scale": 45,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_4_item_06.png": {
+      "isVisible": true,
+      "name": "Upward Arrow",
+      "description": "A green zigzag arrow pointing up",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        9.03086082636143,
+        55.526653406114605,
+        -11.503959418911208
+      ],
+      "rotation": [
+        0.12822917797153194,
+        -0.2929568323662688,
+        2.8864010744780972
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_4_item_07.png": {
+      "isVisible": true,
+      "name": "Briefcase",
+      "description": "A professional brown leather briefcase",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        6.827401439623365,
+        71.40660443136736,
+        68.9431780443409
+      ],
+      "rotation": [
+        -2.1462600738884463,
+        -0.22340107249782012,
+        0.13562358470246333
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_08.png": {
+      "isVisible": true,
+      "name": "Banker's Lamp",
+      "description": "A classic green banker's desk lamp",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_09.png": {
+      "isVisible": true,
+      "name": "Propeller Hat",
+      "description": "A colorful beanie with a propeller on top",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        0.2193832701894518,
+        8.731942994943473,
+        -2.9075073631371042
+      ],
+      "rotation": [
+        -0.8682084302043149,
+        0.09508207382518763,
+        -0.011112746203223658
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_10.png": {
+      "isVisible": true,
+      "name": "RGB Headphones",
+      "description": "A pair of colorful glowing headphones",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        -1.0307001668389384,
+        -3.8468516107569486,
+        3.261881768962711
+      ],
+      "rotation": [
+        -0.8813122937194819,
+        0.03366563143798441,
+        0.0000460073542228823
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_11.png": {
+      "isVisible": true,
+      "name": "Eye Patch",
+      "description": "A black pirate eye patch",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        -1.138138109930864,
+        -4.697954159641638,
+        -1.8254123254840626
+      ],
+      "rotation": [
+        -0.6986287455381225,
+        0.3502498171216235,
+        -0.14670258789224527
+      ],
+      "scale": 85
+    },
+    "/accessories/accessories_set_4_item_12.png": {
+      "isVisible": true,
+      "name": "Gold Crown",
+      "description": "A regal gold crown with jewels",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        0.8019048494424161,
+        10.571992950748726,
+        -17.93027457324931
+      ],
+      "rotation": [
+        -0.8883488057997684,
+        -0.7892203169538023,
+        -0.038408442686464025
+      ],
+      "scale": 60
+    },
+    "/accessories/accessories_set_4_item_13.png": {
+      "isVisible": true,
+      "name": "Top Hat",
+      "description": "A formal black top hat",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        -0.9416319338585979,
+        -27.67553152839067,
+        9.676364253851778
+      ],
+      "rotation": [
+        -0.5939209490306553,
+        0.1339180368070435,
+        -0.009180077955704195
+      ],
+      "scale": 100
+    },
+    "/accessories/accessories_set_4_item_14.png": {
+      "isVisible": true,
+      "name": "Chef Hat",
+      "description": "A tall, fluffy white chef's hat",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        -0.43055031476678174,
+        17.35322083545495,
+        -16.191702906018865
+      ],
+      "rotation": [
+        -0.7194491773192367,
+        0.09130935771219803,
+        -0.012172688732082501
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_15.png": {
+      "isVisible": true,
+      "name": "Spatula",
+      "description": "A metal spatula for cooking",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        0,
+        25.796626828155475,
+        15.33333309100582
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_16.png": {
+      "isVisible": true,
+      "name": "Gameboy",
+      "description": "A classic handheld video game console",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        9.408349457005773,
+        27.920330158123562,
+        20.93324104414898
+      ],
+      "rotation": [
+        2.866743192515278,
+        0.5909312140000766,
+        2.824300454954713
+      ],
+      "scale": 55
+    },
+    "/accessories/accessories_set_4_item_17.png": {
+      "isVisible": true,
+      "name": "Boombox",
+      "description": "A vintage silver boombox radio",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Head",
+      "offset": [
+        -40.90148963126462,
+        5.4684688206601155,
+        14.81835683695222
+      ],
+      "rotation": [
+        -2.6987335569039916,
+        1.3303881866388947,
+        1.8151990580106858
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_18.png": {
+      "isVisible": true,
+      "name": "Rubber Duck",
+      "description": "A yellow rubber duck bath toy",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        0.8497439224678391,
+        64.99868327611111,
+        -38.236095812030655
+      ],
+      "rotation": [
+        -2.6305965745985698,
+        0.2972970730923578,
+        -0.15963825009606372
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_4_item_19.png": {
+      "isVisible": true,
+      "name": "Magic Wand",
+      "description": "A wooden wand with a glowing star",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "offset": [
+        16.0944238828297,
+        18.27586943300222,
+        -32.56147055980513
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_L"
+    },
+    "/accessories/accessories_set_4_item_20.png": {
+      "isVisible": true,
+      "name": "Lightsaber",
+      "description": "A glowing blue sci-fi laser sword",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "offset": [
+        8.605223027278834,
+        -5.642464650068959,
+        -8.225320517403642
+      ],
+      "rotation": [
+        2.477763133146115,
+        0.16259609088668217,
+        2.8597225304892744
+      ],
+      "scale": 100,
+      "type": "both",
+      "bone": "Hand_R"
+    },
+    "/accessories/accessories_set_4_item_21.png": {
+      "isVisible": true,
+      "name": "Pizza Slice",
+      "description": "A delicious slice of pepperoni pizza",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -14.429057037053447,
+        53.28421106420467,
+        4.485514002670054
+      ],
+      "rotation": [
+        -1.8019922272614086,
+        0.4691505848034953,
+        3.111776780958969e-17
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_22.png": {
+      "isVisible": true,
+      "name": "Potted Cactus",
+      "description": "A small green cactus in a terracotta pot",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -7.992082241840928,
+        46.07683092836223,
+        19.386703998649086
+      ],
+      "rotation": [
+        -1.6501376490782598,
+        -0.5330779390777889,
+        -0.05590382103648764
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        -0.28145037576687787,
+        0.028906625268117714
+      ]
+    },
+    "/accessories/accessories_set_4_item_23.png": {
+      "isVisible": true,
+      "name": "Golden Halo",
+      "description": "A glowing angel halo",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_24.png": {
+      "isVisible": true,
+      "name": "Checkered Cube",
+      "description": "A cube with a black and purple checkerboard pattern",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_4_item_25.png": {
+      "isVisible": true,
+      "name": "Blue D20 Die",
+      "description": "A 20-sided die for tabletop gaming",
+      "labels": [
+        "Accessory",
+        "Set 4",
+        "Science"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_01.png": {
+      "isVisible": true,
+      "name": "Cottage",
+      "description": "A small, cozy isometric house with a red roof",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_02.png": {
+      "isVisible": true,
+      "name": "Brass Keys",
+      "description": "A set of vintage brass keys on a ring",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -1.6349656182799777,
+        60.893278072776965,
+        32.86523098063121
+      ],
+      "rotation": [
+        -1.284694299462321,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_03.png": {
+      "isVisible": true,
+      "name": "Welcome Mat",
+      "description": "A simple 'Welcome' doormat",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_04.png": {
+      "isVisible": true,
+      "name": "Compact Mirror",
+      "description": "A green makeup compact mirror",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        -5.003575673557352,
+        56.589641747803014,
+        -24.783987861555794
+      ],
+      "rotation": [
+        0.5499036964041575,
+        -0.1137981843071419,
+        2.6727056126680937
+      ],
+      "scale": 55,
+      "type": "both",
+      "bone": "Hand_L"
+    },
+    "/accessories/accessories_set_5_item_05.png": {
+      "isVisible": true,
+      "name": "Wooden Hanger",
+      "description": "A classic wooden clothes hanger",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_06.png": {
+      "isVisible": true,
+      "name": "Mannequin Torso",
+      "description": "A wooden dressmaker's mannequin",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_5_item_07.png": {
+      "isVisible": true,
+      "name": "Spool of Thread",
+      "description": "A large spool of pink sewing thread",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -7.729504315356402,
+        48.67376829844425,
+        -5.031567100231145
+      ],
+      "rotation": [
+        0.7568033572129254,
+        0.2840971859410626,
+        -2.84435304019324
+      ],
+      "scale": 45,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_08.png": {
+      "isVisible": true,
+      "name": "Yellow Armchair",
+      "description": "A comfortable upholstered armchair",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_09.png": {
+      "isVisible": true,
+      "name": "Lotus Flower",
+      "description": "A beautiful pink lotus flower",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -12.00613116383869,
+        52.08019599182108,
+        11.54416566899378
+      ],
+      "rotation": [
+        1.3770836599274312,
+        0.35084758071549516,
+        3.05344089297797
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_10.png": {
+      "isVisible": true,
+      "name": "Salt Lamp",
+      "description": "A glowing orange Himalayan salt lamp",
+      "labels": [
+        "Crystal",
+        "Lamp",
+        "Zen"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        2.0972480285851507,
+        57.165948909700134,
+        10.576771732070588
+      ],
+      "rotation": [
+        -1.831988389898829,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_11.png": {
+      "isVisible": true,
+      "name": "Matcha Bowl",
+      "description": "A bowl of frothy green matcha tea",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -12.201046559226112,
+        53.183164098789774,
+        0.23533205506564414
+      ],
+      "rotation": [
+        3.839724354387525,
+        0.03490658503988659,
+        0.17453292519943295
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_12.png": {
+      "isVisible": true,
+      "name": "Tilted Chef Hat",
+      "description": "A tall pleated white chef's toque",
+      "labels": [
+        "Chef",
+        "Hat"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        -2.065892492015669,
+        15.777810612555559,
+        -16.259184731604723
+      ],
+      "rotation": [
+        -0.4768096685159334,
+        -0.31747304346429905,
+        0.34996116794526944
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_13.png": {
+      "isVisible": true,
+      "name": "Rolling Pin",
+      "description": "A wooden rolling pin for baking",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        -46.58620061058016,
+        61.148141476897635,
+        17.56851267010611
+      ],
+      "rotation": [
+        0.19446362143236604,
+        -0.07150688384742149,
+        -0.7610611410084404
+      ],
+      "scale": 130
+    },
+    "/accessories/accessories_set_5_item_14.png": {
+      "isVisible": true,
+      "name": "Cooking Pot",
+      "description": "A large black cooking pot with a lid",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        -37.692178517885175,
+        60.670791293050144,
+        -5.5812103968477125
+      ],
+      "rotation": [
+        0.6265426986990033,
+        -0.3047309852712035,
+        -2.971417197459621
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_L"
+    },
+    "/accessories/accessories_set_5_item_15.png": {
+      "isVisible": true,
+      "name": "Food Cloche",
+      "description": "A shiny silver serving cloche cover",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -30.936655262397387,
+        35.571183008291335,
+        -12.888884080688634
+      ],
+      "rotation": [
+        -2.8448373353837346,
+        -0.05866344684154139,
+        -0.2439594913025517
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_16.png": {
+      "isVisible": true,
+      "name": "Vintage Camera",
+      "description": "A retro film camera",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        15.790948139334485,
+        46.88748555161878,
+        12.746974398191641
+      ],
+      "rotation": [
+        -1.8396476886668236,
+        0,
+        0
+      ],
+      "scale": 60
+    },
+    "/accessories/accessories_set_5_item_17.png": {
+      "isVisible": true,
+      "name": "Passport",
+      "description": "A travel passport booklet",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        3.067033256888356,
+        27.906171852968807,
+        18.262369506427152
+      ],
+      "rotation": [
+        2.814234283794943,
+        -0.03025225704703896,
+        -2.863335829978855
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_5_item_18.png": {
+      "isVisible": true,
+      "name": "Compass",
+      "description": "A classic navigational compass",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        -21.305863611540918,
+        41.31119262542647,
+        -1.5992970366729704
+      ],
+      "rotation": [
+        0.5433364263179797,
+        0.3695370329865218,
+        -0.7713930367569098
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_L"
+    },
+    "/accessories/accessories_set_5_item_19.png": {
+      "isVisible": true,
+      "name": "Airplane",
+      "description": "A commercial passenger airplane",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -11.163833434950131,
+        70.78423811602354,
+        -23.181855144299742
+      ],
+      "rotation": [
+        -2.5858749830892247,
+        0.9176732891018509,
+        -0.04390522883448955
+      ],
+      "scale": 170,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_20.png": {
+      "isVisible": true,
+      "name": "DSLR Camera",
+      "description": "A modern digital camera with a flash",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        27.013087654283414,
+        74.38814847459588,
+        10.79730827690926
+      ],
+      "rotation": [
+        -1.7942367077459391,
+        -0.7175761496171061,
+        0.4936324065244323
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_R"
+    },
+    "/accessories/accessories_set_5_item_21.png": {
+      "isVisible": true,
+      "name": "Red Megaphone",
+      "description": "A loud red handheld megaphone",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        6.568755635909586,
+        60.22312717942799,
+        -28.632190318825494
+      ],
+      "rotation": [
+        1.8532810473197638,
+        1.2045589243914359,
+        2.222945319636039
+      ],
+      "scale": 85,
+      "type": "both",
+      "bone": "Hand_L"
+    },
+    "/accessories/accessories_set_5_item_22.png": {
+      "isVisible": true,
+      "name": "Vintage Microphone",
+      "description": "A classic silver radio broadcast microphone",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        6.393919590629778,
+        55.81292777181128,
+        15.681337154085146
+      ],
+      "rotation": [
+        -2.222720028519262,
+        0.7493785406958622,
+        -0.018865992772052087
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_L",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_23.png": {
+      "isVisible": true,
+      "name": "ABC Block",
+      "description": "A wooden children's alphabet block",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "offset": [
+        -10.745482849171378,
+        59.611587227737374,
+        22.430011681250146
+      ],
+      "rotation": [
+        0.26558487335382824,
+        -1.2254258342124797,
+        2.1692661001974995
+      ],
+      "scale": 55,
+      "type": "both",
+      "bone": "Hand_R",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_24.png": {
+      "isVisible": true,
+      "name": "Spinning Top",
+      "description": "A colorful striped spinning top toy",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        12.355322808925212,
+        62.89910374130279,
+        71.7421533058827
+      ],
+      "rotation": [
+        -2.872908400658524,
+        1.4217100479520588,
+        0.9668681845078698
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_5_item_25.png": {
+      "isVisible": true,
+      "name": "Teddy Bear",
+      "description": "A cute brown stuffed teddy bear",
+      "labels": [
+        "Accessory",
+        "Set 5",
+        "Luxury"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        9.236605212683742,
+        48.28847501795204,
+        30.207576197789123
+      ],
+      "rotation": [
+        -2.097673860815064,
+        0.6047706066342694,
+        0.6804253391613906
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_6_item_01.png": {
+      "isVisible": true,
+      "name": "Stopwatch",
+      "description": "A glowing digital stopwatch",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        11.62626341881731,
+        39.478178714399334,
+        22.524046326643987
+      ],
+      "rotation": [
+        2.1742401127882083,
+        0.38721916552671226,
+        -3.0522531562920947
+      ],
+      "scale": 40
+    },
+    "/accessories/accessories_set_6_item_02.png": {
+      "isVisible": true,
+      "name": "Orange Headphones",
+      "description": "A pair of bright orange over-ear headphones",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        -1.3996568431553928,
+        -2.2516044836427422,
+        -5.018641006894094
+      ],
+      "rotation": [
+        -0.695225935637859,
+        0.017254384090875693,
+        -0.07836549034201519
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_03.png": {
+      "isVisible": true,
+      "name": "Vinyl Record",
+      "description": "A classic black vinyl record",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_04.png": {
+      "isVisible": true,
+      "name": "Metronome",
+      "description": "A traditional wooden pyramid metronome",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_05.png": {
+      "isVisible": true,
+      "name": "Kettlebell",
+      "description": "A heavy black cast-iron kettlebell",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "both",
+      "bone": "Hand_R",
+      "offset": [
+        9.691372660202545,
+        62.21505053439138,
+        76.29531789980119
+      ],
+      "rotation": [
+        1.1280881565574556,
+        -0.18354859049671932,
+        2.8968768166679357
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_06.png": {
+      "isVisible": true,
+      "name": "Yoga Mat",
+      "description": "A rolled-up green yoga mat",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "both",
+      "bone": "Spine",
+      "offset": [
+        12.381923611398546,
+        -0.8996140649286084,
+        -36.00291416783012
+      ],
+      "rotation": [
+        -0.20331151239579856,
+        0.18220432673209103,
+        -1.2396212293999418
+      ],
+      "scale": 100
+    },
+    "/accessories/accessories_set_6_item_07.png": {
+      "isVisible": true,
+      "name": "Tape and Bottle",
+      "description": "Athletic tape and a yellow water bottle",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_08.png": {
+      "isVisible": true,
+      "name": "Quill and Ink",
+      "description": "A feather quill pen and an inkwell",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Hand_R",
+      "offset": [
+        -2.9756763422883687,
+        0,
+        1.9468465147640974
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_6_item_09.png": {
+      "isVisible": true,
+      "name": "Parchment Scroll",
+      "description": "An old rolled-up scroll with a red wax seal",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        17.167483014192925,
+        38.453739606760934,
+        -31.92563280383867
+      ],
+      "rotation": [
+        0.288052669269637,
+        -0.07764772107208757,
+        2.435075591998211
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_10.png": {
+      "isVisible": true,
+      "name": "Gavel",
+      "description": "A wooden judge's gavel and block",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "offset": [
+        6.727163636041949,
+        40.58785163568464,
+        34.54424397462687
+      ],
+      "rotation": [
+        1.4108848709103692,
+        0.12906771617620041,
+        2.5307063281259556
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_R"
+    },
+    "/accessories/accessories_set_6_item_11.png": {
+      "isVisible": true,
+      "name": "Approved Stamp",
+      "description": "A red rubber stamp that reads APPROVED",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Hand_R",
+      "offset": [
+        -2.5154206453912535,
+        -1.1804823254837244,
+        1.048492473961845
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 0.7000000000000001
+    },
+    "/accessories/accessories_set_6_item_12.png": {
+      "isVisible": true,
+      "name": "Stethoscope",
+      "description": "A medical doctor's stethoscope",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "both",
+      "bone": "Spine",
+      "offset": [
+        -29.766876308646793,
+        0.6153079882405699,
+        49.01941474575467
+      ],
+      "rotation": [
+        -1.3961820298356957,
+        -1.304239460949306,
+        0.9274965551907445
+      ],
+      "scale": 160
+    },
+    "/accessories/accessories_set_6_item_13.png": {
+      "isVisible": true,
+      "name": "Blueprint",
+      "description": "A rolled-up blue architectural blueprint",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_14.png": {
+      "isVisible": true,
+      "name": "Brass Gears",
+      "description": "A set of interlocking metal cogs",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "both",
+      "bone": "Hand_L",
+      "offset": [
+        -1.6895265848433152,
+        34.94433453041442,
+        -44.17128327436599
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_6_item_15.png": {
+      "isVisible": true,
+      "name": "Teal Typewriter",
+      "description": "A vintage teal mechanical typewriter",
+      "labels": [
+        "Typewriter",
+        "Writer",
+        "Author",
+        "Study"
+      ],
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_6_item_16.png": {
+      "isVisible": true,
+      "name": "Gold Brim Hat",
+      "description": "A black top hat with a gold rim",
+      "labels": [
+        "Travel",
+        "Luxury",
+        "Investigation",
+        "Study"
+      ],
+      "offset": [
+        -2.9756763422883687,
+        0,
+        1.9468465147640974
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 0.75,
+      "type": "decor",
+      "bone": "Head"
+    },
+    "/accessories/accessories_set_6_item_17.png": {
+      "isVisible": true,
+      "name": "Test Tubes",
+      "description": "A wooden rack with colorful chemistry test tubes",
+      "labels": [
+        "Science",
+        "Research",
+        "Lab",
+        "Test Tubes"
+      ],
+      "offset": [
+        -0.3696152374429309,
+        41.00791894659748,
+        18.381724623855725
+      ],
+      "rotation": [
+        -1.615571268337157,
+        -0.42366303211062956,
+        0.5710535584089779
+      ],
+      "scale": 75,
+      "bone": "Hand_R",
+      "type": "both"
+    },
+    "/accessories/accessories_set_6_item_18.png": {
+      "isVisible": true,
+      "name": "Diving Helmet",
+      "description": "A vintage brass deep-sea diving helmet",
+      "labels": [
+        "Scuba",
+        "Adventure",
+        "Travel",
+        "Outdoors"
+      ],
+      "type": "wearable",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_19.png": {
+      "isVisible": true,
+      "name": "Gold Trophy",
+      "description": "A shiny gold first-place trophy cup",
+      "labels": [
+        "Trophy",
+        "Sports",
+        "Champion",
+        "Coach",
+        "Athlete"
+      ],
+      "offset": [
+        4.846491001965872,
+        66.17338185056566,
+        -7.940616964880668
+      ],
+      "rotation": [
+        -2.6888735278310523,
+        0.44494028542737696,
+        -0.004223110160441296
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_L",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_6_item_20.png": {
+      "isVisible": true,
+      "name": "Watering Can",
+      "description": "A green metal watering can for plants",
+      "labels": [
+        "Garden",
+        "Outdoors",
+        "Watering Can"
+      ],
+      "type": "wearable",
+      "bone": "Hand_L",
+      "offset": [
+        -23.076011327101792,
+        52.41769112207777,
+        -5.721337364156266
+      ],
+      "rotation": [
+        -2.401554918459946,
+        0.30386128800536727,
+        -0.03510179887226301
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_21.png": {
+      "isVisible": true,
+      "name": "Fishbowl",
+      "description": "A glass fishbowl with a small goldfish",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_22.png": {
+      "isVisible": true,
+      "name": "Rubik's Cube",
+      "description": "A colorful 3x3 puzzle cube",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_23.png": {
+      "isVisible": true,
+      "name": "Easel",
+      "description": "A wooden artist's easel with a blank canvas",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "type": "decor",
+      "bone": "Head",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75
+    },
+    "/accessories/accessories_set_6_item_24.png": {
+      "isVisible": true,
+      "name": "Boxing Gloves",
+      "description": "A pair of red padded boxing gloves",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "offset": [
+        -1.6895265848433152,
+        0,
+        2.7200970050672235
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 75,
+      "bone": "Hand_R",
+      "type": "decor",
+      "decorRotation": [
+        0,
+        0,
+        0
+      ]
+    },
+    "/accessories/accessories_set_6_item_25.png": {
+      "isVisible": true,
+      "name": "Pottery Wheel",
+      "description": "A clay vase spinning on a pottery wheel",
+      "labels": [
+        "Accessory",
+        "Set 6",
+        "Tech"
+      ],
+      "offset": [
+        3.0791675884019916,
+        57.32573694741281,
+        8.457394833864669
+      ],
+      "rotation": [
+        1.2505547093894136,
+        -0.3715001174885671,
+        -3.1369057091863906
+      ],
+      "scale": 75,
+      "type": "both",
+      "bone": "Hand_R"
+    },
+    "/accessories/An%20isometric%203D%20prop%20of%20nerdy%20glasses%2C%20simple%2C%20blocky%2C%20pastel%20colored%2C%20in%20the%20style%20of%20Monument%20Valley%2C%20isolated%20on%20a%20solid%20white%20background.png": {
+      "isVisible": false,
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "name": "Glasses",
+      "description": "Generated via Nano Banana Studio with prompt: An isometric 3D prop of nerdy glasses, simple, blocky, pastel colored, in the style of Monument Valley, isolated on a solid white background.",
+      "labels": [
+        "Glasses",
+        "Nerdy",
+        "Smart",
+        "Research",
+        "Therapy"
+      ],
+      "scale": 75
+    },
+    "/accessories/meshy_019e181e-df8a-7a90-8f00-1df4bf9a0524.png": {
+      "isVisible": true,
+      "offset": [
+        -2.1038204414030486,
+        8.410449890272599,
+        -11.301306206484519
+      ],
+      "name": "A single, low-poly style black cowboy hat, featuring a simple, rounded crown and a gently upturned brim. The surface is smooth and blocky, rendered in a muted, dark pastel grey-black color. It has a basic, flat pastel grey band around the crown. The entire object is isometric and floating against a solid white background, with no ground or platform.",
+      "description": "Generated via Nano Banana Studio with prompt: A single, low-poly style black cowboy hat, featuring a simple, rounded crown and a gently upturned brim. The surface is smooth and blocky, rendered in a muted, dark pastel grey-black color. It has a basic, flat pastel grey band around the crown. The entire object is isometric and floating against a solid white background, with no ground or platform.",
+      "labels": [
+        "New"
+      ],
+      "rotation": [
+        -0.6179040845261564,
+        0.2454681918277565,
+        0.024450341524514304
+      ],
+      "scale": 95
+    },
+    "/accessories/meshy_019e1821-63cc-7bd1-be78-fb4f8365385a.png": {
+      "isVisible": true,
+      "offset": [
+        -0.8077029121199848,
+        4.1410621749164545,
+        -9.588119663015387
+      ],
+      "name": "A simple, isometric, blocky 3D model of a black cowboy hat, featuring a distinct center pinch on the crown and a slightly curved, wide brim. The texture is a flat, matte dark pastel slate, appearing simple and toy-like. A thin, flat pastel blue band wraps around the base of the crown. It floats in isolation on a pure white background, free of any supporting objects.",
+      "description": "Generated via Nano Banana Studio with prompt: A simple, isometric, blocky 3D model of a black cowboy hat, featuring a distinct center pinch on the crown and a slightly curved, wide brim. The texture is a flat, matte dark pastel slate, appearing simple and toy-like. A thin, flat pastel blue band wraps around the base of the crown. It floats in isolation on a pure white background, free of any supporting objects.",
+      "labels": [
+        "New"
+      ],
+      "rotation": [
+        -1.0087936955747754,
+        0.11196636092977937,
+        0.019734778771175788
+      ],
+      "type": "both",
+      "scale": 120
+    }
+  },
+  "defaults": {
+    "Coder": [
+      "/accessories/accessories_set_6_item_22.png",
+      "/accessories/accessories_set_1_item_04.png"
+    ],
+    "Researcher": [
+      "/accessories/accessories_set_4_item_11.png"
+    ],
+    "Accountant": [
+      "/accessories/accessories_set_2_item_18.png"
+    ]
+  },
+  "boneDefaults": {
+    "Head": {
+      "rotation": [
+        -1.9132888888608304,
+        0.7023023125451754,
+        -3.140710577498082
+      ],
+      "scale": 1.14,
+      "offset": [
+        0.0493040980268018,
+        -33.61053704673911,
+        -135.05199813066923
+      ]
+    },
+    "Spine": {
+      "offset": [
+        -4.942492438408432,
+        104.8118875477892,
+        -24.30557918205097
+      ],
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 0.3
+    },
+    "Hand_R": {
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 0.3,
+      "offset": [
+        76.36007627187321,
+        -56.47929551939015,
+        -56.388415360455106
+      ]
+    },
+    "Hand_L": {
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 0.3,
+      "offset": [
+        -77.06020376616755,
+        -60.67936366209337,
+        -61.541554606666914
+      ]
+    },
+    "Root": {
+      "rotation": [
+        0,
+        0,
+        0
+      ],
+      "scale": 0.3,
+      "offset": [
+        -0.079665026155505,
+        0.9645004318830167,
+        0.2361243595723183
+      ]
+    }
+  }
+}

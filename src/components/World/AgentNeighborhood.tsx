@@ -1,7 +1,7 @@
 import { GLBAgent, GLBModel } from "./GLBAgent";
 import React, { useMemo } from "react";
-import accessoriesData from "../../../../shared/accessories.json";
-import habitatsData from "../../../../shared/habitats.json";
+import accessoriesData from "../../../shared/accessories.json";
+import habitatsData from "../../../shared/habitats.json";
 import * as THREE from "three";
 
 // Admin's HabitatPlacementScene paints decor points with the habitat scaled

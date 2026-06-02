@@ -3,7 +3,7 @@ import { useFrame } from "@react-three/fiber";
 import { useGLTF, useAnimations } from "@react-three/drei";
 import * as THREE from "three";
 import { SkeletonUtils } from "three-stdlib";
-import accessoriesData from "../../../../shared/accessories.json";
+import accessoriesData from "../../../shared/accessories.json";
 import { AttachedAccessory } from "./AttachedAccessory";
 import { getAssetUrl } from "../../utils/assets";
 
