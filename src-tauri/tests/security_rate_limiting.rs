@@ -73,7 +73,11 @@ fn test_agent_accepts_normal_message_rate() {
         );
     }
 
-    assert_eq!(limiter.request_count(), 10, "Should have recorded 10 messages");
+    assert_eq!(
+        limiter.request_count(),
+        10,
+        "Should have recorded 10 messages"
+    );
 }
 
 #[test]
@@ -170,10 +174,7 @@ fn test_payment_requests_rate_limited() {
 
     // Normal usage should work
     for _ in 0..15 {
-        assert!(
-            limiter.is_allowed(),
-            "Normal payment rate allowed"
-        );
+        assert!(limiter.is_allowed(), "Normal payment rate allowed");
     }
 
     // Remaining quota available
@@ -213,10 +214,7 @@ fn test_transcription_requests_rate_limited() {
 
     // Normal usage
     for _ in 0..3 {
-        assert!(
-            limiter.is_allowed(),
-            "Normal transcription rate allowed"
-        );
+        assert!(limiter.is_allowed(), "Normal transcription rate allowed");
     }
 
     // Still have quota
@@ -277,10 +275,7 @@ fn test_per_user_limits_independent() {
 
     // User 2 still has full quota
     for _ in 0..5 {
-        assert!(
-            user2_limiter.is_allowed(),
-            "User 2 should be independent"
-        );
+        assert!(user2_limiter.is_allowed(), "User 2 should be independent");
     }
 }
 

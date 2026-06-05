@@ -4,7 +4,10 @@
 mod common;
 
 use canopy_lib::models::{Agent, AgentStatus};
-use common::{TestContext, default_test_agent, test_agent_with_id, test_agent_with_name, validate_test_agent_id};
+use common::{
+    default_test_agent, test_agent_with_id, test_agent_with_name, validate_test_agent_id,
+    TestContext,
+};
 use std::path::Path;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -53,7 +56,11 @@ fn test_agent_creation_persists_to_database() {
     );
     assert!(!agent.name.is_empty(), "Agent name required");
     assert!(!agent.emoji.is_empty(), "Agent emoji required");
-    assert_eq!(agent.status, AgentStatus::Active, "New agents should be Active");
+    assert_eq!(
+        agent.status,
+        AgentStatus::Active,
+        "New agents should be Active"
+    );
 }
 
 #[test]
@@ -67,7 +74,10 @@ fn test_agent_name_persists_with_unicode() {
     let mut agent = test_agent_with_name(unicode_name);
 
     // Validate unicode is preserved
-    assert_eq!(agent.name, unicode_name, "Unicode name should persist exactly");
+    assert_eq!(
+        agent.name, unicode_name,
+        "Unicode name should persist exactly"
+    );
     assert!(
         validate_test_agent_id(&agent.id).is_ok(),
         "ID generated from unicode name should be valid"
@@ -128,7 +138,11 @@ fn test_paused_agent_has_stopped_status() {
 
     let agent = test_paused_agent();
     assert!(agent.paused, "Agent should be marked paused");
-    assert_eq!(agent.status, AgentStatus::Stopped, "Paused agent should be Stopped");
+    assert_eq!(
+        agent.status,
+        AgentStatus::Stopped,
+        "Paused agent should be Stopped"
+    );
 }
 
 #[test]
@@ -142,7 +156,10 @@ fn test_isolated_agent_flag_set_correctly() {
     let isolated = test_isolated_agent();
     let normal = default_test_agent();
 
-    assert!(isolated.isolated, "Isolated agent should have isolated=true");
+    assert!(
+        isolated.isolated,
+        "Isolated agent should have isolated=true"
+    );
     assert!(!normal.isolated, "Normal agent should have isolated=false");
 }
 
@@ -308,8 +325,14 @@ fn test_agent_container_cleanup_validated() {
 
     // Cleanup validation
     if let Some(container) = &agent.container_id {
-        assert!(!container.is_empty(), "Container ID should not be empty string");
-        assert!(!container.contains(' '), "Container ID should not have spaces");
+        assert!(
+            !container.is_empty(),
+            "Container ID should not be empty string"
+        );
+        assert!(
+            !container.contains(' '),
+            "Container ID should not have spaces"
+        );
     }
 }
 

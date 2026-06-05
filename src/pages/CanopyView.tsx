@@ -273,7 +273,7 @@ export // ═══════════════════════�
             }}>
               <Plus size={14} strokeWidth={2.5} />
             </div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#3c6663" }}>Add Agent</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#3c6663", whiteSpace: "nowrap" }}>Add Agent</div>
           </div>
 
           {/* New Forum Button */}
@@ -290,7 +290,7 @@ export // ═══════════════════════�
             }}>
               <Users size={12} strokeWidth={2.5} />
             </div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#FFF" }}>New Forum</div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#FFF", whiteSpace: "nowrap" }}>New Forum</div>
           </div>
         </div>
 

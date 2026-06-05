@@ -156,13 +156,13 @@ const GlobalGenUIListener = () => {
       try {
         const { listen } = await import("@tauri-apps/api/event");
         unlisten = await listen<any>("spawn_genui_window", async (e) => {
-          const { agent_id, component, props } = e.payload;
+          const { agent_id, component, props, sessionId } = e.payload;
           const windowId = `genui_${agent_id}_${component}_${Date.now()}`;
           if (!poppedOutWindows.current.has(windowId)) {
             poppedOutWindows.current.add(windowId);
             const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
             // Encode the payload into the URL query so the new window can read it
-            const payload = encodeURIComponent(JSON.stringify({ component, props, agentId: agent_id, target: "window" }));
+            const payload = encodeURIComponent(JSON.stringify({ component, props, agentId: agent_id, sessionId: sessionId || null, target: "window" }));
             new WebviewWindow(windowId, {
               url: `/index.html?genui=${payload}`,
               title: `${component}`,
@@ -216,6 +216,7 @@ root.render(
                   await invoke("send_message", {
                     agentId: app.agentId,
                     message: `[GenUI Event] User interacted with floating ${app.component}: ${JSON.stringify(evt)}`,
+                    sessionId: app.sessionId || null,
                   });
                 } catch (e) {
                   console.error("Failed to route GenUI window event back to agent", e);

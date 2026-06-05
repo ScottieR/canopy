@@ -17,7 +17,8 @@ pub struct GoogleTokenResponse {
 // documentation states that the "client secret" for desktop/native apps is not truly
 // secret, because anyone can extract it from the binary. The env var override exists
 // for local development only; production builds use these compile-time constants.
-const GOOGLE_OAUTH_CLIENT_ID: &str = "677940720803-9ainnmmjh1ac4aeagq4ln3gll1v2t65f.apps.googleusercontent.com";
+const GOOGLE_OAUTH_CLIENT_ID: &str =
+    "677940720803-9ainnmmjh1ac4aeagq4ln3gll1v2t65f.apps.googleusercontent.com";
 const GOOGLE_OAUTH_CLIENT_SECRET: &str = "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";
 
 /// Start Google OAuth flow by opening the browser and listening for a local redirect
@@ -45,22 +46,23 @@ pub async fn start_google_oauth(
     let read_only = read_only.unwrap_or(false);
 
     // Find available port for redirect listener
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("Failed to bind port: {}", e))?;
-    let port = listener.local_addr()
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|e| format!("Failed to bind port: {}", e))?;
+    let port = listener
+        .local_addr()
         .map_err(|e| format!("Failed to get port: {}", e))?
         .port();
 
     debug!("OAuth redirect listener on port {}", port);
 
     let redirect_uri = format!("http://localhost:{}", port);
-    
+
     // Combine requested scopes plus standard email/profile
     let mut requested_scopes = vec![
         "https://www.googleapis.com/auth/userinfo.email".to_string(),
-        "https://www.googleapis.com/auth/userinfo.profile".to_string()
+        "https://www.googleapis.com/auth/userinfo.profile".to_string(),
     ];
-    
+
     for scope in &scopes {
         if scope == "email" {
             requested_scopes.push("https://www.googleapis.com/auth/gmail.readonly".to_string());
@@ -74,7 +76,8 @@ pub async fn start_google_oauth(
             requested_scopes.push("https://www.googleapis.com/auth/calendar.readonly".to_string());
             if !read_only {
                 // Only request write access for non-read-only strategies
-                requested_scopes.push("https://www.googleapis.com/auth/calendar.events".to_string());
+                requested_scopes
+                    .push("https://www.googleapis.com/auth/calendar.events".to_string());
             }
         }
         if scope == "drive" {
@@ -83,7 +86,8 @@ pub async fn start_google_oauth(
                 requested_scopes.push("https://www.googleapis.com/auth/drive.file".to_string());
             } else {
                 if read_only {
-                    requested_scopes.push("https://www.googleapis.com/auth/drive.readonly".to_string());
+                    requested_scopes
+                        .push("https://www.googleapis.com/auth/drive.readonly".to_string());
                 } else {
                     requested_scopes.push("https://www.googleapis.com/auth/drive".to_string());
                 }
@@ -111,7 +115,8 @@ pub async fn start_google_oauth(
 
     // Wait for redirect with timeout
     let timeout = std::time::Duration::from_secs(300); // 5 minutes
-    listener.set_nonblocking(false)
+    listener
+        .set_nonblocking(false)
         .map_err(|e| format!("Failed to configure listener: {}", e))?;
 
     // Read the HTTP request (blocking, with timeout)
@@ -182,12 +187,12 @@ pub async fn start_google_oauth(
     }
 
     // ── Persist tokens to keychain so re-auth isn't needed after app restart ──
-    let service_prefix = if scopes.iter().any(|s| s == "email") { 
-        "google_email" 
+    let service_prefix = if scopes.iter().any(|s| s == "email") {
+        "google_email"
     } else if scopes.iter().any(|s| s == "drive") {
         "google_drive"
-    } else { 
-        "google_calendar" 
+    } else {
+        "google_calendar"
     };
 
     if let Some(access_token) = &token_data.access_token {
@@ -201,7 +206,10 @@ pub async fn start_google_oauth(
                 refresh_token,
             );
         }
-        info!("Google {} tokens saved to keychain for agent {}", service_prefix, agent_id);
+        info!(
+            "Google {} tokens saved to keychain for agent {}",
+            service_prefix, agent_id
+        );
     }
 
     Ok(token_data)

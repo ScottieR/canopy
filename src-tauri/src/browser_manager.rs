@@ -1,10 +1,10 @@
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use anyhow::{Result, Context};
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrowserStatus {
@@ -13,10 +13,19 @@ pub struct BrowserStatus {
     pub cdp_endpoint: String,
     pub profile_path: String,
     pub is_running: bool,
+    pub mode: BrowserMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserMode {
+    Automated,
+    InteractiveAuth,
 }
 
 pub struct BrowserManager {
     active_browsers: Arc<Mutex<HashMap<String, (Child, BrowserStatus)>>>,
+    interactive_browsers: Arc<Mutex<HashMap<String, (Child, BrowserStatus)>>>,
     /// Per-agent visual-stream state — a refcount of how many UI consumers are
     /// currently subscribed (BrowserTab, BrowserPopout, etc.) plus the JoinHandle
     /// for the stream task. The stream task runs while count > 0 and is aborted
@@ -33,23 +42,27 @@ impl BrowserManager {
     pub fn new() -> Self {
         Self {
             active_browsers: Arc::new(Mutex::new(HashMap::new())),
+            interactive_browsers: Arc::new(Mutex::new(HashMap::new())),
             stream_handles: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub async fn kill_leftover_processes(&self, agent_id: &str) {
         let pattern = format!("agent-browsers/{}", agent_id);
-        
-        tracing::info!("Cleaning up leftover Chrome processes for agent {}", agent_id);
-        
+
+        tracing::info!(
+            "Cleaning up leftover Chrome processes for agent {}",
+            agent_id
+        );
+
         // Graceful SIGTERM
         let _ = tokio::process::Command::new("pkill")
             .args(["-f", &pattern])
             .output()
             .await;
-            
+
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        
+
         // Forceful SIGKILL fallback
         let _ = tokio::process::Command::new("pkill")
             .args(["-9", "-f", &pattern])
@@ -57,9 +70,24 @@ impl BrowserManager {
             .await;
     }
 
-    pub async fn start_browser(&self, app_handle: tauri::AppHandle, agent_id: &str) -> Result<BrowserStatus> {
+    pub async fn start_browser(
+        &self,
+        app_handle: tauri::AppHandle,
+        agent_id: &str,
+    ) -> Result<BrowserStatus> {
+        self.start_browser_with_options(app_handle, agent_id, false)
+            .await
+    }
+
+    async fn start_browser_with_options(
+        &self,
+        app_handle: tauri::AppHandle,
+        agent_id: &str,
+        restore_last_session: bool,
+    ) -> Result<BrowserStatus> {
+        self.stop_interactive_browser(agent_id).await?;
         let mut active = self.active_browsers.lock().await;
-        
+
         // Kill existing if any
         if let Some((mut child, _)) = active.remove(agent_id) {
             let _ = child.kill().await;
@@ -68,98 +96,25 @@ impl BrowserManager {
         // Pre-flight Health Check: Kill leftovers from crashed sessions
         self.kill_leftover_processes(agent_id).await;
 
-        let data_dir = dirs::data_dir()
-            .context("Could not find data directory")?
-            .join("Canopy")
-            .join("agent-browsers")
-            .join(agent_id);
-        
-        std::fs::create_dir_all(&data_dir)?;
-        let profile_path = data_dir.to_string_lossy().to_string();
-
-        // Ensure the agent workspace exists for downloads
-        let openclaw_state_dir = dirs::data_dir()
-            .context("Could not find data directory")?
-            .join("Canopy")
-            .join("openclaw-state")
-            .join("workspace")
-            .join(agent_id);
-        std::fs::create_dir_all(&openclaw_state_dir)?;
-        let download_path = openclaw_state_dir.to_string_lossy().to_string();
-
-        // Write a minimal Preferences file to enforce download directory
-        let default_dir = data_dir.join("Default");
-        std::fs::create_dir_all(&default_dir)?;
-        let prefs_path = default_dir.join("Preferences");
-        let prefs_json = serde_json::json!({
-            "download": {
-                "default_directory": download_path,
-                "prompt_for_download": false,
-                "directory_upgrade": true
-            },
-            "savefile": {
-                "default_directory": download_path
-            }
-        });
-        std::fs::write(&prefs_path, serde_json::to_string(&prefs_json)?)?;
-
-        // Build the PAC (Proxy Auto-Config) script for this agent.
-        //
-        // Always blocks SSRF (localhost / private subnets / file:// URLs) so an agent can't
-        // pivot through the host's local network regardless of allowlist settings.
-        //
-        // If the agent has an allowlist configured (allowed_domains.json next to its profile),
-        // ONLY hosts that match a listed domain are allowed; everything else is blackholed.
-        // Wildcard `*.example.com` matches any subdomain of example.com (and example.com itself).
-        //
-        // If no allowlist is configured, the agent has open web access (still subject to SSRF).
-        let allowlist = read_agent_allowlist(agent_id);
-        let pac_script = build_pac_script(allowlist.as_deref());
-        use base64::Engine;
-        let pac_base64 = base64::engine::general_purpose::STANDARD.encode(&pac_script);
-        let pac_url = format!("data:application/x-ns-proxy-autoconfig;base64,{}", pac_base64);
+        let profile = prepare_agent_browser_profile(agent_id)?;
 
         // Try to find Google Chrome on macOS
         let chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
         if !std::path::Path::new(chrome_path).exists() {
-            return Err(anyhow::anyhow!("Google Chrome not found at {}. Please install it to use Machine Browser.", chrome_path));
+            return Err(anyhow::anyhow!(
+                "Google Chrome not found at {}. Please install it to use Machine Browser.",
+                chrome_path
+            ));
         }
 
-        // Compute a safe off-screen point that avoids every connected monitor.
-        // See `compute_offscreen_position` for why a fixed (-3000, 0) is wrong.
-        let (offscreen_x, offscreen_y) = compute_offscreen_position();
-        let window_position = format!("--window-position={},{}", offscreen_x, offscreen_y);
-
         let mut child = Command::new(chrome_path)
-            .args([
-                "--remote-debugging-port=0",
-                "--remote-debugging-address=127.0.0.1",
-                &format!("--user-data-dir={}", profile_path),
-                "--no-first-run",
-                "--no-default-browser-check",
-
-                // Spawn off-screen — the user makes it visible explicitly via `show_browser`,
-                // or the agent requests attention via `request_user_attention`.
-                &window_position,
-                "--window-size=1280,800",
-                
-                // Security Flags
-                "--disable-extensions",      // Prevent malicious extensions
-                "--deny-permission-prompts", // Block location, camera, mic prompts
-                "--disable-sync",            // Ensure no accidental profile sync
-                "--disable-features=TranslateUI",
-                // ⚠️ DO NOT add --safebrowsing-disable-download-protection. Chrome's
-                // malware-download check is the cheapest mitigation we have for an agent
-                // that gets prompt-injected into pulling a malicious binary. Silent
-                // workspace-scoped downloads are still possible because the Preferences
-                // file (written above) sets `prompt_for_download: false` and pins the
-                // download directory to the agent's workspace — we get the no-prompt UX
-                // without disabling the malware scanner.
-
-                // Network Guardrail: PAC script to block SSRF
-                &format!("--proxy-pac-url={}", pac_url),
-                "about:blank",
-            ])
+            .args(build_chrome_args(
+                &profile.profile_path,
+                &profile.pac_url,
+                BrowserMode::Automated,
+                Some("about:blank"),
+                restore_last_session,
+            ))
             .stderr(std::process::Stdio::piped())
             .spawn()
             .context("Failed to spawn Chrome process")?;
@@ -170,17 +125,19 @@ impl BrowserManager {
         let stderr = child.stderr.take().unwrap();
         let mut reader = tokio::io::BufReader::new(stderr);
         use tokio::io::AsyncBufReadExt;
-        
+
         let mut cdp_endpoint = String::new();
         let mut port = 0;
         let mut lines = reader.lines();
-        
+
         let find_url = async {
             while let Ok(Some(line)) = lines.next_line().await {
                 if line.contains("DevTools listening on ws://") {
                     if let Some(start) = line.find("ws://") {
                         let url = line[start..].trim().to_string();
-                        if let Some(port_str) = url.split(':').nth(2).and_then(|s| s.split('/').next()) {
+                        if let Some(port_str) =
+                            url.split(':').nth(2).and_then(|s| s.split('/').next())
+                        {
                             if let Ok(p) = port_str.parse::<u16>() {
                                 port = p;
                                 cdp_endpoint = url;
@@ -191,7 +148,7 @@ impl BrowserManager {
                 }
             }
         };
-        
+
         // Wait up to 15 seconds for Chrome to print "DevTools listening on ws://" to
         // stderr. Previously this was 5s — too tight for the first spawn against a cold
         // profile dir, where Gatekeeper assessment, Spotlight indexing, and macOS
@@ -200,30 +157,34 @@ impl BrowserManager {
         // sees an immediate "Empty reply", and the user has no idea why. 15s costs
         // nothing on warm spawns (Chrome usually prints in ~1s) and prevents the
         // spurious failure mode on cold ones.
-        if tokio::time::timeout(std::time::Duration::from_secs(15), find_url).await.is_err() {
+        if tokio::time::timeout(std::time::Duration::from_secs(15), find_url)
+            .await
+            .is_err()
+        {
             let _ = child.kill().await;
             return Err(anyhow::anyhow!(
                 "Chrome didn't print DevTools URL within 15s — user-data-dir may be locked at {}",
-                profile_path
+                profile.profile_path
             ));
         }
-        
+
         if cdp_endpoint.is_empty() {
             let _ = child.kill().await;
             return Err(anyhow::anyhow!("Failed to parse Chrome DevTools URL"));
         }
 
         // Drain the rest of stderr so we don't block Chrome
-        tauri::async_runtime::spawn(async move {
-            while let Ok(Some(_)) = lines.next_line().await {}
-        });
+        tauri::async_runtime::spawn(
+            async move { while let Ok(Some(_)) = lines.next_line().await {} },
+        );
 
         let status = BrowserStatus {
             agent_id: agent_id.to_string(),
             port,
             cdp_endpoint: cdp_endpoint.clone(),
-            profile_path,
+            profile_path: profile.profile_path,
             is_running: true,
+            mode: BrowserMode::Automated,
         };
 
         active.insert(agent_id.to_string(), (child, status.clone()));
@@ -243,11 +204,88 @@ impl BrowserManager {
         Ok(status)
     }
 
+    pub async fn start_interactive_auth_session(
+        &self,
+        agent_id: &str,
+        start_url: Option<&str>,
+    ) -> Result<BrowserStatus> {
+        if let Some(status) = {
+            let active = self.interactive_browsers.lock().await;
+            active.get(agent_id).map(|(_, status)| status.clone())
+        } {
+            activate_google_chrome().await;
+            return Ok(status);
+        }
+
+        let current_url = match self.get_automated_status(agent_id).await? {
+            Some(status) => capture_browser_url(status.port).await.ok().flatten(),
+            None => None,
+        };
+
+        self.stop_automated_browser(agent_id).await?;
+        self.kill_leftover_processes(agent_id).await;
+
+        let profile = prepare_agent_browser_profile(agent_id)?;
+        let chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        if !std::path::Path::new(chrome_path).exists() {
+            return Err(anyhow::anyhow!(
+                "Google Chrome not found at {}. Please install it to use Machine Browser.",
+                chrome_path
+            ));
+        }
+
+        let launch_url = start_url
+            .or(current_url.as_deref())
+            .unwrap_or("https://accounts.google.com/");
+
+        let child = Command::new(chrome_path)
+            .args(build_chrome_args(
+                &profile.profile_path,
+                &profile.pac_url,
+                BrowserMode::InteractiveAuth,
+                Some(launch_url),
+                false,
+            ))
+            .spawn()
+            .context("Failed to spawn interactive auth Chrome process")?;
+
+        let status = BrowserStatus {
+            agent_id: agent_id.to_string(),
+            port: 0,
+            cdp_endpoint: String::new(),
+            profile_path: profile.profile_path,
+            is_running: true,
+            mode: BrowserMode::InteractiveAuth,
+        };
+
+        {
+            let mut interactive = self.interactive_browsers.lock().await;
+            interactive.insert(agent_id.to_string(), (child, status.clone()));
+        }
+
+        activate_google_chrome().await;
+        Ok(status)
+    }
+
+    pub async fn finish_interactive_auth_session(
+        &self,
+        app_handle: tauri::AppHandle,
+        agent_id: &str,
+    ) -> Result<BrowserStatus> {
+        self.stop_interactive_browser(agent_id).await?;
+        self.start_browser_with_options(app_handle, agent_id, true)
+            .await
+    }
+
     /// Increment the subscriber refcount for an agent's visual stream. Starts the
     /// 2 FPS loop on first subscriber. Idempotent on each call — N start calls need
     /// N matching stop calls to actually tear down. Called by UI consumers
     /// (BrowserTab, BrowserPopout) on mount.
-    pub async fn start_browser_stream(&self, app_handle: tauri::AppHandle, agent_id: &str) -> Result<()> {
+    pub async fn start_browser_stream(
+        &self,
+        app_handle: tauri::AppHandle,
+        agent_id: &str,
+    ) -> Result<()> {
         let mut handles = self.stream_handles.lock().await;
         if let Some((count, _)) = handles.get_mut(agent_id) {
             *count += 1;
@@ -292,6 +330,12 @@ impl BrowserManager {
     }
 
     pub async fn stop_browser(&self, agent_id: &str) -> Result<()> {
+        self.stop_automated_browser(agent_id).await?;
+        self.stop_interactive_browser(agent_id).await?;
+        Ok(())
+    }
+
+    async fn stop_automated_browser(&self, agent_id: &str) -> Result<()> {
         // Abort any visual-stream task first so it can't try to send screenshots
         // to a Chrome that's about to die. Force-removes regardless of refcount —
         // if Chrome's dying, there's nothing to stream anyway.
@@ -306,8 +350,17 @@ impl BrowserManager {
         if let Some((mut child, _)) = active.remove(agent_id) {
             let pid = child.id().unwrap_or(0);
             match child.kill().await {
-                Ok(_) => tracing::info!("Successfully terminated Chrome process (PID {}) for agent {}", pid, agent_id),
-                Err(e) => tracing::error!("Failed to gracefully kill Chrome process (PID {}) for agent {}: {}", pid, agent_id, e),
+                Ok(_) => tracing::info!(
+                    "Successfully terminated Chrome process (PID {}) for agent {}",
+                    pid,
+                    agent_id
+                ),
+                Err(e) => tracing::error!(
+                    "Failed to gracefully kill Chrome process (PID {}) for agent {}: {}",
+                    pid,
+                    agent_id,
+                    e
+                ),
             }
         }
 
@@ -317,13 +370,46 @@ impl BrowserManager {
         Ok(())
     }
 
+    async fn stop_interactive_browser(&self, agent_id: &str) -> Result<()> {
+        let mut interactive = self.interactive_browsers.lock().await;
+        if let Some((mut child, _)) = interactive.remove(agent_id) {
+            let pid = child.id().unwrap_or(0);
+            match child.kill().await {
+                Ok(_) => tracing::info!(
+                    "Successfully terminated interactive Chrome process (PID {}) for agent {}",
+                    pid,
+                    agent_id
+                ),
+                Err(e) => tracing::error!(
+                    "Failed to gracefully kill interactive Chrome process (PID {}) for agent {}: {}",
+                    pid,
+                    agent_id,
+                    e
+                ),
+            }
+        }
+
+        self.kill_leftover_processes(agent_id).await;
+        Ok(())
+    }
+
     pub async fn get_status(&self, agent_id: &str) -> Result<Option<BrowserStatus>> {
+        let interactive = self.interactive_browsers.lock().await;
+        if let Some((_, status)) = interactive.get(agent_id) {
+            return Ok(Some(status.clone()));
+        }
+
         let active = self.active_browsers.lock().await;
         if let Some((_, status)) = active.get(agent_id) {
             Ok(Some(status.clone()))
         } else {
             Ok(None)
         }
+    }
+
+    async fn get_automated_status(&self, agent_id: &str) -> Result<Option<BrowserStatus>> {
+        let active = self.active_browsers.lock().await;
+        Ok(active.get(agent_id).map(|(_, status)| status.clone()))
     }
 }
 
@@ -335,7 +421,10 @@ pub async fn start_machine_browser(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<BrowserStatus, String> {
-    let status = state.start_browser(app_handle.clone(), &agent_id).await.map_err(|e| e.to_string())?;
+    let status = state
+        .start_browser(app_handle.clone(), &agent_id)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Point the agent at the JIT proxy port (NOT the raw Chrome CDP URL). Two reasons:
     //
@@ -353,17 +442,31 @@ pub async fn start_machine_browser(
     //
     // Same env URL shape used by `sync_agent_skills` when the user toggles the browser
     // capability — single source of truth for "where does the agent connect".
-    let proxy_port = enable_jit_proxy(app_handle.clone(), agent_id.clone()).await.map_err(|e| e.to_string())?;
+    let proxy_port = enable_jit_proxy(app_handle.clone(), agent_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
     let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
     use tauri::Manager;
     let db = app_handle.state::<crate::db::Database>();
     let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
 
     let _ = crate::openclaw::get_docker_command()
-        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
-               "openclaw", "agents", "edit", &agent_id,
-               "--env", &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint)])
-        .output().await;
+        .args([
+            "exec",
+            "-u",
+            "node",
+            "-e",
+            "NODE_OPTIONS=--v8-pool-size=1",
+            &container_name,
+            "openclaw",
+            "agents",
+            "edit",
+            &agent_id,
+            "--env",
+            &format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint),
+        ])
+        .output()
+        .await;
 
     Ok(status)
 }
@@ -373,7 +476,10 @@ pub async fn stop_machine_browser(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<(), String> {
-    state.stop_browser(&agent_id).await.map_err(|e| e.to_string())
+    state
+        .stop_browser(&agent_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -392,7 +498,10 @@ pub async fn start_browser_stream(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<(), String> {
-    state.start_browser_stream(app_handle, &agent_id).await.map_err(|e| e.to_string())
+    state
+        .start_browser_stream(app_handle, &agent_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Called by BrowserTab on unmount. Stops the visual-stream loop for this agent.
@@ -407,29 +516,57 @@ pub async fn stop_browser_stream(
 }
 
 #[tauri::command]
+pub async fn start_browser_interactive_auth(
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+    start_url: Option<String>,
+) -> Result<BrowserStatus, String> {
+    state
+        .start_interactive_auth_session(&agent_id, start_url.as_deref())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn finish_browser_interactive_auth(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+) -> Result<BrowserStatus, String> {
+    state
+        .finish_interactive_auth_session(app_handle, &agent_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn ping_agent_browser(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<bool, String> {
-    let status = state.get_status(&agent_id).await.map_err(|e| e.to_string())?;
-    
+    let status = state
+        .get_status(&agent_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
     if let Some(status) = status {
         if !status.is_running {
             return Ok(false);
         }
-        
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
             .build()
             .map_err(|e| e.to_string())?;
-            
-        let res = client.get(&format!("http://localhost:{}/json/version", status.port))
+
+        let res = client
+            .get(&format!("http://localhost:{}/json/version", status.port))
             .send()
             .await;
-            
+
         match res {
             Ok(response) => Ok(response.status().is_success()),
-            Err(_) => Ok(false)
+            Err(_) => Ok(false),
         }
     } else {
         Ok(false)
@@ -437,28 +574,26 @@ pub async fn ping_agent_browser(
 }
 
 #[tauri::command]
-pub async fn reset_machine_browsers(
-    state: tauri::State<'_, BrowserManager>,
-) -> Result<(), String> {
+pub async fn reset_machine_browsers(state: tauri::State<'_, BrowserManager>) -> Result<(), String> {
     let mut active = state.active_browsers.lock().await;
     active.clear();
-    
+
     tracing::info!("Force-resetting all machine browser processes...");
-    
+
     // Graceful SIGTERM
     let _ = tokio::process::Command::new("pkill")
         .args(["-f", "agent-browsers/agent-"])
         .output()
         .await;
-        
+
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    
+
     // Forceful SIGKILL
     let _ = tokio::process::Command::new("pkill")
         .args(["-9", "-f", "agent-browsers/agent-"])
         .output()
         .await;
-        
+
     tracing::info!("All browser processes successfully reset.");
     Ok(())
 }
@@ -482,11 +617,14 @@ pub async fn reset_machine_browsers(
 fn resolve_lock_for(agent_id: &str) -> &'static tokio::sync::Mutex<()> {
     use std::sync::Mutex as StdMutex;
     use std::sync::OnceLock;
-    static LOCKS: OnceLock<StdMutex<std::collections::HashMap<String, &'static tokio::sync::Mutex<()>>>> =
-        OnceLock::new();
+    static LOCKS: OnceLock<
+        StdMutex<std::collections::HashMap<String, &'static tokio::sync::Mutex<()>>>,
+    > = OnceLock::new();
     let locks = LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
     let mut map = locks.lock().expect("resolve_lock_for: LOCKS poisoned");
-    if let Some(m) = map.get(agent_id) { return m; }
+    if let Some(m) = map.get(agent_id) {
+        return m;
+    }
     // Leak a fresh Mutex so we can return a `&'static`. The set of agent ids is bounded
     // (current users, ever) so the leak is bounded too.
     let leaked: &'static tokio::sync::Mutex<()> = Box::leak(Box::new(tokio::sync::Mutex::new(())));
@@ -512,10 +650,10 @@ pub const SHARED_BRIDGE_PORT: u16 = 19800;
 /// Per-agent data isolation still works because OpenClaw creates a separate
 /// Playwright BrowserContext for each agent session.
 pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Result<(), String> {
-    use tokio::net::{TcpListener, TcpStream};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     let listener = match TcpListener::bind(("0.0.0.0", SHARED_BRIDGE_PORT)).await {
         Ok(l) => l,
@@ -527,7 +665,10 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
     const SHARED_AGENT_ID: &str = "shared-browser";
 
     tauri::async_runtime::spawn(async move {
-        tracing::info!("Shared browser bridge listening on port {}", SHARED_BRIDGE_PORT);
+        tracing::info!(
+            "Shared browser bridge listening on port {}",
+            SHARED_BRIDGE_PORT
+        );
         loop {
             if let Ok((mut client_stream, peer_addr)) = listener.accept().await {
                 // Trace every accepted TCP connection so we can answer "did OpenClaw
@@ -560,19 +701,25 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                     ) -> Option<(String, u16, String)> {
                         let cdp = match bm.get_status(SHARED_AGENT_ID).await {
                             Ok(Some(status)) => {
-                                tracing::info!("Shared bridge: reusing live Chrome at {}", status.cdp_endpoint);
+                                tracing::info!(
+                                    "Shared bridge: reusing live Chrome at {}",
+                                    status.cdp_endpoint
+                                );
                                 status.cdp_endpoint
                             }
                             _ => match bm.start_browser(app.clone(), SHARED_AGENT_ID).await {
                                 Ok(status) => {
-                                    tracing::info!("Shared bridge: spawned fresh Chrome at {}", status.cdp_endpoint);
+                                    tracing::info!(
+                                        "Shared bridge: spawned fresh Chrome at {}",
+                                        status.cdp_endpoint
+                                    );
                                     status.cdp_endpoint
                                 }
                                 Err(e) => {
                                     tracing::error!("Shared bridge: Chrome spawn failed: {}", e);
                                     return None;
                                 }
-                            }
+                            },
                         };
                         let url = url::Url::parse(&cdp).ok()?;
                         let host = url.host_str().unwrap_or("127.0.0.1").to_string();
@@ -598,54 +745,60 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                     // would serialise every CDP request, killing throughput.
                     drop(_resolve_guard);
 
-                    let mut chrome_stream = match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
-                        Ok(s) => s,
-                        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                            tracing::warn!(
+                    let mut chrome_stream =
+                        match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                            Ok(s) => s,
+                            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                                tracing::warn!(
                                 "Shared bridge: cached Chrome at {}:{} is dead ({}); respawning",
                                 chrome_host, chrome_port, e
                             );
-                            // Recovery also goes through the resolve lock — otherwise N
-                            // concurrent failed connects each trigger a stop+start race.
-                            let _recover_guard = resolve_lock_for(SHARED_AGENT_ID).lock().await;
-                            // Drop the stale BrowserManager entry. stop_browser is
-                            // idempotent — it just removes from the map if present.
-                            let _ = browser_manager.stop_browser(SHARED_AGENT_ID).await;
-                            let Some((h, p, pth)) =
-                                resolve_endpoint(&*browser_manager, &app_handle_inner).await
-                            else {
+                                // Recovery also goes through the resolve lock — otherwise N
+                                // concurrent failed connects each trigger a stop+start race.
+                                let _recover_guard = resolve_lock_for(SHARED_AGENT_ID).lock().await;
+                                // Drop the stale BrowserManager entry. stop_browser is
+                                // idempotent — it just removes from the map if present.
+                                let _ = browser_manager.stop_browser(SHARED_AGENT_ID).await;
+                                let Some((h, p, pth)) =
+                                    resolve_endpoint(&*browser_manager, &app_handle_inner).await
+                                else {
+                                    drop(_recover_guard);
+                                    conn_counter.fetch_sub(1, Ordering::SeqCst);
+                                    return;
+                                };
                                 drop(_recover_guard);
-                                conn_counter.fetch_sub(1, Ordering::SeqCst);
-                                return;
-                            };
-                            drop(_recover_guard);
-                            chrome_host = h;
-                            chrome_port = p;
-                            chrome_path = pth;
-                            match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    tracing::error!(
+                                chrome_host = h;
+                                chrome_port = p;
+                                chrome_path = pth;
+                                match TcpStream::connect((chrome_host.as_str(), chrome_port)).await
+                                {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        tracing::error!(
                                         "Shared bridge: fresh Chrome at {}:{} ALSO unreachable: {}",
                                         chrome_host, chrome_port, e
                                     );
-                                    conn_counter.fetch_sub(1, Ordering::SeqCst);
-                                    return;
+                                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                                        return;
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            tracing::error!(
+                            Err(e) => {
+                                tracing::error!(
                                 "Shared bridge: TcpStream::connect to Chrome at {}:{} failed: {}",
                                 chrome_host, chrome_port, e
                             );
-                            conn_counter.fetch_sub(1, Ordering::SeqCst);
-                            return;
-                        }
-                    };
+                                conn_counter.fetch_sub(1, Ordering::SeqCst);
+                                return;
+                            }
+                        };
 
                     // Past this point chrome_stream is live and chrome_path is current.
-                    tracing::debug!("Shared bridge: connected to Chrome CDP at {}:{}", chrome_host, chrome_port);
+                    tracing::debug!(
+                        "Shared bridge: connected to Chrome CDP at {}:{}",
+                        chrome_host,
+                        chrome_port
+                    );
                     let mut buf = Vec::with_capacity(8192);
                     let mut chunk = [0u8; 4096];
                     let mut header_end: Option<usize> = None;
@@ -660,7 +813,9 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                         if let Some(pos) = find_header_terminator(&buf) {
                             header_end = Some(pos);
                         }
-                        if buf.len() > 64 * 1024 { break; }
+                        if buf.len() > 64 * 1024 {
+                            break;
+                        }
                     }
 
                     let Some(end) = header_end else {
@@ -676,8 +831,12 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                     let (headers, body) = buf.split_at(end + 4);
                     let headers_str = String::from_utf8_lossy(headers).to_string();
                     let first_line = headers_str.lines().next().unwrap_or("").to_string();
-                    tracing::info!("Shared bridge: forwarding request `{}` to Chrome", first_line);
-                    let rewritten = rewrite_cdp_request_headers(&headers_str, chrome_port, &chrome_path);
+                    tracing::info!(
+                        "Shared bridge: forwarding request `{}` to Chrome",
+                        first_line
+                    );
+                    let rewritten =
+                        rewrite_cdp_request_headers(&headers_str, chrome_port, &chrome_path);
 
                     if let Err(e) = chrome_stream.write_all(rewritten.as_bytes()).await {
                         tracing::warn!("Shared bridge: failed to write headers to Chrome: {}", e);
@@ -715,7 +874,9 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                         &mut client_stream,
                         &chrome_origin,
                         &bridge_origin,
-                    ).await {
+                    )
+                    .await
+                    {
                         tracing::warn!("Shared bridge: response relay failed: {}", e);
                     }
 
@@ -739,13 +900,16 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
     Ok(())
 }
 
-pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) -> Result<u16, String> {
-    use tokio::net::{TcpListener, TcpStream};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use std::hash::{Hash, Hasher};
+pub async fn enable_jit_proxy(
+    app_handle: tauri::AppHandle,
+    agent_id: String,
+) -> Result<u16, String> {
     use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     let mut hasher = DefaultHasher::new();
     agent_id.hash(&mut hasher);
@@ -761,7 +925,11 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
     let app_handle_clone = app_handle.clone();
 
     tauri::async_runtime::spawn(async move {
-        tracing::info!("JIT Proxy listening on port {} for {}", proxy_port, agent_id_clone);
+        tracing::info!(
+            "JIT Proxy listening on port {} for {}",
+            proxy_port,
+            agent_id_clone
+        );
         loop {
             if let Ok((mut client_stream, _)) = listener.accept().await {
                 let agent_id_inner = agent_id_clone.clone();
@@ -776,7 +944,10 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
                     let cdp_endpoint = match browser_manager.get_status(&agent_id_inner).await {
                         Ok(Some(status)) => status.cdp_endpoint,
                         _ => {
-                            match browser_manager.start_browser(app_handle_inner.clone(), &agent_id_inner).await {
+                            match browser_manager
+                                .start_browser(app_handle_inner.clone(), &agent_id_inner)
+                                .await
+                            {
                                 Ok(status) => status.cdp_endpoint,
                                 Err(e) => {
                                     tracing::error!("JIT failed: {}", e);
@@ -792,7 +963,9 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
                     let chrome_port = chrome_url.port().unwrap_or(0);
                     let chrome_path = chrome_url.path().to_string();
 
-                    if let Ok(mut chrome_stream) = TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                    if let Ok(mut chrome_stream) =
+                        TcpStream::connect((chrome_host.as_str(), chrome_port)).await
+                    {
                         // Read the full HTTP request headers (up to "\r\n\r\n").
                         //
                         // Chrome DevTools enforces TWO protections we have to satisfy:
@@ -811,9 +984,11 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
                         let mut buf = Vec::with_capacity(8192);
                         let mut chunk = [0u8; 4096];
                         let mut header_end: Option<usize> = None;
-                        let header_read_deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(5);
-                        while header_end.is_none() && std::time::Instant::now() < header_read_deadline {
+                        let header_read_deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(5);
+                        while header_end.is_none()
+                            && std::time::Instant::now() < header_read_deadline
+                        {
                             let n = match client_stream.read(&mut chunk).await {
                                 Ok(0) => break,
                                 Ok(n) => n,
@@ -830,22 +1005,26 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
                         }
 
                         let Some(end) = header_end else {
-                            tracing::warn!("JIT Proxy: incomplete HTTP headers from client for {}", agent_id_inner);
+                            tracing::warn!(
+                                "JIT Proxy: incomplete HTTP headers from client for {}",
+                                agent_id_inner
+                            );
                             conn_counter.fetch_sub(1, Ordering::SeqCst);
                             return;
                         };
 
                         let (headers, body) = buf.split_at(end + 4);
                         let headers_str = String::from_utf8_lossy(headers).to_string();
-                        let rewritten_headers = rewrite_cdp_request_headers(
-                            &headers_str,
-                            chrome_port,
-                            &chrome_path,
-                        );
+                        let rewritten_headers =
+                            rewrite_cdp_request_headers(&headers_str, chrome_port, &chrome_path);
 
                         // Write the rewritten headers, then any body bytes we
                         // already over-read while looking for "\r\n\r\n".
-                        if chrome_stream.write_all(rewritten_headers.as_bytes()).await.is_err() {
+                        if chrome_stream
+                            .write_all(rewritten_headers.as_bytes())
+                            .await
+                            .is_err()
+                        {
                             conn_counter.fetch_sub(1, Ordering::SeqCst);
                             return;
                         }
@@ -855,14 +1034,19 @@ pub async fn enable_jit_proxy(app_handle: tauri::AppHandle, agent_id: String) ->
 
                         // Tunnel the rest bidirectionally — this carries WebSocket frames
                         // after the upgrade succeeds.
-                        let _ = tokio::io::copy_bidirectional(&mut client_stream, &mut chrome_stream).await;
+                        let _ =
+                            tokio::io::copy_bidirectional(&mut client_stream, &mut chrome_stream)
+                                .await;
                     }
 
                     let remaining = conn_counter.fetch_sub(1, Ordering::SeqCst) - 1;
                     if remaining == 0 {
                         tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                         if conn_counter.load(Ordering::SeqCst) == 0 {
-                            tracing::info!("JIT Proxy: No connections for 10s, stopping Chrome for {}", agent_id_inner);
+                            tracing::info!(
+                                "JIT Proxy: No connections for 10s, stopping Chrome for {}",
+                                agent_id_inner
+                            );
                             let _ = browser_manager.stop_browser(&agent_id_inner).await;
                         }
                     }
@@ -993,7 +1177,9 @@ async fn relay_chrome_response_to_client(
             header_end = Some(pos);
             break;
         }
-        if resp.len() > 256 * 1024 { break; }
+        if resp.len() > 256 * 1024 {
+            break;
+        }
     }
 
     let Some(end) = header_end else {
@@ -1030,7 +1216,9 @@ async fn relay_chrome_response_to_client(
             while body.len() < total {
                 let to_read = (total - body.len()).min(chunk.len());
                 let n = chrome_stream.read(&mut chunk[..to_read]).await?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 body.extend_from_slice(&chunk[..n]);
             }
         }
@@ -1038,7 +1226,9 @@ async fn relay_chrome_response_to_client(
             // No Content-Length — drain until EOF.
             loop {
                 let n = chrome_stream.read(&mut chunk).await?;
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 body.extend_from_slice(&chunk[..n]);
             }
         }
@@ -1129,32 +1319,53 @@ mod jit_proxy_tests {
 
     #[test]
     fn host_header_is_rewritten_to_loopback() {
-        let req = "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\nUpgrade: websocket\r\n\r\n";
+        let req =
+            "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\nUpgrade: websocket\r\n\r\n";
         let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc-123");
-        assert!(out.contains("Host: 127.0.0.1:54198\r\n"), "rewrite missing: {}", out);
+        assert!(
+            out.contains("Host: 127.0.0.1:54198\r\n"),
+            "rewrite missing: {}",
+            out
+        );
         // Original Host line must be gone.
-        assert!(!out.contains("host.docker.internal"), "stale Host survived: {}", out);
+        assert!(
+            !out.contains("host.docker.internal"),
+            "stale Host survived: {}",
+            out
+        );
     }
 
     #[test]
     fn root_path_is_rewritten_to_chrome_browser_path() {
         let req = "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\n\r\n";
         let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc-123");
-        assert!(out.starts_with("GET /devtools/browser/abc-123 HTTP/1.1\r\n"), "got: {}", out);
+        assert!(
+            out.starts_with("GET /devtools/browser/abc-123 HTTP/1.1\r\n"),
+            "got: {}",
+            out
+        );
     }
 
     #[test]
     fn explicit_path_is_preserved() {
         let req = "GET /json/version HTTP/1.1\r\nHost: x.example:80\r\n\r\n";
         let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc");
-        assert!(out.starts_with("GET /json/version HTTP/1.1\r\n"), "got: {}", out);
+        assert!(
+            out.starts_with("GET /json/version HTTP/1.1\r\n"),
+            "got: {}",
+            out
+        );
     }
 
     #[test]
     fn missing_host_header_gets_injected() {
         let req = "GET /json/version HTTP/1.1\r\nUpgrade: websocket\r\n\r\n";
         let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc");
-        assert!(out.contains("Host: 127.0.0.1:54198\r\n"), "Host not injected: {}", out);
+        assert!(
+            out.contains("Host: 127.0.0.1:54198\r\n"),
+            "Host not injected: {}",
+            out
+        );
     }
 
     #[test]
@@ -1163,7 +1374,10 @@ mod jit_proxy_tests {
             rewrite_request_line("GET / HTTP/1.1", "/devtools/browser/x").as_deref(),
             Some("GET /devtools/browser/x HTTP/1.1")
         );
-        assert_eq!(rewrite_request_line("GET /json/version HTTP/1.1", "/devtools/browser/x"), None);
+        assert_eq!(
+            rewrite_request_line("GET /json/version HTTP/1.1", "/devtools/browser/x"),
+            None
+        );
         assert_eq!(rewrite_request_line("POST / HTTP/1.1", "/"), None); // no useful rewrite if chrome_path is /
     }
 
@@ -1174,14 +1388,23 @@ mod jit_proxy_tests {
         // HTTP parser treats as malformed body framing — Chrome closes the connection
         // with no response, the bridge propagates a zero-byte close to the client,
         // and curl reports `(52) Empty reply from server`.
-        let req = "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\nUpgrade: websocket\r\n\r\n";
+        let req =
+            "GET / HTTP/1.1\r\nHost: host.docker.internal:10042\r\nUpgrade: websocket\r\n\r\n";
         let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc-123");
         assert!(out.ends_with("\r\n\r\n"), "missing terminator: {:?}", out);
-        assert!(!out.ends_with("\r\n\r\n\r\n"), "extra trailing CRLF: {:?}", out);
+        assert!(
+            !out.ends_with("\r\n\r\n\r\n"),
+            "extra trailing CRLF: {:?}",
+            out
+        );
         // Belt-and-suspenders: exactly one occurrence of the header terminator should
         // appear in the output (anywhere — there's no body bytes, so it's only at the end).
         let count = out.matches("\r\n\r\n").count();
-        assert_eq!(count, 1, "expected exactly one \\r\\n\\r\\n terminator, got {} in: {:?}", count, out);
+        assert_eq!(
+            count, 1,
+            "expected exactly one \\r\\n\\r\\n terminator, got {} in: {:?}",
+            count, out
+        );
     }
 
     #[test]
@@ -1189,7 +1412,11 @@ mod jit_proxy_tests {
         let req = "GET /json/version HTTP/1.1\r\nUpgrade: websocket\r\n\r\n";
         let out = rewrite_cdp_request_headers(req, 54198, "/devtools/browser/abc");
         assert!(out.ends_with("\r\n\r\n"), "missing terminator: {:?}", out);
-        assert!(!out.ends_with("\r\n\r\n\r\n"), "extra trailing CRLF: {:?}", out);
+        assert!(
+            !out.ends_with("\r\n\r\n\r\n"),
+            "extra trailing CRLF: {:?}",
+            out
+        );
         assert!(out.contains("Host: 127.0.0.1:54198\r\n"));
     }
 
@@ -1198,7 +1425,8 @@ mod jit_proxy_tests {
 
     #[test]
     fn parse_content_length_handles_basic_case() {
-        let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 421\r\n\r\n";
+        let headers =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 421\r\n\r\n";
         assert_eq!(parse_content_length(headers), Some(421));
     }
 
@@ -1216,7 +1444,8 @@ mod jit_proxy_tests {
 
     #[test]
     fn rebuild_response_headers_replaces_content_length() {
-        let headers = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 421\r\n\r\n";
+        let headers =
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 421\r\n\r\n";
         let rebuilt = rebuild_response_headers(headers, 500);
         assert!(rebuilt.contains("Content-Length: 500\r\n"));
         assert!(!rebuilt.contains("Content-Length: 421"));
@@ -1244,10 +1473,85 @@ mod jit_proxy_tests {
     }
 }
 
+#[cfg(test)]
+mod browser_launch_tests {
+    use super::{build_chrome_args, BrowserMode};
+
+    #[test]
+    fn automated_browser_launch_keeps_remote_debugging_and_starts_offscreen() {
+        let args = build_chrome_args(
+            "/tmp/agent-profile",
+            "data:pac",
+            BrowserMode::Automated,
+            Some("about:blank"),
+            false,
+        );
+
+        assert!(args.iter().any(|arg| arg == "--remote-debugging-port=0"));
+        assert!(args
+            .iter()
+            .any(|arg| arg == "--remote-debugging-address=127.0.0.1"));
+        assert!(args.iter().any(|arg| arg.starts_with("--window-position=")));
+        assert!(args.iter().any(|arg| arg == "about:blank"));
+    }
+
+    #[test]
+    fn interactive_auth_launch_drops_remote_debugging_and_uses_requested_url() {
+        let args = build_chrome_args(
+            "/tmp/agent-profile",
+            "data:pac",
+            BrowserMode::InteractiveAuth,
+            Some("https://accounts.google.com/"),
+            false,
+        );
+
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("--remote-debugging-port")));
+        assert!(!args
+            .iter()
+            .any(|arg| arg.starts_with("--remote-debugging-address")));
+        assert!(args.iter().any(|arg| arg == "--window-position=0,0"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("https://accounts.google.com/")
+        );
+    }
+
+    #[test]
+    fn resumed_automation_restores_last_session() {
+        let args = build_chrome_args(
+            "/tmp/agent-profile",
+            "data:pac",
+            BrowserMode::Automated,
+            Some("about:blank"),
+            true,
+        );
+
+        assert!(args.iter().any(|arg| arg == "--restore-last-session"));
+    }
+}
+
 #[tauri::command]
-pub async fn show_browser(state: tauri::State<'_, BrowserManager>, agent_id: String) -> Result<(), String> {
+pub async fn show_browser(
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+) -> Result<(), String> {
+    let status = state
+        .get_status(&agent_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(status) = status {
+        if status.mode == BrowserMode::InteractiveAuth {
+            activate_google_chrome().await;
+            return Ok(());
+        }
+    }
+
     // 1) Move the window onto the primary monitor via CDP setWindowBounds.
-    move_browser(&state, &agent_id, 0, 0).await.map_err(|e| e.to_string())?;
+    move_browser(&state, &agent_id, 0, 0)
+        .await
+        .map_err(|e| e.to_string())?;
 
     // 2) Bring Chrome to OS-level focus so the user actually sees it. CDP's
     //    `Browser.setWindowBounds` repositions the window but doesn't raise it above
@@ -1257,20 +1561,160 @@ pub async fn show_browser(state: tauri::State<'_, BrowserManager>, agent_id: Str
     //    Note: this activates ALL Google Chrome processes (macOS treats them as one
     //    application bundle). Other agent browsers stay parked at their off-screen
     //    coordinates so they remain invisible — only their process focus changes.
-    let _ = tokio::process::Command::new("osascript")
-        .args(["-e", r#"tell application "Google Chrome" to activate"#])
-        .output()
-        .await;
+    activate_google_chrome().await;
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn hide_browser(state: tauri::State<'_, BrowserManager>, agent_id: String) -> Result<(), String> {
+pub async fn hide_browser(
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+) -> Result<(), String> {
+    let status = state
+        .get_status(&agent_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(status) = status {
+        if status.mode == BrowserMode::InteractiveAuth {
+            return Err(
+                "Interactive auth window stays visible until you resume automation.".into(),
+            );
+        }
+    }
+
     // Move the window back to the safe off-screen coordinate computed in
     // `compute_offscreen_position` (left of all monitors, above all monitors).
     let (x, y) = compute_offscreen_position();
-    move_browser(&state, &agent_id, x, y).await.map_err(|e| e.to_string())
+    move_browser(&state, &agent_id, x, y)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn activate_google_chrome() {
+    let _ = tokio::process::Command::new("osascript")
+        .args(["-e", r#"tell application "Google Chrome" to activate"#])
+        .output()
+        .await;
+}
+
+struct PreparedBrowserProfile {
+    profile_path: String,
+    pac_url: String,
+}
+
+fn prepare_agent_browser_profile(agent_id: &str) -> Result<PreparedBrowserProfile> {
+    let data_dir = dirs::data_dir()
+        .context("Could not find data directory")?
+        .join("Canopy")
+        .join("agent-browsers")
+        .join(agent_id);
+
+    std::fs::create_dir_all(&data_dir)?;
+    let profile_path = data_dir.to_string_lossy().to_string();
+
+    let openclaw_state_dir = dirs::data_dir()
+        .context("Could not find data directory")?
+        .join("Canopy")
+        .join("openclaw-state")
+        .join("workspace")
+        .join(agent_id);
+    std::fs::create_dir_all(&openclaw_state_dir)?;
+    let download_path = openclaw_state_dir.to_string_lossy().to_string();
+
+    let default_dir = data_dir.join("Default");
+    std::fs::create_dir_all(&default_dir)?;
+    let prefs_path = default_dir.join("Preferences");
+    let prefs_json = serde_json::json!({
+        "download": {
+            "default_directory": download_path,
+            "prompt_for_download": false,
+            "directory_upgrade": true
+        },
+        "savefile": {
+            "default_directory": download_path
+        }
+    });
+    std::fs::write(&prefs_path, serde_json::to_string(&prefs_json)?)?;
+
+    let allowlist = read_agent_allowlist(agent_id);
+    let pac_script = build_pac_script(allowlist.as_deref());
+    use base64::Engine;
+    let pac_base64 = base64::engine::general_purpose::STANDARD.encode(&pac_script);
+    let pac_url = format!(
+        "data:application/x-ns-proxy-autoconfig;base64,{}",
+        pac_base64
+    );
+
+    Ok(PreparedBrowserProfile {
+        profile_path,
+        pac_url,
+    })
+}
+
+fn build_chrome_args(
+    profile_path: &str,
+    pac_url: &str,
+    mode: BrowserMode,
+    start_url: Option<&str>,
+    restore_last_session: bool,
+) -> Vec<String> {
+    let (left, top) = match mode {
+        BrowserMode::Automated => compute_offscreen_position(),
+        BrowserMode::InteractiveAuth => (0, 0),
+    };
+
+    let mut args = vec![
+        format!("--user-data-dir={}", profile_path),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        format!("--window-position={},{}", left, top),
+        "--window-size=1280,800".to_string(),
+        "--disable-extensions".to_string(),
+        "--deny-permission-prompts".to_string(),
+        "--disable-sync".to_string(),
+        "--disable-features=TranslateUI".to_string(),
+        format!("--proxy-pac-url={}", pac_url),
+    ];
+
+    if mode == BrowserMode::Automated {
+        args.push("--remote-debugging-port=0".to_string());
+        args.push("--remote-debugging-address=127.0.0.1".to_string());
+    }
+
+    if restore_last_session {
+        args.push("--restore-last-session".to_string());
+    }
+
+    args.push(start_url.unwrap_or("about:blank").to_string());
+    args
+}
+
+async fn capture_browser_url(port: u16) -> Result<Option<String>> {
+    if port == 0 {
+        return Ok(None);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()?;
+    let targets = client
+        .get(format!("http://127.0.0.1:{}/json/list", port))
+        .send()
+        .await?
+        .json::<Vec<serde_json::Value>>()
+        .await?;
+
+    Ok(targets
+        .into_iter()
+        .find(|target| target.get("type").and_then(|v| v.as_str()) == Some("page"))
+        .and_then(|target| {
+            target
+                .get("url")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+        })
+        .filter(|url| !url.is_empty() && url != "about:blank"))
 }
 
 async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32, top: i32) -> Result<()> {
@@ -1279,17 +1723,21 @@ async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32, top: i3
         None => return Err(anyhow::anyhow!("Browser not running")),
     };
 
-    use tokio_tungstenite::connect_async;
     use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
 
-    let (mut ws_stream, _) = connect_async(&cdp_url).await.context("Failed to connect to CDP")?;
+    let (mut ws_stream, _) = connect_async(&cdp_url)
+        .await
+        .context("Failed to connect to CDP")?;
 
     let req1 = serde_json::json!({
         "id": 1,
         "method": "Browser.getWindowForTarget"
     });
-    ws_stream.send(Message::Text(req1.to_string().into())).await?;
+    ws_stream
+        .send(Message::Text(req1.to_string().into()))
+        .await?;
 
     let mut window_id = None;
     while let Some(msg) = ws_stream.next().await {
@@ -1318,7 +1766,9 @@ async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32, top: i3
                 }
             }
         });
-        ws_stream.send(Message::Text(req2.to_string().into())).await?;
+        ws_stream
+            .send(Message::Text(req2.to_string().into()))
+            .await?;
     }
 
     Ok(())
@@ -1350,11 +1800,16 @@ fn read_agent_allowlist(agent_id: &str) -> Option<Vec<String>> {
     let raw = std::fs::read_to_string(&path).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let arr = v.get("domains")?.as_array()?;
-    let domains: Vec<String> = arr.iter()
+    let domains: Vec<String> = arr
+        .iter()
         .filter_map(|d| d.as_str().map(|s| s.trim().to_lowercase()))
         .filter(|s| !s.is_empty())
         .collect();
-    if domains.is_empty() { None } else { Some(domains) }
+    if domains.is_empty() {
+        None
+    } else {
+        Some(domains)
+    }
 }
 
 /// Build the PAC (Proxy Auto-Config) script for an agent.
@@ -1368,15 +1823,18 @@ fn build_pac_script(allowlist: Option<&[String]>) -> String {
             // Build a JS array literal of (host pattern, allow_subdomains) pairs.
             // We split into two checks so `*.foo.com` matches `foo.com` AND `*.foo.com`,
             // while `foo.com` (no wildcard) matches ONLY `foo.com`.
-            let entries: Vec<String> = domains.iter().map(|d| {
-                let d_clean = d.trim().to_lowercase();
-                if let Some(stripped) = d_clean.strip_prefix("*.") {
-                    // Wildcard: match `stripped` exactly OR any subdomain of `stripped`.
-                    format!(r#"["{}",true]"#, stripped.replace('"', ""))
-                } else {
-                    format!(r#"["{}",false]"#, d_clean.replace('"', ""))
-                }
-            }).collect();
+            let entries: Vec<String> = domains
+                .iter()
+                .map(|d| {
+                    let d_clean = d.trim().to_lowercase();
+                    if let Some(stripped) = d_clean.strip_prefix("*.") {
+                        // Wildcard: match `stripped` exactly OR any subdomain of `stripped`.
+                        format!(r#"["{}",true]"#, stripped.replace('"', ""))
+                    } else {
+                        format!(r#"["{}",false]"#, d_clean.replace('"', ""))
+                    }
+                })
+                .collect();
             format!(
                 r#"
                 var allowed = [{}];
@@ -1432,12 +1890,16 @@ pub async fn update_agent_allowed_domains(
     agent_id: String,
     domains: Vec<String>,
 ) -> Result<(), String> {
-    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !agent_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(format!("invalid agent id {:?}", agent_id));
     }
 
     // Normalize: trim, lowercase, drop blanks, dedupe.
-    let mut normalized: Vec<String> = domains.into_iter()
+    let mut normalized: Vec<String> = domains
+        .into_iter()
         .map(|d| d.trim().to_lowercase())
         .filter(|d| !d.is_empty())
         .collect();
@@ -1451,16 +1913,24 @@ pub async fn update_agent_allowed_domains(
     }
 
     let body = serde_json::json!({ "domains": normalized });
-    std::fs::write(&path, serde_json::to_string_pretty(&body).unwrap_or_default())
-        .map_err(|e| format!("write failed: {}", e))?;
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&body).unwrap_or_default(),
+    )
+    .map_err(|e| format!("write failed: {}", e))?;
 
     // If the browser is currently alive, kill it so the next JIT spawn picks up the
     // new PAC. We can't change PAC on a running Chrome instance.
-    let needs_restart = state.get_status(&agent_id).await
+    let needs_restart = state
+        .get_status(&agent_id)
+        .await
         .map_err(|e| e.to_string())?
         .is_some();
     if needs_restart {
-        state.stop_browser(&agent_id).await.map_err(|e| e.to_string())?;
+        state
+            .stop_browser(&agent_id)
+            .await
+            .map_err(|e| e.to_string())?;
         // Don't auto-respawn — the next agent action that needs the browser will trigger
         // the JIT proxy to start a fresh Chrome with the updated PAC.
         let _ = app_handle; // reserved for future events
@@ -1488,7 +1958,9 @@ fn compute_offscreen_position() -> (i32, i32) {
     // mid-session and the AppleScript probe is ~50 ms.
     use std::sync::OnceLock;
     static CACHED: OnceLock<(i32, i32)> = OnceLock::new();
-    if let Some(p) = CACHED.get() { return *p; }
+    if let Some(p) = CACHED.get() {
+        return *p;
+    }
 
     let probe = std::process::Command::new("osascript")
         .args([
@@ -1506,13 +1978,19 @@ fn compute_offscreen_position() -> (i32, i32) {
     let (left, top) = match probe {
         Ok(out) if out.status.success() => {
             let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let parts: Vec<i32> = raw.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+            let parts: Vec<i32> = raw
+                .split(',')
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
             if parts.len() == 4 {
                 let (min_x, min_y) = (parts[0], parts[1]);
                 // 3000 px LEFT of the leftmost monitor edge, 1500 px ABOVE the topmost edge.
                 (min_x.saturating_sub(3000), min_y.saturating_sub(1500))
             } else {
-                tracing::warn!("compute_offscreen_position: unparseable Finder bounds {:?}", raw);
+                tracing::warn!(
+                    "compute_offscreen_position: unparseable Finder bounds {:?}",
+                    raw
+                );
                 (-3000, -1500)
             }
         }
@@ -1525,7 +2003,11 @@ fn compute_offscreen_position() -> (i32, i32) {
 
     let result = (left, top);
     let _ = CACHED.set(result);
-    tracing::info!("compute_offscreen_position: hidden browser parked at ({}, {})", left, top);
+    tracing::info!(
+        "compute_offscreen_position: hidden browser parked at ({}, {})",
+        left,
+        top
+    );
     result
 }
 
@@ -1536,7 +2018,10 @@ async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, 
             Ok(_) => break,
             Err(e) if retries < 5 => {
                 retries += 1;
-                eprintln!("Browser stream disconnected, reconnecting in 3s (attempt {}/5): {}", retries, e);
+                eprintln!(
+                    "Browser stream disconnected, reconnecting in 3s (attempt {}/5): {}",
+                    retries, e
+                );
                 tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
             }
             Err(e) => {
@@ -1547,11 +2032,15 @@ async fn stream_browser_visuals(app_handle: tauri::AppHandle, agent_id: String, 
     }
 }
 
-async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &str, cdp_url: &str) -> Result<(), String> {
-    use tokio_tungstenite::connect_async;
+async fn try_stream_browser_visuals(
+    app_handle: &tauri::AppHandle,
+    agent_id: &str,
+    cdp_url: &str,
+) -> Result<(), String> {
     use futures_util::{SinkExt, StreamExt};
     use tauri::Emitter;
     use tokio::time::{sleep, timeout, Duration};
+    use tokio_tungstenite::connect_async;
 
     // Outer reconnect loop. Each iteration attempts one full connect-and-stream cycle.
     // On mid-stream disconnect we fall through to the top and reconnect; on persistent
@@ -1559,7 +2048,7 @@ async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &st
     let mut connect_failures = 0u32;
 
     'reconnect: loop {
-        let ws = timeout(Duration::from_secs(5), connect_async(&cdp_url)).await;
+        let ws = timeout(Duration::from_secs(5), connect_async(cdp_url)).await;
         let mut ws_stream = match ws {
             Ok(Ok((stream, _))) => {
                 connect_failures = 0;
@@ -1567,21 +2056,38 @@ async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &st
             }
             Ok(Err(e)) => {
                 connect_failures += 1;
-                tracing::debug!("stream_browser_visuals: CDP connect failed for {} (attempt {}): {}", agent_id, connect_failures, e);
+                tracing::debug!(
+                    "stream_browser_visuals: CDP connect failed for {} (attempt {}): {}",
+                    agent_id,
+                    connect_failures,
+                    e
+                );
                 if connect_failures >= 20 {
-                    tracing::warn!("stream_browser_visuals: giving up for {} after {} failures", agent_id, connect_failures);
-                    return;
+                    tracing::warn!(
+                        "stream_browser_visuals: giving up for {} after {} failures",
+                        agent_id,
+                        connect_failures
+                    );
+                    return Ok(());
                 }
                 // Fast retries first, then slow — avoids hammering a starting Chrome.
-                sleep(Duration::from_millis(if connect_failures <= 5 { 500 } else { 3_000 })).await;
+                sleep(Duration::from_millis(if connect_failures <= 5 {
+                    500
+                } else {
+                    3_000
+                }))
+                .await;
                 continue 'reconnect;
             }
             Err(_) => {
                 // connect_async itself timed out
                 connect_failures += 1;
                 if connect_failures >= 10 {
-                    tracing::warn!("stream_browser_visuals: connect timed out too many times for {}", agent_id);
-                    return;
+                    tracing::warn!(
+                        "stream_browser_visuals: connect timed out too many times for {}",
+                        agent_id
+                    );
+                    return Ok(());
                 }
                 sleep(Duration::from_millis(500)).await;
                 continue 'reconnect;
@@ -1601,7 +2107,9 @@ async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &st
             });
 
             if ws_stream
-                .send(tokio_tungstenite::tungstenite::Message::Text(req.to_string().into()))
+                .send(tokio_tungstenite::tungstenite::Message::Text(
+                    req.to_string().into(),
+                ))
                 .await
                 .is_err()
             {
@@ -1618,11 +2126,16 @@ async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &st
                     Ok(Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text)))) => {
                         if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&text) {
                             if resp.get("id").and_then(|id| id.as_i64()) == Some(msg_id) {
-                                if let Some(data) = resp.pointer("/result/data").and_then(|d| d.as_str()) {
-                                    let _ = app_handle.emit("browser_stream_frame", serde_json::json!({
-                                        "agent_id": agent_id,
-                                        "frame": data
-                                    }));
+                                if let Some(data) =
+                                    resp.pointer("/result/data").and_then(|d| d.as_str())
+                                {
+                                    let _ = app_handle.emit(
+                                        "browser_stream_frame",
+                                        serde_json::json!({
+                                            "agent_id": agent_id,
+                                            "frame": data
+                                        }),
+                                    );
                                 }
                                 break 'response;
                             }
@@ -1639,7 +2152,10 @@ async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &st
                     }
                     Err(_) => {
                         // 10s timeout: Chrome is unresponsive (hung page or renderer crash).
-                        tracing::warn!("stream_browser_visuals: screenshot response timed out for {}", agent_id);
+                        tracing::warn!(
+                            "stream_browser_visuals: screenshot response timed out for {}",
+                            agent_id
+                        );
                         sleep(Duration::from_millis(500)).await;
                         break 'stream;
                     }
@@ -1651,4 +2167,3 @@ async fn try_stream_browser_visuals(app_handle: &tauri::AppHandle, agent_id: &st
         // 'stream ended — 'reconnect loops back to try a fresh connection.
     }
 }
-

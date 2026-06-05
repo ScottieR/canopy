@@ -32,7 +32,6 @@
 /// routing requires OpenClaw to grow `channels.{name}.accounts` support — see
 /// TODO inside each configurator. Until then: assume one active bot per channel,
 /// reconfigure to switch which agent owns it.
-
 use crate::openclaw::get_docker_command;
 use serde_json::{json, Value};
 
@@ -43,8 +42,14 @@ fn validate_agent_id(agent_id: &str) -> Result<(), String> {
     if agent_id.is_empty() {
         return Err("agent_id is required for per-agent channel configuration".into());
     }
-    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(format!("invalid agent id {:?} — only [a-zA-Z0-9_-] allowed", agent_id));
+    if !agent_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "invalid agent id {:?} — only [a-zA-Z0-9_-] allowed",
+            agent_id
+        ));
     }
     Ok(())
 }
@@ -60,7 +65,10 @@ fn validate_agent_id(agent_id: &str) -> Result<(), String> {
 /// so the plugin actually starts/stops alongside the channel.
 async fn patch_channel_config(channel_name: &str, fields: Value) -> Result<(), String> {
     if !fields.is_object() {
-        return Err(format!("patch_channel_config: fields must be a JSON object, got {}", fields));
+        return Err(format!(
+            "patch_channel_config: fields must be a JSON object, got {}",
+            fields
+        ));
     }
 
     // Embed the fields object directly as a JS literal — JSON is a subset of JS so this
@@ -69,8 +77,14 @@ async fn patch_channel_config(channel_name: &str, fields: Value) -> Result<(), S
         .map_err(|e| format!("patch_channel_config: serialize error: {}", e))?;
 
     // Channel name is restricted to [a-z0-9-]+ for safety inside the JS string literal.
-    if !channel_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(format!("patch_channel_config: invalid channel name {:?}", channel_name));
+    if !channel_name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "patch_channel_config: invalid channel name {:?}",
+            channel_name
+        ));
     }
 
     let patch_script = format!(
@@ -96,7 +110,15 @@ console.log('channel '+ch+' patched');
     let out = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", &patch_script])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                "canopy-gateway",
+                "node",
+                "-e",
+                &patch_script,
+            ])
             .output(),
     )
     .await
@@ -108,7 +130,10 @@ console.log('channel '+ch+' patched');
         // Treat "container not running" as a soft warning — credentials are still in the
         // keychain and will be applied on the next gateway start cycle.
         if stderr.contains("No such container") || stderr.contains("is not running") {
-            tracing::warn!("Gateway offline while patching {}; will apply on next start", channel_name);
+            tracing::warn!(
+                "Gateway offline while patching {}; will apply on next start",
+                channel_name
+            );
             return Ok(());
         }
         return Err(format!("{} patch failed: {}", channel_name, stderr.trim()));
@@ -122,8 +147,11 @@ console.log('channel '+ch+' patched');
 async fn restart_gateway_soft() {
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        get_docker_command().args(["restart", "canopy-gateway"]).output(),
-    ).await;
+        get_docker_command()
+            .args(["restart", "canopy-gateway"])
+            .output(),
+    )
+    .await;
 }
 
 // ─── Telegram ─────────────────────────────────────────────────────────────────
@@ -137,10 +165,16 @@ pub async fn configure_telegram(agent_id: String, bot_token: String) -> Result<S
     let token = bot_token.trim().to_string();
 
     // Validate format: numeric ID, colon, alphanumeric string
-    if !token.contains(':') || token.split(':').next().map_or(false, |id| id.parse::<u64>().is_err()) {
+    if !token.contains(':')
+        || token
+            .split(':')
+            .next()
+            .map_or(false, |id| id.parse::<u64>().is_err())
+    {
         return Err(
             "Invalid Telegram bot token format. It should look like '123456789:ABCdefGHI...' \
-             — get one from @BotFather in Telegram.".to_string()
+             — get one from @BotFather in Telegram."
+                .to_string(),
         );
     }
 
@@ -156,11 +190,15 @@ pub async fn configure_telegram(agent_id: String, bot_token: String) -> Result<S
     // path in `openclaw::sync_gateway_channels_internal`. Until then, the keychain is
     // already in the right per-agent shape and the gateway can be re-pointed at any
     // agent's saved token without losing the others.
-    patch_channel_config("telegram", json!({
-        "botToken": token,
-        "enabled":  true,
-        "mode":     "polling",
-    })).await?;
+    patch_channel_config(
+        "telegram",
+        json!({
+            "botToken": token,
+            "enabled":  true,
+            "mode":     "polling",
+        }),
+    )
+    .await?;
 
     restart_gateway_soft().await;
 
@@ -179,7 +217,8 @@ pub async fn configure_telegram(agent_id: String, bot_token: String) -> Result<S
 #[tauri::command]
 pub async fn disconnect_telegram_for_agent(agent_id: String) -> Result<String, String> {
     validate_agent_id(&agent_id)?;
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_telegram_bot_token", agent_id));
+    let _ =
+        crate::keychain::delete_secret_internal(&format!("agent_{}_telegram_bot_token", agent_id));
     Ok(format!("Telegram token removed for agent '{}'.", agent_id))
 }
 
@@ -190,10 +229,14 @@ pub async fn disconnect_telegram_for_agent(agent_id: String) -> Result<String, S
 #[tauri::command]
 pub async fn disconnect_telegram() -> Result<String, String> {
     let _ = crate::keychain::delete_secret_internal("telegram-bot-token");
-    patch_channel_config("telegram", json!({
-        "enabled":  false,
-        "botToken": "",
-    })).await?;
+    patch_channel_config(
+        "telegram",
+        json!({
+            "enabled":  false,
+            "botToken": "",
+        }),
+    )
+    .await?;
     restart_gateway_soft().await;
     Ok("Telegram disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
@@ -222,21 +265,31 @@ pub async fn configure_whatsapp(
     let token = api_token.trim().to_string();
 
     if phone_id.is_empty() || biz_id.is_empty() || token.is_empty() {
-        return Err("All three fields are required: Phone Number ID, Business Account ID, and API Token.".to_string());
+        return Err(
+            "All three fields are required: Phone Number ID, Business Account ID, and API Token."
+                .to_string(),
+        );
     }
     if !token.starts_with("EAA") {
         return Err(
             "API Token looks wrong — Meta permanent system user tokens start with 'EAA'. \
-             Make sure you are using a System User Token, not an app secret or page token.".to_string()
+             Make sure you are using a System User Token, not an app secret or page token."
+                .to_string(),
         );
     }
 
     // Per-agent keychain. WhatsApp Business has THREE secrets per agent; each goes
     // under its own slot so a second agent connecting can't clobber the first.
-    crate::keychain::store_secret(&format!("agent_{}_whatsapp_phone_number_id", agent_id), &phone_id)
-        .map_err(|e| format!("Keychain error: {}", e))?;
-    crate::keychain::store_secret(&format!("agent_{}_whatsapp_business_account_id", agent_id), &biz_id)
-        .map_err(|e| format!("Keychain error: {}", e))?;
+    crate::keychain::store_secret(
+        &format!("agent_{}_whatsapp_phone_number_id", agent_id),
+        &phone_id,
+    )
+    .map_err(|e| format!("Keychain error: {}", e))?;
+    crate::keychain::store_secret(
+        &format!("agent_{}_whatsapp_business_account_id", agent_id),
+        &biz_id,
+    )
+    .map_err(|e| format!("Keychain error: {}", e))?;
     crate::keychain::store_secret(&format!("agent_{}_whatsapp_api_token", agent_id), &token)
         .map_err(|e| format!("Keychain error: {}", e))?;
 
@@ -244,12 +297,16 @@ pub async fn configure_whatsapp(
     // `channels.whatsapp.{field}` values so last writer wins at the gateway. Storage
     // is per-agent; runtime routing is single-tenant until OpenClaw grows accounts
     // support for whatsapp.
-    patch_channel_config("whatsapp", json!({
-        "phoneNumberId":     phone_id,
-        "businessAccountId": biz_id,
-        "apiToken":          token,
-        "enabled":           true,
-    })).await?;
+    patch_channel_config(
+        "whatsapp",
+        json!({
+            "phoneNumberId":     phone_id,
+            "businessAccountId": biz_id,
+            "apiToken":          token,
+            "enabled":           true,
+        }),
+    )
+    .await?;
 
     restart_gateway_soft().await;
 
@@ -263,10 +320,20 @@ pub async fn configure_whatsapp(
 #[tauri::command]
 pub async fn disconnect_whatsapp_for_agent(agent_id: String) -> Result<String, String> {
     validate_agent_id(&agent_id)?;
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_whatsapp_phone_number_id", agent_id));
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_whatsapp_business_account_id", agent_id));
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_whatsapp_api_token", agent_id));
-    Ok(format!("WhatsApp credentials removed for agent '{}'.", agent_id))
+    let _ = crate::keychain::delete_secret_internal(&format!(
+        "agent_{}_whatsapp_phone_number_id",
+        agent_id
+    ));
+    let _ = crate::keychain::delete_secret_internal(&format!(
+        "agent_{}_whatsapp_business_account_id",
+        agent_id
+    ));
+    let _ =
+        crate::keychain::delete_secret_internal(&format!("agent_{}_whatsapp_api_token", agent_id));
+    Ok(format!(
+        "WhatsApp credentials removed for agent '{}'.",
+        agent_id
+    ))
 }
 
 // ─── Twilio ───────────────────────────────────────────────────────────────────
@@ -287,7 +354,9 @@ pub async fn configure_twilio(
     let phone = phone_number.trim().to_string();
 
     if sid.is_empty() || token.is_empty() || phone.is_empty() {
-        return Err("All three fields are required: Account SID, Auth Token, and Phone Number.".to_string());
+        return Err(
+            "All three fields are required: Account SID, Auth Token, and Phone Number.".to_string(),
+        );
     }
 
     if !sid.starts_with("AC") {
@@ -306,12 +375,16 @@ pub async fn configure_twilio(
 
     // TODO(multi-tenant): same caveat as Telegram/WhatsApp — gateway still reads a
     // single `channels.twilio.{field}` set.
-    patch_channel_config("twilio", json!({
-        "accountSid":  sid,
-        "authToken":   token,
-        "phoneNumber": phone,
-        "enabled":     true,
-    })).await?;
+    patch_channel_config(
+        "twilio",
+        json!({
+            "accountSid":  sid,
+            "authToken":   token,
+            "phoneNumber": phone,
+            "enabled":     true,
+        }),
+    )
+    .await?;
 
     restart_gateway_soft().await;
 
@@ -325,10 +398,16 @@ pub async fn configure_twilio(
 #[tauri::command]
 pub async fn disconnect_twilio_for_agent(agent_id: String) -> Result<String, String> {
     validate_agent_id(&agent_id)?;
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_account_sid", agent_id));
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_auth_token", agent_id));
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_phone_number", agent_id));
-    Ok(format!("Twilio credentials removed for agent '{}'.", agent_id))
+    let _ =
+        crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_account_sid", agent_id));
+    let _ =
+        crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_auth_token", agent_id));
+    let _ =
+        crate::keychain::delete_secret_internal(&format!("agent_{}_twilio_phone_number", agent_id));
+    Ok(format!(
+        "Twilio credentials removed for agent '{}'.",
+        agent_id
+    ))
 }
 
 // ─── Discord ──────────────────────────────────────────────────────────────────
@@ -352,7 +431,8 @@ pub async fn configure_discord(
     if token.matches('.').count() < 2 || token.len() < 50 {
         return Err(
             "Invalid Discord bot token format. Get it from the Discord Developer Portal: \
-             discord.com/developers → Your App → Bot → Reset Token.".to_string()
+             discord.com/developers → Your App → Bot → Reset Token."
+                .to_string(),
         );
     }
 
@@ -369,8 +449,11 @@ pub async fn configure_discord(
 
     if let Some(gid) = guild_id.as_deref().filter(|s| !s.trim().is_empty()) {
         let gid_trimmed = gid.trim().to_string();
-        crate::keychain::store_secret(&format!("agent_{}_discord_guild_id", agent_id), &gid_trimmed)
-            .map_err(|e| format!("Keychain error: {}", e))?;
+        crate::keychain::store_secret(
+            &format!("agent_{}_discord_guild_id", agent_id),
+            &gid_trimmed,
+        )
+        .map_err(|e| format!("Keychain error: {}", e))?;
         fields["guildId"] = Value::String(gid_trimmed);
     }
 
@@ -390,9 +473,14 @@ pub async fn configure_discord(
 #[tauri::command]
 pub async fn disconnect_discord_for_agent(agent_id: String) -> Result<String, String> {
     validate_agent_id(&agent_id)?;
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_discord_bot_token", agent_id));
-    let _ = crate::keychain::delete_secret_internal(&format!("agent_{}_discord_guild_id", agent_id));
-    Ok(format!("Discord credentials removed for agent '{}'.", agent_id))
+    let _ =
+        crate::keychain::delete_secret_internal(&format!("agent_{}_discord_bot_token", agent_id));
+    let _ =
+        crate::keychain::delete_secret_internal(&format!("agent_{}_discord_guild_id", agent_id));
+    Ok(format!(
+        "Discord credentials removed for agent '{}'.",
+        agent_id
+    ))
 }
 
 // ─── Global "disable channel at the gateway" disconnects ─────────────────────
@@ -413,12 +501,16 @@ pub async fn disconnect_whatsapp() -> Result<String, String> {
     let _ = crate::keychain::delete_secret_internal("whatsapp-phone-number-id");
     let _ = crate::keychain::delete_secret_internal("whatsapp-business-account-id");
     let _ = crate::keychain::delete_secret_internal("whatsapp-api-token");
-    patch_channel_config("whatsapp", json!({
-        "enabled":           false,
-        "phoneNumberId":     "",
-        "businessAccountId": "",
-        "apiToken":          "",
-    })).await?;
+    patch_channel_config(
+        "whatsapp",
+        json!({
+            "enabled":           false,
+            "phoneNumberId":     "",
+            "businessAccountId": "",
+            "apiToken":          "",
+        }),
+    )
+    .await?;
     restart_gateway_soft().await;
     Ok("WhatsApp disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
@@ -428,12 +520,16 @@ pub async fn disconnect_twilio() -> Result<String, String> {
     let _ = crate::keychain::delete_secret_internal("twilio-account-sid");
     let _ = crate::keychain::delete_secret_internal("twilio-auth-token");
     let _ = crate::keychain::delete_secret_internal("twilio-phone-number");
-    patch_channel_config("twilio", json!({
-        "enabled":     false,
-        "accountSid":  "",
-        "authToken":   "",
-        "phoneNumber": "",
-    })).await?;
+    patch_channel_config(
+        "twilio",
+        json!({
+            "enabled":     false,
+            "accountSid":  "",
+            "authToken":   "",
+            "phoneNumber": "",
+        }),
+    )
+    .await?;
     restart_gateway_soft().await;
     Ok("Twilio disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
@@ -442,11 +538,15 @@ pub async fn disconnect_twilio() -> Result<String, String> {
 pub async fn disconnect_discord() -> Result<String, String> {
     let _ = crate::keychain::delete_secret_internal("discord-bot-token");
     let _ = crate::keychain::delete_secret_internal("discord-guild-id");
-    patch_channel_config("discord", json!({
-        "enabled":  false,
-        "botToken": "",
-        "guildId":  "",
-    })).await?;
+    patch_channel_config(
+        "discord",
+        json!({
+            "enabled":  false,
+            "botToken": "",
+            "guildId":  "",
+        }),
+    )
+    .await?;
     restart_gateway_soft().await;
     Ok("Discord disabled at the gateway. Per-agent saved tokens are kept; use the per-agent disconnect to remove them.".to_string())
 }
@@ -492,9 +592,10 @@ pub async fn fetch_github_repos(token: String) -> Result<Vec<GithubRepo>, String
 
     // Filter to only include repositories where the token has explicit write (push) access.
     // Fine-grained PATs default to read-only for all public repos, which creates clutter.
-    let writable_repos = all_repos.into_iter().filter(|r| {
-        r.permissions.as_ref().map(|p| p.push).unwrap_or(false)
-    }).collect();
+    let writable_repos = all_repos
+        .into_iter()
+        .filter(|r| r.permissions.as_ref().map(|p| p.push).unwrap_or(false))
+        .collect();
 
     Ok(writable_repos)
 }
@@ -511,7 +612,10 @@ pub async fn fetch_github_repos(token: String) -> Result<Vec<GithubRepo>, String
 fn is_safe_github_token_value(token: &str) -> bool {
     let has_known_prefix =
         token.starts_with("ghp_") || token.starts_with("github_pat_") || token.starts_with("gho_");
-    has_known_prefix && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+    has_known_prefix
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
 #[tauri::command]
@@ -529,7 +633,8 @@ pub async fn configure_github(
         return Err(
             "Invalid GitHub token format. Classic PATs start with 'ghp_', \
              fine-grained PATs start with 'github_pat_'. \
-             Generate one at github.com/settings/tokens.".to_string()
+             Generate one at github.com/settings/tokens."
+                .to_string(),
         );
     }
 
@@ -569,26 +674,48 @@ EOF
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         get_docker_command()
-            .args(["exec", "-u", "root", "-e", "DEBIAN_FRONTEND=noninteractive", &container_name, "sh", "-c", root_setup_script])
-            .output()
-    ).await;
+            .args([
+                "exec",
+                "-u",
+                "root",
+                "-e",
+                "DEBIAN_FRONTEND=noninteractive",
+                &container_name,
+                "sh",
+                "-c",
+                root_setup_script,
+            ])
+            .output(),
+    )
+    .await;
 
     // Inject the token via the host bind-mount instead of interpolating secrets into sh -c.
     let workspace = crate::openclaw::get_agent_workspace_dir(&db, &agent_id)
         .map_err(|e| format!("Workspace error: {}", e))?;
-    std::fs::create_dir_all(&workspace)
-        .map_err(|e| format!("Workspace create error: {}", e))?;
-    std::fs::write(workspace.join(".github_env"), format!("GITHUB_TOKEN={}\n", token))
-        .map_err(|e| format!("Failed to write GitHub token file: {}", e))?;
+    std::fs::create_dir_all(&workspace).map_err(|e| format!("Workspace create error: {}", e))?;
+    std::fs::write(
+        workspace.join(".github_env"),
+        format!("GITHUB_TOKEN={}\n", token),
+    )
+    .map_err(|e| format!("Failed to write GitHub token file: {}", e))?;
 
     let node_setup_script =
         "git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
          git config --global url.\"https://github.com/\".insteadOf \"git@github.com:\"; \
          git config --global url.\"https://github.com/\".insteadOf \"ssh://git@github.com/\"";
-    
+
     let _ = get_docker_command()
-        .args(["exec", "-u", "node", &container_name, "sh", "-c", &node_setup_script])
-        .output().await;
+        .args([
+            "exec",
+            "-u",
+            "node",
+            &container_name,
+            "sh",
+            "-c",
+            &node_setup_script,
+        ])
+        .output()
+        .await;
 
     restart_gateway_soft().await;
 
@@ -600,9 +727,18 @@ EOF
 /// the token is no longer reachable by the agent's tooling. No openclaw.json change is
 /// required because GitHub is wired through a workspace wrapper, not a `channels.*` block.
 #[tauri::command]
-pub async fn disconnect_github(db: tauri::State<'_, crate::db::Database>, agent_id: String) -> Result<String, String> {
-    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(format!("disconnect_github: invalid agent id {:?}", agent_id));
+pub async fn disconnect_github(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<String, String> {
+    if !agent_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "disconnect_github: invalid agent id {:?}",
+            agent_id
+        ));
     }
 
     let _ = crate::keychain::delete_secret_internal(&format!("github-access-token-{}", agent_id));
@@ -622,7 +758,8 @@ pub async fn disconnect_github(db: tauri::State<'_, crate::db::Database>, agent_
         get_docker_command()
             .args(["exec", "-u", "node", &container_name, "sh", "-c", &cleanup])
             .output(),
-    ).await;
+    )
+    .await;
 
     Ok("GitHub disconnected for this agent and saved token removed.".to_string())
 }
@@ -636,7 +773,11 @@ mod github_token_validation_tests {
     #[ignore]
     async fn test_e2e_github_container_provisioning() {
         // Skip if canopy-gateway is not running to avoid breaking CI
-        let out = get_docker_command().args(["exec", "canopy-gateway", "echo", "ping"]).output().await.unwrap();
+        let out = get_docker_command()
+            .args(["exec", "canopy-gateway", "echo", "ping"])
+            .output()
+            .await
+            .unwrap();
         if !out.status.success() {
             println!("Skipping E2E test, canopy-gateway container is not running");
             return;
@@ -649,23 +790,44 @@ mod github_token_validation_tests {
 
         // Run the configure_github command with a dummy token
         let token = "ghp_teste2e_token_1234567890".to_string();
-        let res = configure_github(state, "agent-test".to_string(), token.clone(), Some("testuser".to_string())).await;
+        let res = configure_github(
+            state,
+            "agent-test".to_string(),
+            token.clone(),
+            Some("testuser".to_string()),
+        )
+        .await;
         res.expect("configure_github failed");
 
         // Verify the environment variable was injected into the agent's bin wrapper
         let check_gh_script = get_docker_command()
-            .args(["exec", "canopy-gateway", "cat", "/home/node/.openclaw/workspace/agent-test/bin/gh"])
-            .output().await.unwrap();
+            .args([
+                "exec",
+                "canopy-gateway",
+                "cat",
+                "/home/node/.openclaw/workspace/agent-test/bin/gh",
+            ])
+            .output()
+            .await
+            .unwrap();
 
         let gh_script_content = String::from_utf8_lossy(&check_gh_script.stdout);
-        assert!(gh_script_content.contains(&format!("export GITHUB_TOKEN={}", token)), "Token not found in agent gh wrapper");
+        assert!(
+            gh_script_content.contains(&format!("export GITHUB_TOKEN={}", token)),
+            "Token not found in agent gh wrapper"
+        );
 
         // Verify the gh CLI is installed and accessible
         let check_gh = get_docker_command()
             .args(["exec", "canopy-gateway", "sh", "-c", "command -v gh"])
-            .output().await.unwrap();
+            .output()
+            .await
+            .unwrap();
 
-        assert!(check_gh.status.success(), "gh CLI is not installed in the container");
+        assert!(
+            check_gh.status.success(),
+            "gh CLI is not installed in the container"
+        );
     }
 }
 
@@ -692,12 +854,22 @@ fn check_slack_gateway_state(
 ) -> (bool, String) {
     let cfg = match gateway_cfg {
         Some(c) => c,
-        None => return (false, "Couldn't read the gateway's openclaw.json — is the canopy-gateway container running?".to_string()),
+        None => return (
+            false,
+            "Couldn't read the gateway's openclaw.json — is the canopy-gateway container running?"
+                .to_string(),
+        ),
     };
 
-    let enabled = cfg.pointer("/channels/slack/enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let enabled = cfg
+        .pointer("/channels/slack/enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if !enabled {
-        return (false, "Slack is disabled in the gateway config (channels.slack.enabled=false).".to_string());
+        return (
+            false,
+            "Slack is disabled in the gateway config (channels.slack.enabled=false).".to_string(),
+        );
     }
 
     let plugin_enabled = cfg
@@ -705,7 +877,11 @@ fn check_slack_gateway_state(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     if !plugin_enabled {
-        return (false, "Slack plugin is disabled in the gateway (plugins.entries.slack.enabled=false).".to_string());
+        return (
+            false,
+            "Slack plugin is disabled in the gateway (plugins.entries.slack.enabled=false)."
+                .to_string(),
+        );
     }
 
     let account = cfg.pointer(&format!("/channels/slack/accounts/{}", agent_id));
@@ -754,12 +930,19 @@ fn check_slack_gateway_state(
 }
 
 #[tauri::command]
-pub async fn ping_agent_connections(db: tauri::State<'_, crate::db::Database>, agent_id: String) -> Result<Vec<ConnectionDiagnostic>, String> {
+pub async fn ping_agent_connections(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<Vec<ConnectionDiagnostic>, String> {
     ping_agent_connections_internal(&db, &agent_id).await
 }
 
-pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id: &str) -> Result<Vec<ConnectionDiagnostic>, String> {
-    let agent = db.get_agent(agent_id)
+pub async fn ping_agent_connections_internal(
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Result<Vec<ConnectionDiagnostic>, String> {
+    let agent = db
+        .get_agent(agent_id)
         .map_err(|e| format!("Failed to get agent: {}", e))?
         .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
@@ -780,9 +963,18 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
     let gateway_cfg: Option<serde_json::Value> = match tokio::time::timeout(
         std::time::Duration::from_secs(4),
         crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "cat", "/home/node/.openclaw/openclaw.json"])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "cat",
+                "/home/node/.openclaw/openclaw.json",
+            ])
             .output(),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).ok(),
         _ => None,
     };
@@ -791,10 +983,11 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
         match integration.as_str() {
             "slack" => {
                 // Step 1: is the Slack TOKEN currently valid (auth.test)?
-                let token_ok = match crate::slack::check_slack_connection(Some(agent_id.to_string())).await {
-                    Ok(s) => (s.connected, s.workspace_name),
-                    Err(_) => (false, None),
-                };
+                let token_ok =
+                    match crate::slack::check_slack_connection(Some(agent_id.to_string())).await {
+                        Ok(s) => (s.connected, s.workspace_name),
+                        Err(_) => (false, None),
+                    };
 
                 // Step 2: does the running gateway actually have Slack wired up
                 // for THIS agent? We check four things in openclaw.json:
@@ -844,8 +1037,11 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
                 }
             }
             "github" => {
-                if let Ok(token) = crate::keychain::get_secret(&format!("github-access-token-{}", agent_id)) {
-                    let res = client.get("https://api.github.com/user")
+                if let Ok(token) =
+                    crate::keychain::get_secret(&format!("github-access-token-{}", agent_id))
+                {
+                    let res = client
+                        .get("https://api.github.com/user")
                         .header("User-Agent", "Canopy-Agent")
                         .bearer_auth(token)
                         .send()
@@ -862,7 +1058,8 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
                             diagnostics.push(ConnectionDiagnostic {
                                 service: "GitHub".to_string(),
                                 is_ok: false,
-                                message: "GitHub token invalid. Reconfigure in Connections tab.".to_string(),
+                                message: "GitHub token invalid. Reconfigure in Connections tab."
+                                    .to_string(),
                             });
                         }
                     }
@@ -875,8 +1072,13 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
                 }
             }
             "telegram" => {
-                if let Ok(token) = crate::keychain::get_secret(&format!("agent_{}_telegram_bot_token", agent_id)) {
-                    let res = client.get(&format!("https://api.telegram.org/bot{}/getMe", token)).send().await;
+                if let Ok(token) =
+                    crate::keychain::get_secret(&format!("agent_{}_telegram_bot_token", agent_id))
+                {
+                    let res = client
+                        .get(&format!("https://api.telegram.org/bot{}/getMe", token))
+                        .send()
+                        .await;
                     match res {
                         Ok(r) if r.status().is_success() => {
                             diagnostics.push(ConnectionDiagnostic {
@@ -902,10 +1104,14 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
                 }
             }
             "discord" => {
-                if let Ok(token) = crate::keychain::get_secret(&format!("agent_{}_discord_bot_token", agent_id)) {
-                    let res = client.get("https://discord.com/api/v10/users/@me")
+                if let Ok(token) =
+                    crate::keychain::get_secret(&format!("agent_{}_discord_bot_token", agent_id))
+                {
+                    let res = client
+                        .get("https://discord.com/api/v10/users/@me")
                         .header("Authorization", format!("Bot {}", token))
-                        .send().await;
+                        .send()
+                        .await;
                     match res {
                         Ok(r) if r.status().is_success() => {
                             diagnostics.push(ConnectionDiagnostic {
@@ -931,7 +1137,9 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
                 }
             }
             "whatsapp" => {
-                if crate::keychain::get_secret(&format!("agent_{}_whatsapp_api_token", agent_id)).is_ok() {
+                if crate::keychain::get_secret(&format!("agent_{}_whatsapp_api_token", agent_id))
+                    .is_ok()
+                {
                     diagnostics.push(ConnectionDiagnostic {
                         service: "WhatsApp".to_string(),
                         is_ok: true,
@@ -948,11 +1156,16 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
             "twilio" => {
                 if let (Ok(sid), Ok(token)) = (
                     crate::keychain::get_secret(&format!("agent_{}_twilio_account_sid", agent_id)),
-                    crate::keychain::get_secret(&format!("agent_{}_twilio_auth_token", agent_id))
+                    crate::keychain::get_secret(&format!("agent_{}_twilio_auth_token", agent_id)),
                 ) {
-                    let res = client.get(&format!("https://api.twilio.com/2010-04-01/Accounts/{}.json", sid))
+                    let res = client
+                        .get(&format!(
+                            "https://api.twilio.com/2010-04-01/Accounts/{}.json",
+                            sid
+                        ))
                         .basic_auth(&sid, Some(&token))
-                        .send().await;
+                        .send()
+                        .await;
                     match res {
                         Ok(r) if r.status().is_success() => {
                             diagnostics.push(ConnectionDiagnostic {
@@ -989,7 +1202,7 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
         }
     }
 
-    // JIT Bug Reporting: Automatically log any detected failures into the bug tracker 
+    // JIT Bug Reporting: Automatically log any detected failures into the bug tracker
     // exactly when they are needed (e.g., prior to a message run or via the UI).
     for diag in &diagnostics {
         if !diag.is_ok {
@@ -1002,7 +1215,11 @@ pub async fn ping_agent_connections_internal(db: &crate::db::Database, agent_id:
                 resolved: false,
             };
             let _ = db.insert_agent_bug_report(&bug);
-            tracing::warn!("JIT diagnostic logged bug for agent {}: {}", agent_id, bug.error_message);
+            tracing::warn!(
+                "JIT diagnostic logged bug for agent {}: {}",
+                agent_id,
+                bug.error_message
+            );
         }
     }
 
@@ -1015,8 +1232,12 @@ mod tests {
 
     #[test]
     fn github_token_validation_accepts_known_safe_prefixes() {
-        assert!(is_safe_github_token_value("ghp_abcdefghijklmnopqrstuvwxyz123456"));
-        assert!(is_safe_github_token_value("gho_abcdefghijklmnopqrstuvwxyz123456"));
+        assert!(is_safe_github_token_value(
+            "ghp_abcdefghijklmnopqrstuvwxyz123456"
+        ));
+        assert!(is_safe_github_token_value(
+            "gho_abcdefghijklmnopqrstuvwxyz123456"
+        ));
         assert!(is_safe_github_token_value("github_pat_11AA.BB-cc_22"));
     }
 

@@ -29,7 +29,10 @@ impl OAuthToken {
     }
 
     fn is_expired(&self) -> bool {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         self.expires_at < now
     }
 }
@@ -85,7 +88,12 @@ fn test_bridge_channel_list_configured() {
     let bridge = default_test_bridge();
 
     assert!(
-        bridge.config.scope.get("channels").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()),
+        bridge
+            .config
+            .scope
+            .get("channels")
+            .and_then(|v| v.as_array())
+            .is_some_and(|a| !a.is_empty()),
         "Bridge should have authorized channels"
     );
 }
@@ -133,7 +141,10 @@ fn test_oauth_token_can_be_invalidated() {
     assert!(token_is_valid(&token), "Valid token should pass");
 
     token.is_valid = false;
-    assert!(!token_is_valid(&token), "Invalidated token should fail validation");
+    assert!(
+        !token_is_valid(&token),
+        "Invalidated token should fail validation"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -209,10 +220,7 @@ fn test_read_only_bridge_cannot_write() {
 
     let bridge = test_read_only_bridge();
 
-    assert!(
-        bridge.permissions.read,
-        "Read-only should allow read"
-    );
+    assert!(bridge.permissions.read, "Read-only should allow read");
     assert!(
         !bridge.permissions.write,
         "Read-only should not allow write"
@@ -305,10 +313,16 @@ fn test_refresh_token_not_exposed_to_api() {
 
     // Access token used for API calls
     let api_auth = format!("Bearer {}", token.access_token);
-    assert!(api_auth.contains(&token.access_token), "API uses access token");
+    assert!(
+        api_auth.contains(&token.access_token),
+        "API uses access token"
+    );
 
     // Refresh token kept secure, never sent in requests
-    assert!(!api_auth.contains(&token.refresh_token), "API should not use refresh token");
+    assert!(
+        !api_auth.contains(&token.refresh_token),
+        "API should not use refresh token"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -343,7 +357,10 @@ fn test_authorization_header_format() {
     let token = OAuthToken::new("test-token-456");
 
     let auth_header = format!("Bearer {}", token.access_token);
-    assert!(auth_header.starts_with("Bearer "), "Should use Bearer scheme");
+    assert!(
+        auth_header.starts_with("Bearer "),
+        "Should use Bearer scheme"
+    );
     assert!(
         auth_header.contains(&token.access_token),
         "Should include access token"

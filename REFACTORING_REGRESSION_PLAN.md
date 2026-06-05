@@ -84,6 +84,8 @@ Completed June 2, 2026:
 - `lib.rs` invoke handler entries use `openclaw::workspace_files::*` directly because Tauri command macro metadata is tied to the defining module path.
 - `get_agent_workspace_dir()` remains in `openclaw.rs` until workspace path resolution can be moved without forcing Docker/GitHub/terminal history churn.
 - `CANOPY_DATA_DIR` can override the host data directory for tests; production uses `dirs::data_dir()` when no override is present.
+- Emergency follow-up: API-key sync helpers now consider both shared and isolated OpenClaw state dirs via `agent_state_dirs()`. This prevents isolated agents from being skipped when writing keychain-derived `auth-profiles.json`.
+- Emergency follow-up: `list_agents` now fills blank SQLite `active_model` values from OpenClaw config before returning agents to the UI.
 
 Regression focus:
 

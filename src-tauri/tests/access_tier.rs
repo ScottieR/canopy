@@ -9,10 +9,9 @@
 ///   Tier 1 / Notify        — new file or minor update, show dismissible toast
 ///   Tier 2 / SoftInterrupt — large content change >50%, show soft interrupt
 ///   Tier 3 / Block         — security violation, write rejected, Err returned
-
 mod common;
 
-use canopy_lib::{sanitize_path_component, change_magnitude, AccessTier};
+use canopy_lib::{change_magnitude, sanitize_path_component, AccessTier};
 use std::fs;
 use tempfile::TempDir;
 
@@ -57,11 +56,13 @@ fn sanitize_strips_forward_slash() {
     let result = sanitize_path_component("../../etc/passwd");
     assert!(
         !result.contains('/'),
-        "Sanitized path must not contain '/': got '{}'", result
+        "Sanitized path must not contain '/': got '{}'",
+        result
     );
     assert!(
         !result.starts_with(".."),
-        "Sanitized path must not start with '..': got '{}'", result
+        "Sanitized path must not start with '..': got '{}'",
+        result
     );
 }
 
@@ -70,7 +71,8 @@ fn sanitize_strips_backslash() {
     let result = sanitize_path_component("C:\\Windows\\System32");
     assert!(
         !result.contains('\\'),
-        "Sanitized path must not contain '\\': got '{}'", result
+        "Sanitized path must not contain '\\': got '{}'",
+        result
     );
 }
 
@@ -139,7 +141,8 @@ fn change_magnitude_small_word_swap_is_under_half() {
     let mag = change_magnitude(a, b);
     assert!(
         mag < 0.50,
-        "Single word swap should be < 50% change, got {:.3}", mag
+        "Single word swap should be < 50% change, got {:.3}",
+        mag
     );
 }
 
@@ -150,7 +153,8 @@ fn change_magnitude_full_rewrite_is_over_half() {
     let mag = change_magnitude(a, b);
     assert!(
         mag > 0.50,
-        "Full rewrite should be > 50% change, got {:.3}", mag
+        "Full rewrite should be > 50% change, got {:.3}",
+        mag
     );
 }
 
@@ -189,7 +193,8 @@ fn tier3_path_traversal_raw_string_fails_prefix_check() {
     let attempted = "/Users/scottie/Projects/Q3Launch/../OtherProject/steal.txt";
     assert!(
         !is_within_namespace(connected, attempted),
-        "Path with '..' must fail the namespace prefix check: '{}'", attempted
+        "Path with '..' must fail the namespace prefix check: '{}'",
+        attempted
     );
 }
 
@@ -258,7 +263,7 @@ fn tier1_new_file_always_produces_notify() {
 #[test]
 fn tier0_small_edit_produces_silent() {
     let original = "The quick brown fox jumps over the lazy dog.";
-    let edited   = "The quick brown cat jumps over the lazy dog.";
+    let edited = "The quick brown cat jumps over the lazy dog.";
     assert_eq!(
         classify_tier(true, original, edited),
         AccessTier::Silent,
@@ -323,7 +328,10 @@ fn snapshot_written_before_overwrite() {
 
     // Verify the live file has the new content
     let live = fs::read_to_string(&artifact_path).unwrap();
-    assert_eq!(live, new_content, "Live file must have new content after overwrite");
+    assert_eq!(
+        live, new_content,
+        "Live file must have new content after overwrite"
+    );
 }
 
 #[test]
@@ -334,7 +342,7 @@ fn restore_writes_snapshot_of_current_before_reverting() {
 
     let artifact_path = tmp.path().join("doc.md");
     let current_content = "Current version before restore.";
-    let prev_content    = "Previous version we are restoring to.";
+    let prev_content = "Previous version we are restoring to.";
     fs::write(&artifact_path, current_content).unwrap();
 
     // Simulate restore: snapshot current first, then write prev
@@ -346,7 +354,8 @@ fn restore_writes_snapshot_of_current_before_reverting() {
     fs::write(
         history_dir.join("snap_undo.json"),
         serde_json::to_string_pretty(&undo_snap).unwrap(),
-    ).unwrap();
+    )
+    .unwrap();
     fs::write(&artifact_path, prev_content).unwrap();
 
     // Verify the undo snapshot has the pre-restore content

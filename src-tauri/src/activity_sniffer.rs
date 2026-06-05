@@ -1,11 +1,11 @@
-use tauri::Manager;
-use tokio::time::{sleep, Duration};
+use crate::db::{Database, SecurityAlert};
+use chrono::Utc;
 use std::collections::HashMap;
 use std::fs;
-use crate::db::{Database, SecurityAlert};
-use uuid::Uuid;
-use chrono::Utc;
 use tauri::Emitter;
+use tauri::Manager;
+use tokio::time::{sleep, Duration};
+use uuid::Uuid;
 
 // Map of Agent ID -> Last checked timestamp for terminal history
 // to avoid alerting on the same event multiple times.
@@ -38,7 +38,9 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
                     continue; // Skip already paused agents
                 }
 
-                let history_file = workspace_base.join(&agent.id).join(".terminal_history.json");
+                let history_file = workspace_base
+                    .join(&agent.id)
+                    .join(".terminal_history.json");
                 if !history_file.exists() {
                     continue;
                 }
@@ -69,8 +71,9 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
                         }
 
                         if let Some(command) = entry.get("command").and_then(|c| c.as_str()) {
-                            let (is_suspicious, severity, reason) = analyze_command_for_egress(command);
-                            
+                            let (is_suspicious, severity, reason) =
+                                analyze_command_for_egress(command);
+
                             if is_suspicious {
                                 let alert = SecurityAlert {
                                     id: Uuid::new_v4().to_string(),
@@ -80,23 +83,40 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
                                     description: reason.clone(),
                                     resolved: false,
                                 };
-                                
+
                                 let _ = db.insert_security_alert(&alert);
-                                
+
                                 // Automatically pause the agent if severity is Critical
                                 if severity == "Critical" || severity == "High" {
-                                    tracing::warn!("Auto-pausing agent {} due to high-risk network egress: {}", agent.id, reason);
+                                    tracing::warn!(
+                                        "Auto-pausing agent {} due to high-risk network egress: {}",
+                                        agent.id,
+                                        reason
+                                    );
                                     let _ = db.set_agent_paused(&agent.id, true);
-                                    
-                                    let container_name = crate::openclaw::get_agent_container_name(&db, &agent.id);
+
+                                    let container_name =
+                                        crate::openclaw::get_agent_container_name(&db, &agent.id);
                                     let _ = crate::openclaw::get_docker_command()
-                                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
-                                               "openclaw", "agents", "remove", &agent.id])
+                                        .args([
+                                            "exec",
+                                            "-u",
+                                            "node",
+                                            "-e",
+                                            "NODE_OPTIONS=--v8-pool-size=1",
+                                            &container_name,
+                                            "openclaw",
+                                            "agents",
+                                            "remove",
+                                            &agent.id,
+                                        ])
                                         .output()
                                         .await;
-                                        
+
                                     // Stop the machine browser if running
-                                    let browser_manager = app_handle.state::<crate::browser_manager::BrowserManager>();
+                                    let browser_manager = app_handle
+                                        .state::<crate::browser_manager::BrowserManager>(
+                                    );
                                     let _ = browser_manager.stop_browser(&agent.id).await;
                                 }
 
@@ -118,43 +138,77 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
 
 fn analyze_command_for_egress(command: &str) -> (bool, String, String) {
     let lower_cmd = command.to_lowercase();
-    
+
     // Ignore the approved secure export bridge
     if lower_cmd.contains("18802/export_file") {
         return (false, "".to_string(), "".to_string());
     }
 
     // Heuristics for unauthorized file uploads
-    if lower_cmd.contains("curl") && (lower_cmd.contains("-f ") || lower_cmd.contains("--form") || lower_cmd.contains("--data-binary") || lower_cmd.contains("-t ")) {
-        return (true, "High".to_string(), format!("Detected unauthorized HTTP file upload via curl: {}", command.chars().take(100).collect::<String>()));
+    if lower_cmd.contains("curl")
+        && (lower_cmd.contains("-f ")
+            || lower_cmd.contains("--form")
+            || lower_cmd.contains("--data-binary")
+            || lower_cmd.contains("-t "))
+    {
+        return (
+            true,
+            "High".to_string(),
+            format!(
+                "Detected unauthorized HTTP file upload via curl: {}",
+                command.chars().take(100).collect::<String>()
+            ),
+        );
     }
 
     if lower_cmd.contains("wget") && lower_cmd.contains("--post-file") {
-        return (true, "High".to_string(), "Detected unauthorized HTTP file upload via wget.".to_string());
+        return (
+            true,
+            "High".to_string(),
+            "Detected unauthorized HTTP file upload via wget.".to_string(),
+        );
     }
 
     if lower_cmd.contains("scp ") || lower_cmd.contains("rsync ") || lower_cmd.contains("sftp ") {
-        return (true, "Critical".to_string(), "Detected SSH/SFTP file exfiltration attempt.".to_string());
+        return (
+            true,
+            "Critical".to_string(),
+            "Detected SSH/SFTP file exfiltration attempt.".to_string(),
+        );
     }
-    
+
     if lower_cmd.contains("nc -") || lower_cmd.contains("netcat") {
-        return (true, "Critical".to_string(), "Detected raw socket connection (potential reverse shell or exfiltration).".to_string());
+        return (
+            true,
+            "Critical".to_string(),
+            "Detected raw socket connection (potential reverse shell or exfiltration).".to_string(),
+        );
     }
 
     if lower_cmd.contains("setinputfiles") {
         // Playwright file upload signature
-        return (true, "Medium".to_string(), "Detected automated browser file upload.".to_string());
+        return (
+            true,
+            "Medium".to_string(),
+            "Detected automated browser file upload.".to_string(),
+        );
     }
 
     (false, "".to_string(), "".to_string())
 }
 
 #[tauri::command]
-pub async fn get_network_security_alerts(db: tauri::State<'_, Database>) -> Result<Vec<SecurityAlert>, String> {
+pub async fn get_network_security_alerts(
+    db: tauri::State<'_, Database>,
+) -> Result<Vec<SecurityAlert>, String> {
     db.get_active_security_alerts().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub async fn resolve_network_security_alert(db: tauri::State<'_, Database>, alert_id: String) -> Result<(), String> {
-    db.resolve_security_alert(&alert_id).map_err(|e| e.to_string())
+pub async fn resolve_network_security_alert(
+    db: tauri::State<'_, Database>,
+    alert_id: String,
+) -> Result<(), String> {
+    db.resolve_security_alert(&alert_id)
+        .map_err(|e| e.to_string())
 }

@@ -436,18 +436,33 @@ export const useForumStore = create<ForumState>()(
         const id = generateId("art");
         const createdAt = Date.now();
         set(state => ({
-          forums: state.forums.map(f =>
-            f.id !== forumId ? f : {
-              ...f,
-              artifacts: [...f.artifacts, {
+          forums: state.forums.map(f => {
+            if (f.id !== forumId) return f;
+            const existingIndex = f.artifacts.findIndex(a =>
+              a.folder === artifact.folder &&
+              (artifact.filename ? a.filename === artifact.filename : a.title === artifact.title)
+            );
+            let updatedArtifacts;
+            if (existingIndex !== -1) {
+              updatedArtifacts = [...f.artifacts];
+              updatedArtifacts[existingIndex] = {
+                ...updatedArtifacts[existingIndex],
+                ...artifact,
+                syncState: artifact.syncState ?? "unsynced" as ArtifactSyncState,
+              };
+            } else {
+              updatedArtifacts = [...f.artifacts, {
                 ...artifact,
                 id,
                 createdAt,
-                // New artifacts start unsynced; auto if the forum auto-syncs deliverables
                 syncState: artifact.syncState ?? "unsynced" as ArtifactSyncState,
-              }],
+              }];
             }
-          ),
+            return {
+              ...f,
+              artifacts: updatedArtifacts,
+            };
+          }),
         }));
       },
 

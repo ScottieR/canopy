@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use bollard::Docker;
 use bollard::container::{ListContainersOptions, StatsOptions};
+use bollard::Docker;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -21,18 +21,30 @@ impl DockerManager {
         let mut docker = Docker::connect_with_socket_defaults().unwrap_or_else(|_| {
             let home = dirs::home_dir().unwrap_or_default();
             let orb_sock = home.join(".orbstack/run/docker.sock");
-            Docker::connect_with_socket(&orb_sock.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION).unwrap()
+            Docker::connect_with_socket(
+                &orb_sock.to_string_lossy(),
+                120,
+                bollard::API_DEFAULT_VERSION,
+            )
+            .unwrap()
         });
 
         if docker.ping().await.is_err() {
             let home = dirs::home_dir().unwrap_or_default();
             let orb_sock = home.join(".orbstack/run/docker.sock");
-            docker = Docker::connect_with_socket(&orb_sock.to_string_lossy(), 120, bollard::API_DEFAULT_VERSION)
-                .context("Failed to connect to OrbStack explicitly")?;
+            docker = Docker::connect_with_socket(
+                &orb_sock.to_string_lossy(),
+                120,
+                bollard::API_DEFAULT_VERSION,
+            )
+            .context("Failed to connect to OrbStack explicitly")?;
         }
 
         // Verify connection
-        docker.ping().await.context("Docker ping failed. Is OrbStack running?")?;
+        docker
+            .ping()
+            .await
+            .context("Docker ping failed. Is OrbStack running?")?;
         tracing::info!("Connected to Docker engine");
 
         Ok(Self { docker })
@@ -118,13 +130,10 @@ async fn ensure_orbstack_memory_internal() -> Result<(bool, u64, u64), String> {
         "{}".to_string()
     };
 
-    let mut cfg: serde_json::Value = serde_json::from_str(&existing_raw)
-        .unwrap_or(serde_json::json!({}));
+    let mut cfg: serde_json::Value =
+        serde_json::from_str(&existing_raw).unwrap_or(serde_json::json!({}));
 
-    let current_mib: u64 = cfg
-        .get("vmMemoryMiB")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0); // 0 = not set → OrbStack picks its own default (~8 GB)
+    let current_mib: u64 = cfg.get("vmMemoryMiB").and_then(|v| v.as_u64()).unwrap_or(0); // 0 = not set → OrbStack picks its own default (~8 GB)
 
     if current_mib >= ORBSTACK_TARGET_MEMORY_MIB {
         return Ok((false, current_mib, current_mib));
@@ -141,7 +150,8 @@ async fn ensure_orbstack_memory_internal() -> Result<(bool, u64, u64), String> {
 
     tracing::info!(
         "OrbStack VM memory updated: {} MiB → {} MiB",
-        current_mib, ORBSTACK_TARGET_MEMORY_MIB
+        current_mib,
+        ORBSTACK_TARGET_MEMORY_MIB
     );
     Ok((true, current_mib, ORBSTACK_TARGET_MEMORY_MIB))
 }
@@ -168,16 +178,28 @@ pub async fn configure_orbstack_memory() -> Result<String, String> {
     let orb_bin = home.join(".orbstack/bin/orb");
 
     if orb_bin.exists() {
-        tracing::info!("Restarting OrbStack VM to apply new memory limit ({} MiB)…", new_mib);
-        let _ = tokio::process::Command::new(&orb_bin).arg("stop").output().await;
+        tracing::info!(
+            "Restarting OrbStack VM to apply new memory limit ({} MiB)…",
+            new_mib
+        );
+        let _ = tokio::process::Command::new(&orb_bin)
+            .arg("stop")
+            .output()
+            .await;
         tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-        let _ = tokio::process::Command::new(&orb_bin).arg("start").output().await;
+        let _ = tokio::process::Command::new(&orb_bin)
+            .arg("start")
+            .output()
+            .await;
 
         // Wait up to 20 s for the Docker socket to reappear.
         let sock_path = home.join(".orbstack/run/docker.sock");
         let mut up = false;
         for _ in 0..20 {
-            if sock_path.exists() { up = true; break; }
+            if sock_path.exists() {
+                up = true;
+                break;
+            }
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
 
@@ -185,7 +207,8 @@ pub async fn configure_orbstack_memory() -> Result<String, String> {
             return Err(format!(
                 "OrbStack config updated ({} GB → {} GB) but the VM did not restart within 20 s. \
                  Please restart OrbStack manually from the menu bar.",
-                prev_mib / 1024, new_mib / 1024
+                prev_mib / 1024,
+                new_mib / 1024
             ));
         }
     }
@@ -281,7 +304,10 @@ process.on('unhandledRejection', (reason, promise) => {
         for dir in dirs {
             let path = std::path::Path::new(&dir);
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                extra_volumes.push_str(&format!("      - {}:/home/node/.openclaw/workspace/mounts/{}\n", dir, name));
+                extra_volumes.push_str(&format!(
+                    "      - {}:/home/node/.openclaw/workspace/mounts/{}\n",
+                    dir, name
+                ));
             }
         }
     }
@@ -409,7 +435,10 @@ process.on('unhandledRejection', (reason, promise) => {
                 for dir in dirs {
                     let path = std::path::Path::new(&dir);
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        extra_volumes.push_str(&format!("      - {}:/home/node/.openclaw/workspace/mounts/{}\n", dir, name));
+                        extra_volumes.push_str(&format!(
+                            "      - {}:/home/node/.openclaw/workspace/mounts/{}\n",
+                            dir, name
+                        ));
                     }
                 }
             }
@@ -522,7 +551,8 @@ fn preflight_sanitize_auth_profiles(data_dir: &PathBuf) {
                         if let Err(e) = std::fs::write(auth_file, "{}") {
                             tracing::warn!(
                                 "preflight_sanitize_auth_profiles: could not fix {:?}: {}",
-                                auth_file, e
+                                auth_file,
+                                e
                             );
                         } else {
                             tracing::warn!(
@@ -578,7 +608,11 @@ fn merge_json(a: &mut serde_json::Value, b: &serde_json::Value) {
     }
 }
 
-pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isolated: bool, token: &str) {
+pub fn preflight_sanitize_and_merge_config(
+    state_dir: &std::path::Path,
+    is_isolated: bool,
+    token: &str,
+) {
     let config_path = state_dir.join("openclaw.json");
 
     // ── 1. Delete OpenClaw's backup configs to prevent "size-drop" anomaly ──────
@@ -603,14 +637,24 @@ pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isola
             Ok(existing) => {
                 let mut base = serde_json::json!({});
                 // Preserve crucial state to avoid anomaly loops and keep integrations
-                if let Some(meta) = existing.get("meta") { base["meta"] = meta.clone(); }
-                if let Some(channels) = existing.get("channels") { base["channels"] = channels.clone(); }
-                if let Some(bindings) = existing.get("bindings") { base["bindings"] = bindings.clone(); }
-                
+                if let Some(meta) = existing.get("meta") {
+                    base["meta"] = meta.clone();
+                }
+                if let Some(channels) = existing.get("channels") {
+                    base["channels"] = channels.clone();
+                }
+                if let Some(bindings) = existing.get("bindings") {
+                    base["bindings"] = bindings.clone();
+                }
+
                 // For plugins, preserve the enabled flags of specific integrations
                 if let Some(plugins) = existing.pointer("/plugins/entries") {
-                    if let Some(slack) = plugins.get("slack") { base["plugins"]["entries"]["slack"] = slack.clone(); }
-                    if let Some(google) = plugins.get("google") { base["plugins"]["entries"]["google"] = google.clone(); }
+                    if let Some(slack) = plugins.get("slack") {
+                        base["plugins"]["entries"]["slack"] = slack.clone();
+                    }
+                    if let Some(google) = plugins.get("google") {
+                        base["plugins"]["entries"]["google"] = google.clone();
+                    }
                 }
 
                 // For isolated containers, we must preserve their agents.list and full plugins
@@ -637,7 +681,7 @@ pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isola
     if let Some(channels) = cfg.get_mut("channels").and_then(|c| c.as_object_mut()) {
         // Remove known broken/deprecated channels that cause OpenClaw to crash
         channels.remove("bluebubbles");
-        
+
         if let Some(slack) = channels.get_mut("slack").and_then(|s| s.as_object_mut()) {
             slack.remove("botToken");
             slack.remove("appToken");
@@ -647,8 +691,12 @@ pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isola
     let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").is_ok();
     let has_openai = crate::keychain::get_secret("OPENAI_API_KEY").is_ok();
     let has_gemini = crate::keychain::get_secret("GEMINI_API_KEY").is_ok();
-    let default_model = crate::model_constants::default_model_from_available_keys(has_anthropic, has_openai, has_gemini);
-    
+    let default_model = crate::model_constants::default_model_from_available_keys(
+        has_anthropic,
+        has_openai,
+        has_gemini,
+    );
+
     cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": default_model });
     cfg["agents"]["defaults"]["models"][default_model] = serde_json::json!({});
     cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize"]);
@@ -685,8 +733,10 @@ pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isola
 
         required_baseline["plugins"]["entries"]["talk-voice"]["enabled"] = serde_json::json!(true);
         required_baseline["plugins"]["entries"]["google"]["enabled"] = serde_json::json!(true);
-        required_baseline["plugins"]["entries"]["device-pair"]["enabled"] = serde_json::json!(false);
-        required_baseline["plugins"]["entries"]["phone-control"]["enabled"] = serde_json::json!(false);
+        required_baseline["plugins"]["entries"]["device-pair"]["enabled"] =
+            serde_json::json!(false);
+        required_baseline["plugins"]["entries"]["phone-control"]["enabled"] =
+            serde_json::json!(false);
 
         cfg["agents"]["list"] = serde_json::json!([]);
     }
@@ -702,13 +752,14 @@ pub fn preflight_sanitize_and_merge_config(state_dir: &std::path::Path, is_isola
     }
 }
 
-
 #[tauri::command]
 pub async fn start_gateway(app_handle: tauri::AppHandle) -> Result<String, String> {
     start_gateway_internal(Some(app_handle)).await
 }
 
-pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Result<String, String> {
+pub async fn start_gateway_internal(
+    app_handle: Option<tauri::AppHandle>,
+) -> Result<String, String> {
     // ── RATE LIMITING ──
     crate::rate_limiter::limiters::DOCKER_EXEC_LIMITER
         .check("local-user")
@@ -733,19 +784,28 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         Ok((true, prev, new)) => {
             tracing::info!(
                 "start_gateway: OrbStack VM memory raised {} MiB → {} MiB; restarting VM…",
-                prev, new
+                prev,
+                new
             );
             emit_progress("Applying new OrbStack memory limit — restarting VM (one-time, ~10 s)…");
             let home = dirs::home_dir().unwrap_or_default();
             let orb_bin = home.join(".orbstack/bin/orb");
             if orb_bin.exists() {
-                let _ = tokio::process::Command::new(&orb_bin).arg("stop").output().await;
+                let _ = tokio::process::Command::new(&orb_bin)
+                    .arg("stop")
+                    .output()
+                    .await;
                 tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                let _ = tokio::process::Command::new(&orb_bin).arg("start").output().await;
+                let _ = tokio::process::Command::new(&orb_bin)
+                    .arg("start")
+                    .output()
+                    .await;
                 // Wait up to 20 s for Docker socket
                 let sock = home.join(".orbstack/run/docker.sock");
                 for _ in 0..20 {
-                    if sock.exists() { break; }
+                    if sock.exists() {
+                        break;
+                    }
                     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                 }
             }
@@ -756,7 +816,10 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         Err(e) => {
             // Non-fatal: log and continue. The gateway can still start; we just
             // couldn't verify the memory config (e.g. Docker Desktop user).
-            tracing::warn!("start_gateway: could not check OrbStack memory config: {}", e);
+            tracing::warn!(
+                "start_gateway: could not check OrbStack memory config: {}",
+                e
+            );
         }
     }
 
@@ -811,7 +874,9 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
             .filter(|v| v.as_array().map(|a| !a.is_empty()).unwrap_or(false))
     };
     if saved_agents_list.is_some() {
-        tracing::info!("start_gateway: saved existing agents.list for potential restore after preflight");
+        tracing::info!(
+            "start_gateway: saved existing agents.list for potential restore after preflight"
+        );
     }
 
     // Write a clean openclaw.json BEFORE the container starts, then check whether the
@@ -827,7 +892,11 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
     // of openclaw.json that was in place when the container was last (re)started.
     // If the marker differs from what we want now → the running container has stale config
     // → stop it so compose-up recreates it fresh with the new file.
-    preflight_sanitize_and_merge_config(&state_dir, false, crate::model_constants::GATEWAY_INTERNAL_TOKEN);
+    preflight_sanitize_and_merge_config(
+        &state_dir,
+        false,
+        crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+    );
     let openclaw_path = state_dir.join("openclaw.json");
     let desired_config = std::fs::read_to_string(&openclaw_path).unwrap_or_default();
 
@@ -844,9 +913,11 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         if needs_restart {
             if let (Ok(mut app_json), Ok(mut des_json)) = (
                 serde_json::from_str::<serde_json::Value>(&applied_config),
-                serde_json::from_str::<serde_json::Value>(&desired_config)
+                serde_json::from_str::<serde_json::Value>(&desired_config),
             ) {
-                if let (Some(app_obj), Some(des_obj)) = (app_json.as_object_mut(), des_json.as_object_mut()) {
+                if let (Some(app_obj), Some(des_obj)) =
+                    (app_json.as_object_mut(), des_json.as_object_mut())
+                {
                     app_obj.remove("meta");
                     des_obj.remove("meta");
                     needs_restart = app_obj != des_obj;
@@ -860,12 +931,19 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         // ZOMBIE DETECTION: The container might be marked as "Running" by docker ps,
         // but its PID namespace has crashed. A simple exec probe will fail with
         // "error executing setns process". If so, we MUST force a restart.
-        if let Ok(exec_out) = get_docker_command().args(["exec", "canopy-gateway", "true"]).output().await {
+        if let Ok(exec_out) = get_docker_command()
+            .args(["exec", "canopy-gateway", "true"])
+            .output()
+            .await
+        {
             if !exec_out.status.success() {
                 let stderr = String::from_utf8_lossy(&exec_out.stderr).to_lowercase();
                 let stdout = String::from_utf8_lossy(&exec_out.stdout).to_lowercase();
-                if stderr.contains("error executing setns process") || stderr.contains("no such file or directory") || 
-                   stdout.contains("error executing setns process") || stdout.contains("no such file or directory") {
+                if stderr.contains("error executing setns process")
+                    || stderr.contains("no such file or directory")
+                    || stdout.contains("error executing setns process")
+                    || stdout.contains("no such file or directory")
+                {
                     tracing::warn!("start_gateway: zombie canopy-gateway detected (setns error)! Forcing container recreate.");
                     config_needs_restart = true;
                 }
@@ -876,7 +954,9 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
     if config_needs_restart {
         tracing::info!("start_gateway: openclaw.json differs from last applied config, or container is zombified — will force-remove and recreate container");
     } else {
-        tracing::info!("start_gateway: openclaw.json unchanged since last container start — no restart needed");
+        tracing::info!(
+            "start_gateway: openclaw.json unchanged since last container start — no restart needed"
+        );
     }
 
     // Fix any auth-profiles.json files that contain invalid JSON BEFORE the container
@@ -890,7 +970,12 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
     // auth-profiles.json is still written by boot_sync_agents as belt-and-suspenders.
     let provider_keys = {
         let mut m = HashMap::new();
-        for key in &["GEMINI_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"] {
+        for key in &[
+            "GEMINI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "XAI_API_KEY",
+        ] {
             if let Ok(v) = crate::keychain::get_secret(key) {
                 if !v.trim().is_empty() {
                     m.insert(key.to_string(), v.trim().to_string());
@@ -900,7 +985,10 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         // DO NOT include global SLACK_BOT_TOKEN to prevent cross-agent context bleed
         m
     };
-    tracing::info!("start_gateway: injecting {} provider env var(s) into compose", provider_keys.len());
+    tracing::info!(
+        "start_gateway: injecting {} provider env var(s) into compose",
+        provider_keys.len()
+    );
 
     let compose = generate_compose_file(&data_dir, &provider_keys);
     let compose_path = data_dir.join("docker-compose.yml");
@@ -931,7 +1019,14 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
     // If compose didn't change and the canonical `canopy-gateway` is already running
     // cleanly, we skip removing it (docker-compose up -d will be a no-op).
     if let Ok(ls_out) = get_docker_command()
-        .args(["ps", "-a", "--filter", "name=canopy-gateway", "--format", "{{.Names}}\t{{.ID}}"])
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            "name=canopy-gateway",
+            "--format",
+            "{{.Names}}\t{{.ID}}",
+        ])
         .output()
         .await
     {
@@ -939,21 +1034,37 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         for line in output.lines() {
             let mut parts = line.splitn(2, '\t');
             let name = parts.next().unwrap_or("").trim();
-            let id   = parts.next().unwrap_or("").trim();
-            if id.is_empty() { continue; }
+            let id = parts.next().unwrap_or("").trim();
+            if id.is_empty() {
+                continue;
+            }
 
             if name != "canopy-gateway" {
                 // Hash-prefixed stale container (e.g. 53eca6e3188b_canopy-gateway) — always remove
-                tracing::info!("start_gateway: removing stale mangled container '{}' ({})", name, id);
+                tracing::info!(
+                    "start_gateway: removing stale mangled container '{}' ({})",
+                    name,
+                    id
+                );
                 match get_docker_command().args(["rm", "-f", id]).output().await {
                     Ok(ref o) if o.status.success() => {}
                     Ok(ref o) => {
                         let err_msg = String::from_utf8_lossy(&o.stderr);
-                        tracing::warn!("start_gateway: could not remove '{}': {}", name, err_msg.trim());
-                        
-                        if err_msg.to_lowercase().contains("did not receive an exit event") || err_msg.to_lowercase().contains("cannot kill container") {
+                        tracing::warn!(
+                            "start_gateway: could not remove '{}': {}",
+                            name,
+                            err_msg.trim()
+                        );
+
+                        if err_msg
+                            .to_lowercase()
+                            .contains("did not receive an exit event")
+                            || err_msg.to_lowercase().contains("cannot kill container")
+                        {
                             tracing::error!("start_gateway: FATAL DOCKER ENGINE WEDGE DETECTED on mangled container. Attempting to force-restart Docker engine...");
-                            emit_progress("Docker daemon frozen. Restarting engine (takes ~12s)...");
+                            emit_progress(
+                                "Docker daemon frozen. Restarting engine (takes ~12s)...",
+                            );
                             let _ = std::process::Command::new("sh")
                                 .arg("-c")
                                 .arg("if command -v orbctl >/dev/null; then orbctl stop && orbctl start; else osascript -e 'quit app \"OrbStack\"' 2>/dev/null || osascript -e 'quit app \"Docker\"' 2>/dev/null && sleep 3 && (open -a OrbStack 2>/dev/null || open -a Docker 2>/dev/null); fi")
@@ -962,34 +1073,53 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
                             tokio::time::sleep(std::time::Duration::from_secs(12)).await;
                         }
                     }
-                    Err(e)    => tracing::warn!("start_gateway: docker rm error for '{}': {}", name, e),
+                    Err(e) => {
+                        tracing::warn!("start_gateway: docker rm error for '{}': {}", name, e)
+                    }
                 }
             } else if needs_write || config_needs_restart {
                 // Canonical container, but compose file or openclaw.json changed.
                 // docker stop has a race with restart:unless-stopped — use rm -f (instant SIGKILL)
                 // so compose-up always creates a fresh container with the updated config.
-                let reason = if needs_write { "compose file changed" } else { "openclaw.json config changed" };
-                tracing::info!("start_gateway: {} — force-removing canopy-gateway ({}) for clean recreate", reason, id);
+                let reason = if needs_write {
+                    "compose file changed"
+                } else {
+                    "openclaw.json config changed"
+                };
+                tracing::info!(
+                    "start_gateway: {} — force-removing canopy-gateway ({}) for clean recreate",
+                    reason,
+                    id
+                );
                 match get_docker_command().args(["rm", "-f", id]).output().await {
                     Ok(ref o) if o.status.success() => {}
                     Ok(ref o) => {
                         let err_msg = String::from_utf8_lossy(&o.stderr);
-                        tracing::warn!("start_gateway: could not remove canopy-gateway: {}", err_msg.trim());
-                        
-                        if err_msg.to_lowercase().contains("did not receive an exit event") || err_msg.to_lowercase().contains("cannot kill container") {
+                        tracing::warn!(
+                            "start_gateway: could not remove canopy-gateway: {}",
+                            err_msg.trim()
+                        );
+
+                        if err_msg
+                            .to_lowercase()
+                            .contains("did not receive an exit event")
+                            || err_msg.to_lowercase().contains("cannot kill container")
+                        {
                             tracing::error!("start_gateway: FATAL DOCKER ENGINE WEDGE DETECTED. The container process cannot be killed by Docker. Attempting to force-restart Docker engine...");
-                            emit_progress("Docker daemon frozen. Restarting engine (takes ~12s)...");
+                            emit_progress(
+                                "Docker daemon frozen. Restarting engine (takes ~12s)...",
+                            );
                             // Try OrbStack first, fallback to Docker Desktop
                             let _ = std::process::Command::new("sh")
                                 .arg("-c")
                                 .arg("if command -v orbctl >/dev/null; then orbctl stop && orbctl start; else osascript -e 'quit app \"OrbStack\"' 2>/dev/null || osascript -e 'quit app \"Docker\"' 2>/dev/null && sleep 3 && (open -a OrbStack 2>/dev/null || open -a Docker 2>/dev/null); fi")
                                 .output();
-                                
+
                             tracing::info!("start_gateway: Docker engine restart command issued. Waiting 12 seconds for daemon to recover...");
                             tokio::time::sleep(std::time::Duration::from_secs(12)).await;
                         }
                     }
-                    Err(e)    => tracing::warn!("start_gateway: docker rm error: {}", e),
+                    Err(e) => tracing::warn!("start_gateway: docker rm error: {}", e),
                 }
                 // ── Wipe agent directories — only when actually recreating the container ──
                 // OpenClaw scans agents/ at startup and immediately begins starting channel
@@ -1008,7 +1138,10 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.is_dir() {
-                            tracing::info!("start_gateway: clearing agent dir {:?} (container recreate)", path.file_name().unwrap_or_default());
+                            tracing::info!(
+                                "start_gateway: clearing agent dir {:?} (container recreate)",
+                                path.file_name().unwrap_or_default()
+                            );
                             if let Err(e) = std::fs::remove_dir_all(&path) {
                                 tracing::warn!("start_gateway: could not remove {:?}: {}", path, e);
                             }
@@ -1113,9 +1246,11 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         .map_err(|e| format!("Failed to start gateway: {}", e))?;
 
     if output.status.success() {
-        let out = format!("{}{}",
+        let out = format!(
+            "{}{}",
             String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim());
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
         tracing::info!("start_gateway: docker-compose up -d succeeded: {}", out);
 
         // Always write the applied-config marker so the next launch can compare it
@@ -1132,11 +1267,13 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         // still running the desired config — write it. Only a genuine config change will
         // set config_needs_restart=true on the next launch and trigger a real recreate.
 
-
-        let container_was_restarted = out.contains("Starting") || out.contains("Started") || out.contains("Creating");
+        let container_was_restarted =
+            out.contains("Starting") || out.contains("Started") || out.contains("Creating");
         let _ = std::fs::write(&applied_marker, &desired_config);
         if container_was_restarted {
-            tracing::info!("start_gateway: applied-config marker written (container was recreated)");
+            tracing::info!(
+                "start_gateway: applied-config marker written (container was recreated)"
+            );
             ensure_browser_dependencies("canopy-gateway".to_string());
         } else {
             tracing::info!("start_gateway: applied-config marker written (container already running with correct config)");
@@ -1149,7 +1286,6 @@ pub async fn start_gateway_internal(app_handle: Option<tauri::AppHandle>) -> Res
         Err(format!("Failed to start gateway: {}", stderr))
     }
 }
-
 
 pub fn ensure_browser_dependencies(container_name: String) {
     tauri::async_runtime::spawn(async move {
@@ -1217,13 +1353,25 @@ for (const file of files) {
 "#;
 
         let patch_output = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "root", &container_name, "node", "-e", patch_js])
-            .output().await;
-            
+            .args([
+                "exec",
+                "-u",
+                "root",
+                &container_name,
+                "node",
+                "-e",
+                patch_js,
+            ])
+            .output()
+            .await;
+
         match patch_output {
             Ok(out) if out.status.success() => {
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                tracing::info!("ensure_browser_dependencies: Gemini patch applied successfully:\n{}", stdout.trim());
+                tracing::info!(
+                    "ensure_browser_dependencies: Gemini patch applied successfully:\n{}",
+                    stdout.trim()
+                );
                 // SIGUSR1 tells OpenClaw to hot-reload its JSON config — NOT its JS code.
                 // It is therefore useless for making Gemini patches take effect (those
                 // require a full process restart to re-import the patched dist files).
@@ -1252,50 +1400,92 @@ for (const file of files) {
                     } else {
                         let _ = crate::openclaw::get_docker_command()
                             .args(["exec", &container_name, "pkill", "-USR1", "-f", "openclaw"])
-                            .output().await;
+                            .output()
+                            .await;
                     }
                 } else {
                     tracing::info!("ensure_browser_dependencies: no files modified by Gemini patch — skipping SIGUSR1 reload");
                 }
             }
             Ok(out) => {
-                tracing::error!("ensure_browser_dependencies: Gemini patch failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+                tracing::error!(
+                    "ensure_browser_dependencies: Gemini patch failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
             }
             Err(e) => {
-                tracing::error!("ensure_browser_dependencies: Gemini patch command error: {}", e);
+                tracing::error!(
+                    "ensure_browser_dependencies: Gemini patch command error: {}",
+                    e
+                );
             }
         }
 
         // Check if chromium is already installed
         let check = crate::openclaw::get_docker_command()
             .args(["exec", "-u", "root", &container_name, "which", "chromium"])
-            .output().await;
-            
+            .output()
+            .await;
+
         if let Ok(out) = check {
             if out.status.success() {
-                tracing::info!("ensure_browser_dependencies: Chromium already installed in {}", container_name);
+                tracing::info!(
+                    "ensure_browser_dependencies: Chromium already installed in {}",
+                    container_name
+                );
                 return;
             }
         }
 
         tracing::info!("ensure_browser_dependencies: Initiating background Playwright and Chromium installation for {}...", container_name);
-        
-        let _ = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "root", &container_name, "apt-get", "update"])
-            .output().await;
-            
-        let _ = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "root", &container_name, "apt-get", "install", "-y", "chromium"])
-            .output().await;
 
         let _ = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "root", &container_name, "npx", "playwright", "install-deps"])
-            .output().await;
-        
+            .args(["exec", "-u", "root", &container_name, "apt-get", "update"])
+            .output()
+            .await;
+
         let _ = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "npx", "playwright", "install", "chromium", "webkit"])
-            .output().await;
-            
+            .args([
+                "exec",
+                "-u",
+                "root",
+                &container_name,
+                "apt-get",
+                "install",
+                "-y",
+                "chromium",
+            ])
+            .output()
+            .await;
+
+        let _ = crate::openclaw::get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "root",
+                &container_name,
+                "npx",
+                "playwright",
+                "install-deps",
+            ])
+            .output()
+            .await;
+
+        let _ = crate::openclaw::get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "npx",
+                "playwright",
+                "install",
+                "chromium",
+                "webkit",
+            ])
+            .output()
+            .await;
+
         tracing::info!("ensure_browser_dependencies: Background Chromium/Playwright installation complete for {}.", container_name);
     });
 }
@@ -1353,7 +1543,7 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
             .arg("stop")
             .output()
             .await;
-        
+
         // Brief pause before start
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
@@ -1369,14 +1559,14 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
         let mut healthy = false;
         for _ in 0..15 {
             if sock_path.exists() {
-               healthy = true;
-               break;
+                healthy = true;
+                break;
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
 
         if !healthy {
-             return Err("Docker daemon failed to securely boot back online within 15 seconds. Please manually verify OrbStack.".to_string());
+            return Err("Docker daemon failed to securely boot back online within 15 seconds. Please manually verify OrbStack.".to_string());
         }
         tracing::info!("Docker socket available — OrbStack VM is up.");
     } else {
@@ -1399,7 +1589,9 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
 
     // Confirm the container is actually running now
     let container_state = tokio::process::Command::new(
-        dirs::home_dir().unwrap_or_default().join(".orbstack/bin/docker")
+        dirs::home_dir()
+            .unwrap_or_default()
+            .join(".orbstack/bin/docker"),
     )
     .args(["inspect", "-f", "{{.State.Status}}", "canopy-gateway"])
     .output()
@@ -1407,7 +1599,10 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
     .ok()
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|| "unknown".into());
-    tracing::info!("canopy-gateway container state after reset: {}", container_state);
+    tracing::info!(
+        "canopy-gateway container state after reset: {}",
+        container_state
+    );
 
     Ok("Infrastructure rebooted perfectly.".to_string())
 }

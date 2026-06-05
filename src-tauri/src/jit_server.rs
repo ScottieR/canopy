@@ -1,10 +1,10 @@
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use base64::Engine;
 use tokio::sync::{oneshot, Mutex};
 use tracing::{error, info};
 
@@ -44,7 +44,9 @@ struct PermissionRequest {
 }
 
 pub async fn start_jit_server(app_handle: tauri::AppHandle) {
-    let listener = TcpListener::bind("0.0.0.0:18802").await.expect("Failed to bind JIT port");
+    let listener = TcpListener::bind("0.0.0.0:18802")
+        .await
+        .expect("Failed to bind JIT port");
     info!("JIT Provisioning server listening on 0.0.0.0:18802");
 
     loop {
@@ -65,10 +67,12 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                             req_data.extend_from_slice(&buf[..n]);
 
                             if !headers_parsed {
-                                if let Some(pos) = req_data.windows(4).position(|w| w == b"\r\n\r\n") {
+                                if let Some(pos) =
+                                    req_data.windows(4).position(|w| w == b"\r\n\r\n")
+                                {
                                     headers_parsed = true;
                                     let header_str = String::from_utf8_lossy(&req_data[..pos]);
-                                    
+
                                     let mut path = "/";
                                     if header_str.starts_with("POST ") {
                                         is_post = true;
@@ -80,7 +84,8 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                     for line in header_str.lines() {
                                         if line.to_lowercase().starts_with("content-length:") {
                                             if let Some(len_str) = line.split(':').nth(1) {
-                                                content_length = len_str.trim().parse().unwrap_or(0);
+                                                content_length =
+                                                    len_str.trim().parse().unwrap_or(0);
                                             }
                                         }
                                     }
@@ -91,7 +96,9 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                 }
                             } else {
                                 // Find end of headers again to calculate body length
-                                if let Some(pos) = req_data.windows(4).position(|w| w == b"\r\n\r\n") {
+                                if let Some(pos) =
+                                    req_data.windows(4).position(|w| w == b"\r\n\r\n")
+                                {
                                     let body_start = pos + 4;
                                     if req_data.len() - body_start >= content_length {
                                         break;
@@ -105,19 +112,32 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
 
                 if let Some(pos) = req_data.windows(4).position(|w| w == b"\r\n\r\n") {
                     let body = &req_data[pos + 4..];
-                    
+
                     if is_post {
-                        let path = if let Some(p) = String::from_utf8_lossy(&req_data).split_whitespace().nth(1) { p.to_string() } else { "/".to_string() };
-                        
+                        let path = if let Some(p) =
+                            String::from_utf8_lossy(&req_data).split_whitespace().nth(1)
+                        {
+                            p.to_string()
+                        } else {
+                            "/".to_string()
+                        };
+
                         // Helper inline-format: produces an HTTP response string given status + body.
                         // Kept as a macro-like format so we don't have to plumb closures through async.
                         let route_to_response: (u16, String) = if path == "/export_file" {
                             match serde_json::from_slice::<ExportRequest>(body) {
                                 Ok(req) => {
-                                    let (response, status_code) = handle_export_request(app.clone(), req).await;
-                                    (status_code, serde_json::to_string(&response).unwrap_or_default())
+                                    let (response, status_code) =
+                                        handle_export_request(app.clone(), req).await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
                                 }
-                                Err(_) => (400, r#"{"error":"Invalid export request body"}"#.to_string()),
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid export request body"}"#.to_string(),
+                                ),
                             }
                         } else if path == "/request_attention" {
                             // Agent → user "please look at the browser" notification. Fire-and-forget:
@@ -128,7 +148,10 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                     handle_attention_request(app.clone(), req).await;
                                     (200, r#"{"status":"notified","message":"User has been notified."}"#.to_string())
                                 }
-                                Err(_) => (400, r#"{"error":"Invalid attention request body"}"#.to_string()),
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid attention request body"}"#.to_string(),
+                                ),
                             }
                         } else if path == "/spawn_genui" {
                             // Agent → user GenUI request. Spawns a native floating WebviewWindow
@@ -137,27 +160,44 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                 Ok(req) => {
                                     use tauri::Emitter;
                                     let _ = app.emit("spawn_genui_window", req);
-                                    (200, r#"{"status":"spawned","message":"GenUI window spawned."}"#.to_string())
+                                    (
+                                        200,
+                                        r#"{"status":"spawned","message":"GenUI window spawned."}"#
+                                            .to_string(),
+                                    )
                                 }
-                                Err(_) => (400, r#"{"error":"Invalid GenUI request body"}"#.to_string()),
+                                Err(_) => {
+                                    (400, r#"{"error":"Invalid GenUI request body"}"#.to_string())
+                                }
                             }
                         } else if path == "/request_permission" {
                             // Agent → user permission elevation. Blocks waiting for a decision:
                             // once / session / forever / deny.
                             match serde_json::from_slice::<PermissionRequest>(body) {
                                 Ok(req) => {
-                                    let (response, status_code) = handle_permission_request(app.clone(), req).await;
-                                    (status_code, serde_json::to_string(&response).unwrap_or_default())
+                                    let (response, status_code) =
+                                        handle_permission_request(app.clone(), req).await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
                                 }
-                                Err(_) => (400, r#"{"error":"Invalid permission request body"}"#.to_string()),
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid permission request body"}"#.to_string(),
+                                ),
                             }
                         } else {
                             // Default = legacy JIT credential request (backwards-compat for agent
                             // code that POSTs to / without a specific path).
                             match serde_json::from_slice::<JitRequest>(body) {
                                 Ok(req) => {
-                                    let (response, status_code) = handle_jit_request(app.clone(), req).await;
-                                    (status_code, serde_json::to_string(&response).unwrap_or_default())
+                                    let (response, status_code) =
+                                        handle_jit_request(app.clone(), req).await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
                                 }
                                 Err(_) => (400, r#"{"error":"Invalid request body"}"#.to_string()),
                             }
@@ -217,17 +257,20 @@ async fn handle_export_request(app: tauri::AppHandle, req: ExportRequest) -> (Va
     let approved = rx.await.unwrap_or(false);
 
     if approved {
-        (json!({"status": "saved", "message": "The user approved and saved the file."}), 200)
+        (
+            json!({"status": "saved", "message": "The user approved and saved the file."}),
+            200,
+        )
     } else {
-        (json!({"status": "blocked", "message": "The user blocked the file export."}), 403)
+        (
+            json!({"status": "blocked", "message": "The user blocked the file export."}),
+            403,
+        )
     }
 }
 
 #[tauri::command]
-pub async fn resolve_export_request(
-    request_id: String,
-    approved: bool,
-) -> Result<(), String> {
+pub async fn resolve_export_request(request_id: String, approved: bool) -> Result<(), String> {
     let mut pending = PENDING_EXPORTS.lock().await;
     if let Some(tx) = pending.remove(&request_id) {
         let _ = tx.send(approved);
@@ -289,22 +332,26 @@ pub async fn approve_jit_request(
 ) -> Result<(), String> {
     if approved {
         if duration == "permanent" {
-            let mut agent = db.get_agent(&agent_id)
+            let mut agent = db
+                .get_agent(&agent_id)
                 .map_err(|e| format!("DB error: {}", e))?
                 .ok_or_else(|| "Agent not found".to_string())?;
-                
+
             if !agent.integrations.contains(&credential_id) {
                 agent.integrations.push(credential_id.clone());
-                db.update_agent(&agent).map_err(|e| format!("Failed to update agent: {}", e))?;
-                
+                db.update_agent(&agent)
+                    .map_err(|e| format!("Failed to update agent: {}", e))?;
+
                 // Sync openclaw.json so it applies permanently
                 let _ = crate::openclaw::boot_sync_agents(app_handle.clone(), db.clone()).await;
             }
         } else {
             // Session or One-Time
             // Inject dynamically into container without saving to the DB profile
-            crate::openclaw::inject_jit_credential(&db, &agent_id, &credential_id).await.map_err(|e| e.to_string())?;
-            
+            crate::openclaw::inject_jit_credential(&db, &agent_id, &credential_id)
+                .await
+                .map_err(|e| e.to_string())?;
+
             if duration == "one_time" {
                 // Spawn task to automatically revoke after 5 minutes
                 let agent_id_clone = agent_id.clone();
@@ -314,8 +361,17 @@ pub async fn approve_jit_request(
                     use tauri::Manager;
                     tokio::time::sleep(std::time::Duration::from_secs(300)).await;
                     let db_state = app_handle_clone.state::<crate::db::Database>();
-                    let _ = crate::openclaw::revoke_jit_credential(&*db_state, &agent_id_clone, &cred_id_clone).await;
-                    tracing::info!("Auto-revoked one_time JIT credential {} for {}", cred_id_clone, agent_id_clone);
+                    let _ = crate::openclaw::revoke_jit_credential(
+                        &*db_state,
+                        &agent_id_clone,
+                        &cred_id_clone,
+                    )
+                    .await;
+                    tracing::info!(
+                        "Auto-revoked one_time JIT credential {} for {}",
+                        cred_id_clone,
+                        agent_id_clone
+                    );
                 });
             }
         }
@@ -472,20 +528,23 @@ pub async fn resolve_permission_request(
                 bm_state,
                 agent_id.clone(),
                 current,
-            ).await?;
+            )
+            .await?;
         } else if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
             let cap = permission_id.as_str();
             // Capability flips
             let mut handled = true;
             match cap {
-                "browser"   => agent.capabilities.browser = true,
-                "proxy"     => agent.capabilities.proxy = true,
-                "vision"    => agent.capabilities.vision = true,
-                "canvas"    => agent.capabilities.canvas = true,
-                "coding"    => agent.capabilities.coding = true,
-                "gog"       => agent.capabilities.gog = true,
+                "browser" => agent.capabilities.browser = true,
+                "proxy" => agent.capabilities.proxy = true,
+                "vision" => agent.capabilities.vision = true,
+                "canvas" => agent.capabilities.canvas = true,
+                "coding" => agent.capabilities.coding = true,
+                "gog" => agent.capabilities.gog = true,
                 "summarize" => agent.capabilities.summarize = true,
-                _ => { handled = false; }
+                _ => {
+                    handled = false;
+                }
             }
             if !handled {
                 // Treat as integration name.
@@ -493,7 +552,8 @@ pub async fn resolve_permission_request(
                     agent.integrations.push(permission_id.clone());
                 }
             }
-            db.update_agent(&agent).map_err(|e| format!("DB error: {}", e))?;
+            db.update_agent(&agent)
+                .map_err(|e| format!("DB error: {}", e))?;
 
             // Patch agents.list[i].skills via the existing helper so OpenClaw picks up
             // the new permission via hot-reload (no SIGTERM cascade).

@@ -37,7 +37,6 @@
 /// Cross-reference: https://docs.openclaw.ai/concepts/models
 ///
 /// Last verified: April 2026
-
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
 
@@ -153,26 +152,116 @@ pub struct ModelInfo {
 pub fn all_models() -> Vec<ModelInfo> {
     vec![
         // Anthropic
-        ModelInfo { id: ANTHROPIC_CLAUDE_SONNET.into(), name: "Claude Sonnet 4.6".into(), provider: "Anthropic".into(), strategy: "heavy".into(), description: "Fast & highly capable".into() },
-        ModelInfo { id: ANTHROPIC_CLAUDE_HAIKU.into(),  name: "Claude Haiku 4.5".into(),  provider: "Anthropic".into(), strategy: "light".into(), description: "Fastest Anthropic model".into() },
-        ModelInfo { id: ANTHROPIC_CLAUDE_OPUS.into(),   name: "Claude Opus 4.6".into(),   provider: "Anthropic".into(), strategy: "heavy".into(), description: "Most capable Anthropic".into() },
-        ModelInfo { id: ANTHROPIC_CLAUDE_OPUS_47.into(), name: "Claude Opus 4.7".into(),  provider: "Anthropic".into(), strategy: "heavy".into(), description: "Flagship Anthropic model".into() },
+        ModelInfo {
+            id: ANTHROPIC_CLAUDE_SONNET.into(),
+            name: "Claude Sonnet 4.6".into(),
+            provider: "Anthropic".into(),
+            strategy: "heavy".into(),
+            description: "Fast & highly capable".into(),
+        },
+        ModelInfo {
+            id: ANTHROPIC_CLAUDE_HAIKU.into(),
+            name: "Claude Haiku 4.5".into(),
+            provider: "Anthropic".into(),
+            strategy: "light".into(),
+            description: "Fastest Anthropic model".into(),
+        },
+        ModelInfo {
+            id: ANTHROPIC_CLAUDE_OPUS.into(),
+            name: "Claude Opus 4.6".into(),
+            provider: "Anthropic".into(),
+            strategy: "heavy".into(),
+            description: "Most capable Anthropic".into(),
+        },
+        ModelInfo {
+            id: ANTHROPIC_CLAUDE_OPUS_47.into(),
+            name: "Claude Opus 4.7".into(),
+            provider: "Anthropic".into(),
+            strategy: "heavy".into(),
+            description: "Flagship Anthropic model".into(),
+        },
         // OpenAI
-        ModelInfo { id: OPENAI_GPT4O.into(),     name: "GPT-4o".into(),      provider: "OpenAI".into(), strategy: "heavy".into(), description: "Flagship multimodal".into() },
-        ModelInfo { id: OPENAI_GPT4O_MINI.into(), name: "GPT-4o Mini".into(), provider: "OpenAI".into(), strategy: "light".into(), description: "Fast & affordable".into() },
-        ModelInfo { id: OPENAI_O4_MINI.into(),    name: "o4-mini".into(),     provider: "OpenAI".into(), strategy: "heavy".into(), description: "Fast reasoning model".into() },
+        ModelInfo {
+            id: OPENAI_GPT4O.into(),
+            name: "GPT-4o".into(),
+            provider: "OpenAI".into(),
+            strategy: "heavy".into(),
+            description: "Flagship multimodal".into(),
+        },
+        ModelInfo {
+            id: OPENAI_GPT4O_MINI.into(),
+            name: "GPT-4o Mini".into(),
+            provider: "OpenAI".into(),
+            strategy: "light".into(),
+            description: "Fast & affordable".into(),
+        },
+        ModelInfo {
+            id: OPENAI_O4_MINI.into(),
+            name: "o4-mini".into(),
+            provider: "OpenAI".into(),
+            strategy: "heavy".into(),
+            description: "Fast reasoning model".into(),
+        },
         // ── Google Gemini 3.x — Preview (no shutdown date announced) ──────────
         // Source: https://ai.google.dev/gemini-api/docs/deprecations
-        ModelInfo { id: GOOGLE_GEMINI_3_FLASH.into(),      name: "Gemini 3 Flash".into(),         provider: "Google Gemini".into(), strategy: "light".into(),  description: "Preview — successor to 2.5 Flash".into() },
-        ModelInfo { id: GOOGLE_GEMINI_31_FLASH_LITE.into(), name: "Gemini 3.1 Flash Lite".into(),  provider: "Google Gemini".into(), strategy: "light".into(),  description: "Preview — successor to 2.5 Flash Lite".into() },
-        ModelInfo { id: GOOGLE_GEMINI_31_PRO.into(),        name: "Gemini 3.1 Pro".into(),         provider: "Google Gemini".into(), strategy: "heavy".into(), description: "Preview — successor to 2.5 Pro".into() },
+        ModelInfo {
+            id: GOOGLE_GEMINI_3_FLASH.into(),
+            name: "Gemini 3 Flash".into(),
+            provider: "Google Gemini".into(),
+            strategy: "light".into(),
+            description: "Preview — successor to 2.5 Flash".into(),
+        },
+        ModelInfo {
+            id: GOOGLE_GEMINI_31_FLASH_LITE.into(),
+            name: "Gemini 3.1 Flash Lite".into(),
+            provider: "Google Gemini".into(),
+            strategy: "light".into(),
+            description: "Preview — successor to 2.5 Flash Lite".into(),
+        },
+        ModelInfo {
+            id: GOOGLE_GEMINI_31_PRO.into(),
+            name: "Gemini 3.1 Pro".into(),
+            provider: "Google Gemini".into(),
+            strategy: "heavy".into(),
+            description: "Preview — successor to 2.5 Pro".into(),
+        },
         // ── Google Gemini 2.5 — Stable GA (shutdown not before June 2026) ─────
-        ModelInfo { id: GOOGLE_GEMINI_FLASH_25.into(),      name: "Gemini 2.5 Flash".into(),       provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — recommended default".into() },
-        ModelInfo { id: GOOGLE_GEMINI_FLASH_LITE_25.into(), name: "Gemini 2.5 Flash Lite".into(),  provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — fastest/cheapest option".into() },
-        ModelInfo { id: GOOGLE_GEMINI_PRO_25.into(),        name: "Gemini 2.5 Pro".into(),         provider: "Google Gemini".into(), strategy: "heavy".into(), description: "Stable — flagship model".into() },
+        ModelInfo {
+            id: GOOGLE_GEMINI_FLASH_25.into(),
+            name: "Gemini 2.5 Flash".into(),
+            provider: "Google Gemini".into(),
+            strategy: "light".into(),
+            description: "Stable — recommended default".into(),
+        },
+        ModelInfo {
+            id: GOOGLE_GEMINI_FLASH_LITE_25.into(),
+            name: "Gemini 2.5 Flash Lite".into(),
+            provider: "Google Gemini".into(),
+            strategy: "light".into(),
+            description: "Stable — fastest/cheapest option".into(),
+        },
+        ModelInfo {
+            id: GOOGLE_GEMINI_PRO_25.into(),
+            name: "Gemini 2.5 Pro".into(),
+            provider: "Google Gemini".into(),
+            strategy: "heavy".into(),
+            description: "Stable — flagship model".into(),
+        },
         // ── Google Gemini 3.5 ────────────────────────────────────────────────
-        ModelInfo { id: GOOGLE_GEMINI_FLASH_35.into(),      name: "Gemini 3.5 Flash".into(),       provider: "Google Gemini".into(), strategy: "light".into(),  description: "Stable — speed optimized flagship".into() },
-        ModelInfo { id: GOOGLE_GEMINI_PRO_35.into(),        name: "Gemini 3.5 Pro".into(),         provider: "Google Gemini".into(), strategy: "heavy".into(), description: "Preview — flagship 3.5 model".into() },
+        ModelInfo {
+            id: GOOGLE_GEMINI_FLASH_35.into(),
+            name: "Gemini 3.5 Flash".into(),
+            provider: "Google Gemini".into(),
+            strategy: "light".into(),
+            description: "Stable — speed optimized flagship".into(),
+        },
+        ModelInfo {
+            id: GOOGLE_GEMINI_PRO_35.into(),
+            name: "Gemini 3.5 Pro".into(),
+            provider: "Google Gemini".into(),
+            strategy: "heavy".into(),
+            description: "Preview — flagship 3.5 model".into(),
+        },
         // NOTE: gemini-2.0-flash and gemini-2.0-flash-lite are DEPRECATED (Feb 2025,
         // shutdown June 1 2026). Do not add them back — use 2.5 series instead.
     ]
@@ -204,12 +293,17 @@ pub fn update_model_registry(fetched: Vec<ModelInfo>) {
         .collect();
 
     if valid.is_empty() {
-        tracing::warn!("update_model_registry: all fetched models failed validation — keeping existing list");
+        tracing::warn!(
+            "update_model_registry: all fetched models failed validation — keeping existing list"
+        );
         return;
     }
     let count = valid.len();
     *MODEL_REGISTRY.write().expect("MODEL_REGISTRY poisoned") = valid;
-    tracing::info!("update_model_registry: registry updated with {} models", count);
+    tracing::info!(
+        "update_model_registry: registry updated with {} models",
+        count
+    );
 }
 
 // ─── Gateway / Docker networking ──────────────────────────────────────────────
@@ -256,7 +350,10 @@ pub fn gateway_bearer_header() -> String {
 ///   /home/node/.openclaw/agents/{agent_id}/auth-profiles.json        ← flat
 ///   /home/node/.openclaw/agents/{agent_id}/agent/auth-profiles.json  ← with subdir
 pub fn agent_auth_profile_path(agent_id: &str) -> String {
-    format!("/home/node/.openclaw/agents/{}/auth-profiles.json", agent_id)
+    format!(
+        "/home/node/.openclaw/agents/{}/auth-profiles.json",
+        agent_id
+    )
 }
 
 /// Returns the path inside the container where an agent's SOUL.md lives.
@@ -419,7 +516,11 @@ mod tests {
     fn gemini_3x_constants_are_real_and_valid() {
         // Gemini 3.x models ARE real — confirmed from Google Vertex AI docs April 2026.
         // Gemini 3 Flash, 3.1 Flash-Lite, 3.1 Pro, and 3.1 Flash Image are all Preview.
-        for model in &[GOOGLE_GEMINI_31_FLASH_LITE, GOOGLE_GEMINI_3_FLASH, GOOGLE_GEMINI_31_PRO] {
+        for model in &[
+            GOOGLE_GEMINI_31_FLASH_LITE,
+            GOOGLE_GEMINI_3_FLASH,
+            GOOGLE_GEMINI_31_PRO,
+        ] {
             assert!(
                 validate_model_string(model).is_ok(),
                 "Gemini 3.x model '{}' failed format validation",
@@ -440,9 +541,11 @@ mod tests {
         // active sloane sessions Apr 2026). gemini-3.1-flash-lite-preview is NOT confirmed:
         // using it causes OpenClaw to hang at "starting..." (LiteLLM retry loop blocks the
         // Node.js event loop permanently). Switch only after confirming LiteLLM support.
-        assert_eq!(DEFAULT_GEMINI_MODEL, GOOGLE_GEMINI_31_PRO,
+        assert_eq!(
+            DEFAULT_GEMINI_MODEL, GOOGLE_GEMINI_31_PRO,
             "Default Gemini model must be gemini-3.1-pro-preview (confirmed LiteLLM support). \
-             See model_constants.rs comment for why flash-lite is not safe as a default.");
+             See model_constants.rs comment for why flash-lite is not safe as a default."
+        );
     }
 
     #[test]
@@ -462,12 +565,21 @@ mod tests {
         // Source: https://ai.google.dev/gemini-api/docs/deprecations
         // gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.5-pro are all stable GA.
         let models = all_models();
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_25),
-            "Catalogue must include stable '{}'", GOOGLE_GEMINI_FLASH_25);
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_LITE_25),
-            "Catalogue must include stable '{}'", GOOGLE_GEMINI_FLASH_LITE_25);
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_25),
-            "Catalogue must include stable '{}'", GOOGLE_GEMINI_PRO_25);
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_25),
+            "Catalogue must include stable '{}'",
+            GOOGLE_GEMINI_FLASH_25
+        );
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_LITE_25),
+            "Catalogue must include stable '{}'",
+            GOOGLE_GEMINI_FLASH_LITE_25
+        );
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_25),
+            "Catalogue must include stable '{}'",
+            GOOGLE_GEMINI_PRO_25
+        );
     }
 
     #[test]
@@ -475,12 +587,21 @@ mod tests {
         // Source: https://ai.google.dev/gemini-api/docs/deprecations
         // All three are listed as Preview with no shutdown date announced.
         let models = all_models();
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_3_FLASH),
-            "Catalogue must include '{}'", GOOGLE_GEMINI_3_FLASH);
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_31_FLASH_LITE),
-            "Catalogue must include '{}'", GOOGLE_GEMINI_31_FLASH_LITE);
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_31_PRO),
-            "Catalogue must include '{}'", GOOGLE_GEMINI_31_PRO);
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_3_FLASH),
+            "Catalogue must include '{}'",
+            GOOGLE_GEMINI_3_FLASH
+        );
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_31_FLASH_LITE),
+            "Catalogue must include '{}'",
+            GOOGLE_GEMINI_31_FLASH_LITE
+        );
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_31_PRO),
+            "Catalogue must include '{}'",
+            GOOGLE_GEMINI_31_PRO
+        );
     }
 
     #[test]
@@ -489,15 +610,25 @@ mod tests {
         // gemini-2.0-flash-lite deprecated Feb 2025, shutdown June 1 2026.
         // Source: https://ai.google.dev/gemini-api/docs/deprecations
         let models = all_models();
-        assert!(!models.iter().any(|m| m.id == "google/gemini-2.0-flash"),
-            "Catalogue must NOT include deprecated google/gemini-2.0-flash");
-        assert!(!models.iter().any(|m| m.id == "google/gemini-2.0-flash-lite"),
-            "Catalogue must NOT include deprecated google/gemini-2.0-flash-lite");
+        assert!(
+            !models.iter().any(|m| m.id == "google/gemini-2.0-flash"),
+            "Catalogue must NOT include deprecated google/gemini-2.0-flash"
+        );
+        assert!(
+            !models
+                .iter()
+                .any(|m| m.id == "google/gemini-2.0-flash-lite"),
+            "Catalogue must NOT include deprecated google/gemini-2.0-flash-lite"
+        );
         // Also ensure dated preview suffixes are not used — those are all deprecated/shutdown.
-        assert!(!models.iter().any(|m| m.id.contains("-preview-04-17")),
-            "Catalogue must NOT include shut-down -preview-04-17 variant");
-        assert!(!models.iter().any(|m| m.id.contains("-preview-05-06")),
-            "Catalogue must NOT include deprecated -preview-05-06 variant");
+        assert!(
+            !models.iter().any(|m| m.id.contains("-preview-04-17")),
+            "Catalogue must NOT include shut-down -preview-04-17 variant"
+        );
+        assert!(
+            !models.iter().any(|m| m.id.contains("-preview-05-06")),
+            "Catalogue must NOT include deprecated -preview-05-06 variant"
+        );
     }
 
     #[test]
@@ -552,12 +683,15 @@ mod tests {
         assert!(
             GATEWAY_URL.contains(&GATEWAY_HOST_PORT.to_string()),
             "GATEWAY_URL '{}' must use host port {} (not container port {})",
-            GATEWAY_URL, GATEWAY_HOST_PORT, GATEWAY_CONTAINER_PORT
+            GATEWAY_URL,
+            GATEWAY_HOST_PORT,
+            GATEWAY_CONTAINER_PORT
         );
         assert!(
             !GATEWAY_URL.contains(&GATEWAY_CONTAINER_PORT.to_string()),
             "GATEWAY_URL '{}' must NOT use container-internal port {}",
-            GATEWAY_URL, GATEWAY_CONTAINER_PORT
+            GATEWAY_URL,
+            GATEWAY_CONTAINER_PORT
         );
     }
 
@@ -635,9 +769,15 @@ mod tests {
     #[test]
     fn all_models_catalogue_has_gemini_35_models() {
         let models = all_models();
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_35),
-            "Catalogue must include stable '{}'", GOOGLE_GEMINI_FLASH_35);
-        assert!(models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_35),
-            "Catalogue must include '{}'", GOOGLE_GEMINI_PRO_35);
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_35),
+            "Catalogue must include stable '{}'",
+            GOOGLE_GEMINI_FLASH_35
+        );
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_35),
+            "Catalogue must include '{}'",
+            GOOGLE_GEMINI_PRO_35
+        );
     }
 }

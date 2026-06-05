@@ -61,6 +61,7 @@ export function resolveAnswer(messageId: string, answer: string): void {
 // ─── Controller ────────────────────────────────────────────────────────────────
 
 export interface ForumOrchestratorController {
+  start: () => void;
   stop: () => void;
 }
 
@@ -645,6 +646,18 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     );
     const reviewer = findByRole(agents, "qa", "review", "engin", "advis", "test");
 
+    const checkAborted = () => {
+      const freshForum = useForumStore.getState().forums.find(f => f.id === forumId);
+      if (stopped || !freshForum || freshForum.status !== "active") {
+        throw new Error("Forum execution aborted");
+      }
+    };
+
+    const isAbortError = (err: unknown) => {
+      const msg = String(err);
+      return msg.includes("aborted") || msg.includes("budget reached") || msg.includes("not active");
+    };
+
     // Helpers
     // Phase-scoped session IDs keep each orchestrator call context-clean.
     // The prompts already include all necessary context (board content, clarifications),
@@ -713,6 +726,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       const MAX_ATTEMPTS = 4;
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         if (stopped) throw new Error("Orchestrator stopped");
+        checkAborted();
         assertBudgetAvailable();
         updateAgentAction(forumId, agent.agentId, attempt === 1 ? "Thinking…" : `Retrying (${attempt})…`);
         useForumStore.getState().incrementTokensAndCost?.(forumId, estimatedTokens, estimatedCost);
@@ -749,9 +763,11 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
             message: prompt,
             sessionId: sessionId(agent, phase),
           });
+          checkAborted();
           return extractText(response);
         } catch (err) {
           if (stopped) throw err;
+          if (isAbortError(err)) throw err;
 
           // Quota/billing errors — don't retry, it won't help. Surface immediately.
           if (isQuotaErr(err)) {
@@ -933,6 +949,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         try {
           kickoffText = await callAgent(coordinator, buildKickoffPrompt(forum, coordinator), "kickoff");
         } catch (err) {
+          if (isAbortError(err)) throw err;
           reportAgentError(err, coordinator);
           kickoffText = '{"greeting": "Let\'s get started. *(Coordinator had a connection issue)*", "milestones": []}';
         }
@@ -1094,6 +1111,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
             updateAgentAction(forumId, agent.agentId, "Research posted ✓");
             return { name: agent.name, text: responseText };
           } catch (err) {
+            if (isAbortError(err)) throw err;
             reportAgentError(err, agent);
             return { name: agent.name, text: "" };
           }
@@ -1170,6 +1188,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
             "strategy"
           );
         } catch (err) {
+          if (isAbortError(err)) throw err;
           reportAgentError(err, strategist);
           stratText = "*(Strategy agent failed to produce an approach)*";
         }
@@ -1220,6 +1239,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           "Drafting…"
         );
       } catch (err) {
+        if (isAbortError(err)) throw err;
         reportAgentError(err, writer);
         rawDraftText = "---FORMAT---\nmarkdown\n---CONTENT---\n*(Writer agent failed to produce a draft)*";
       }
@@ -1294,6 +1314,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           if (stopped) return;
           post(reviewer.agentId, reviewText);
         } catch (err) {
+          if (isAbortError(err)) throw err;
           reportAgentError(err, reviewer);
         }
       }
@@ -1322,24 +1343,25 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
     }
   };
 
-  run().catch(err => {
-    // Catch unhandled rejections outside the main try/catch (e.g. from helpers).
-    // Guard: if the forum is already paused the inner catch already handled it —
-    // don't add a second error message.
-    if (!stopped) {
-      const store = useForumStore.getState();
-      const currentForum = store.forums.find(f => f.id === forumId);
-      if (currentForum?.status === "paused") return; // inner catch already handled it
-      const d = diagnoseError(err);
-      store.addForumMessage(forumId, {
-        kind: "system", sender: "system",
-        text: `⚠ Unexpected error — ${d.summary}\n\nError: ${d.detail}\n\nFix: ${d.fix}`,
-      });
-      store.setForumStatus(forumId, "paused");
-    }
-  });
-
   return {
+    start: () => {
+      run().catch(err => {
+        // Catch unhandled rejections outside the main try/catch (e.g. from helpers).
+        // Guard: if the forum is already paused the inner catch already handled it —
+        // don't add a second error message.
+        if (!stopped) {
+          const store = useForumStore.getState();
+          const currentForum = store.forums.find(f => f.id === forumId);
+          if (currentForum?.status === "paused") return; // inner catch already handled it
+          const d = diagnoseError(err);
+          store.addForumMessage(forumId, {
+            kind: "system", sender: "system",
+            text: `⚠ Unexpected error — ${d.summary}\n\nError: ${d.detail}\n\nFix: ${d.fix}`,
+          });
+          store.setForumStatus(forumId, "paused");
+        }
+      });
+    },
     stop: () => {
       stopped = true;
       // Resolve any pending answer promises so the async chain doesn't hang
@@ -1467,14 +1489,15 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
     }
   };
 
-  run().catch(err => {
-    if (!stopped) {
-      const store = useForumStore.getState();
-      store.setForumStatus(forumId, "paused");
-    }
-  });
-
   return {
+    start: () => {
+      run().catch(err => {
+        if (!stopped) {
+          const store = useForumStore.getState();
+          store.setForumStatus(forumId, "paused");
+        }
+      });
+    },
     stop: () => {
       stopped = true;
     }
@@ -1507,14 +1530,17 @@ export function initializeGlobalBackgroundOrchestrator() {
 
       if (forum.status === "active") {
         if (!running) {
-          // Start fresh engine
-          const engine = createForumOrchestrator(forum.id);
+          const isFollowUp = forum.milestones.length > 0 && forum.milestones.every(m => m.status === "done");
+          const engine = isFollowUp ? createFollowUpOrchestrator(forum.id) : createForumOrchestrator(forum.id);
           activeEngines.set(forum.id, { engine, version: currentVersion });
+          engine.start();
         } else if (running.version !== currentVersion) {
           // orchestratorVersion bumped (retry/resume) — restart engine
           running.engine.stop();
-          const engine = createForumOrchestrator(forum.id);
+          const isFollowUp = forum.milestones.length > 0 && forum.milestones.every(m => m.status === "done");
+          const engine = isFollowUp ? createFollowUpOrchestrator(forum.id) : createForumOrchestrator(forum.id);
           activeEngines.set(forum.id, { engine, version: currentVersion });
+          engine.start();
         }
         // else: same version, engine already running — do nothing
       } else if (running) {

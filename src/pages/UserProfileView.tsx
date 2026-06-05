@@ -22,12 +22,30 @@ function UserProfileView() {
     communication_tone: "Professional", global_directives: "Always cite your sources and optimize for safety."
   });
   const [saving, setSaving] = useState(false);
+  const [passcode, setPasscode] = useState("");
+  const [passcodeSaved, setPasscodeSaved] = useState(false);
 
   useEffect(() => {
     if (typeof invoke === 'function') {
       invoke("get_user_profile").then((res: any) => setProfile(res)).catch(console.error);
+      invoke("get_secret_cmd", { key: "cloak_passcode" })
+        .then((res: any) => {
+          if (res) setPasscode("••••••");
+        })
+        .catch(() => {});
     }
   }, []);
+
+  const handleSavePasscode = async () => {
+    if (typeof invoke === 'function' && passcode && passcode !== "••••••") {
+      try {
+        await invoke("store_secret_cmd", { key: "cloak_passcode", value: passcode.trim() });
+        setPasscodeSaved(true);
+      } catch (e) {
+        console.error("Failed to save passcode:", e);
+      }
+    }
+  };
 
   const handleSave = async () => {
     if (typeof invoke === 'function') {
@@ -93,19 +111,53 @@ function UserProfileView() {
         </div>
         
         {useWorldStore(s => s.isAutoCloakEnabled) && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(0,0,0,0.05)" }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Auto-lock after</div>
-            <select 
-              value={useWorldStore(s => s.autoCloakTimeout)}
-              onChange={(e) => useWorldStore.getState().setAutoCloakTimeout(Number(e.target.value))}
-              style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontFamily: "inherit", fontSize: 13, color: "var(--text-main)", outline: "none", cursor: "pointer" }}
-            >
-              <option value={1}>1 Minute</option>
-              <option value={5}>5 Minutes</option>
-              <option value={15}>15 Minutes</option>
-              <option value={60}>1 Hour</option>
-            </select>
-          </div>
+          <>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Auto-lock after</div>
+              <select 
+                value={useWorldStore(s => s.autoCloakTimeout)}
+                onChange={(e) => useWorldStore.getState().setAutoCloakTimeout(Number(e.target.value))}
+                style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontFamily: "inherit", fontSize: 13, color: "var(--text-main)", outline: "none", cursor: "pointer" }}
+              >
+                <option value={1}>1 Minute</option>
+                <option value={5}>5 Minutes</option>
+                <option value={15}>15 Minutes</option>
+                <option value={60}>1 Hour</option>
+              </select>
+            </div>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Fallback Canopy Passcode</div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>Used when Touch ID / local auth fails or is unsupported.</div>
+                </div>
+                <input
+                  type="password"
+                  value={passcode}
+                  onChange={e => {
+                    setPasscode(e.target.value);
+                    setPasscodeSaved(false);
+                  }}
+                  placeholder="e.g. 4-6 digits or password"
+                  style={{ padding: "8px 12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontFamily: "inherit", fontSize: 13, color: "var(--text-main)", outline: "none", width: 180, textAlign: "center" }}
+                />
+              </div>
+              {passcode && passcode !== "••••••" && !passcodeSaved && (
+                <button
+                  onClick={handleSavePasscode}
+                  style={{ alignSelf: "flex-end", marginTop: 8, padding: "6px 16px", borderRadius: 8, background: "#3c6663", color: "white", fontSize: 12, fontWeight: 600, border: "none", cursor: "pointer", transition: "all 0.2s" }}
+                >
+                  Save Passcode
+                </button>
+              )}
+              {passcodeSaved && (
+                <div style={{ alignSelf: "flex-end", fontSize: 12, color: "#4A9E96", fontWeight: 600, marginTop: 4 }}>
+                  Passcode updated successfully! ✓
+                </div>
+              )}
+            </div>
+          </>
         )}
       </div>
 

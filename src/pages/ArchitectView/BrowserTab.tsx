@@ -38,6 +38,8 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
 
   const browserStatus = agent.browser_status;
   const isRunning = browserStatus?.is_running || false;
+  const browserMode = browserStatus?.mode || "automated";
+  const isInteractiveAuth = browserMode === "interactive_auth";
 
   const refreshStatus = async () => {
     try {
@@ -139,6 +141,32 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
     }
   };
 
+  const handleStartTrustedGoogleLogin = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const status: BrowserStatus = await invoke("start_browser_interactive_auth", { agentId: agent.id });
+      updateAgentBrowserStatus(agent.id, status);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResumeAutomation = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const status: BrowserStatus = await invoke("finish_browser_interactive_auth", { agentId: agent.id });
+      updateAgentBrowserStatus(agent.id, status);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {/* Header / Main Control */}
@@ -167,15 +195,45 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
                 <button onClick={handleShowBrowser} style={{ padding: "6px 12px", borderRadius: 8, background: "#3c6663", color: "white", border: "none", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
                   Bring to Front
                 </button>
-                <button onClick={handleHideBrowser} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--surface-base)", color: "var(--text-main)", border: "1px solid var(--border-subtle)", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
-                  Hide Off-Screen
-                </button>
+                {isInteractiveAuth ? (
+                  <button onClick={handleResumeAutomation} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--surface-base)", color: "var(--text-main)", border: "1px solid var(--border-subtle)", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+                    Resume Automation
+                  </button>
+                ) : (
+                  <>
+                    <button onClick={handleHideBrowser} style={{ padding: "6px 12px", borderRadius: 8, background: "var(--surface-base)", color: "var(--text-main)", border: "1px solid var(--border-subtle)", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+                      Hide Off-Screen
+                    </button>
+                    <button onClick={handleStartTrustedGoogleLogin} style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(60, 102, 99, 0.1)", color: "#3c6663", border: "1px solid rgba(60, 102, 99, 0.25)", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+                      Trusted Google Login
+                    </button>
+                  </>
+                )}
               </>
             ) : (
-              <span style={{ fontSize: 12, color: "var(--text-sub)", fontWeight: 600, padding: "6px 12px", background: "var(--surface-base)", borderRadius: 8 }} title="The browser starts up the moment the agent needs it. Nothing is running right now.">
-                Browser idle
-              </span>
+              <>
+                <span style={{ fontSize: 12, color: "var(--text-sub)", fontWeight: 600, padding: "6px 12px", background: "var(--surface-base)", borderRadius: 8 }} title="The browser starts up the moment the agent needs it. Nothing is running right now.">
+                  Browser idle
+                </span>
+                <button onClick={handleStartTrustedGoogleLogin} style={{ padding: "6px 12px", borderRadius: 8, background: "rgba(60, 102, 99, 0.1)", color: "#3c6663", border: "1px solid rgba(60, 102, 99, 0.25)", fontWeight: 600, display: "flex", gap: 6, alignItems: "center", cursor: "pointer", fontSize: 12 }}>
+                  Trusted Google Login
+                </button>
+              </>
             )}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16, padding: 12, background: isInteractiveAuth ? "rgba(60, 102, 99, 0.08)" : "rgba(60, 102, 99, 0.04)", border: "1px solid rgba(60, 102, 99, 0.14)", borderRadius: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+            <Shield size={14} style={{ color: "#3c6663" }} />
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-main)" }}>
+              {isInteractiveAuth ? "Trusted login window active" : "Google sign-in handoff"}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+            {isInteractiveAuth
+              ? "Automation is paused. This Chrome window is using the same isolated agent profile, but without the automation bridge, so you can complete Google sign-in manually."
+              : "Use Trusted Google Login when a site rejects the agent's normal browser during Sign in with Google. Canopy reuses the same agent-only profile, pauses automation, and then restores it after you finish."}
           </div>
         </div>
 
@@ -194,7 +252,7 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
           <div style={{ background: "var(--surface-base)", padding: 12, borderRadius: 12, border: "1px solid var(--border-subtle)" }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 4 }}>Status</div>
             <div style={{ fontSize: 14, fontWeight: 700, color: isRunning ? "#3c6663" : "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
-              {isRunning ? <><CheckCircle2 size={14} /> Active</> : "Offline"}
+              {isRunning ? <><CheckCircle2 size={14} /> {isInteractiveAuth ? "Manual Login" : "Active"}</> : "Offline"}
             </div>
           </div>
           <div style={{ background: "var(--surface-base)", padding: 12, borderRadius: 12, border: "1px solid var(--border-subtle)" }}>
@@ -205,7 +263,7 @@ export function BrowserTab({ agent }: { agent: AgentData }) {
           </div>
           <div style={{ background: "var(--surface-base)", padding: 12, borderRadius: 12, border: "1px solid var(--border-subtle)" }}>
             <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 4 }}>Type</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Host Bridge</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>{isInteractiveAuth ? "Trusted Login" : "Host Bridge"}</div>
           </div>
         </div>
       </div>

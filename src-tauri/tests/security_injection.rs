@@ -83,10 +83,7 @@ fn test_agent_id_allows_hyphens_and_underscores() {
     // Result: Legitimate IDs accepted
 
     let result = validate_test_agent_id("test-agent_123");
-    assert!(
-        result.is_ok(),
-        "Hyphens and underscores should be allowed"
-    );
+    assert!(result.is_ok(), "Hyphens and underscores should be allowed");
 }
 
 #[test]
@@ -110,9 +107,15 @@ fn test_agent_id_rejects_parent_directory_reference() {
     // Result: Cannot escape directory
 
     let result = validate_test_agent_id("../../../etc/config");
-    assert!(result.is_err(), "Parent directory reference should be rejected");
     assert!(
-        result.unwrap_err().to_lowercase().contains("path traversal"),
+        result.is_err(),
+        "Parent directory reference should be rejected"
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .to_lowercase()
+            .contains("path traversal"),
         "Error should identify path traversal"
     );
 }
@@ -124,7 +127,10 @@ fn test_agent_id_rejects_current_directory_with_parent() {
     // Result: Hidden traversal blocked
 
     let result = validate_test_agent_id("test/../etc");
-    assert!(result.is_err(), "Obfuscated path traversal should be rejected");
+    assert!(
+        result.is_err(),
+        "Obfuscated path traversal should be rejected"
+    );
 }
 
 #[test]
@@ -292,8 +298,14 @@ fn test_validation_case_insensitive_for_special_chars() {
     let result_lower = validate_test_agent_id("test; whoami");
     let result_mixed = validate_test_agent_id("TEST; WHOAMI");
 
-    assert!(result_lower.is_err(), "Lowercase injection should be rejected");
-    assert!(result_mixed.is_err(), "Uppercase injection should be rejected");
+    assert!(
+        result_lower.is_err(),
+        "Lowercase injection should be rejected"
+    );
+    assert!(
+        result_mixed.is_err(),
+        "Uppercase injection should be rejected"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -359,7 +371,10 @@ fn test_bash_script_injection_blocked() {
 
     let bash_attack = "$(whoami)";
     let result = validate_test_agent_id(bash_attack);
-    assert!(result.is_err(), "Bash substitution injection should be blocked");
+    assert!(
+        result.is_err(),
+        "Bash substitution injection should be blocked"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────

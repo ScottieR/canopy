@@ -1,5 +1,5 @@
-use tauri::Manager;
 use tauri::Emitter;
+use tauri::Manager;
 use tokio::time::{sleep, Duration};
 
 pub fn start_health_monitor_daemon(app_handle: tauri::AppHandle) {
@@ -25,16 +25,23 @@ pub fn start_health_monitor_daemon(app_handle: tauri::AppHandle) {
 /// Emits a `gateway-health` Tauri event so the frontend can show a reconnect prompt
 /// if the gateway goes offline mid-session without a user-triggered action.
 async fn check_gateway_health(app_handle: &tauri::AppHandle) {
-    use crate::openclaw::get_docker_command;
     use crate::model_constants::GATEWAY_URL;
+    use crate::openclaw::get_docker_command;
 
     // Step 1: Is the container running?
     let container_running = match tokio::time::timeout(
         Duration::from_secs(5),
         get_docker_command()
-            .args(["inspect", "--format", "{{.State.Running}}", "canopy-gateway"])
+            .args([
+                "inspect",
+                "--format",
+                "{{.State.Running}}",
+                "canopy-gateway",
+            ])
             .output(),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout).trim() == "true",
         _ => false,
     };
@@ -60,7 +67,10 @@ async fn check_gateway_health(app_handle: &tauri::AppHandle) {
 
     let gateway_ok = client
         .get(format!("{}/health/stats", GATEWAY_URL))
-        .header("Authorization", &crate::model_constants::gateway_bearer_header())
+        .header(
+            "Authorization",
+            &crate::model_constants::gateway_bearer_header(),
+        )
         .send()
         .await
         .map(|r| r.status().is_success())

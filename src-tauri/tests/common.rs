@@ -1,8 +1,7 @@
 /// Common test utilities, fixtures, and setup for integration tests
-
 use canopy_lib::models::{
-    Agent, AgentStatus, AgentPersonality, AgentCapabilities, AgentStats, AgentBudget,
-    Bridge, BridgeType, BridgePermissions, BridgeConfig, PurchaseRequest, PurchaseDecision,
+    Agent, AgentBudget, AgentCapabilities, AgentPersonality, AgentStats, AgentStatus, Bridge,
+    BridgeConfig, BridgePermissions, BridgeType, PurchaseDecision, PurchaseRequest,
 };
 use chrono::Utc;
 use std::path::PathBuf;
@@ -20,10 +19,7 @@ impl TestContext {
         let temp_dir = TempDir::new().expect("Failed to create temp directory");
         let db_path = temp_dir.path().join("test.db");
 
-        TestContext {
-            temp_dir,
-            db_path,
-        }
+        TestContext { temp_dir, db_path }
     }
 
     /// Get the database path for this context
@@ -83,7 +79,11 @@ pub fn test_agent_with_id(id: &str) -> Agent {
 pub fn test_agent_with_name(name: &str) -> Agent {
     let mut agent = default_test_agent();
     agent.name = name.to_string();
-    let safe_name: String = name.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    let safe_name: String = name
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
     agent.id = format!("agent-{}", safe_name);
     agent
 }
@@ -110,10 +110,10 @@ pub fn default_test_budget(agent_id: &str) -> AgentBudget {
     AgentBudget {
         agent_id: agent_id.to_string(),
         payments_enabled: true,
-        auto_approve_threshold_cents: 5000,     // $50
-        per_transaction_limit_cents: 20000,     // $200
-        daily_limit_cents: 50000,               // $500
-        monthly_limit_cents: 200000,            // $2000
+        auto_approve_threshold_cents: 5000, // $50
+        per_transaction_limit_cents: 20000, // $200
+        daily_limit_cents: 50000,           // $500
+        monthly_limit_cents: 200000,        // $2000
         allowed_categories: vec![
             "cleaning_supplies".to_string(),
             "office_equipment".to_string(),
@@ -181,10 +181,7 @@ pub fn test_purchase_request(agent_id: &str, amount_cents: u64) -> PurchaseReque
 }
 
 /// Create a purchase request with custom category
-pub fn test_purchase_request_with_category(
-    agent_id: &str,
-    category: &str,
-) -> PurchaseRequest {
+pub fn test_purchase_request_with_category(agent_id: &str, category: &str) -> PurchaseRequest {
     let mut req = default_purchase_request(agent_id);
     req.category = category.to_string();
     req
@@ -247,7 +244,10 @@ pub fn validate_test_agent_id(id: &str) -> Result<(), String> {
     if id.contains(';') || id.contains('|') || id.contains('`') || id.contains('$') {
         return Err("Agent ID contains shell metacharacters".into());
     }
-    if !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return Err("Agent ID must be alphanumeric with hyphens/underscores".into());
     }
     Ok(())

@@ -110,16 +110,30 @@ const formatMessageTime = (dateInput: Date | string | number) => {
   }
 };
 
+const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
+const HTML_EXTS  = /\.(html?|htm)$/i;
+
 function EmbedPreview({ agentId, refName, title, height }: { agentId: string; refName: string; title: string; height: string }) {
   const [content, setContent] = useState<string | null>(null);
+  const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
+
+  const isImage = IMAGE_EXTS.test(refName);
+
   useEffect(() => {
-    const filename = refName.endsWith(".html") ? refName : `${refName}.html`;
-    invoke<string>("read_workspace_file", { agentId, filename })
-      .then(body => setContent(body))
-      .catch(e => setError(String(e)));
-  }, [agentId, refName]);
+    if (isImage) {
+      // Load image as base64 data URL for inline display
+      invoke<string>("read_workspace_file_base64", { agentId, filename: refName })
+        .then(url => setImageDataUrl(url))
+        .catch(e => setError(String(e)));
+    } else {
+      // Load HTML / text file for iframe
+      const filename = HTML_EXTS.test(refName) ? refName : `${refName}.html`;
+      invoke<string>("read_workspace_file", { agentId, filename })
+        .then(body => setContent(body))
+        .catch(e => setError(String(e)));
+    }
+  }, [agentId, refName, isImage]);
 
   return (
     <div style={{ margin: "12px 0", border: "1px solid var(--border-subtle)", borderRadius: 12, overflow: "hidden", background: "var(--surface-card)" }}>
@@ -145,7 +159,11 @@ function EmbedPreview({ agentId, refName, title, height }: { agentId: string; re
         <span style={{ fontSize: 12, fontWeight: 600 }}>{title}</span>
       </div>
       {error ? (
-        <div style={{ padding: 16, fontSize: 12, color: "#E57373" }}>Failed to load embed: {error}</div>
+        <div style={{ padding: 16, fontSize: 12, color: "#E57373" }}>Failed to load: {error}</div>
+      ) : isImage ? (
+        imageDataUrl
+          ? <img src={imageDataUrl} alt={title || refName} style={{ width: "100%", display: "block", maxHeight: height ? `${height}px` : "500px", objectFit: "contain" }} />
+          : <div style={{ padding: 16, fontSize: 12, color: "var(--text-muted)" }}>Loading {refName}...</div>
       ) : content === null ? (
         <div style={{ padding: 16, fontSize: 12, color: "var(--text-muted)" }}>Loading {refName}...</div>
       ) : content.trim() === "" ? (
@@ -452,10 +470,10 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     };
   }, [agent.id]);
   const [loading, setLoading] = useState(false);
-  // Hover-revealed reaction shortcuts (👍 / retry / edit) on agent messages.
-  // Tracking by ID rather than index keeps the reactions stable across re-renders.
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [likedMsgIds, setLikedMsgIds] = useState<Set<string>>(new Set());
+  const [dislikedMsgIds, setDislikedMsgIds] = useState<Set<string>>(new Set());
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   // Helper: find the user message that prompted a given agent message, so retry
   // and edit-prompt actions know what text to re-use.
   const findPriorUserMessage = useCallback((agentMsgId: string): ChatMessage | null => {
@@ -1054,10 +1072,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
              if (t.includes("System diagnostic ping. Please reply")) return false;
              if (t === "PONG" || t === "PONG.") return false;
              return true;
-          }).map(msg => (
+          }).map(rawMsg => {
+            // ── Tool-delivered agent messages mis-labeled as "user" ───────────────
+            // When OpenClaw routes a message via its internal message tool
+            // (action="send"), the reply arrives with sender:"user" even though
+            // it came from the agent. Detect these by checking:
+            // 1. Has image attachments (data: URL — works on fresh delivery)
+            // 2. Has image attachments by filename extension (works after persistence
+            //    strips the data URLs)
+            // 3. Message text looks like an agent response, not a user message
+            const looksLikeAgentDelivery = (
+              rawMsg.sender === "user" &&
+              rawMsg.attachments &&
+              rawMsg.attachments.length > 0 &&
+              rawMsg.attachments.some(a =>
+                a.dataUrl?.startsWith("data:image") ||
+                IMAGE_EXTS.test(a.name)
+              )
+            );
+            const msg = looksLikeAgentDelivery
+              ? { ...rawMsg, sender: "agent" as const }
+              : rawMsg;
+
+            return (
             <div
               key={msg.id}
-              onMouseEnter={() => msg.sender === "agent" && setHoveredMsgId(msg.id)}
+              onMouseEnter={() => setHoveredMsgId(msg.id)}
               onMouseLeave={() => setHoveredMsgId(prev => prev === msg.id ? null : prev)}
               style={{
                 display: "flex", flexDirection: "column",
@@ -1085,6 +1125,56 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 )}
                 {(() => {
                   const textTrimmed = msg.text.trim();
+
+                  // ── OpenClaw inter-session routing messages — never user-visible ──────
+                  // These contain <<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>> blocks and
+                  // [Inter-session message] headers. They are internal tool routing
+                  // used by OpenClaw's image/task pipeline and must be suppressed entirely.
+                  if (
+                    textTrimmed.includes("<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>") ||
+                    textTrimmed.includes("<<<END_OPENCLAW_INTERNAL_CONTEXT>>>") ||
+                    textTrimmed.startsWith("[Inter-session message]") ||
+                    textTrimmed.includes("[Internal task completion event]") ||
+                    textTrimmed.startsWith("[Queued messages while agent was busy]")
+                  ) {
+                    return null;
+                  }
+
+                  // ── Image attachments from tool-delivered messages ────────────────────
+                  // When an agent uses OpenClaw's message tool with action="send" and
+                  // attaches media, the reply may arrive with attachments. Render images
+                  // inline rather than as a text bubble.
+                  if (msg.attachments && msg.attachments.length > 0) {
+                    const imageAtts = msg.attachments.filter(a =>
+                      a.dataUrl?.startsWith("data:image") ||
+                      /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(a.name)
+                    );
+                    if (imageAtts.length > 0) {
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {textTrimmed && (
+                            <div className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                              <MDEditor.Markdown source={textTrimmed} style={{ background: "transparent", color: "inherit", fontSize: "inherit" }} />
+                            </div>
+                          )}
+                          {imageAtts.map((att, i) => (
+                            <div key={i} style={{ borderRadius: 10, overflow: "hidden", border: "1px solid var(--border-subtle)", maxWidth: 480 }}>
+                              <img
+                                src={att.dataUrl || att.name}
+                                alt={att.name}
+                                style={{ width: "100%", display: "block" }}
+                                onError={e => { (e.target as HTMLImageElement).style.display = "none"; }}
+                              />
+                              <div style={{ padding: "6px 10px", fontSize: 10, color: "var(--text-sub)", background: "rgba(0,0,0,0.02)", borderTop: "1px solid var(--border-subtle)" }}>
+                                {att.name}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }
+                  }
+
                   let isSystemDump = false;
                   let dumpTitle = "System Output";
 
@@ -1306,9 +1396,9 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 <span>{msg.sender === "agent" ? agent.name : "You"} · {msg.time}</span>
 
                 {msg.sender === "agent" && (() => {
-                  const visible = hoveredMsgId === msg.id || likedMsgIds.has(msg.id);
+                  const visible = hoveredMsgId === msg.id || likedMsgIds.has(msg.id) || dislikedMsgIds.has(msg.id) || copiedMsgId === msg.id;
                   const liked = likedMsgIds.has(msg.id);
-                  const priorUser = findPriorUserMessage(msg.id);
+                  const disliked = dislikedMsgIds.has(msg.id);
                   return (
                     <div style={{
                       display: "flex", alignItems: "center", gap: 4,
@@ -1319,7 +1409,16 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                       <button
                         onClick={() => setLikedMsgIds(prev => {
                           const next = new Set(prev);
-                          if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+                          if (next.has(msg.id)) {
+                            next.delete(msg.id);
+                          } else {
+                            next.add(msg.id);
+                            setDislikedMsgIds(d => {
+                              const nd = new Set(d);
+                              nd.delete(msg.id);
+                              return nd;
+                            });
+                          }
                           return next;
                         })}
                         title={liked ? "Liked" : "Mark as good"}
@@ -1335,18 +1434,82 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                         </svg>
                       </button>
                       <button
-                        onClick={() => {
-                          if (!priorUser || loading) return;
-                          handleSendMessage(priorUser.text);
-                        }}
-                        disabled={!priorUser || loading}
-                        title={priorUser ? "Retry — send the same prompt again for a fresh reply" : "Nothing to retry"}
+                        onClick={() => setDislikedMsgIds(prev => {
+                          const next = new Set(prev);
+                          if (next.has(msg.id)) {
+                            next.delete(msg.id);
+                          } else {
+                            next.add(msg.id);
+                            setLikedMsgIds(l => {
+                              const nl = new Set(l);
+                              nl.delete(msg.id);
+                              return nl;
+                            });
+                          }
+                          return next;
+                        })}
+                        title={disliked ? "Disliked" : "Mark as bad"}
                         style={{
                           padding: 3, border: "none", background: "transparent",
-                          cursor: !priorUser || loading ? "not-allowed" : "pointer",
+                          cursor: "pointer", borderRadius: 4,
+                          display: "flex", alignItems: "center",
+                          color: disliked ? "#e05252" : "var(--text-muted)",
+                        }}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill={disliked ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2-2.3zm7-13h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/>
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(msg.text);
+                          setCopiedMsgId(msg.id);
+                          setTimeout(() => setCopiedMsgId(null), 1500);
+                        }}
+                        title={copiedMsgId === msg.id ? "Copied!" : "Copy message"}
+                        style={{
+                          padding: 3, border: "none", background: "transparent",
+                          cursor: "pointer", borderRadius: 4, display: "flex", alignItems: "center",
+                          color: copiedMsgId === msg.id ? "#218380" : "var(--text-muted)",
+                        }}
+                      >
+                        {copiedMsgId === msg.id ? (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })()}
+
+                {msg.sender === "user" && (() => {
+                  const visible = hoveredMsgId === msg.id || copiedMsgId === msg.id;
+                  return (
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 4,
+                      opacity: visible ? 1 : 0,
+                      pointerEvents: visible ? "auto" : "none",
+                      transition: "opacity 0.15s ease",
+                    }}>
+                      <button
+                        onClick={() => {
+                          if (loading) return;
+                          handleSendMessage(msg.text);
+                        }}
+                        disabled={loading}
+                        title="Retry — send this message again"
+                        style={{
+                          padding: 3, border: "none", background: "transparent",
+                          cursor: loading ? "not-allowed" : "pointer",
                           borderRadius: 4, display: "flex", alignItems: "center",
                           color: "var(--text-muted)",
-                          opacity: !priorUser || loading ? 0.4 : 1,
+                          opacity: loading ? 0.4 : 1,
                         }}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1355,30 +1518,53 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                       </button>
                       <button
                         onClick={() => {
-                          if (!priorUser) return;
-                          setMessage(priorUser.text);
+                          setMessage(msg.text);
                         }}
-                        disabled={!priorUser}
-                        title={priorUser ? "Edit my prompt and re-send" : "No prompt to edit"}
+                        title="Rewrite — edit this prompt"
                         style={{
                           padding: 3, border: "none", background: "transparent",
-                          cursor: !priorUser ? "not-allowed" : "pointer",
+                          cursor: "pointer",
                           borderRadius: 4, display: "flex", alignItems: "center",
                           color: "var(--text-muted)",
-                          opacity: !priorUser ? 0.4 : 1,
                         }}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                           <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
                         </svg>
                       </button>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(msg.text);
+                          setCopiedMsgId(msg.id);
+                          setTimeout(() => setCopiedMsgId(null), 1500);
+                        }}
+                        title={copiedMsgId === msg.id ? "Copied!" : "Copy message"}
+                        style={{
+                          padding: 3, border: "none", background: "transparent",
+                          cursor: "pointer", borderRadius: 4, display: "flex", alignItems: "center",
+                          color: copiedMsgId === msg.id ? "#218380" : "var(--text-muted)",
+                        }}
+                      >
+                        {copiedMsgId === msg.id ? (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="20 6 9 17 4 12" />
+                          </svg>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                          </svg>
+                        )}
+                      </button>
                     </div>
                   );
                 })()}
               </div>
             </div>
-          ))
+          );
+          })
         )}
+
         {loading && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
@@ -1552,7 +1738,11 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                       ts: Date.now(),
                     };
                     setChatLog(prev => capLog([...prev, sysMsg]));
-                    invoke("send_message", { agentId: agent.id, message: sysMsg.text }).catch(e => console.warn("Auto-reply failed:", e));
+                    invoke("send_message", {
+                      agentId: agent.id,
+                      message: sysMsg.text,
+                      sessionId: agent.activeConversationId || null,
+                    }).catch(e => console.warn("Auto-reply failed:", e));
                     setAuthDomain(null); setAuthError(""); setForceNewCred(false); setSelectedCreds([]);
                   }}
                   style={{ padding: "8px 14px", background: "transparent", color: "#c0392b", border: "1px solid rgba(192,57,43,0.3)", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}

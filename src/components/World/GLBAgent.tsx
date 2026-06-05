@@ -10,6 +10,29 @@ import { getAssetUrl } from "../../utils/assets";
 // Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous
 let globalAnimationStagger = 0;
 
+class AccessoryRenderBoundary extends React.Component<
+  { children: React.ReactNode; path: string },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; path: string }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.warn(`Accessory render skipped for ${this.props.path}`, error);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
 export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, position = [0, 0, 0], rotationY = 0, scale = 1, isWorking = false, agentStatus, baseColor, robeColor, accentColor, role, navPoints, forceAnimation }: { fileUrl?: string, accessories?: string[], accessoryBehaviors?: Record<string, 'wearable' | 'decor'>, position?: [number, number, number] | number[], rotationY?: number, scale?: number, isWorking?: boolean, agentStatus?: string, baseColor?: string, robeColor?: string, accentColor?: string, role?: string, navPoints?: THREE.Vector3[], forceAnimation?: string }) {
   const groupRef = useRef<THREE.Group>(null);
   const orbRef = useRef<THREE.Mesh>(null);
@@ -224,12 +247,15 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
           const behavior = accessoryBehaviors?.[acc] || itemData?.type || 'accessory';
           if (behavior === 'decor') return null;
 
-          return <AttachedAccessory
-            key={`${acc}-${i}`}
-            path={acc}
-            accessoryData={accessoriesData}
-            clonedSceneRoot={clonedScene}
-          />;
+          return (
+            <AccessoryRenderBoundary key={`${acc}-${i}`} path={acc}>
+              <AttachedAccessory
+                path={acc}
+                accessoryData={accessoriesData}
+                clonedSceneRoot={clonedScene}
+              />
+            </AccessoryRenderBoundary>
+          );
         })}
         {role && <DynamicAccessory role={role} />}
       </React.Suspense>

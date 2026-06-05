@@ -8,18 +8,17 @@ pub fn get_agent_workspace_config_path(agent_id: &str) -> Result<PathBuf> {
         .join("agent-workspaces")
         .join(agent_id)
         .join("allowed_directories.json");
-    
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    
+
     Ok(path)
 }
 
 #[tauri::command]
 pub async fn get_agent_allowed_directories(agent_id: String) -> Result<Vec<String>, String> {
-    let path = get_agent_workspace_config_path(&agent_id)
-        .map_err(|e| e.to_string())?;
+    let path = get_agent_workspace_config_path(&agent_id).map_err(|e| e.to_string())?;
 
     if !path.exists() {
         return Ok(Vec::new());
@@ -28,8 +27,7 @@ pub async fn get_agent_allowed_directories(agent_id: String) -> Result<Vec<Strin
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("Failed to read allowed directories: {}", e))?;
 
-    let directories: Vec<String> = serde_json::from_str(&content)
-        .unwrap_or_default();
+    let directories: Vec<String> = serde_json::from_str(&content).unwrap_or_default();
 
     Ok(directories)
 }
@@ -40,8 +38,7 @@ pub async fn update_agent_allowed_directories(
     agent_id: String,
     directories: Vec<String>,
 ) -> Result<(), String> {
-    let path = get_agent_workspace_config_path(&agent_id)
-        .map_err(|e| e.to_string())?;
+    let path = get_agent_workspace_config_path(&agent_id).map_err(|e| e.to_string())?;
 
     let content = serde_json::to_string_pretty(&directories)
         .map_err(|e| format!("Failed to serialize allowed directories: {}", e))?;
@@ -50,7 +47,12 @@ pub async fn update_agent_allowed_directories(
         .map_err(|e| format!("Failed to write allowed directories: {}", e))?;
 
     // If the agent is isolated, we must restart its specific container to pick up the new volume mounts
-    let is_isolated = db.get_agent(&agent_id).ok().flatten().map(|a| a.isolated).unwrap_or(false);
+    let is_isolated = db
+        .get_agent(&agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.isolated)
+        .unwrap_or(false);
     if is_isolated {
         let data_dir = dirs::data_dir().unwrap().join("Canopy");
         let port = crate::openclaw::get_agent_isolated_port(&agent_id);
@@ -62,12 +64,17 @@ pub async fn update_agent_allowed_directories(
             .args(["-f", compose_path.to_str().unwrap(), "up", "-d"])
             .output()
             .await;
-            
+
         // Because recreating the container wipes any root filesystem changes (like apt-get installs),
         // we must re-apply the GitHub configuration if they had it enabled.
-        if let Ok(gh_token) = crate::keychain::get_secret(&format!("github-access-token-{}", agent_id)) {
-            let gh_user = crate::keychain::get_secret(&format!("github-username-{}", agent_id)).ok();
-            let _ = crate::channels::configure_github(db.clone(), agent_id.clone(), gh_token, gh_user).await;
+        if let Ok(gh_token) =
+            crate::keychain::get_secret(&format!("github-access-token-{}", agent_id))
+        {
+            let gh_user =
+                crate::keychain::get_secret(&format!("github-username-{}", agent_id)).ok();
+            let _ =
+                crate::channels::configure_github(db.clone(), agent_id.clone(), gh_token, gh_user)
+                    .await;
         }
     }
 

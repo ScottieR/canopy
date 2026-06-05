@@ -1,6 +1,5 @@
 /// Application state carrying user context through Tauri commands
 /// Enables authorization checks and audit logging
-
 use std::sync::Arc;
 use tauri::State;
 
@@ -28,8 +27,7 @@ impl AppState {
     /// For now, defaults to system user
     pub fn new() -> Self {
         AppState {
-            user_id: std::env::var("USER")
-                .unwrap_or_else(|_| "local-user".to_string()),
+            user_id: std::env::var("USER").unwrap_or_else(|_| "local-user".to_string()),
             is_admin: false,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             dev_mode: cfg!(debug_assertions),
@@ -50,7 +48,7 @@ impl AppState {
         if required_admin {
             self.is_admin
         } else {
-            true  // All users can perform non-admin operations
+            true // All users can perform non-admin operations
         }
     }
 }
@@ -75,8 +73,8 @@ mod tests {
     #[test]
     fn test_authorization_check() {
         let state = AppState::new();
-        assert!(state.is_authorized(false));  // Non-admin ops allowed
-        assert!(!state.is_authorized(true));  // Admin ops denied for non-admin
+        assert!(state.is_authorized(false)); // Non-admin ops allowed
+        assert!(!state.is_authorized(true)); // Admin ops denied for non-admin
     }
 
     #[test]

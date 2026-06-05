@@ -1,9 +1,9 @@
-use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
-use std::sync::Mutex;
 use chrono::Utc;
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use serde_json::json;
-use uuid::Uuid;
+use std::sync::Mutex;
 use tauri::Manager;
+use uuid::Uuid;
 
 use crate::models::*;
 
@@ -74,7 +74,9 @@ impl Database {
             dir.join("Canopy")
         } else {
             // Fallback to app data directory
-            app_handle.path().app_data_dir()
+            app_handle
+                .path()
+                .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
         };
 
@@ -305,8 +307,11 @@ impl Database {
         )?;
 
         // Create indexes for common queries
-        
-        let _ = conn.execute("ALTER TABLE token_usage_history ADD COLUMN conversation_id TEXT", []);
+
+        let _ = conn.execute(
+            "ALTER TABLE token_usage_history ADD COLUMN conversation_id TEXT",
+            [],
+        );
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS token_usage_history (
@@ -323,7 +328,10 @@ impl Database {
             )",
             [],
         )?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage_history(agent_id)", [])?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_agent ON token_usage_history(agent_id)",
+            [],
+        )?;
         conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_timestamp ON token_usage_history(timestamp)", [])?;
 
         conn.execute(
@@ -339,12 +347,30 @@ impl Database {
             [],
         )?;
 
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_bridges_agent ON bridges(agent_id)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON audit_log(agent_id)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp)", [])?;
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_purchase_history_agent ON purchase_history(agent_id)", [])?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_bridges_agent ON bridges(agent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON audit_log(agent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log(timestamp)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_purchase_history_agent ON purchase_history(agent_id)",
+            [],
+        )?;
 
         tracing::debug!("Database migrations completed");
         Ok(())
@@ -354,24 +380,24 @@ impl Database {
 
     pub fn get_user_profile(&self) -> SqlResult<UserProfile> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT value_json FROM global_config WHERE key = 'user_profile'")?;
-        
+        let mut stmt =
+            conn.prepare("SELECT value_json FROM global_config WHERE key = 'user_profile'")?;
+
         let json_str: String = match stmt.query_row([], |row| row.get(0)) {
             Ok(val) => val,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(UserProfile::default()),
             Err(e) => return Err(e),
         };
 
-        let profile: UserProfile = serde_json::from_str(&json_str)
-            .unwrap_or_else(|_| UserProfile::default());
+        let profile: UserProfile =
+            serde_json::from_str(&json_str).unwrap_or_else(|_| UserProfile::default());
         Ok(profile)
     }
 
     pub fn save_user_profile(&self, profile: &UserProfile) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
-        let value_json = serde_json::to_string(profile)
-            .unwrap_or_else(|_| "{}".to_string());
-        
+        let value_json = serde_json::to_string(profile).unwrap_or_else(|_| "{}".to_string());
+
         conn.execute(
             "INSERT INTO global_config (key, value_json) VALUES ('user_profile', ?1)
              ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
@@ -386,21 +412,20 @@ impl Database {
     pub fn insert_agent(&self, agent: &Agent) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        let personality_json = serde_json::to_string(&agent.personality)
-            .unwrap_or_else(|_| "{}".to_string());
-        let capabilities_json = serde_json::to_string(&agent.capabilities)
-            .unwrap_or_else(|_| "{}".to_string());
-        let integrations_json = serde_json::to_string(&agent.integrations)
-            .unwrap_or_else(|_| "[]".to_string());
-        let stats_json = serde_json::to_string(&agent.stats)
-            .unwrap_or_else(|_| "{}".to_string());
+        let personality_json =
+            serde_json::to_string(&agent.personality).unwrap_or_else(|_| "{}".to_string());
+        let capabilities_json =
+            serde_json::to_string(&agent.capabilities).unwrap_or_else(|_| "{}".to_string());
+        let integrations_json =
+            serde_json::to_string(&agent.integrations).unwrap_or_else(|_| "[]".to_string());
+        let stats_json = serde_json::to_string(&agent.stats).unwrap_or_else(|_| "{}".to_string());
         let status_str = status_to_string(&agent.status);
 
-        let memories_json = serde_json::to_string(&agent.memories)
-            .unwrap_or_else(|_| "[]".to_string());
-        let vi_json = serde_json::to_string(&agent.visual_identity)
-            .unwrap_or_else(|_| "{}".to_string());
-            
+        let memories_json =
+            serde_json::to_string(&agent.memories).unwrap_or_else(|_| "[]".to_string());
+        let vi_json =
+            serde_json::to_string(&agent.visual_identity).unwrap_or_else(|_| "{}".to_string());
+
         conn.execute(
             "INSERT INTO agents
                 (id, name, role, emoji, color, status, isolated, container_id,
@@ -438,38 +463,40 @@ impl Database {
              FROM agents WHERE id = ?1",
         )?;
 
-        let agent = stmt.query_row(params![id], |row| {
-            let status_str: String = row.get(5)?;
-            let personality_json: String = row.get(8)?;
-            let capabilities_json: String = row.get(9)?;
-            let integrations_json: String = row.get(10)?;
-            let stats_json: String = row.get(12)?;
-            let created_at_str: String = row.get(11)?;
-            let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
-            let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
-            let paused: bool = row.get(15).unwrap_or(false);
+        let agent = stmt
+            .query_row(params![id], |row| {
+                let status_str: String = row.get(5)?;
+                let personality_json: String = row.get(8)?;
+                let capabilities_json: String = row.get(9)?;
+                let integrations_json: String = row.get(10)?;
+                let stats_json: String = row.get(12)?;
+                let created_at_str: String = row.get(11)?;
+                let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
+                let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
+                let paused: bool = row.get(15).unwrap_or(false);
 
-            Ok(Agent {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                role: row.get(2)?,
-                emoji: row.get(3)?,
-                color: row.get(4)?,
-                status: string_to_status(&status_str),
-                isolated: row.get(6)?,
-                paused,
-                container_id: row.get(7)?,
-                personality: serde_json::from_str(&personality_json).unwrap_or_default(),
-                capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
-                integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
-                memories: serde_json::from_str(&memories_json).unwrap_or_default(),
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                    .unwrap_or_else(|_| chrono::DateTime::default())
-                    .with_timezone(&Utc),
-                stats: serde_json::from_str(&stats_json).unwrap_or_default(),
-                visual_identity: serde_json::from_str(&vi_json).ok(),
+                Ok(Agent {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    role: row.get(2)?,
+                    emoji: row.get(3)?,
+                    color: row.get(4)?,
+                    status: string_to_status(&status_str),
+                    isolated: row.get(6)?,
+                    paused,
+                    container_id: row.get(7)?,
+                    personality: serde_json::from_str(&personality_json).unwrap_or_default(),
+                    capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
+                    integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
+                    memories: serde_json::from_str(&memories_json).unwrap_or_default(),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    stats: serde_json::from_str(&stats_json).unwrap_or_default(),
+                    visual_identity: serde_json::from_str(&vi_json).ok(),
+                })
             })
-        }).optional()?;
+            .optional()?;
 
         Ok(agent)
     }
@@ -484,38 +511,39 @@ impl Database {
              FROM agents ORDER BY created_at DESC",
         )?;
 
-        let agents = stmt.query_map([], |row| {
-            let status_str: String = row.get(5)?;
-            let personality_json: String = row.get(8)?;
-            let capabilities_json: String = row.get(9)?;
-            let integrations_json: String = row.get(10)?;
-            let stats_json: String = row.get(12)?;
-            let created_at_str: String = row.get(11)?;
-            let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
-            let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
-            let paused: bool = row.get(15).unwrap_or(false);
+        let agents = stmt
+            .query_map([], |row| {
+                let status_str: String = row.get(5)?;
+                let personality_json: String = row.get(8)?;
+                let capabilities_json: String = row.get(9)?;
+                let integrations_json: String = row.get(10)?;
+                let stats_json: String = row.get(12)?;
+                let created_at_str: String = row.get(11)?;
+                let memories_json: String = row.get(13).unwrap_or_else(|_| "[]".to_string());
+                let vi_json: String = row.get(14).unwrap_or_else(|_| "{}".to_string());
+                let paused: bool = row.get(15).unwrap_or(false);
 
-            Ok(Agent {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                role: row.get(2)?,
-                emoji: row.get(3)?,
-                color: row.get(4)?,
-                status: string_to_status(&status_str),
-                isolated: row.get(6)?,
-                paused,
-                container_id: row.get(7)?,
-                personality: serde_json::from_str(&personality_json).unwrap_or_default(),
-                capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
-                integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
-                memories: serde_json::from_str(&memories_json).unwrap_or_default(),
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                    .unwrap_or_else(|_| chrono::DateTime::default())
-                    .with_timezone(&Utc),
-                stats: serde_json::from_str(&stats_json).unwrap_or_default(),
-                visual_identity: serde_json::from_str(&vi_json).ok(),
-            })
-        })?
+                Ok(Agent {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    role: row.get(2)?,
+                    emoji: row.get(3)?,
+                    color: row.get(4)?,
+                    status: string_to_status(&status_str),
+                    isolated: row.get(6)?,
+                    paused,
+                    container_id: row.get(7)?,
+                    personality: serde_json::from_str(&personality_json).unwrap_or_default(),
+                    capabilities: serde_json::from_str(&capabilities_json).unwrap_or_default(),
+                    integrations: serde_json::from_str(&integrations_json).unwrap_or_default(),
+                    memories: serde_json::from_str(&memories_json).unwrap_or_default(),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    stats: serde_json::from_str(&stats_json).unwrap_or_default(),
+                    visual_identity: serde_json::from_str(&vi_json).ok(),
+                })
+            })?
             .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(agents)
@@ -535,18 +563,17 @@ impl Database {
     pub fn update_agent(&self, agent: &Agent) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        let personality_json = serde_json::to_string(&agent.personality)
-            .unwrap_or_else(|_| "{}".to_string());
-        let capabilities_json = serde_json::to_string(&agent.capabilities)
-            .unwrap_or_else(|_| "{}".to_string());
-        let integrations_json = serde_json::to_string(&agent.integrations)
-            .unwrap_or_else(|_| "[]".to_string());
-        let stats_json = serde_json::to_string(&agent.stats)
-            .unwrap_or_else(|_| "{}".to_string());
-        let memories_json = serde_json::to_string(&agent.memories)
-            .unwrap_or_else(|_| "[]".to_string());
-        let vi_json = serde_json::to_string(&agent.visual_identity)
-            .unwrap_or_else(|_| "{}".to_string());
+        let personality_json =
+            serde_json::to_string(&agent.personality).unwrap_or_else(|_| "{}".to_string());
+        let capabilities_json =
+            serde_json::to_string(&agent.capabilities).unwrap_or_else(|_| "{}".to_string());
+        let integrations_json =
+            serde_json::to_string(&agent.integrations).unwrap_or_else(|_| "[]".to_string());
+        let stats_json = serde_json::to_string(&agent.stats).unwrap_or_else(|_| "{}".to_string());
+        let memories_json =
+            serde_json::to_string(&agent.memories).unwrap_or_else(|_| "[]".to_string());
+        let vi_json =
+            serde_json::to_string(&agent.visual_identity).unwrap_or_else(|_| "{}".to_string());
         let status_str = status_to_string(&agent.status);
 
         conn.execute(
@@ -588,12 +615,21 @@ impl Database {
         tx.execute("DELETE FROM conversations WHERE agent_id = ?1", params![id])?;
         tx.execute("DELETE FROM bridges WHERE agent_id = ?1", params![id])?;
         tx.execute("DELETE FROM budgets WHERE agent_id = ?1", params![id])?;
-        tx.execute("DELETE FROM purchase_history WHERE agent_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM purchase_history WHERE agent_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM audit_log WHERE agent_id = ?1", params![id])?;
-        tx.execute("DELETE FROM security_alerts WHERE agent_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM security_alerts WHERE agent_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM voice_configs WHERE agent_id = ?1", params![id])?;
-        tx.execute("DELETE FROM agent_bug_reports WHERE agent_id = ?1", params![id])?;
-        
+        tx.execute(
+            "DELETE FROM agent_bug_reports WHERE agent_id = ?1",
+            params![id],
+        )?;
+
         // Finally delete the main agent record
         tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
 
@@ -609,11 +645,13 @@ impl Database {
     pub fn is_agent_owner(&self, agent_id: &str, _user_id: &str) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap();
 
-        let exists: bool = conn.query_row(
-            "SELECT 1 FROM agents WHERE id = ?1 LIMIT 1",
-            params![agent_id],
-            |_| Ok(true),
-        ).optional()?
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM agents WHERE id = ?1 LIMIT 1",
+                params![agent_id],
+                |_| Ok(true),
+            )
+            .optional()?
             .unwrap_or(false);
 
         Ok(exists)
@@ -624,11 +662,13 @@ impl Database {
     pub fn is_budget_owner(&self, agent_id: &str, _user_id: &str) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap();
 
-        let exists: bool = conn.query_row(
-            "SELECT 1 FROM budgets WHERE agent_id = ?1 LIMIT 1",
-            params![agent_id],
-            |_| Ok(true),
-        ).optional()?
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM budgets WHERE agent_id = ?1 LIMIT 1",
+                params![agent_id],
+                |_| Ok(true),
+            )
+            .optional()?
             .unwrap_or(false);
 
         Ok(exists)
@@ -639,11 +679,13 @@ impl Database {
     pub fn is_conversation_owner(&self, conversation_id: &str, _user_id: &str) -> SqlResult<bool> {
         let conn = self.conn.lock().unwrap();
 
-        let exists: bool = conn.query_row(
-            "SELECT 1 FROM conversations WHERE id = ?1 LIMIT 1",
-            params![conversation_id],
-            |_| Ok(true),
-        ).optional()?
+        let exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM conversations WHERE id = ?1 LIMIT 1",
+                params![conversation_id],
+                |_| Ok(true),
+            )
+            .optional()?
             .unwrap_or(false);
 
         Ok(exists)
@@ -668,7 +710,11 @@ impl Database {
 
         // Check if exists
         let mut stmt = conn.prepare("SELECT 1 FROM conversations WHERE id = ?1")?;
-        if stmt.query_row(params![conv_id], |_| Ok(())).optional()?.is_some() {
+        if stmt
+            .query_row(params![conv_id], |_| Ok(()))
+            .optional()?
+            .is_some()
+        {
             return Ok(());
         }
 
@@ -677,13 +723,7 @@ impl Database {
         conn.execute(
             "INSERT INTO conversations (id, agent_id, title, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                conv_id,
-                agent_id,
-                "New Conversation",
-                &now,
-                &now
-            ],
+            params![conv_id, agent_id, "New Conversation", &now, &now],
         )?;
 
         Ok(())
@@ -698,7 +738,10 @@ impl Database {
             "SELECT id FROM conversations WHERE agent_id = ?1 ORDER BY created_at DESC LIMIT 1",
         )?;
 
-        if let Some(existing_id) = stmt.query_row(params![agent_id], |row| row.get::<_, String>(0)).optional()? {
+        if let Some(existing_id) = stmt
+            .query_row(params![agent_id], |row| row.get::<_, String>(0))
+            .optional()?
+        {
             return Ok(existing_id);
         }
 
@@ -731,13 +774,7 @@ impl Database {
         conn.execute(
             "INSERT INTO messages (id, conversation_id, role, content, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                &msg_id,
-                conv_id,
-                role,
-                content,
-                &timestamp,
-            ],
+            params![&msg_id, conv_id, role, content, &timestamp,],
         )?;
 
         // Update conversation's updated_at timestamp
@@ -761,15 +798,16 @@ impl Database {
              LIMIT ?2",
         )?;
 
-        let messages = stmt.query_map(params![conv_id, limit as i32], |row| {
-            Ok(Message {
-                id: row.get(0)?,
-                conversation_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                timestamp: row.get(4)?,
-            })
-        })?
+        let messages = stmt
+            .query_map(params![conv_id, limit as i32], |row| {
+                Ok(Message {
+                    id: row.get(0)?,
+                    conversation_id: row.get(1)?,
+                    role: row.get(2)?,
+                    content: row.get(3)?,
+                    timestamp: row.get(4)?,
+                })
+            })?
             .collect::<SqlResult<Vec<_>>>()?;
 
         // Reverse to get oldest first
@@ -782,12 +820,12 @@ impl Database {
     pub fn insert_bridge(&self, bridge: &Bridge) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        let bridge_type_str = serde_json::to_string(&bridge.bridge_type)
-            .unwrap_or_else(|_| "custom".to_string());
-        let config_json = serde_json::to_string(&bridge.config)
-            .unwrap_or_else(|_| "{}".to_string());
-        let permissions_json = serde_json::to_string(&bridge.permissions)
-            .unwrap_or_else(|_| "{}".to_string());
+        let bridge_type_str =
+            serde_json::to_string(&bridge.bridge_type).unwrap_or_else(|_| "custom".to_string());
+        let config_json =
+            serde_json::to_string(&bridge.config).unwrap_or_else(|_| "{}".to_string());
+        let permissions_json =
+            serde_json::to_string(&bridge.permissions).unwrap_or_else(|_| "{}".to_string());
 
         conn.execute(
             "INSERT INTO bridges
@@ -816,21 +854,24 @@ impl Database {
              FROM bridges WHERE id = ?1",
         )?;
 
-        let bridge = stmt.query_row(params![id], |row| {
-            let bridge_type_str: String = row.get(3)?;
-            let config_json: String = row.get(5)?;
-            let permissions_json: String = row.get(6)?;
+        let bridge = stmt
+            .query_row(params![id], |row| {
+                let bridge_type_str: String = row.get(3)?;
+                let config_json: String = row.get(5)?;
+                let permissions_json: String = row.get(6)?;
 
-            Ok(Bridge {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                name: row.get(2)?,
-                bridge_type: serde_json::from_str(&bridge_type_str).unwrap_or(BridgeType::Custom),
-                enabled: row.get(4)?,
-                config: serde_json::from_str(&config_json).unwrap_or_default(),
-                permissions: serde_json::from_str(&permissions_json).unwrap_or_default(),
+                Ok(Bridge {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    name: row.get(2)?,
+                    bridge_type: serde_json::from_str(&bridge_type_str)
+                        .unwrap_or(BridgeType::Custom),
+                    enabled: row.get(4)?,
+                    config: serde_json::from_str(&config_json).unwrap_or_default(),
+                    permissions: serde_json::from_str(&permissions_json).unwrap_or_default(),
+                })
             })
-        }).optional()?;
+            .optional()?;
 
         Ok(bridge)
     }
@@ -844,21 +885,23 @@ impl Database {
              FROM bridges WHERE agent_id = ?1",
         )?;
 
-        let bridges = stmt.query_map(params![agent_id], |row| {
-            let bridge_type_str: String = row.get(3)?;
-            let config_json: String = row.get(5)?;
-            let permissions_json: String = row.get(6)?;
+        let bridges = stmt
+            .query_map(params![agent_id], |row| {
+                let bridge_type_str: String = row.get(3)?;
+                let config_json: String = row.get(5)?;
+                let permissions_json: String = row.get(6)?;
 
-            Ok(Bridge {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                name: row.get(2)?,
-                bridge_type: serde_json::from_str(&bridge_type_str).unwrap_or(BridgeType::Custom),
-                enabled: row.get(4)?,
-                config: serde_json::from_str(&config_json).unwrap_or_default(),
-                permissions: serde_json::from_str(&permissions_json).unwrap_or_default(),
-            })
-        })?
+                Ok(Bridge {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    name: row.get(2)?,
+                    bridge_type: serde_json::from_str(&bridge_type_str)
+                        .unwrap_or(BridgeType::Custom),
+                    enabled: row.get(4)?,
+                    config: serde_json::from_str(&config_json).unwrap_or_default(),
+                    permissions: serde_json::from_str(&permissions_json).unwrap_or_default(),
+                })
+            })?
             .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(bridges)
@@ -873,21 +916,23 @@ impl Database {
              FROM bridges",
         )?;
 
-        let bridges = stmt.query_map([], |row| {
-            let bridge_type_str: String = row.get(3)?;
-            let config_json: String = row.get(5)?;
-            let permissions_json: String = row.get(6)?;
+        let bridges = stmt
+            .query_map([], |row| {
+                let bridge_type_str: String = row.get(3)?;
+                let config_json: String = row.get(5)?;
+                let permissions_json: String = row.get(6)?;
 
-            Ok(Bridge {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                name: row.get(2)?,
-                bridge_type: serde_json::from_str(&bridge_type_str).unwrap_or(BridgeType::Custom),
-                enabled: row.get(4)?,
-                config: serde_json::from_str(&config_json).unwrap_or_default(),
-                permissions: serde_json::from_str(&permissions_json).unwrap_or_default(),
-            })
-        })?
+                Ok(Bridge {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    name: row.get(2)?,
+                    bridge_type: serde_json::from_str(&bridge_type_str)
+                        .unwrap_or(BridgeType::Custom),
+                    enabled: row.get(4)?,
+                    config: serde_json::from_str(&config_json).unwrap_or_default(),
+                    permissions: serde_json::from_str(&permissions_json).unwrap_or_default(),
+                })
+            })?
             .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(bridges)
@@ -897,12 +942,12 @@ impl Database {
     pub fn update_bridge(&self, bridge: &Bridge) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        let bridge_type_str = serde_json::to_string(&bridge.bridge_type)
-            .unwrap_or_else(|_| "custom".to_string());
-        let config_json = serde_json::to_string(&bridge.config)
-            .unwrap_or_else(|_| "{}".to_string());
-        let permissions_json = serde_json::to_string(&bridge.permissions)
-            .unwrap_or_else(|_| "{}".to_string());
+        let bridge_type_str =
+            serde_json::to_string(&bridge.bridge_type).unwrap_or_else(|_| "custom".to_string());
+        let config_json =
+            serde_json::to_string(&bridge.config).unwrap_or_else(|_| "{}".to_string());
+        let permissions_json =
+            serde_json::to_string(&bridge.permissions).unwrap_or_else(|_| "{}".to_string());
 
         conn.execute(
             "UPDATE bridges
@@ -969,7 +1014,14 @@ impl Database {
         conn.execute(
             "INSERT INTO security_alerts (id, agent_id, timestamp, severity, description, resolved)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![&alert.id, &alert.agent_id, &alert.timestamp, &alert.severity, &alert.description, alert.resolved],
+            params![
+                &alert.id,
+                &alert.agent_id,
+                &alert.timestamp,
+                &alert.severity,
+                &alert.description,
+                alert.resolved
+            ],
         )?;
         Ok(())
     }
@@ -980,19 +1032,21 @@ impl Database {
             "SELECT id, agent_id, timestamp, severity, description, resolved 
              FROM security_alerts 
              WHERE resolved = 0 
-             ORDER BY timestamp DESC"
+             ORDER BY timestamp DESC",
         )?;
 
-        let alerts = stmt.query_map([], |row| {
-            Ok(SecurityAlert {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                timestamp: row.get(2)?,
-                severity: row.get(3)?,
-                description: row.get(4)?,
-                resolved: row.get(5)?,
-            })
-        })?.collect::<SqlResult<Vec<_>>>()?;
+        let alerts = stmt
+            .query_map([], |row| {
+                Ok(SecurityAlert {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    timestamp: row.get(2)?,
+                    severity: row.get(3)?,
+                    description: row.get(4)?,
+                    resolved: row.get(5)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(alerts)
     }
@@ -1031,19 +1085,21 @@ impl Database {
             "SELECT id, agent_id, timestamp, service, error_message, resolved
              FROM agent_bug_reports
              WHERE resolved = 0
-             ORDER BY timestamp DESC"
+             ORDER BY timestamp DESC",
         )?;
 
-        let reports = stmt.query_map([], |row| {
-            Ok(AgentBugReport {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                timestamp: row.get(2)?,
-                service: row.get(3)?,
-                error_message: row.get(4)?,
-                resolved: row.get(5)?,
-            })
-        })?.collect::<SqlResult<Vec<_>>>()?;
+        let reports = stmt
+            .query_map([], |row| {
+                Ok(AgentBugReport {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    timestamp: row.get(2)?,
+                    service: row.get(3)?,
+                    error_message: row.get(4)?,
+                    resolved: row.get(5)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(reports)
     }
@@ -1061,7 +1117,9 @@ impl Database {
     pub fn get_audit_log(&self, agent_id: Option<&str>, limit: u32) -> SqlResult<Vec<AuditEntry>> {
         let conn = self.conn.lock().unwrap();
 
-        let (query, params_vec): (String, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(agent_id) = agent_id {
+        let (query, params_vec): (String, Vec<Box<dyn rusqlite::ToSql>>) = if let Some(agent_id) =
+            agent_id
+        {
             (
                 "SELECT id, timestamp, agent_id, action, bridge_type, detail, content_hash
                  FROM (
@@ -1111,7 +1169,8 @@ impl Database {
                     detail: row.get(5)?,
                     content_hash: row.get(6)?,
                 })
-            })?.collect::<SqlResult<Vec<_>>>()?
+            })?
+            .collect::<SqlResult<Vec<_>>>()?
         } else {
             stmt.query_map(params![limit as i32], |row| {
                 Ok(AuditEntry {
@@ -1123,15 +1182,20 @@ impl Database {
                     detail: row.get(5)?,
                     content_hash: row.get(6)?,
                 })
-            })?.collect::<SqlResult<Vec<_>>>()?
+            })?
+            .collect::<SqlResult<Vec<_>>>()?
         };
 
         Ok(entries)
     }
 
-    pub fn get_agent_browser_history(&self, agent_id: &str, limit: u32) -> SqlResult<Vec<BrowserHistoryEntry>> {
+    pub fn get_agent_browser_history(
+        &self,
+        agent_id: &str,
+        limit: u32,
+    ) -> SqlResult<Vec<BrowserHistoryEntry>> {
         let conn = self.conn.lock().unwrap();
-        
+
         let query = "
             SELECT timestamp, action, detail 
             FROM audit_log 
@@ -1139,22 +1203,27 @@ impl Database {
             ORDER BY timestamp DESC
             LIMIT ?2
         ";
-        
+
         let mut stmt = conn.prepare(query)?;
-        
-        let entries = stmt.query_map(params![agent_id, limit], |row| {
-            Ok(BrowserHistoryEntry {
-                timestamp: row.get(0)?,
-                action: row.get(1)?,
-                detail: row.get(2)?,
-            })
-        })?.collect::<SqlResult<Vec<_>>>()?;
-        
+
+        let entries = stmt
+            .query_map(params![agent_id, limit], |row| {
+                Ok(BrowserHistoryEntry {
+                    timestamp: row.get(0)?,
+                    action: row.get(1)?,
+                    detail: row.get(2)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
         Ok(entries)
     }
 
     /// Get aggregated daily activity counts for the last 90 days
-    pub fn get_agent_activity_heatmap(&self, agent_id: &str) -> SqlResult<Vec<ActivityHeatmapEntry>> {
+    pub fn get_agent_activity_heatmap(
+        &self,
+        agent_id: &str,
+    ) -> SqlResult<Vec<ActivityHeatmapEntry>> {
         let conn = self.conn.lock().unwrap();
 
         let query = "
@@ -1190,20 +1259,22 @@ impl Database {
         ";
 
         let mut stmt = conn.prepare(query)?;
-        
-        let heatmap = stmt.query_map(params![agent_id], |row| {
-            let interactions: u32 = row.get(1).unwrap_or(0);
-            let tools: u32 = row.get(2).unwrap_or(0);
-            let system: u32 = row.get(3).unwrap_or(0);
-            
-            Ok(ActivityHeatmapEntry {
-                date: row.get(0)?,
-                interactions,
-                tools,
-                system,
-                total: interactions + tools + system,
-            })
-        })?.collect::<SqlResult<Vec<_>>>()?;
+
+        let heatmap = stmt
+            .query_map(params![agent_id], |row| {
+                let interactions: u32 = row.get(1).unwrap_or(0);
+                let tools: u32 = row.get(2).unwrap_or(0);
+                let system: u32 = row.get(3).unwrap_or(0);
+
+                Ok(ActivityHeatmapEntry {
+                    date: row.get(0)?,
+                    interactions,
+                    tools,
+                    system,
+                    total: interactions + tools + system,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(heatmap)
     }
@@ -1219,28 +1290,31 @@ impl Database {
              FROM budgets WHERE agent_id = ?1",
         )?;
 
-        let budget = stmt.query_row(params![agent_id], |row| {
-            let config_json: String = row.get(1)?;
-            let default_budget = AgentBudget {
-                agent_id: row.get(0)?,
-                payments_enabled: false,
-                auto_approve_threshold_cents: 0,
-                per_transaction_limit_cents: 0,
-                daily_limit_cents: 0,
-                monthly_limit_cents: 0,
-                allowed_categories: vec![],
-                daily_spent_cents: row.get(2)?,
-                monthly_spent_cents: row.get(3)?,
-                require_approval_new_merchant: false,
-                require_approval_recurring: false,
-            };
-            
-            let mut config: AgentBudget = serde_json::from_str(&config_json).unwrap_or(default_budget);
-            config.daily_spent_cents = row.get(2)?;
-            config.monthly_spent_cents = row.get(3)?;
+        let budget = stmt
+            .query_row(params![agent_id], |row| {
+                let config_json: String = row.get(1)?;
+                let default_budget = AgentBudget {
+                    agent_id: row.get(0)?,
+                    payments_enabled: false,
+                    auto_approve_threshold_cents: 0,
+                    per_transaction_limit_cents: 0,
+                    daily_limit_cents: 0,
+                    monthly_limit_cents: 0,
+                    allowed_categories: vec![],
+                    daily_spent_cents: row.get(2)?,
+                    monthly_spent_cents: row.get(3)?,
+                    require_approval_new_merchant: false,
+                    require_approval_recurring: false,
+                };
 
-            Ok(config)
-        }).optional()?;
+                let mut config: AgentBudget =
+                    serde_json::from_str(&config_json).unwrap_or(default_budget);
+                config.daily_spent_cents = row.get(2)?;
+                config.monthly_spent_cents = row.get(3)?;
+
+                Ok(config)
+            })
+            .optional()?;
 
         Ok(budget)
     }
@@ -1249,8 +1323,7 @@ impl Database {
     pub fn upsert_budget(&self, budget: &AgentBudget) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        let config_json = serde_json::to_string(budget)
-            .unwrap_or_else(|_| "{}".to_string());
+        let config_json = serde_json::to_string(budget).unwrap_or_else(|_| "{}".to_string());
         let last_reset = Utc::now().to_rfc3339();
 
         conn.execute(
@@ -1273,8 +1346,8 @@ impl Database {
     pub fn record_purchase(&self, record: &PurchaseRecord) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
-        let decision_json = serde_json::to_string(&record.decision)
-            .unwrap_or_else(|_| "{}".to_string());
+        let decision_json =
+            serde_json::to_string(&record.decision).unwrap_or_else(|_| "{}".to_string());
 
         conn.execute(
             "INSERT INTO purchase_history
@@ -1297,7 +1370,11 @@ impl Database {
     }
 
     /// Get purchase history for an agent
-    pub fn get_purchase_history(&self, agent_id: &str, limit: u32) -> SqlResult<Vec<PurchaseRecord>> {
+    pub fn get_purchase_history(
+        &self,
+        agent_id: &str,
+        limit: u32,
+    ) -> SqlResult<Vec<PurchaseRecord>> {
         let conn = self.conn.lock().unwrap();
 
         let mut stmt = conn.prepare(
@@ -1308,26 +1385,29 @@ impl Database {
              LIMIT ?2",
         )?;
 
-        let records = stmt.query_map(params![agent_id, limit as i32], |row| {
-            let decision_json: String = row.get(6)?;
-            let timestamp_str: String = row.get(8)?;
+        let records = stmt
+            .query_map(params![agent_id, limit as i32], |row| {
+                let decision_json: String = row.get(6)?;
+                let timestamp_str: String = row.get(8)?;
 
-            Ok(PurchaseRecord {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                description: row.get(2)?,
-                merchant: row.get(3)?,
-                amount_cents: row.get::<_, i32>(4)? as u64,
-                category: row.get(5)?,
-                decision: serde_json::from_str(&decision_json).unwrap_or(PurchaseDecision::Denied {
-                    reasons: vec!["Failed to deserialize decision".to_string()],
-                }),
-                virtual_card_id: row.get(7)?,
-                timestamp: chrono::DateTime::parse_from_rfc3339(&timestamp_str)
-                    .unwrap_or_else(|_| chrono::DateTime::default())
-                    .with_timezone(&Utc),
-            })
-        })?
+                Ok(PurchaseRecord {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    description: row.get(2)?,
+                    merchant: row.get(3)?,
+                    amount_cents: row.get::<_, i32>(4)? as u64,
+                    category: row.get(5)?,
+                    decision: serde_json::from_str(&decision_json).unwrap_or(
+                        PurchaseDecision::Denied {
+                            reasons: vec!["Failed to deserialize decision".to_string()],
+                        },
+                    ),
+                    virtual_card_id: row.get(7)?,
+                    timestamp: chrono::DateTime::parse_from_rfc3339(&timestamp_str)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                })
+            })?
             .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(records)
@@ -1346,7 +1426,14 @@ impl Database {
             params![&now],
         )?;
 
-        self.log_audit_internal(&conn, None, "reset_daily_budgets", None, "Daily budgets reset", None)?;
+        self.log_audit_internal(
+            &conn,
+            None,
+            "reset_daily_budgets",
+            None,
+            "Daily budgets reset",
+            None,
+        )?;
 
         Ok(())
     }
@@ -1362,7 +1449,14 @@ impl Database {
             params![&now],
         )?;
 
-        self.log_audit_internal(&conn, None, "reset_monthly_budgets", None, "Monthly budgets reset", None)?;
+        self.log_audit_internal(
+            &conn,
+            None,
+            "reset_monthly_budgets",
+            None,
+            "Monthly budgets reset",
+            None,
+        )?;
 
         Ok(())
     }
@@ -1399,7 +1493,13 @@ impl Database {
     }
 
     /// Update agent spending (called after successful purchase)
-    pub fn update_agent_spending(&self, agent_id: &str, amount_cents: u64, is_daily: bool, is_monthly: bool) -> SqlResult<()> {
+    pub fn update_agent_spending(
+        &self,
+        agent_id: &str,
+        amount_cents: u64,
+        is_daily: bool,
+        is_monthly: bool,
+    ) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
 
         if is_daily {
@@ -1443,7 +1543,8 @@ impl Database {
 
         // To keep logic simple, we can upsert
         for m in models {
-            let caps_json = serde_json::to_string(&m.capabilities).unwrap_or_else(|_| "[]".to_string());
+            let caps_json =
+                serde_json::to_string(&m.capabilities).unwrap_or_else(|_| "[]".to_string());
             tx.execute(
                 "INSERT INTO provider_models (id, provider, name, capabilities_json, recommended, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1465,20 +1566,22 @@ impl Database {
             "SELECT id, provider, name, capabilities_json, recommended, created_at FROM provider_models ORDER BY provider ASC, id DESC"
         )?;
 
-        let models = stmt.query_map([], |row| {
-            let caps_json: String = row.get(3)?;
-            let created_at_str: String = row.get(5)?;
-            Ok(ProviderModel {
-                id: row.get(0)?,
-                provider: row.get(1)?,
-                name: row.get(2)?,
-                capabilities: serde_json::from_str(&caps_json).unwrap_or_default(),
-                recommended: row.get(4)?,
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
-                    .unwrap_or_else(|_| chrono::DateTime::default())
-                    .with_timezone(&Utc),
-            })
-        })?.collect::<SqlResult<Vec<_>>>()?;
+        let models = stmt
+            .query_map([], |row| {
+                let caps_json: String = row.get(3)?;
+                let created_at_str: String = row.get(5)?;
+                Ok(ProviderModel {
+                    id: row.get(0)?,
+                    provider: row.get(1)?,
+                    name: row.get(2)?,
+                    capabilities: serde_json::from_str(&caps_json).unwrap_or_default(),
+                    recommended: row.get(4)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(models)
     }
@@ -1499,14 +1602,19 @@ impl Database {
             "INSERT INTO voice_configs (agent_id, config_json) VALUES (?1, ?2)
              ON CONFLICT(agent_id) DO UPDATE SET config_json = excluded.config_json",
             params![&config.agent_id, config_json],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         Ok(())
     }
 
-    pub fn get_voice_config(&self, agent_id: &str) -> Result<Option<crate::voice::VoiceConfig>, String> {
+    pub fn get_voice_config(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<crate::voice::VoiceConfig>, String> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT config_json FROM voice_configs WHERE agent_id = ?1")
+        let mut stmt = conn
+            .prepare("SELECT config_json FROM voice_configs WHERE agent_id = ?1")
             .map_err(|e| e.to_string())?;
 
         let json_str: String = match stmt.query_row(params![agent_id], |row| row.get(0)) {
@@ -1519,7 +1627,10 @@ impl Database {
         Ok(Some(config))
     }
 
-    pub fn insert_token_usage_record(&self, record: &crate::models::TokenUsageRecord) -> SqlResult<()> {
+    pub fn insert_token_usage_record(
+        &self,
+        record: &crate::models::TokenUsageRecord,
+    ) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO token_usage_history
@@ -1540,9 +1651,14 @@ impl Database {
         Ok(())
     }
 
-    pub fn get_token_usage_history(&self, agent_id: Option<&str>, conversation_id: Option<&str>, days: u32) -> SqlResult<Vec<crate::models::TokenUsageRecord>> {
+    pub fn get_token_usage_history(
+        &self,
+        agent_id: Option<&str>,
+        conversation_id: Option<&str>,
+        days: u32,
+    ) -> SqlResult<Vec<crate::models::TokenUsageRecord>> {
         let conn = self.conn.lock().unwrap();
-        
+
         let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
         let cutoff_str = cutoff.to_rfc3339();
 
@@ -1551,7 +1667,7 @@ impl Database {
              FROM token_usage_history
              WHERE timestamp >= ?1"
         );
-        
+
         let mut sql_params: Vec<&dyn rusqlite::ToSql> = vec![&cutoff_str];
         let mut next_param_idx = 2;
 
@@ -1560,7 +1676,7 @@ impl Database {
             sql_params.push(a_id);
             next_param_idx += 1;
         }
-        
+
         if let Some(ref c_id) = conversation_id {
             query.push_str(&format!(" AND conversation_id = ?{}", next_param_idx));
             sql_params.push(c_id);
@@ -1570,7 +1686,7 @@ impl Database {
         query.push_str(" ORDER BY timestamp ASC");
 
         let mut stmt = conn.prepare(&query)?;
-        
+
         let rows = stmt.query_map(rusqlite::params_from_iter(sql_params), |row| {
             Ok(crate::models::TokenUsageRecord {
                 id: row.get(0)?,
@@ -1598,7 +1714,7 @@ impl Database {
             "SELECT id, agent_id, timestamp, warning_type, message, resolved 
              FROM system_warnings 
              WHERE resolved = 0 
-             ORDER BY timestamp DESC"
+             ORDER BY timestamp DESC",
         )?;
 
         let rows = stmt.query_map([], |row| {
@@ -1627,8 +1743,6 @@ impl Database {
         )?;
         Ok(())
     }
-
-
 }
 
 // ─── Helper Functions ────────────────────────────────────────────────────────
@@ -1766,7 +1880,8 @@ mod tests {
         let msg_id = db.insert_message(&conv_id, "user", "Hello").unwrap();
         assert!(!msg_id.is_empty());
 
-        db.insert_message(&conv_id, "assistant", "Hi there").unwrap();
+        db.insert_message(&conv_id, "assistant", "Hi there")
+            .unwrap();
 
         let messages = db.get_messages(&conv_id, 10).unwrap();
         assert_eq!(messages.len(), 2);
@@ -1842,8 +1957,10 @@ mod tests {
     fn test_audit_log() {
         let db = create_test_db();
 
-        db.log_audit("agent-1", "created", Some("slack"), "Agent created", None).unwrap();
-        db.log_audit("agent-1", "updated", None, "Agent config changed", None).unwrap();
+        db.log_audit("agent-1", "created", Some("slack"), "Agent created", None)
+            .unwrap();
+        db.log_audit("agent-1", "updated", None, "Agent config changed", None)
+            .unwrap();
 
         let entries = db.get_audit_log(Some("agent-1"), 10).unwrap();
         assert_eq!(entries.len(), 2);
@@ -1905,7 +2022,8 @@ mod tests {
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().daily_spent_cents, 1000);
 
-        db.update_agent_spending("agent-1", 500, true, true).unwrap();
+        db.update_agent_spending("agent-1", 500, true, true)
+            .unwrap();
 
         let updated = db.get_budget("agent-1").unwrap().unwrap();
         assert_eq!(updated.daily_spent_cents, 1500);

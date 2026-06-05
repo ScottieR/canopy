@@ -1,6 +1,5 @@
 /// Rate limiting for expensive operations
 /// Prevents brute force attacks, DoS, and system overload
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -173,12 +172,12 @@ mod tests {
         // Each user gets their own quota
         assert!(limiter.check("user-1").is_ok());
         assert!(limiter.check("user-1").is_ok());
-        assert!(limiter.check("user-1").is_err());  // user-1 is limited
+        assert!(limiter.check("user-1").is_err()); // user-1 is limited
 
         // user-2 still has quota
         assert!(limiter.check("user-2").is_ok());
         assert!(limiter.check("user-2").is_ok());
-        assert!(limiter.check("user-2").is_err());  // user-2 is limited
+        assert!(limiter.check("user-2").is_err()); // user-2 is limited
     }
 
     #[test]
@@ -213,7 +212,7 @@ mod tests {
 
         limiter.check("user-1").ok();
         match limiter.check("user-1") {
-            Err(CanopyError::RateLimit) => (),  // Expected
+            Err(CanopyError::RateLimit) => (), // Expected
             other => panic!("Expected RateLimit error, got: {:?}", other),
         }
     }

@@ -1,11 +1,11 @@
-use rusqlite::{params, Connection, Result as SqlResult};
-use std::collections::HashMap;
-use std::time::SystemTime;
 use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::{error, info, warn, debug};
+use std::time::SystemTime;
+use tracing::{debug, error, info, warn};
 
 use crate::db::Database;
 use tauri::Emitter;
@@ -72,7 +72,10 @@ fn apple_timestamp_to_rfc3339(apple_nanos: i64) -> String {
         Some(dt) => dt.to_rfc3339(),
         None => {
             // Fallback for invalid timestamps
-            warn!("Invalid Apple timestamp: {}, using current time", apple_nanos);
+            warn!(
+                "Invalid Apple timestamp: {}, using current time",
+                apple_nanos
+            );
             Utc::now().to_rfc3339()
         }
     }
@@ -211,26 +214,28 @@ fn try_resolve_contact_names() -> HashMap<String, String> {
             WHERE p.ZFULLNUMBER IS NOT NULL
         ";
         if let Ok(mut stmt) = conn.prepare(phone_sql) {
-            let _ = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            }).map(|rows| {
-                for row in rows.filter_map(|r| r.ok()) {
-                    if let (Some(phone), first, last, org) = row {
-                        let name = build_name(first, last, org);
-                        if !name.is_empty() {
-                            let norm = normalize_phone(&phone);
-                            if !norm.is_empty() {
-                                map.insert(norm, name);
+            let _ = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map(|rows| {
+                    for row in rows.filter_map(|r| r.ok()) {
+                        if let (Some(phone), first, last, org) = row {
+                            let name = build_name(first, last, org);
+                            if !name.is_empty() {
+                                let norm = normalize_phone(&phone);
+                                if !norm.is_empty() {
+                                    map.insert(norm, name);
+                                }
                             }
                         }
                     }
-                }
-            });
+                });
         }
 
         // ── Email addresses ────────────────────────────────────────────────
@@ -241,27 +246,32 @@ fn try_resolve_contact_names() -> HashMap<String, String> {
             WHERE e.ZADDRESS IS NOT NULL
         ";
         if let Ok(mut stmt) = conn.prepare(email_sql) {
-            let _ = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, Option<String>>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            }).map(|rows| {
-                for row in rows.filter_map(|r| r.ok()) {
-                    if let (Some(email), first, last, org) = row {
-                        let name = build_name(first, last, org);
-                        if !name.is_empty() {
-                            map.insert(email.to_lowercase(), name);
+            let _ = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map(|rows| {
+                    for row in rows.filter_map(|r| r.ok()) {
+                        if let (Some(email), first, last, org) = row {
+                            let name = build_name(first, last, org);
+                            if !name.is_empty() {
+                                map.insert(email.to_lowercase(), name);
+                            }
                         }
                     }
-                }
-            });
-        };  // semicolon forces the Statement temporary to drop before `conn` goes out of scope
+                });
+        }; // semicolon forces the Statement temporary to drop before `conn` goes out of scope
     }
 
-    debug!("Resolved {} contacts from macOS Contacts database", map.len());
+    debug!(
+        "Resolved {} contacts from macOS Contacts database",
+        map.len()
+    );
     map
 }
 
@@ -347,7 +357,9 @@ fn query_imessage_threads() -> Result<Vec<IMessageThread>, String> {
 
             Ok(IMessageThread {
                 // display_name resolved below (after query_map, which can't capture contacts)
-                display_name: display_name_raw.filter(|s| !s.is_empty()).unwrap_or_else(|| chat_identifier.clone()),
+                display_name: display_name_raw
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| chat_identifier.clone()),
                 chat_identifier,
                 last_message_date,
                 message_count,
@@ -368,7 +380,11 @@ fn query_imessage_threads() -> Result<Vec<IMessageThread>, String> {
         // we leave those unchanged.
     }
 
-    info!("Found {} iMessage threads ({} contacts loaded)", threads.len(), contacts.len());
+    info!(
+        "Found {} iMessage threads ({} contacts loaded)",
+        threads.len(),
+        contacts.len()
+    );
     Ok(threads)
 }
 
@@ -405,7 +421,9 @@ fn query_imessage_messages(
         .query_map(params![chat_identifier, limit as i32], |row| {
             let id: i64 = row.get(0)?;
             let chat_id: String = row.get(1)?;
-            let sender: String = row.get::<_, Option<String>>(2)?.unwrap_or_else(|| "unknown".to_string());
+            let sender: String = row
+                .get::<_, Option<String>>(2)?
+                .unwrap_or_else(|| "unknown".to_string());
             let text: String = row.get::<_, Option<String>>(3)?.unwrap_or_default();
             let apple_nanos: i64 = row.get(4)?;
             let is_from_me: bool = row.get(5)?;
@@ -439,17 +457,18 @@ fn query_imessage_messages(
     // Reverse to get chronological order (oldest first)
     messages.reverse();
 
-    debug!("Found {} messages for thread {}", messages.len(), chat_identifier);
+    debug!(
+        "Found {} messages for thread {}",
+        messages.len(),
+        chat_identifier
+    );
     Ok(messages)
 }
 
 // ─── Allowlist Management ──────────────────────────────────────────────────
 
 /// Get allowed iMessage threads for an agent
-fn get_allowlist_from_db(
-    db: &Database,
-    agent_id: &str,
-) -> Result<Vec<String>, String> {
+fn get_allowlist_from_db(db: &Database, agent_id: &str) -> Result<Vec<String>, String> {
     // Try to find the iMessage bridge for this agent
     // The bridge ID follows the pattern: "{agent_id}-imessage"
     let bridge_id = format!("{}-imessage", agent_id);
@@ -483,7 +502,7 @@ fn save_allowlist_to_db(
     agent_id: &str,
     chat_identifiers: Vec<String>,
 ) -> Result<(), String> {
-    use crate::models::{Bridge, BridgeType, BridgeConfig, BridgePermissions};
+    use crate::models::{Bridge, BridgeConfig, BridgePermissions, BridgeType};
 
     let bridge_id = format!("{}-imessage", agent_id);
 
@@ -491,17 +510,15 @@ fn save_allowlist_to_db(
     let bridge = match db.get_bridge(&bridge_id) {
         Ok(Some(mut existing)) => {
             // Update existing bridge's config
-            existing.config.scope["allowed_threads"] =
-                serde_json::to_value(&chat_identifiers)
-                    .map_err(|e| format!("JSON serialization error: {}", e))?;
+            existing.config.scope["allowed_threads"] = serde_json::to_value(&chat_identifiers)
+                .map_err(|e| format!("JSON serialization error: {}", e))?;
             existing
         }
         Ok(None) => {
             // Create new bridge
             let mut config = BridgeConfig::default();
-            config.scope["allowed_threads"] =
-                serde_json::to_value(&chat_identifiers)
-                    .map_err(|e| format!("JSON serialization error: {}", e))?;
+            config.scope["allowed_threads"] = serde_json::to_value(&chat_identifiers)
+                .map_err(|e| format!("JSON serialization error: {}", e))?;
 
             Bridge {
                 id: bridge_id.clone(),
@@ -551,10 +568,7 @@ fn save_allowlist_to_db(
 }
 
 /// Check if an agent is allowed to access a specific iMessage thread
-fn is_thread_allowed(
-    allowlist: &[String],
-    chat_identifier: &str,
-) -> bool {
+fn is_thread_allowed(allowlist: &[String], chat_identifier: &str) -> bool {
     // Empty allowlist means allow all (no restrictions set yet)
     if allowlist.is_empty() {
         return true;
@@ -572,9 +586,7 @@ pub async fn check_full_disk_access() -> Result<bool, String> {
     let db_path = get_imessage_db_path();
 
     if !db_path.exists() {
-        return Err(
-            "iMessage database not found. Ensure macOS has iMessage enabled.".to_string()
-        );
+        return Err("iMessage database not found. Ensure macOS has iMessage enabled.".to_string());
     }
 
     match open_imessage_db() {
@@ -623,8 +635,7 @@ pub async fn read_imessage_messages(
     let safe_limit = std::cmp::min(limit, 1000);
 
     // Check allowlist
-    let allowlist = get_allowlist_from_db(&db, &agent_id)
-        .unwrap_or_default();
+    let allowlist = get_allowlist_from_db(&db, &agent_id).unwrap_or_default();
 
     if !is_thread_allowed(&allowlist, &chat_identifier) {
         return Err(format!(
@@ -692,10 +703,7 @@ pub async fn update_allowed_imessage_threads(
     // Save to Canopy's database
     save_allowlist_to_db(&db, &agent_id, chat_identifiers)?;
 
-    info!(
-        "Updated allowed iMessage threads for agent {}",
-        agent_id
-    );
+    info!("Updated allowed iMessage threads for agent {}", agent_id);
 
     Ok(())
 }
@@ -705,9 +713,7 @@ pub async fn update_allowed_imessage_threads(
 /// Start watching for iMessage database changes
 /// Emits `imessage://new-messages` event on updates
 #[tauri::command]
-pub async fn start_imessage_watcher(
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
+pub async fn start_imessage_watcher(app_handle: tauri::AppHandle) -> Result<(), String> {
     info!("Starting iMessage watcher");
 
     // Spawn background task

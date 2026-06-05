@@ -1,7 +1,7 @@
+use crate::db::{AuditEntry, Database};
+use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Timelike, Utc, Duration};
 use tauri::State;
-use crate::db::{Database, AuditEntry};
 
 // ─── Core Audit Types ────────────────────────────────────────────────────────
 
@@ -156,7 +156,8 @@ pub fn check_security_alerts(db: &Database, agent_id: &str) -> Result<Vec<Securi
     let mut alerts = Vec::new();
 
     // Get last 1000 audit entries for the agent to analyze
-    let entries = db.get_audit_log(Some(agent_id), 1000)
+    let entries = db
+        .get_audit_log(Some(agent_id), 1000)
         .map_err(|e| format!("Failed to retrieve audit log: {}", e))?;
 
     if entries.is_empty() {
@@ -168,7 +169,8 @@ pub fn check_security_alerts(db: &Database, agent_id: &str) -> Result<Vec<Securi
     let one_minute_ago = now - Duration::minutes(1);
 
     // Check for excessive bridge accesses in the last hour
-    let recent_bridge_accesses = entries.iter()
+    let recent_bridge_accesses = entries
+        .iter()
         .filter(|entry| {
             if let Ok(timestamp) = DateTime::parse_from_rfc3339(&entry.timestamp) {
                 let ts = timestamp.with_timezone(&Utc);
@@ -183,7 +185,10 @@ pub fn check_security_alerts(db: &Database, agent_id: &str) -> Result<Vec<Securi
         alerts.push(SecurityAlert {
             alert_type: "excessive_bridge_access".to_string(),
             severity: AlertSeverity::High,
-            detail: format!("{} bridge accesses in the last hour (threshold: 100)", recent_bridge_accesses),
+            detail: format!(
+                "{} bridge accesses in the last hour (threshold: 100)",
+                recent_bridge_accesses
+            ),
             timestamp: now.to_rfc3339(),
         });
     }
@@ -196,7 +201,8 @@ pub fn check_security_alerts(db: &Database, agent_id: &str) -> Result<Vec<Securi
     // Check for rapid message sending (>200 messages per minute)
     // Threshold is 200, not 20 — a multi-agent forum run can legitimately fire 10+ messages
     // per agent per phase. 20/min triggered false Critical alerts during normal orchestration.
-    let rapid_messages = entries.iter()
+    let rapid_messages = entries
+        .iter()
         .filter(|entry| {
             if entry.action == "message_sent" {
                 if let Ok(timestamp) = DateTime::parse_from_rfc3339(&entry.timestamp) {
@@ -215,7 +221,10 @@ pub fn check_security_alerts(db: &Database, agent_id: &str) -> Result<Vec<Securi
         alerts.push(SecurityAlert {
             alert_type: "rapid_message_sending".to_string(),
             severity: AlertSeverity::Critical,
-            detail: format!("{} messages sent in the last minute (threshold: 200)", rapid_messages),
+            detail: format!(
+                "{} messages sent in the last minute (threshold: 200)",
+                rapid_messages
+            ),
             timestamp: now.to_rfc3339(),
         });
     }
@@ -249,7 +258,8 @@ pub async fn get_audit_summary(
     db: State<'_, Database>,
     agent_id: String,
 ) -> Result<AuditSummary, String> {
-    let entries = db.get_audit_log(Some(&agent_id), 10000)
+    let entries = db
+        .get_audit_log(Some(&agent_id), 10000)
         .map_err(|e| format!("Failed to retrieve audit log: {}", e))?;
 
     if entries.is_empty() {
@@ -266,7 +276,8 @@ pub async fn get_audit_summary(
     let today = now.date_naive();
 
     // Count actions today
-    let actions_today = entries.iter()
+    let actions_today = entries
+        .iter()
         .filter(|entry| {
             if let Ok(timestamp) = DateTime::parse_from_rfc3339(&entry.timestamp) {
                 let ts = timestamp.with_timezone(&Utc);
@@ -278,7 +289,8 @@ pub async fn get_audit_summary(
         .count();
 
     // Count bridge accesses today
-    let bridge_accesses_today = entries.iter()
+    let bridge_accesses_today = entries
+        .iter()
         .filter(|entry| {
             let is_bridge_action = entry.action == "bridge_access"
                 || entry.action == "bridge_enabled"
@@ -301,8 +313,7 @@ pub async fn get_audit_summary(
     let last_action_at = entries.first().map(|e| e.timestamp.clone());
 
     // Count security alerts
-    let alerts = check_security_alerts(&db, &agent_id)
-        .unwrap_or_default();
+    let alerts = check_security_alerts(&db, &agent_id).unwrap_or_default();
     let security_alerts_count = alerts.len() as u32;
 
     Ok(AuditSummary {
@@ -331,7 +342,8 @@ pub async fn search_audit_log(
 ) -> Result<Vec<AuditEntry>, String> {
     let agent_ref = agent_id.as_deref();
 
-    let mut entries = db.get_audit_log(agent_ref, limit * 2)
+    let mut entries = db
+        .get_audit_log(agent_ref, limit * 2)
         .map_err(|e| format!("Failed to retrieve audit log: {}", e))?;
 
     // Filter by action if provided
@@ -376,11 +388,11 @@ pub async fn export_audit_log(
     }
 
     let agent_ref = agent_id.as_deref();
-    let entries = db.get_audit_log(agent_ref, 10000)
+    let entries = db
+        .get_audit_log(agent_ref, 10000)
         .map_err(|e| format!("Failed to retrieve audit log: {}", e))?;
 
-    serde_json::to_string(&entries)
-        .map_err(|e| format!("Failed to serialize audit log: {}", e))
+    serde_json::to_string(&entries).map_err(|e| format!("Failed to serialize audit log: {}", e))
 }
 
 /// Get security alerts for an agent
@@ -405,7 +417,10 @@ mod tests {
         assert_eq!(AuditAction::AgentCreated.to_string(), "agent_created");
         assert_eq!(AuditAction::BridgeEnabled.to_string(), "bridge_enabled");
         assert_eq!(AuditAction::MessageSent.to_string(), "message_sent");
-        assert_eq!(AuditAction::PurchaseApproved.to_string(), "purchase_approved");
+        assert_eq!(
+            AuditAction::PurchaseApproved.to_string(),
+            "purchase_approved"
+        );
         assert_eq!(AuditAction::SecurityAlert.to_string(), "security_alert");
     }
 
@@ -462,7 +477,6 @@ mod tests {
         assert_eq!(alert.severity, AlertSeverity::Medium);
     }
 }
-
 
 #[tauri::command]
 pub async fn get_token_usage_history(

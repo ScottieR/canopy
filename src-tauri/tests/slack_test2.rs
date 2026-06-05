@@ -19,7 +19,7 @@ async fn test_auth_concurrent() {
             let res = c.post("https://slack.com/api/auth.test").send().await;
             match res {
                 Ok(r) => println!("Success: {:?}", r.status()),
-                Err(e) => println!("Error: {}", e)
+                Err(e) => println!("Error: {}", e),
             }
         }
     });

@@ -117,7 +117,11 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
     ].join("\n");
 
     try {
-      await invoke("send_message", { agentId: agent.id, message: prompt });
+      await invoke("send_message", {
+        agentId: agent.id,
+        message: prompt,
+        sessionId: `diagnostics_${agent.id}`,
+      });
     } catch (e) {
       console.error("Failed to send diagnostic prompt to agent:", e);
     }

@@ -1,9 +1,9 @@
+use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use chrono::{DateTime, Duration, Utc};
-use uuid::Uuid;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use uuid::Uuid;
 
 use crate::db::Database;
 
@@ -296,7 +296,12 @@ pub async fn send_voice_message(
 
     // Log as voice-originated message to conversation history
     // TODO: log to database if desired.
-    tracing::info!("Voice message for {}: '{}' → '{}'", agent_id, transcription, response_text);
+    tracing::info!(
+        "Voice message for {}: '{}' → '{}'",
+        agent_id,
+        transcription,
+        response_text
+    );
 
     Ok(VoiceMessageResponse {
         success: true,

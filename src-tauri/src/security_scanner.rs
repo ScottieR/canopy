@@ -25,7 +25,9 @@ pub async fn analyze_file(content: &[u8], filename: &str) -> ThreatReport {
         .to_lowercase();
 
     // 1. Binary Check
-    let binary_extensions = ["exe", "dll", "so", "dylib", "bin", "sh", "bat", "cmd", "app"];
+    let binary_extensions = [
+        "exe", "dll", "so", "dylib", "bin", "sh", "bat", "cmd", "app",
+    ];
     if binary_extensions.contains(&ext.as_str()) {
         findings.push(format!("File extension '{}' is executable/binary.", ext));
         highest_risk = RiskLevel::Critical;
@@ -49,7 +51,10 @@ pub async fn analyze_file(content: &[u8], filename: &str) -> ThreatReport {
 
     for pattern in critical_patterns.iter() {
         if text.contains(pattern) {
-            findings.push(format!("Contains potentially dangerous execution command: '{}'", pattern));
+            findings.push(format!(
+                "Contains potentially dangerous execution command: '{}'",
+                pattern
+            ));
             highest_risk = RiskLevel::Critical;
         }
     }
@@ -64,7 +69,10 @@ pub async fn analyze_file(content: &[u8], filename: &str) -> ThreatReport {
 
     for pattern in medium_patterns.iter() {
         if text.contains(pattern) {
-            findings.push(format!("Contains potentially obfuscated or active content: '{}'", pattern));
+            findings.push(format!(
+                "Contains potentially obfuscated or active content: '{}'",
+                pattern
+            ));
             if highest_risk == RiskLevel::Low {
                 highest_risk = RiskLevel::Medium;
             }
@@ -83,7 +91,10 @@ pub async fn analyze_file(content: &[u8], filename: &str) -> ThreatReport {
     for pattern in prompt_injection_patterns.iter() {
         // Case-insensitive check
         if text.to_lowercase().contains(&pattern.to_lowercase()) {
-            findings.push(format!("Contains signature matching prompt injection or exfiltration: '{}'", pattern));
+            findings.push(format!(
+                "Contains signature matching prompt injection or exfiltration: '{}'",
+                pattern
+            ));
             if highest_risk == RiskLevel::Low || highest_risk == RiskLevel::Medium {
                 highest_risk = RiskLevel::High;
             }
@@ -98,24 +109,29 @@ pub async fn analyze_file(content: &[u8], filename: &str) -> ThreatReport {
                 filename,
                 text.chars().take(2000).collect::<String>() // Analyze first 2000 chars
             );
-            
+
             let client = reqwest::Client::new();
             let body = serde_json::json!({
                 "model": "claude-3-haiku-20240307",
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": prompt}]
             });
-            
-            if let Ok(resp) = client.post("https://api.anthropic.com/v1/messages")
+
+            if let Ok(resp) = client
+                .post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", anthropic_key)
                 .header("anthropic-version", "2023-06-01")
                 .json(&body)
                 .send()
-                .await 
+                .await
             {
                 if let Ok(json) = resp.json::<serde_json::Value>().await {
                     if let Some(content) = json.get("content").and_then(|c| c.as_array()) {
-                        if let Some(text_field) = content.get(0).and_then(|t| t.get("text")).and_then(|t| t.as_str()) {
+                        if let Some(text_field) = content
+                            .get(0)
+                            .and_then(|t| t.get("text"))
+                            .and_then(|t| t.as_str())
+                        {
                             if text_field.starts_with("THREAT:") {
                                 findings.push(format!("LLM Analysis: {}", text_field));
                                 highest_risk = RiskLevel::High;

@@ -1,21 +1,22 @@
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
-use lazy_static::lazy_static;
 
 use crate::model_constants;
 
 lazy_static! {
-    pub static ref PRICING_REGISTRY: RwLock<HashMap<String, (f64, f64)>> = RwLock::new(HashMap::new());
+    pub static ref PRICING_REGISTRY: RwLock<HashMap<String, (f64, f64)>> =
+        RwLock::new(HashMap::new());
 }
 
 // ─── Constants (re-exported from model_constants for back-compat) ─────────────
 // Callers should prefer importing from model_constants directly.
 
 pub use model_constants::DEFAULT_ANTHROPIC_MODEL;
-pub use model_constants::DEFAULT_OPENAI_MODEL;
 pub use model_constants::DEFAULT_GEMINI_MODEL;
+pub use model_constants::DEFAULT_OPENAI_MODEL;
 
 /// Returns the best available model string for the given provider, consulting the
 /// admin-synced models.json before falling back to the validated constants in model_constants.
@@ -40,21 +41,27 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(strats) = json.get("strategies") {
-                    let heavy = strats.get("defaultHeavyModel").and_then(|v| v.as_str()).unwrap_or("");
-                    let light = strats.get("defaultLightModel").and_then(|v| v.as_str()).unwrap_or("");
+                    let heavy = strats
+                        .get("defaultHeavyModel")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let light = strats
+                        .get("defaultLightModel")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
 
                     let candidate: Option<String> = match provider {
-                        "gemini" => {
-                            json.get("models")
-                                .and_then(|m| m.as_array())
-                                .and_then(|arr| {
-                                    arr.iter().find(|o| {
-                                        o.get("provider").and_then(|v| v.as_str()) == Some("Google Gemini")
-                                    })
+                        "gemini" => json
+                            .get("models")
+                            .and_then(|m| m.as_array())
+                            .and_then(|arr| {
+                                arr.iter().find(|o| {
+                                    o.get("provider").and_then(|v| v.as_str())
+                                        == Some("Google Gemini")
                                 })
-                                .and_then(|entry| entry.get("id").and_then(|v| v.as_str()))
-                                .map(|id| format!("google/{}", id))
-                        }
+                            })
+                            .and_then(|entry| entry.get("id").and_then(|v| v.as_str()))
+                            .map(|id| format!("google/{}", id)),
                         "openai" => {
                             if heavy.contains("gpt") {
                                 Some(format!("openai/{}", heavy))
@@ -67,7 +74,11 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
                         "anthropic" => {
                             // Only accept model names that look like the correct suffix order
                             // (e.g. "claude-sonnet-4-6"), not the reversed "claude-4-6-sonnet".
-                            let raw = if heavy.starts_with("claude") { heavy } else { "" };
+                            let raw = if heavy.starts_with("claude") {
+                                heavy
+                            } else {
+                                ""
+                            };
                             if !raw.is_empty() {
                                 Some(format!("anthropic/{}", raw))
                             } else {
@@ -97,8 +108,8 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
     // Validated hardcoded fallbacks — always correct format
     match provider {
         "anthropic" => model_constants::DEFAULT_ANTHROPIC_MODEL.to_string(),
-        "openai"    => model_constants::DEFAULT_OPENAI_MODEL.to_string(),
-        _           => model_constants::DEFAULT_GEMINI_MODEL.to_string(),
+        "openai" => model_constants::DEFAULT_OPENAI_MODEL.to_string(),
+        _ => model_constants::DEFAULT_GEMINI_MODEL.to_string(),
     }
 }
 
@@ -198,14 +209,14 @@ impl Default for AgentCapabilities {
             ext_network: false,
             int_network: false,
             autonomous: false,
-            scheduled: true,      // QOL: Standard cron features allowed by default
-            memory_write: true,   // QOL: Agents can remember by default
+            scheduled: true,    // QOL: Standard cron features allowed by default
+            memory_write: true, // QOL: Agents can remember by default
             file_read: false,
             file_write: false,
             payments: false,
             spend_auto: false,
-            browser: true,        // Default OpenClaw skills
-            proxy: false,         // Default OpenClaw doesn't include proxy
+            browser: true, // Default OpenClaw skills
+            proxy: false,  // Default OpenClaw doesn't include proxy
             vision: false,
             canvas: false,
             coding: true,
@@ -242,7 +253,7 @@ impl AgentStats {
     pub fn record_usage(&mut self, model: &str, in_tokens: u64, out_tokens: u64) {
         self.total_tokens_in += in_tokens;
         self.total_tokens_out += out_tokens;
-        
+
         let registry = PRICING_REGISTRY.read().unwrap();
         let (cost_in_per_m, cost_out_per_m) = if let Some(&costs) = registry.get(model) {
             costs
@@ -253,33 +264,35 @@ impl AgentStats {
             match model {
                 // Anthropic — correct ID is "claude-sonnet-4-6" not "claude-4-6-sonnet"
                 "claude-sonnet-4-6" => (3.00, 15.00),
-                "claude-haiku-4-5"  => (0.25, 1.25),
-                "claude-opus-4-6"   => (15.00, 75.00),
-                "claude-opus-4-7"   => (5.00, 25.00),
+                "claude-haiku-4-5" => (0.25, 1.25),
+                "claude-opus-4-6" => (15.00, 75.00),
+                "claude-opus-4-7" => (5.00, 25.00),
                 // OpenAI
                 "gpt-4o-mini" => (0.15, 0.60),
-                "gpt-4o"      => (2.50, 10.00),
+                "gpt-4o" => (2.50, 10.00),
                 // Google
                 "gemini-2.0-flash" => (0.35, 1.05),
-                "gemini-2.0-pro"   => (3.50, 10.50),
+                "gemini-2.0-pro" => (3.50, 10.50),
                 "gemini-3.5-flash" => (0.15, 0.60),
-                "gemini-3.5-pro"   => (1.25, 5.00),
+                "gemini-3.5-pro" => (1.25, 5.00),
                 // xAI
                 "grok-beta" => (5.00, 15.00),
                 // Unknown model — log and use conservative estimate
                 other => {
-                    tracing::warn!("No pricing entry for model '{}'; using generic fallback", other);
+                    tracing::warn!(
+                        "No pricing entry for model '{}'; using generic fallback",
+                        other
+                    );
                     (1.00, 5.00)
                 }
             }
         };
-        
+
         let cost_in = (in_tokens as f64 / 1_000_000.0) * cost_in_per_m;
         let cost_out = (out_tokens as f64 / 1_000_000.0) * cost_out_per_m;
         self.total_cost_usd += cost_in + cost_out;
     }
 }
-
 
 // ─── Self-Healing Agent Models ───────────────────────────────────────────────
 
@@ -506,7 +519,6 @@ impl Default for UserProfile {
         }
     }
 }
-
 
 // ─── Telemetry & Warnings ────────────────────────────────────────────────────
 

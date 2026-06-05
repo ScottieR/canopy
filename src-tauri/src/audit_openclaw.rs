@@ -1,9 +1,9 @@
 use crate::model_constants;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::process::Command;
 
 /// Prevents concurrent repair calls (React Strict Mode fires effects twice in dev;
 /// also guards against the user clicking "Repair" while a repair is already running).
@@ -27,16 +27,28 @@ pub async fn audit_openclaw_config(
     app_handle: tauri::AppHandle,
     agent_id: Option<String>,
 ) -> Result<OpenClawAuditReport, String> {
-    use tauri::Manager;
     use tauri::Emitter;
-    
-    let db = app_handle.state::<crate::db::Database>();
-    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+    use tauri::Manager;
 
-    let _ = app_handle.emit("diagnostics-log", format!("Starting OpenClaw gateway diagnostics for {}...", container_name));
+    let db = app_handle.state::<crate::db::Database>();
+    let container_name = agent_id
+        .as_deref()
+        .map(|id| crate::openclaw::get_agent_container_name(&db, id))
+        .unwrap_or_else(|| "canopy-gateway".to_string());
+
+    let _ = app_handle.emit(
+        "diagnostics-log",
+        format!(
+            "Starting OpenClaw gateway diagnostics for {}...",
+            container_name
+        ),
+    );
 
     // 1. Check if container is running
-    let _ = app_handle.emit("diagnostics-log", format!("Checking if {} container is running...", container_name));
+    let _ = app_handle.emit(
+        "diagnostics-log",
+        format!("Checking if {} container is running...", container_name),
+    );
     let container_future = crate::openclaw::get_docker_command()
         .args(["inspect", "-f", "{{.State.Running}}", &container_name])
         .output();
@@ -52,25 +64,34 @@ pub async fn audit_openclaw_config(
 
     if !container_running {
         return Ok(OpenClawAuditReport {
-             is_aligned: false,
-             active_default_model: "Unknown (Offline)".to_string(),
-             expected_model: model_constants::DEFAULT_ANTHROPIC_MODEL.to_string(),
-             missing_keys: vec![],
-             port_mismatch: false,
-             container_running: false,
-             raw_config_json: None,
-             slack_group_policy_open: false,
-             github_token_injected: false,
+            is_aligned: false,
+            active_default_model: "Unknown (Offline)".to_string(),
+            expected_model: model_constants::DEFAULT_ANTHROPIC_MODEL.to_string(),
+            missing_keys: vec![],
+            port_mismatch: false,
+            container_running: false,
+            raw_config_json: None,
+            slack_group_policy_open: false,
+            github_token_injected: false,
         });
     }
 
     // 2. Fetch the config directly from the container
-    let _ = app_handle.emit("diagnostics-log", "Container is running. Fetching openclaw.json configuration...");
+    let _ = app_handle.emit(
+        "diagnostics-log",
+        "Container is running. Fetching openclaw.json configuration...",
+    );
     let cat_future = crate::openclaw::get_docker_command()
-        .args(["exec", &container_name, "cat", "/home/node/.openclaw/openclaw.json"])
+        .args([
+            "exec",
+            &container_name,
+            "cat",
+            "/home/node/.openclaw/openclaw.json",
+        ])
         .output();
 
-    let cat_output = match tokio::time::timeout(std::time::Duration::from_secs(5), cat_future).await {
+    let cat_output = match tokio::time::timeout(std::time::Duration::from_secs(5), cat_future).await
+    {
         Ok(res) => res.map_err(|e| format!("Failed to read openclaw.json: {}", e))?,
         Err(_) => return Err("Docker command timed out while reading config".into()),
     };
@@ -84,14 +105,20 @@ pub async fn audit_openclaw_config(
         } else {
             stderr.trim().to_string()
         };
-        return Err(format!("Failed to retrieve config from container: {}", err_msg));
+        return Err(format!(
+            "Failed to retrieve config from container: {}",
+            err_msg
+        ));
     }
 
     let config_str = String::from_utf8_lossy(&cat_output.stdout).to_string();
     let config: Value = serde_json::from_str(&config_str)
         .map_err(|e| format!("Failed to parse config JSON: {}", e))?;
 
-    let _ = app_handle.emit("diagnostics-log", "Configuration loaded. Evaluating API keys and models...");
+    let _ = app_handle.emit(
+        "diagnostics-log",
+        "Configuration loaded. Evaluating API keys and models...",
+    );
     // 3. Evaluate active settings.
     // OpenClaw stores model in two possible formats (both must be handled):
     //   Nested (correct): "model": { "primary": "google/gemini-2.5-flash" }
@@ -115,13 +142,16 @@ pub async fn audit_openclaw_config(
 
     // 4. Determine the EXPECTED default model based on available API keys.
     // Priority: Anthropic > OpenAI > Gemini (Gemini is last resort, not first choice).
-    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
-    let has_openai    = crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
-    let has_gemini    = crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_anthropic =
+        crate::keychain::get_secret("ANTHROPIC_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_openai =
+        crate::keychain::get_secret("OPENAI_API_KEY").map_or(false, |s| !s.trim().is_empty());
+    let has_gemini =
+        crate::keychain::get_secret("GEMINI_API_KEY").map_or(false, |s| !s.trim().is_empty());
 
-    let expected_model = model_constants::default_model_from_available_keys(
-        has_anthropic, has_openai, has_gemini,
-    ).to_string();
+    let expected_model =
+        model_constants::default_model_from_available_keys(has_anthropic, has_openai, has_gemini)
+            .to_string();
 
     let mut missing_keys = vec![];
 
@@ -141,9 +171,13 @@ pub async fn audit_openclaw_config(
     // Do NOT check for GATEWAY_CONTAINER_PORT (18789) — that's container-internal only
     // and will always appear missing from the host side, causing a permanent false alarm.
     let host_port_str = model_constants::GATEWAY_HOST_PORT.to_string();
-    let port_mismatch = config.pointer("/gateway/controlUi/allowedOrigins")
+    let port_mismatch = config
+        .pointer("/gateway/controlUi/allowedOrigins")
         .and_then(|v| v.as_array())
-        .map_or(false, |arr| !arr.iter().any(|val| val.as_str().unwrap_or("").contains(&host_port_str)));
+        .map_or(false, |arr| {
+            !arr.iter()
+                .any(|val| val.as_str().unwrap_or("").contains(&host_port_str))
+        });
 
     // port_mismatch is informational only — allowedOrigins is CORS for the control UI.
     // missing_keys is also informational only — it checks global keychain entries, but agents
@@ -164,20 +198,32 @@ pub async fn audit_openclaw_config(
     let is_aligned = model_is_valid && missing_keys.is_empty();
 
     let _ = app_handle.emit("diagnostics-log", "Verifying Slack integration policies...");
-    let slack_group_policy_open = config.pointer("/channels/slack/groupPolicy")
+    let slack_group_policy_open = config
+        .pointer("/channels/slack/groupPolicy")
         .and_then(|v| v.as_str())
         .map_or(false, |s| s == "open");
 
-    let _ = app_handle.emit("diagnostics-log", "Checking GitHub workspace integration...");
-    let github_enabled = config.pointer("/channels/github/enabled")
+    let _ = app_handle.emit(
+        "diagnostics-log",
+        "Checking GitHub workspace integration...",
+    );
+    let github_enabled = config
+        .pointer("/channels/github/enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    
+
     let mut github_token_injected = false;
     if github_enabled {
         let bashrc_check = crate::openclaw::get_docker_command()
-            .args(["exec", &container_name, "grep", "GITHUB_TOKEN", "/home/node/.bashrc"])
-            .output().await;
+            .args([
+                "exec",
+                &container_name,
+                "grep",
+                "GITHUB_TOKEN",
+                "/home/node/.bashrc",
+            ])
+            .output()
+            .await;
         if let Ok(out) = bashrc_check {
             github_token_injected = out.status.success();
         }
@@ -207,27 +253,37 @@ pub async fn repair_openclaw_config(
     use tauri::Manager;
     // Prevent concurrent repair runs — each run writes config keys that trigger a gateway
     // self-SIGTERM restart. Two concurrent runs cause overlapping restarts → OOM cascade.
-    if REPAIR_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+    if REPAIR_RUNNING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         tracing::info!("repair_openclaw_config: already running, skipping duplicate call");
         return Ok("Repair already in progress".to_string());
     }
     // Ensure the flag is always cleared when this function returns, even on error.
     struct RepairGuard;
     impl Drop for RepairGuard {
-        fn drop(&mut self) { REPAIR_RUNNING.store(false, Ordering::SeqCst); }
+        fn drop(&mut self) {
+            REPAIR_RUNNING.store(false, Ordering::SeqCst);
+        }
     }
     let _guard = RepairGuard;
 
     let audit_report = audit_openclaw_config(app_handle.clone(), agent_id.clone()).await?;
     if !audit_report.container_running {
         tracing::info!("Gateway offline during repair attempt - initiating secure start...");
-        crate::docker::start_gateway_internal(Some(app_handle.clone())).await.map_err(|e| format!("Failed to start gateway for repair: {}", e))?;
+        crate::docker::start_gateway_internal(Some(app_handle.clone()))
+            .await
+            .map_err(|e| format!("Failed to start gateway for repair: {}", e))?;
         // Brief pause for initialization
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
     }
 
     let db = app_handle.state::<crate::db::Database>();
-    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+    let container_name = agent_id
+        .as_deref()
+        .map(|id| crate::openclaw::get_agent_container_name(&db, id))
+        .unwrap_or_else(|| "canopy-gateway".to_string());
 
     // Decide which model to write.
     // Priority: explicit caller override → keep existing model if it's valid → fall back to expected.
@@ -242,7 +298,7 @@ pub async fn repair_openclaw_config(
     } else {
         let current = &audit_report.active_default_model;
         let current_is_valid = model_constants::validate_model_string(current).is_ok();
-        let current_has_key  = audit_report.missing_keys.is_empty();
+        let current_has_key = audit_report.missing_keys.is_empty();
 
         if current_is_valid && current_has_key {
             // Existing model is fine — preserve it. No model write needed.
@@ -257,23 +313,41 @@ pub async fn repair_openclaw_config(
                 host_port
             );
             let non_model_fixes = [
-                ("gateway.trustedProxies", "[\"127.0.0.1\", \"192.168.107.2\"]"),
+                (
+                    "gateway.trustedProxies",
+                    "[\"127.0.0.1\", \"192.168.107.2\"]",
+                ),
                 ("gateway.controlUi.allowedOrigins", allowed_origins.as_str()),
             ];
             for (key, val) in non_model_fixes.iter() {
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(8),
                     crate::openclaw::get_docker_command()
-                        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
-                               "openclaw", "config", "set", key, val])
+                        .args([
+                            "exec",
+                            "-u",
+                            "node",
+                            "-e",
+                            "NODE_OPTIONS=--v8-pool-size=1",
+                            &container_name,
+                            "openclaw",
+                            "config",
+                            "set",
+                            key,
+                            val,
+                        ])
                         .output(),
-                ).await;
+                )
+                .await;
             }
             let _ = crate::openclaw::get_docker_command()
                 .args(["restart", &container_name])
                 .output()
                 .await;
-            return Ok(format!("Gateway configuration verified — model '{}' is valid, no model change needed.", current));
+            return Ok(format!(
+                "Gateway configuration verified — model '{}' is valid, no model change needed.",
+                current
+            ));
         } else {
             // Current model is broken or its provider has no key — fall back to expected.
             tracing::warn!(
@@ -301,7 +375,10 @@ pub async fn repair_openclaw_config(
         // Using .model directly sets a flat string, which may work but diverges from the
         // format OpenClaw's own config set command produces.
         ("agents.defaults.model.primary", actual_model.as_str()),
-        ("gateway.trustedProxies", "[\"127.0.0.1\", \"192.168.107.2\"]"),
+        (
+            "gateway.trustedProxies",
+            "[\"127.0.0.1\", \"192.168.107.2\"]",
+        ),
         // Fix allowedOrigins so the port-alignment audit check passes.
         // This is CORS for the control UI — it doesn't affect agent API communication.
         ("gateway.controlUi.allowedOrigins", allowed_origins.as_str()),
@@ -312,25 +389,49 @@ pub async fn repair_openclaw_config(
 
     for (key, val) in fixes.iter() {
         let cmd_future = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
-                   "openclaw", "config", "set", key, val])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                "-e",
+                "NODE_OPTIONS=--v8-pool-size=1",
+                &container_name,
+                "openclaw",
+                "config",
+                "set",
+                key,
+                val,
+            ])
             .output();
 
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
-            Ok(res) => res.map_err(|e| format!("Failed to execute config repair for {}: {}", key, e))?,
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await
+        {
+            Ok(res) => {
+                res.map_err(|e| format!("Failed to execute config repair for {}: {}", key, e))?
+            }
             Err(_) => return Err(format!("Docker command timed out while setting {}", key)),
         };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Repair failed on {}: {}", key, if stderr.is_empty() { "Unknown error (container may have crashed)" } else { &stderr }));
+            return Err(format!(
+                "Repair failed on {}: {}",
+                key,
+                if stderr.is_empty() {
+                    "Unknown error (container may have crashed)"
+                } else {
+                    &stderr
+                }
+            ));
         }
     }
 
     // OpenClaw self-SIGTERMs and restarts whenever a config key is written via config-set,
     // so we do NOT need an additional explicit docker restart here. A second restart on top
     // of the self-SIGTERM doubles the memory churn and can cascade into OOM with multiple agents.
-    tracing::info!("repair_openclaw_config: config keys written; OpenClaw will self-restart to apply changes");
+    tracing::info!(
+        "repair_openclaw_config: config keys written; OpenClaw will self-restart to apply changes"
+    );
 
     Ok(format!("Successfully repaired gateway config — model set to '{}' and security constraints patched.", actual_model))
 }
@@ -342,16 +443,29 @@ pub async fn get_openclaw_status(
 ) -> Result<String, String> {
     use tauri::Manager;
     let db = app_handle.state::<crate::db::Database>();
-    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+    let container_name = agent_id
+        .as_deref()
+        .map(|id| crate::openclaw::get_agent_container_name(&db, id))
+        .unwrap_or_else(|| "canopy-gateway".to_string());
 
     let status_fut = crate::openclaw::get_docker_command()
-        .args(["exec", "-u", "node", "-e", "NODE_OPTIONS=--v8-pool-size=1", &container_name,
-               "openclaw", "status"])
+        .args([
+            "exec",
+            "-u",
+            "node",
+            "-e",
+            "NODE_OPTIONS=--v8-pool-size=1",
+            &container_name,
+            "openclaw",
+            "status",
+        ])
         .output();
 
     let output = match tokio::time::timeout(std::time::Duration::from_secs(10), status_fut).await {
-         Ok(res) => res.map_err(|e| format!("Failed to execute openclaw status: {}", e))?,
-         Err(_) => return Err("openclaw status timed out. Gateway container may be hanging.".into()),
+        Ok(res) => res.map_err(|e| format!("Failed to execute openclaw status: {}", e))?,
+        Err(_) => {
+            return Err("openclaw status timed out. Gateway container may be hanging.".into())
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -382,14 +496,25 @@ mod tests {
         let container_port_str = model_constants::GATEWAY_CONTAINER_PORT.to_string();
 
         // Simulate what the audit does: check if host port appears in some origin string
-        let sample_origins = vec![
-            format!("http://localhost:{}", model_constants::GATEWAY_HOST_PORT),
-        ];
+        let sample_origins = vec![format!(
+            "http://localhost:{}",
+            model_constants::GATEWAY_HOST_PORT
+        )];
         let found_host = sample_origins.iter().any(|v| v.contains(&host_port_str));
-        let found_container = sample_origins.iter().any(|v| v.contains(&container_port_str));
+        let found_container = sample_origins
+            .iter()
+            .any(|v| v.contains(&container_port_str));
 
-        assert!(found_host, "Host port {} must be detectable in origins", model_constants::GATEWAY_HOST_PORT);
-        assert!(!found_container, "Container port {} must NOT appear in host-side origins", model_constants::GATEWAY_CONTAINER_PORT);
+        assert!(
+            found_host,
+            "Host port {} must be detectable in origins",
+            model_constants::GATEWAY_HOST_PORT
+        );
+        assert!(
+            !found_container,
+            "Container port {} must NOT appear in host-side origins",
+            model_constants::GATEWAY_CONTAINER_PORT
+        );
     }
 
     // ── Repair validates model string before writing ───────────────────────
@@ -409,7 +534,11 @@ mod tests {
         // The correct string passes validation and has the right suffix order
         let good = model_constants::DEFAULT_ANTHROPIC_MODEL;
         assert!(model_constants::validate_model_string(good).is_ok());
-        assert!(good.ends_with("sonnet-4-6"), "Correct string '{}' must end with 'sonnet-4-6'", good);
+        assert!(
+            good.ends_with("sonnet-4-6"),
+            "Correct string '{}' must end with 'sonnet-4-6'",
+            good
+        );
     }
 
     // ── Offline report uses Anthropic as expected model ───────────────────

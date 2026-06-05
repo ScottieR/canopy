@@ -1,6 +1,5 @@
 /// Agent validation: ID, name, emoji, color
 /// Uses whitelist approach to prevent command injection and invalid inputs
-
 use super::ValidationError;
 use crate::errors::Result;
 
@@ -25,10 +24,15 @@ pub fn validate_id(id: &str) -> Result<()> {
 
     // Whitelist: alphanumeric, dash, underscore only
     // This prevents: ; | ` $ ( ) ' " < > & * ? ~ ! # % ^ { } [ ]
-    if !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
-        return Err(ValidationError::InvalidCharacters(
-            format!("Agent ID can only contain lowercase letters, numbers, dash, and underscore. Got: {}", id)
-        ).into());
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        return Err(ValidationError::InvalidCharacters(format!(
+            "Agent ID can only contain lowercase letters, numbers, dash, and underscore. Got: {}",
+            id
+        ))
+        .into());
     }
 
     Ok(())
@@ -47,8 +51,9 @@ pub fn validate_name(name: &str) -> Result<()> {
     // Block control characters that could break UI
     if name.contains('\n') || name.contains('\r') || name.contains('\0') {
         return Err(ValidationError::InvalidCharacters(
-            "Agent name cannot contain newlines or null bytes".into()
-        ).into());
+            "Agent name cannot contain newlines or null bytes".into(),
+        )
+        .into());
     }
 
     Ok(())
@@ -66,9 +71,11 @@ pub fn validate_name(name: &str) -> Result<()> {
 pub fn validate_emoji(emoji: &str) -> Result<()> {
     let char_count = emoji.chars().count();
     if char_count < 1 || char_count > 2 {
-        return Err(ValidationError::InvalidFormat(
-            format!("Emoji must be 1-2 characters, got: {} chars in '{}'", char_count, emoji)
-        ).into());
+        return Err(ValidationError::InvalidFormat(format!(
+            "Emoji must be 1-2 characters, got: {} chars in '{}'",
+            char_count, emoji
+        ))
+        .into());
     }
 
     // Simple check: emoji characters have high unicode values
@@ -78,9 +85,11 @@ pub fn validate_emoji(emoji: &str) -> Result<()> {
         // Unicode emoji ranges (simplified - covers most emojis)
         // Proper validation would use unicode_emoji crate
         if code < 0x1F300 && code < 0x0080 {
-            return Err(ValidationError::InvalidFormat(
-                format!("'{}' does not appear to be an emoji", emoji)
-            ).into());
+            return Err(ValidationError::InvalidFormat(format!(
+                "'{}' does not appear to be an emoji",
+                emoji
+            ))
+            .into());
         }
     }
 
@@ -98,25 +107,27 @@ pub fn validate_emoji(emoji: &str) -> Result<()> {
 /// ```
 pub fn validate_color(color: &str) -> Result<()> {
     if !color.starts_with('#') {
-        return Err(ValidationError::InvalidFormat(
-            "Color must start with #".into()
-        ).into());
+        return Err(ValidationError::InvalidFormat("Color must start with #".into()).into());
     }
 
     let hex_part = &color[1..];
 
     // Allow #RRGGBB (6 chars) or #RRGGBBAA (8 chars)
     if hex_part.len() != 6 && hex_part.len() != 8 {
-        return Err(ValidationError::InvalidFormat(
-            format!("Color must be #RRGGBB or #RRGGBBAA, got: {}", color)
-        ).into());
+        return Err(ValidationError::InvalidFormat(format!(
+            "Color must be #RRGGBB or #RRGGBBAA, got: {}",
+            color
+        ))
+        .into());
     }
 
     // Verify all characters are valid hex (0-9, a-f, A-F)
     if !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(ValidationError::InvalidFormat(
-            format!("Color contains invalid hex characters: {}", color)
-        ).into());
+        return Err(ValidationError::InvalidFormat(format!(
+            "Color contains invalid hex characters: {}",
+            color
+        ))
+        .into());
     }
 
     Ok(())
@@ -131,7 +142,7 @@ mod tests {
         assert!(validate_id("agent-my-ai").is_ok());
         assert!(validate_id("agent-123").is_ok());
         assert!(validate_id("agent_test").is_ok());
-        assert!(validate_id("a").is_ok());  // Single char OK
+        assert!(validate_id("a").is_ok()); // Single char OK
     }
 
     #[test]
@@ -153,9 +164,9 @@ mod tests {
 
     #[test]
     fn test_validate_id_length_limits() {
-        assert!(validate_id("").is_err());  // Too short
-        assert!(validate_id(&"a".repeat(64)).is_err());  // Too long
-        assert!(validate_id(&"a".repeat(63)).is_ok());  // Max OK
+        assert!(validate_id("").is_err()); // Too short
+        assert!(validate_id(&"a".repeat(64)).is_err()); // Too long
+        assert!(validate_id(&"a".repeat(63)).is_ok()); // Max OK
     }
 
     #[test]
@@ -177,15 +188,15 @@ mod tests {
         assert!(validate_color("#00FF00").is_ok());
         assert!(validate_color("#0000FF").is_ok());
         assert!(validate_color("#FFFFFF").is_ok());
-        assert!(validate_color("#FF0000CC").is_ok());  // With alpha
-        assert!(validate_color("#00000000").is_ok());  // Transparent
+        assert!(validate_color("#FF0000CC").is_ok()); // With alpha
+        assert!(validate_color("#00000000").is_ok()); // Transparent
     }
 
     #[test]
     fn test_validate_color_rejects_invalid() {
-        assert!(validate_color("FF0000").is_err());  // Missing #
-        assert!(validate_color("#GGGGGG").is_err());  // Invalid hex
-        assert!(validate_color("#FF00").is_err());  // Too short
-        assert!(validate_color("#FF000000CC").is_err());  // Too long
+        assert!(validate_color("FF0000").is_err()); // Missing #
+        assert!(validate_color("#GGGGGG").is_err()); // Invalid hex
+        assert!(validate_color("#FF00").is_err()); // Too short
+        assert!(validate_color("#FF000000CC").is_err()); // Too long
     }
 }

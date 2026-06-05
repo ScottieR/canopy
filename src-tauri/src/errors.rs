@@ -1,7 +1,6 @@
 /// Central error type for Canopy Platform
 /// Replaces Result<T, String> with Result<T, CanopyError> for better error context
 /// and consistency across all modules.
-
 use std::fmt;
 
 #[derive(Debug, Clone)]

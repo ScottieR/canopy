@@ -10,6 +10,7 @@ import { ExportForumModal } from "./ExportForumModal";
 import { HistoryPanel } from "./HistoryPanel";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { LiveVoiceOverlay } from "../ArchitectView/LiveVoiceOverlay";
+import { buildForumMiniAppPinTarget } from "./forumMiniAppUtils";
 
 // ─── Annotation Hook & Overlay ────────────────────────────────────────────────
 
@@ -2335,6 +2336,8 @@ function ForumBlackboard({
   // Backwards-compat: blackboardBlock may be missing on forums persisted before this field was added
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const blackboardBlock: ForumBlock | null = ((forum as any).blackboardBlock as ForumBlock | null | undefined) ?? null;
+  const addMiniApp = useWorldStore(s => s.addMiniApp);
+  const agents = useWorldStore(s => s.agents);
 
   // When an artifact is selected, show it instead of the live blackboard
   // "__scratchpad__" is a virtual artifact for the shared agent scratchpad
@@ -2388,6 +2391,16 @@ function ForumBlackboard({
   }, [cards]);
 
   const hasDeliverable = isHtmlMode || isGenUIMode || (isComplete && deliverableCard !== null);
+  const miniAppPinTarget = React.useMemo(
+    () => buildForumMiniAppPinTarget({ forum, selectedArtifact, blackboardBlock }),
+    [forum, selectedArtifact, blackboardBlock]
+  );
+  const isMiniAppPinned = React.useMemo(() => {
+    if (!miniAppPinTarget) return false;
+    return agents
+      .find(a => a.id === miniAppPinTarget.agentId)
+      ?.miniApps?.some(app => app.sourceMessageId === miniAppPinTarget.app.sourceMessageId) ?? false;
+  }, [agents, miniAppPinTarget]);
 
   // When forum first completes, auto-scroll to bottom so deliverable is visible
   useEffect(() => {
@@ -2585,6 +2598,24 @@ function ForumBlackboard({
             Export
           </>,
           "Download with Made with Canopy watermark"
+        )}
+
+        {/* Pin project mini-apps to the originating agent's shelf */}
+        {miniAppPinTarget && toolbarBtn(
+          () => {
+            if (isMiniAppPinned) return;
+            addMiniApp(miniAppPinTarget.agentId, miniAppPinTarget.app);
+          },
+          isMiniAppPinned,
+          "#4A9E96",
+          <>
+            {isMiniAppPinned
+              ? <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><polyline points="20 6 9 17 4 12"/></svg>
+              : <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M12 17v-8"/><path d="M8 13l4-4 4 4"/><path d="M20 21H4"/></svg>
+            }
+            {isMiniAppPinned ? "Pinned" : "Pin app"}
+          </>,
+          "Save this interactive project app to the originating agent's mini-app shelf"
         )}
 
         {/* Comment mode — highlight text to send a note to agents */}
@@ -3158,6 +3189,7 @@ export function ForumView() {
   // Live voice needs full AgentData (role + accent colors) which ForumAgent
   // doesn't carry; we join against the global agent roster.
   const allAgents = useWorldStore(s => s.agents);
+  const [briefExpanded, setBriefExpanded] = useState(false);
 
   // activeForumId === null → show list; !== null → show that forum (or list if not found)
   const forum = activeForumId ? (forums.find(f => f.id === activeForumId) ?? null) : null;
@@ -3288,7 +3320,6 @@ export function ForumView() {
   }, [forum?.id]); // only on mount per forum
 
   // Follow-up orchestrator for when user messages after completion.
-  // Uses a local engine ref so its cleanup never stops a separately-created engine.
   useEffect(() => {
     if (!forum) return;
     if (forum.status !== "completed") return;
@@ -3296,21 +3327,12 @@ export function ForumView() {
     // Check if the last message is from the user and we haven't reacted yet
     const lastMsg = forum.messages[forum.messages.length - 1];
     if (lastMsg?.sender === "user" && !lastMsg.text.startsWith("[GenUI Event]")) {
-      let myEngine: ForumOrchestratorController | null = null;
       const startId = setTimeout(() => {
-        // Change status to "active" — this will trigger the main orchestrator useEffect
-        // to re-run, but that effect guards on "no agent messages yet" so it exits early.
-        // Using a local myEngine ref means the main effect's cleanup won't stop us.
+        // Change status to "active" — this will trigger the global orchestrator to start the follow-up engine
         useForumStore.getState().setForumStatus(forum.id, "active");
-        myEngine = createFollowUpOrchestrator(forum.id);
-        engineRef.current = myEngine;
       }, 500);
       return () => {
         clearTimeout(startId);
-        if (myEngine) {
-          myEngine.stop();
-          if (engineRef.current === myEngine) engineRef.current = null;
-        }
       };
     }
   }, [forum?.id, forum?.status, forum?.messages.length]);
@@ -3409,15 +3431,20 @@ export function ForumView() {
               }}
               title={`Spent: $${(forum.trustBudget?.usdUsed ?? 0).toFixed(2)} / $${(forum.trustBudget?.usdLimit ?? 5.00).toFixed(2)} USD. Click to edit budget.`}
             >
-              Cost: ${((forum as any).totalCost ?? 0).toFixed(3)} (Limit: ${forum.trustBudget?.usdLimit ? `$${forum.trustBudget.usdLimit.toFixed(2)}` : "None"})
+              Cost: ${((forum as any).totalCost ?? 0).toFixed(3)} (Limit: {forum.trustBudget?.usdLimit ? `$${forum.trustBudget.usdLimit.toFixed(2)}` : "None"})
             </div>
           </div>
           <div 
-            title={forum.brief}
+            title="Click to expand/collapse full brief"
+            onClick={() => setBriefExpanded(!briefExpanded)}
             style={{
               fontSize: 11, color: "var(--text-sub, #636E72)", opacity: 0.8,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-              marginTop: 2
+              overflow: briefExpanded ? "visible" : "hidden",
+              textOverflow: briefExpanded ? "clip" : "ellipsis",
+              whiteSpace: briefExpanded ? "normal" : "nowrap",
+              marginTop: 2,
+              cursor: "pointer",
+              userSelect: "text",
             }}>
             {forum.brief}
           </div>

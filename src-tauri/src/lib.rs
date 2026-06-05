@@ -12,33 +12,39 @@ pub mod app_state;
 // Rate limiting for expensive operations
 pub mod rate_limiter;
 
-mod model_constants; // Single source of truth for model strings, ports, and path helpers
-mod docker;
-pub mod openclaw;
-mod keychain;
-mod bridge;
-mod payment;
-pub mod models;
-pub mod db;
-mod imessage;
+mod activity_sniffer;
 mod audit;
 mod audit_openclaw;
-mod voice;
-mod live_voice;
-mod slack;
-mod google;
-mod channels;
-mod jit_server;
-mod browser_manager;
-mod security_scanner;
-mod activity_sniffer;
-mod health_monitor;
-mod workspace_manager;
-mod dispatch;
 mod bluetooth;
+mod bridge;
+mod browser_manager;
+mod channels;
+pub mod db;
+mod dispatch;
+mod docker;
+mod google;
+mod health_monitor;
+mod imessage;
+mod jit_server;
+mod keychain;
+mod live_voice;
+mod model_constants; // Single source of truth for model strings, ports, and path helpers
+pub mod models;
+pub mod openclaw;
+mod payment;
+mod security_scanner;
+mod slack;
+mod voice;
+mod workspace_manager;
 
-use tauri::Manager;
 use base64::Engine;
+use tauri::Manager;
+
+fn admin_api_base_url() -> &'static str {
+    option_env!("CANOPY_API_URL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://localhost:3001")
+}
 
 // ─── Forum project folder sync ────────────────────────────────────────────────
 
@@ -130,7 +136,10 @@ async fn connect_forum_folder(
         serde_json::json!({ "forums": [] })
     };
 
-    let forums = manifest["forums"].as_array_mut().get_or_insert(&mut vec![]).clone();
+    let forums = manifest["forums"]
+        .as_array_mut()
+        .get_or_insert(&mut vec![])
+        .clone();
     let mut forums_arr = forums;
     // Upsert this forum's entry
     let entry = serde_json::json!({
@@ -243,14 +252,22 @@ async fn sync_artifact(
 
     // ── Tier classification ──────────────────────────────────────────────────
     let (tier, tier_reason, is_new_file) = if !file_path.exists() {
-        (AccessTier::Notify, format!("New file: {}", safe_filename), true)
+        (
+            AccessTier::Notify,
+            format!("New file: {}", safe_filename),
+            true,
+        )
     } else {
         let prev = std::fs::read_to_string(&file_path).unwrap_or_default();
         let change_fraction = change_magnitude(&prev, &content);
         if change_fraction > 0.50 {
             (
                 AccessTier::SoftInterrupt,
-                format!("{:.0}% of {} replaced", change_fraction * 100.0, safe_filename),
+                format!(
+                    "{:.0}% of {} replaced",
+                    change_fraction * 100.0,
+                    safe_filename
+                ),
                 false,
             )
         } else {
@@ -279,7 +296,8 @@ async fn sync_artifact(
             std::fs::write(
                 history_dir.join(snap_name),
                 serde_json::to_string_pretty(&snap).map_err(|e| e.to_string())?,
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
     } else if is_new_file {
         let snap_name = format!("{}_{}_{}.json", now_secs, forum_id, artifact_id);
@@ -295,26 +313,45 @@ async fn sync_artifact(
         std::fs::write(
             history_dir.join(snap_name),
             serde_json::to_string_pretty(&snap).map_err(|e| e.to_string())?,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     // ── Write file ──────────────────────────────────────────────────────────
     std::fs::write(&file_path, content.as_bytes()).map_err(|e| e.to_string())?;
 
     let content_hash = format!("{:x}", content.len() ^ now_secs as usize);
-    Ok(SyncResult { synced_at: now_ms, content_hash, tier, tier_reason })
+    Ok(SyncResult {
+        synced_at: now_ms,
+        content_hash,
+        tier,
+        tier_reason,
+    })
 }
 
 /// Compute approximate change fraction between two strings (0.0 = identical, 1.0 = completely different).
 /// Used for access tier classification. Not cryptographic — optimized for readability.
 pub fn change_magnitude(prev: &str, next: &str) -> f64 {
-    if prev.is_empty() && next.is_empty() { return 0.0; }
-    if prev.is_empty() || next.is_empty() { return 1.0; }
+    if prev.is_empty() && next.is_empty() {
+        return 0.0;
+    }
+    if prev.is_empty() || next.is_empty() {
+        return 1.0;
+    }
     // Count bytes that differ using a simple sliding comparison
     let prev_b = prev.as_bytes();
     let next_b = next.as_bytes();
-    let common_prefix = prev_b.iter().zip(next_b.iter()).take_while(|(a, b)| a == b).count();
-    let common_suffix = prev_b.iter().rev().zip(next_b.iter().rev()).take_while(|(a, b)| a == b).count();
+    let common_prefix = prev_b
+        .iter()
+        .zip(next_b.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let common_suffix = prev_b
+        .iter()
+        .rev()
+        .zip(next_b.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
     let prev_changed = prev.len().saturating_sub(common_prefix + common_suffix);
     let next_changed = next.len().saturating_sub(common_prefix + common_suffix);
     let changed = prev_changed.max(next_changed);
@@ -341,7 +378,7 @@ pub fn sanitize_path_component(s: &str) -> String {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct FileHistoryEntry {
     id: String,
-    kind: String,           // always "file"
+    kind: String, // always "file"
     timestamp: u64,
     #[serde(rename = "forumId")]
     forum_id: String,
@@ -349,7 +386,7 @@ struct FileHistoryEntry {
     artifact_id: String,
     filename: String,
     folder: String,
-    action: String,         // "created" | "modified"
+    action: String, // "created" | "modified"
     #[serde(rename = "prevContent")]
     prev_content: Option<String>,
 }
@@ -360,7 +397,9 @@ async fn list_artifact_history(
     folder_path: String,
     forum_title: String,
 ) -> Result<Vec<FileHistoryEntry>, String> {
-    let history_dir = std::path::PathBuf::from(&folder_path).join(".canopy").join("history");
+    let history_dir = std::path::PathBuf::from(&folder_path)
+        .join(".canopy")
+        .join("history");
     if !history_dir.exists() {
         return Ok(vec![]);
     }
@@ -386,9 +425,17 @@ async fn list_artifact_history(
         // Only include entries belonging to this forum (forum_id prefix match on filename or field)
         let entry_forum_id = val["forumId"].as_str().unwrap_or("").to_string();
         // Accept if forumId field mentions this forum, or if filename mentions safe_title
-        let filename_str = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-        if !entry_forum_id.contains(&safe_title) && !filename_str.contains(&safe_title)
-            && val["folder"].as_str().map(|f| !f.is_empty()).unwrap_or(true)
+        let filename_str = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        if !entry_forum_id.contains(&safe_title)
+            && !filename_str.contains(&safe_title)
+            && val["folder"]
+                .as_str()
+                .map(|f| !f.is_empty())
+                .unwrap_or(true)
         {
             // Still include if prev_content present (came from sync_artifact for this title)
         }
@@ -457,7 +504,8 @@ async fn restore_artifact_snapshot(
             std::fs::write(
                 history_dir.join(snap_name),
                 serde_json::to_string_pretty(&snap).map_err(|e| e.to_string())?,
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
     }
 
@@ -466,7 +514,12 @@ async fn restore_artifact_snapshot(
     std::fs::write(&file_path, prev_content.as_bytes()).map_err(|e| e.to_string())?;
 
     let content_hash = format!("{:x}", prev_content.len() ^ now_secs as usize);
-    Ok(SyncResult { synced_at: now_ms, content_hash, tier: AccessTier::Silent, tier_reason: String::new() })
+    Ok(SyncResult {
+        synced_at: now_ms,
+        content_hash,
+        tier: AccessTier::Silent,
+        tier_reason: String::new(),
+    })
 }
 
 // ─── Viewport capture — used by the forum drawing overlay ─────────────────────
@@ -571,7 +624,8 @@ pub fn run() {
             // Sync pricing asynchronously from Admin Oracle
             tauri::async_runtime::spawn(async move {
                 tracing::info!("Attempting to fetch remote LLM pricing sync...");
-                if let Ok(resp) = reqwest::get("http://localhost:3001/api/pricing").await {
+                let pricing_url = format!("{}/api/pricing", admin_api_base_url());
+                if let Ok(resp) = reqwest::get(&pricing_url).await {
                     if let Ok(pricing_json) = resp.json::<std::collections::HashMap<String, serde_json::Value>>().await {
                         let mut registry = models::PRICING_REGISTRY.write().unwrap();
                         for (model_name, costs) in pricing_json {
@@ -592,7 +646,8 @@ pub fn run() {
             // `update_model_registry` drops any phantom / malformed names before storing.
             tauri::async_runtime::spawn(async move {
                 tracing::info!("Attempting to fetch model list from admin oracle...");
-                match reqwest::get("http://localhost:3001/api/models").await {
+                let models_url = format!("{}/api/models", admin_api_base_url());
+                match reqwest::get(&models_url).await {
                     Ok(resp) => {
                         match resp.json::<serde_json::Value>().await {
                             Ok(body) => {
@@ -669,6 +724,7 @@ pub fn run() {
             openclaw::approve_slack_pairing,
             openclaw::get_user_profile,
             openclaw::save_user_profile,
+            openclaw::backfill_agent_workspace_files,
             openclaw::get_global_audit_log,
             openclaw::get_agent_activity_heatmap,
             openclaw::ping_agent_routing,
@@ -703,6 +759,8 @@ pub fn run() {
             browser_manager::update_agent_allowed_domains,
             browser_manager::start_browser_stream,
             browser_manager::stop_browser_stream,
+            browser_manager::start_browser_interactive_auth,
+            browser_manager::finish_browser_interactive_auth,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,
@@ -727,6 +785,8 @@ pub fn run() {
             keychain::delete_secret_cmd,
             keychain::auto_discover_keys_cmd,
             keychain::get_web_credentials_cmd,
+            keychain::verify_cloak_passcode,
+            keychain::authenticate_mac_user,
             // Payment gateway (deterministic)
             payment::evaluate_purchase,
             payment::get_agent_budget,
@@ -862,7 +922,10 @@ mod access_tier_tests {
 
     #[test]
     fn sanitize_strips_backslash() {
-        assert_eq!(sanitize_path_component("C:\\Windows\\System32"), "C-Windows-System32");
+        assert_eq!(
+            sanitize_path_component("C:\\Windows\\System32"),
+            "C-Windows-System32"
+        );
     }
 
     #[test]
@@ -875,8 +938,14 @@ mod access_tier_tests {
 
     #[test]
     fn sanitize_preserves_safe_names() {
-        assert_eq!(sanitize_path_component("site-assessment.md"), "site-assessment.md");
-        assert_eq!(sanitize_path_component("Q3 Launch Strategy"), "Q3 Launch Strategy");
+        assert_eq!(
+            sanitize_path_component("site-assessment.md"),
+            "site-assessment.md"
+        );
+        assert_eq!(
+            sanitize_path_component("Q3 Launch Strategy"),
+            "Q3 Launch Strategy"
+        );
     }
 
     #[test]
@@ -904,7 +973,7 @@ mod access_tier_tests {
     #[test]
     fn change_magnitude_small_edit_under_threshold() {
         let original = "The quick brown fox jumps over the lazy dog.";
-        let edited   = "The quick brown cat jumps over the lazy dog.";
+        let edited = "The quick brown cat jumps over the lazy dog.";
         let mag = change_magnitude(original, edited);
         assert!(mag < 0.50, "Small edit should be < 50%, got {:.2}", mag);
     }
@@ -914,7 +983,11 @@ mod access_tier_tests {
         let original = "First version with lots of content about topic A.";
         let replaced = "Completely different second version about something else entirely new.";
         let mag = change_magnitude(original, replaced);
-        assert!(mag > 0.50, "Full replacement should be > 50%, got {:.2}", mag);
+        assert!(
+            mag > 0.50,
+            "Full replacement should be > 50%, got {:.2}",
+            mag
+        );
     }
 
     // ── Tier 3: path traversal ────────────────────────────────────────────────
@@ -926,7 +999,10 @@ mod access_tier_tests {
         // so a traversal attempt in folder is neutralized before the prefix check.
         let safe = sanitize_path_component("../../../etc");
         assert!(!safe.contains('/'), "Sanitized folder must not contain '/'");
-        assert!(!safe.contains('\\'), "Sanitized folder must not contain '\\'");
+        assert!(
+            !safe.contains('\\'),
+            "Sanitized folder must not contain '\\'"
+        );
     }
 
     #[test]
@@ -988,7 +1064,11 @@ mod access_tier_tests {
         } else {
             AccessTier::Silent
         };
-        assert_eq!(tier, AccessTier::Notify, "New file must produce Tier 1 / Notify");
+        assert_eq!(
+            tier,
+            AccessTier::Notify,
+            "New file must produce Tier 1 / Notify"
+        );
     }
 
     #[test]
@@ -1009,7 +1089,12 @@ mod access_tier_tests {
         } else {
             AccessTier::Silent
         };
-        assert_eq!(tier, AccessTier::Silent, "Small edit must be Tier 0 / Silent, magnitude={:.2}", mag);
+        assert_eq!(
+            tier,
+            AccessTier::Silent,
+            "Small edit must be Tier 0 / Silent, magnitude={:.2}",
+            mag
+        );
     }
 
     #[test]
@@ -1030,7 +1115,12 @@ mod access_tier_tests {
         } else {
             AccessTier::Silent
         };
-        assert_eq!(tier, AccessTier::SoftInterrupt, "Large replace must be Tier 2, magnitude={:.2}", mag);
+        assert_eq!(
+            tier,
+            AccessTier::SoftInterrupt,
+            "Large replace must be Tier 2, magnitude={:.2}",
+            mag
+        );
     }
 
     // ── Namespace enforcement ─────────────────────────────────────────────────
@@ -1038,11 +1128,12 @@ mod access_tier_tests {
     #[test]
     fn out_of_namespace_write_is_detected() {
         let connected_folder = "/Users/scottie/Projects/Q3Launch";
-        let attempted_path   = "/Users/scottie/Projects/Q3Launch/../OtherProject/steal.txt";
-        
+        let attempted_path = "/Users/scottie/Projects/Q3Launch/../OtherProject/steal.txt";
+
         // Let's resolve the paths to test real canonicalization logic
         // But since this is a unit test and paths don't exist, we'll do string matching with /../
-        let is_outside = attempted_path.contains("/../") || !attempted_path.starts_with(connected_folder);
+        let is_outside =
+            attempted_path.contains("/../") || !attempted_path.starts_with(connected_folder);
         assert!(
             is_outside,
             "Path with '..' should be detected as outside or rejected"

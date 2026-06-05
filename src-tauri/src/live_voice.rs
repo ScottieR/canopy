@@ -200,10 +200,7 @@ pub async fn start_live_voice_session(
             "interim_transcripts": true,  // we want incremental captions for the UI
         }
     });
-    if let Err(e) = ws_sink
-        .send(Message::Text(setup_payload.to_string()))
-        .await
-    {
+    if let Err(e) = ws_sink.send(Message::Text(setup_payload.to_string())).await {
         return Err(format!("NETWORK: failed to send setup: {}", e));
     }
 
@@ -262,8 +259,7 @@ pub async fn start_live_voice_session(
                 Message::Binary(bytes) => {
                     // Inbound audio frame. Base64-encode for the event so we
                     // don't have to deal with binary in Tauri's IPC.
-                    let pcm_base64 =
-                        base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    let pcm_base64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                     emit(LiveVoiceEvent::Audio {
                         session_id: reader_session_id.clone(),
                         pcm_base64,
@@ -273,10 +269,7 @@ pub async fn start_live_voice_session(
                     // Control frame. Parse and re-emit as a typed Tauri event.
                     match serde_json::from_str::<serde_json::Value>(&txt) {
                         Ok(json) => {
-                            let kind = json
-                                .get("event")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("");
+                            let kind = json.get("event").and_then(|v| v.as_str()).unwrap_or("");
                             match kind {
                                 "turn_start" => emit(LiveVoiceEvent::TurnStart {
                                     session_id: reader_session_id.clone(),
@@ -451,7 +444,9 @@ fn nanoid_like(n: usize) -> String {
         .map(|d| d.subsec_nanos() as usize)
         .unwrap_or(0);
     for _ in 0..n {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         s.push(alphabet[(seed >> 32) as usize % alphabet.len()] as char);
     }
     s

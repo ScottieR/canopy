@@ -7,6 +7,33 @@ fn validate_workspace_filename(filename: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn is_app_managed_filename(filename: &str) -> bool {
+    super::APP_MANAGED_FRAMEWORK_FILES.contains(&filename)
+}
+
+fn write_workspace_file_inner(
+    db: &crate::db::Database,
+    agent_id: &str,
+    filename: &str,
+    content: &str,
+) -> Result<(), String> {
+    validate_workspace_filename(filename)?;
+    if is_app_managed_filename(filename) {
+        return Err(format!(
+            "{} is app-managed and not directly editable",
+            filename
+        ));
+    }
+    if filename == "USER.md" {
+        return super::sync_shared_user_md_to_all_agents(db, content);
+    }
+
+    let workspace = super::get_agent_workspace_dir(db, agent_id)?;
+    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+    let file_path = workspace.join(filename);
+    std::fs::write(&file_path, content).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn read_workspace_file(
     db: tauri::State<'_, crate::db::Database>,
@@ -29,11 +56,7 @@ pub async fn write_workspace_file(
     filename: String,
     content: String,
 ) -> Result<(), String> {
-    validate_workspace_filename(&filename)?;
-    let workspace = super::get_agent_workspace_dir(&db, &agent_id)?;
-    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
-    let file_path = workspace.join(&filename);
-    std::fs::write(&file_path, content).map_err(|e| e.to_string())
+    write_workspace_file_inner(&db, &agent_id, &filename, &content)
 }
 
 #[tauri::command]
@@ -125,5 +148,12 @@ mod tests {
     fn filename_validation_accepts_plain_filenames() {
         assert!(validate_workspace_filename("notes.md").is_ok());
         assert!(validate_workspace_filename("screen-shot_1.png").is_ok());
+    }
+
+    #[test]
+    fn app_managed_files_are_not_directly_editable() {
+        assert!(is_app_managed_filename("APP_PROTOCOLS.md"));
+        assert!(is_app_managed_filename("APP_CAPABILITIES.md"));
+        assert!(is_app_managed_filename("APP_OPERATING_MODEL.md"));
     }
 }

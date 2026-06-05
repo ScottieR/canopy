@@ -16,6 +16,29 @@ const ADMIN_TO_MAIN_DECOR_SCALE = 0.5;
 const hasSavedDecorPosition = (t: any) =>
   !!t && t.x !== undefined && t.y !== undefined && t.z !== undefined;
 
+class DecorRenderBoundary extends React.Component<
+  { children: React.ReactNode; path: string },
+  { hasError: boolean }
+> {
+  constructor(props: { children: React.ReactNode; path: string }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    console.warn(`Decor render skipped for ${this.props.path}`, error);
+  }
+
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
 export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut, hideAgent, hideDecor }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void, hideAgent?: boolean, hideDecor?: boolean }) {
   const isWorking = agent?.status === "active" || agent?.status === "thinking";
 
@@ -145,9 +168,11 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
 
         return (
           <group key={path} position={decorPos} rotation={decorRot} scale={decorScale * 0.01 * 0.25}>
-             <React.Suspense fallback={null}>
-               <GLBModel url={glbPath} />
-             </React.Suspense>
+            <DecorRenderBoundary path={path}>
+              <React.Suspense fallback={null}>
+                <GLBModel url={glbPath} />
+              </React.Suspense>
+            </DecorRenderBoundary>
           </group>
         );
       })}

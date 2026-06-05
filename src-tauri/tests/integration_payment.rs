@@ -3,11 +3,11 @@
 
 mod common;
 
-use canopy_lib::models::{PurchaseRequest, AgentBudget};
+use canopy_lib::models::{AgentBudget, PurchaseRequest};
 use common::{
-    default_test_budget, default_purchase_request, test_budget_payments_disabled,
-    test_budget_with_daily_limit, test_budget_with_spending, test_purchase_request,
-    test_purchase_request_with_category, test_budget_with_categories,
+    default_purchase_request, default_test_budget, test_budget_payments_disabled,
+    test_budget_with_categories, test_budget_with_daily_limit, test_budget_with_spending,
+    test_purchase_request, test_purchase_request_with_category,
 };
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -56,11 +56,11 @@ fn test_default_budget_enables_payments() {
 
     let budget = default_test_budget("agent-1");
 
-    assert!(budget.payments_enabled, "Payments should be enabled by default");
     assert!(
-        budget.daily_limit_cents > 0,
-        "Daily limit should be set"
+        budget.payments_enabled,
+        "Payments should be enabled by default"
     );
+    assert!(budget.daily_limit_cents > 0, "Daily limit should be set");
     assert!(
         budget.monthly_limit_cents > budget.daily_limit_cents,
         "Monthly limit should exceed daily"
@@ -91,7 +91,10 @@ fn test_budget_has_spending_limits() {
 
     let budget = default_test_budget("agent-1");
 
-    assert_eq!(budget.daily_limit_cents, 50000, "Daily limit should be $500");
+    assert_eq!(
+        budget.daily_limit_cents, 50000,
+        "Daily limit should be $500"
+    );
     assert_eq!(
         budget.monthly_limit_cents, 200000,
         "Monthly limit should be $2000"
@@ -111,7 +114,9 @@ fn test_budget_has_category_whitelist() {
     let budget = default_test_budget("agent-1");
 
     assert!(
-        budget.allowed_categories.contains(&"cleaning_supplies".to_string()),
+        budget
+            .allowed_categories
+            .contains(&"cleaning_supplies".to_string()),
         "Default budget should allow cleaning supplies"
     );
     assert!(
@@ -119,7 +124,10 @@ fn test_budget_has_category_whitelist() {
         "Default budget should allow software"
     );
     // Verify it's a list, not open-ended
-    assert!(!budget.allowed_categories.is_empty(), "Should have categories");
+    assert!(
+        !budget.allowed_categories.is_empty(),
+        "Should have categories"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -296,7 +304,10 @@ fn test_budget_tracks_daily_spending() {
 
     let budget = test_budget_with_spending("agent-1", 30000, 60000);
 
-    assert_eq!(budget.daily_spent_cents, 30000, "Daily spent should be $300");
+    assert_eq!(
+        budget.daily_spent_cents, 30000,
+        "Daily spent should be $300"
+    );
     assert_eq!(
         budget.monthly_spent_cents, 60000,
         "Monthly spent should be $600"

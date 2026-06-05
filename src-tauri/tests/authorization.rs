@@ -17,13 +17,13 @@ mod authorization_tests {
     #[test]
     fn test_authorization_for_non_admin_operations() {
         let state = AppState::new();
-        assert!(state.is_authorized(false));  // Non-admin allowed
+        assert!(state.is_authorized(false)); // Non-admin allowed
     }
 
     #[test]
     fn test_authorization_blocks_admin_operations_for_non_admin() {
         let state = AppState::new();
-        assert!(!state.is_authorized(true));  // Admin required, user is not admin
+        assert!(!state.is_authorized(true)); // Admin required, user is not admin
     }
 
     #[test]
@@ -81,7 +81,10 @@ mod authorization_database_tests {
 
         fn is_agent_owner(&self, agent_id: &str, user_id: &str) -> bool {
             let owners = self.agent_owners.lock().unwrap();
-            owners.get(agent_id).map(|owner| owner == user_id).unwrap_or(false)
+            owners
+                .get(agent_id)
+                .map(|owner| owner == user_id)
+                .unwrap_or(false)
         }
     }
 

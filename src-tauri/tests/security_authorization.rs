@@ -26,7 +26,10 @@ fn test_agent_belongs_to_creator() {
     // assert!(!agent.is_owned_by(other_user_id));
 
     // For now, verify agent structure supports ownership
-    assert!(!agent.id.is_empty(), "Agent should have ID for ownership tracking");
+    assert!(
+        !agent.id.is_empty(),
+        "Agent should have ID for ownership tracking"
+    );
 }
 
 #[test]
@@ -96,8 +99,14 @@ fn test_budget_belongs_to_agent() {
     let budget1 = default_test_budget("agent-1");
     let budget2 = default_test_budget("agent-2");
 
-    assert_eq!(budget1.agent_id, "agent-1", "Budget should be tied to agent");
-    assert_eq!(budget2.agent_id, "agent-2", "Each agent has separate budget");
+    assert_eq!(
+        budget1.agent_id, "agent-1",
+        "Budget should be tied to agent"
+    );
+    assert_eq!(
+        budget2.agent_id, "agent-2",
+        "Each agent has separate budget"
+    );
     assert_ne!(
         budget1.agent_id, budget2.agent_id,
         "Different agents have different budgets"
@@ -294,9 +303,7 @@ fn test_list_agents_filtered_by_owner() {
         test_agent_with_id("user1-agent-2"),
     ];
 
-    let user2_agents = vec![
-        test_agent_with_id("user2-agent-1"),
-    ];
+    let user2_agents = vec![test_agent_with_id("user2-agent-1")];
 
     // When user1 lists agents: should see [user1-agent-1, user1-agent-2]
     // Should NOT see: user2-agent-1

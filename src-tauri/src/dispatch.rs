@@ -1,15 +1,15 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
-use tauri::{State, Emitter};
-use serde::{Deserialize, Serialize};
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use std::process::Command;
+use std::sync::Arc;
+use tauri::{Emitter, State};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::RwLock;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
-use std::process::Command;
+use tracing::{error, info, warn};
 use uuid::Uuid;
-use tracing::{info, warn, error};
 
 const MAX_MOBILE_MESSAGE_CHARS: usize = 64_000;
 const MAX_MOBILE_SYSTEM_COMMAND_CHARS: usize = 4_096;
@@ -45,17 +45,19 @@ pub struct PairingData {
 }
 
 #[tauri::command]
-pub async fn generate_pairing_token(state: State<'_, Arc<DispatchState>>) -> Result<PairingData, String> {
+pub async fn generate_pairing_token(
+    state: State<'_, Arc<DispatchState>>,
+) -> Result<PairingData, String> {
     // 1. Generate new token
     let token = Uuid::new_v4().to_string();
-    
+
     // 2. Store it
     let mut writer = state.current_token.write().await;
     *writer = Some(token.clone());
-    
+
     // 3. Get local IP
     let ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
-    
+
     Ok(PairingData {
         token,
         ip,
@@ -71,7 +73,10 @@ pub async fn revoke_pairing_token(state: State<'_, Arc<DispatchState>>) -> Resul
 }
 
 #[tauri::command]
-pub async fn sync_mobile_state(state: State<'_, Arc<DispatchState>>, payload: serde_json::Value) -> Result<(), String> {
+pub async fn sync_mobile_state(
+    state: State<'_, Arc<DispatchState>>,
+    payload: serde_json::Value,
+) -> Result<(), String> {
     let mut writer = state.mobile_state.write().await;
     *writer = payload;
     Ok(())
@@ -105,12 +110,17 @@ pub async fn start_websocket_server(state: Arc<DispatchState>, app_handle: tauri
             return;
         }
     };
-    
+
     info!("WebSocket relay listening on: {}", addr);
-    
+
     while let Ok((stream, peer_addr)) = listener.accept().await {
         let state_clone = Arc::clone(&state);
-        tokio::spawn(handle_connection(stream, peer_addr, state_clone, app_handle.clone()));
+        tokio::spawn(handle_connection(
+            stream,
+            peer_addr,
+            state_clone,
+            app_handle.clone(),
+        ));
     }
 }
 
@@ -154,7 +164,12 @@ fn is_valid_mobile_message_text(text: &str) -> bool {
     !text.trim().is_empty() && text.len() <= MAX_MOBILE_MESSAGE_CHARS
 }
 
-async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<DispatchState>, app_handle: tauri::AppHandle) {
+async fn handle_connection(
+    stream: TcpStream,
+    peer_addr: SocketAddr,
+    state: Arc<DispatchState>,
+    app_handle: tauri::AppHandle,
+) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -162,10 +177,10 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
             return;
         }
     };
-    
+
     info!("New WebSocket connection from: {}", peer_addr);
     let (mut write, mut read) = ws_stream.split();
-    
+
     // Auth phase
     let mut authenticated = false;
     if let Some(Ok(Message::Text(text))) = read.next().await {
@@ -175,29 +190,33 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                 if auth_msg.auth == *valid_token {
                     authenticated = true;
                     // Write back success
-                    let _ = write.send(Message::Text("{\"status\":\"authenticated\"}".to_string())).await;
+                    let _ = write
+                        .send(Message::Text("{\"status\":\"authenticated\"}".to_string()))
+                        .await;
                 }
             }
         }
     }
-    
+
     if !authenticated {
         warn!("Authentication failed for {}", peer_addr);
-        let _ = write.send(Message::Text("{\"error\":\"unauthorized\"}".to_string())).await;
+        let _ = write
+            .send(Message::Text("{\"error\":\"unauthorized\"}".to_string()))
+            .await;
         return;
     }
-    
+
     info!("Client {} successfully authenticated", peer_addr);
-    
+
     use tauri::Manager;
     let db_state = app_handle.state::<crate::db::Database>();
-    
+
     // Message loop
     while let Some(msg) = read.next().await {
         match msg {
             Ok(Message::Text(text)) => {
                 info!("Received RPC command from {}: {}", peer_addr, text);
-                
+
                 if let Ok(req) = serde_json::from_str::<RpcRequest>(&text) {
                     match req.command.as_str() {
                         "list_agents" => {
@@ -209,7 +228,9 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                             } else {
                                 drop(reader);
                                 // Fallback: raw DB list without conversation_id
-                                if let Ok(agents) = crate::openclaw::list_agents(db_state.clone()).await {
+                                if let Ok(agents) =
+                                    crate::openclaw::list_agents(db_state.clone()).await
+                                {
                                     serde_json::json!(agents)
                                 } else {
                                     serde_json::json!([])
@@ -225,25 +246,43 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                         }
                         "get_chat_history" => {
                             if let Some(payload) = req.payload {
-                                if let Some(agent_id) = payload.get("agent_id").and_then(|v| v.as_str()) {
+                                if let Some(agent_id) =
+                                    payload.get("agent_id").and_then(|v| v.as_str())
+                                {
                                     // Prefer an explicit session_id (the agent's activeConversationId)
                                     // so we never accidentally return a forum orchestration session.
-                                    let session_id = payload.get("session_id")
+                                    let session_id = payload
+                                        .get("session_id")
                                         .and_then(|v| v.as_str())
                                         .filter(|s| !s.is_empty())
                                         .map(|s| s.to_string());
-                                    if let Ok(history) = crate::openclaw::get_conversation_history(db_state.clone(), agent_id.to_string(), session_id, Some(100)).await {
+                                    let is_forum = payload.get("mode").and_then(|v| v.as_str())
+                                        == Some("forum");
+                                    if let Ok(history) = crate::openclaw::get_conversation_history(
+                                        db_state.clone(),
+                                        agent_id.to_string(),
+                                        session_id,
+                                        Some(100),
+                                    )
+                                    .await
+                                    {
                                         // Filter out forum orchestration prompts — these are the large
                                         // system prompts sent to agents during forum phases and should
                                         // never appear in the mobile individual chat thread.
                                         let filtered: Vec<_> = history.into_iter().filter(|m| {
                                             let c = m.content.to_lowercase();
                                             // Drop messages that look like forum phase prompts
-                                            !(c.contains("you are ") && c.contains("participating in a collaborative forum"))
-                                            && !(c.contains("---format---"))
-                                            && !(c.contains("this is the research & discovery phase"))
-                                            && !(c.contains("this is the strategic approach phase"))
-                                            && !(c.contains("producing the final deliverable for a collaborative forum"))
+                                            let mut drop = (c.contains("you are ") && c.contains("participating in a collaborative forum"))
+                                                || c.contains("this is the research & discovery phase")
+                                                || c.contains("this is the strategic approach phase")
+                                                || c.contains("producing the final deliverable for a collaborative forum");
+                                            
+                                            // If not viewing a forum, also drop the artifacts
+                                            if !is_forum && c.contains("---format---") {
+                                                drop = true;
+                                            }
+                                            
+                                            !drop
                                         }).collect();
                                         let res = RpcResponse {
                                             msg_type: "chat_history".to_string(),
@@ -271,7 +310,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                         // writes only "projects", mobile still gets data.
                         "list_forums" => {
                             let reader = state.mobile_state.read().await;
-                            let forums = reader.get("forums")
+                            let forums = reader
+                                .get("forums")
                                 .or_else(|| reader.get("projects"))
                                 .cloned()
                                 .unwrap_or(serde_json::json!([]));
@@ -286,7 +326,8 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                         // list_projects: legacy alias — responds with forums_list for backwards compat
                         "list_projects" => {
                             let reader = state.mobile_state.read().await;
-                            let forums = reader.get("forums")
+                            let forums = reader
+                                .get("forums")
                                 .or_else(|| reader.get("projects"))
                                 .cloned()
                                 .unwrap_or(serde_json::json!([]));
@@ -314,41 +355,79 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                             if let Some(payload) = req.payload {
                                 if let (Some(agent_id), Some(text_msg)) = (
                                     payload.get("agent_id").and_then(|v| v.as_str()),
-                                    payload.get("text").and_then(|v| v.as_str())
+                                    payload.get("text").and_then(|v| v.as_str()),
                                 ) {
                                     if agent_id == "system" {
                                         // Only forward known mobile shortcut commands to the desktop UI.
                                         if is_allowed_mobile_system_command(text_msg) {
-                                            let _ = app_handle.emit("mobile_system_command", serde_json::json!({
-                                                "command": text_msg
-                                            }));
+                                            let _ = app_handle.emit(
+                                                "mobile_system_command",
+                                                serde_json::json!({
+                                                    "command": text_msg
+                                                }),
+                                            );
                                         } else {
-                                            warn!("Rejected mobile system command from {}", peer_addr);
-                                            let _ = write.send(Message::Text("{\"error\":\"unauthorized_system_command\"}".to_string())).await;
+                                            warn!(
+                                                "Rejected mobile system command from {}",
+                                                peer_addr
+                                            );
+                                            let _ = write
+                                                .send(Message::Text(
+                                                    "{\"error\":\"unauthorized_system_command\"}"
+                                                        .to_string(),
+                                                ))
+                                                .await;
                                         }
                                     } else {
-                                        if let Err(e) = crate::validators::agent::validate_id(agent_id) {
+                                        if let Err(e) =
+                                            crate::validators::agent::validate_id(agent_id)
+                                        {
                                             warn!("Rejected mobile send_message with invalid agent id from {}: {}", peer_addr, e);
-                                            let _ = write.send(Message::Text("{\"error\":\"invalid_agent_id\"}".to_string())).await;
+                                            let _ = write
+                                                .send(Message::Text(
+                                                    "{\"error\":\"invalid_agent_id\"}".to_string(),
+                                                ))
+                                                .await;
                                             continue;
                                         }
                                         if !is_valid_mobile_message_text(text_msg) {
                                             warn!("Rejected mobile send_message with invalid message size from {}", peer_addr);
-                                            let _ = write.send(Message::Text("{\"error\":\"invalid_message\"}".to_string())).await;
+                                            let _ = write
+                                                .send(Message::Text(
+                                                    "{\"error\":\"invalid_message\"}".to_string(),
+                                                ))
+                                                .await;
                                             continue;
                                         }
-                                        if let Err(e) = crate::rate_limiter::limiters::AGENT_COMMAND_LIMITER.check(agent_id) {
+                                        if let Err(e) =
+                                            crate::rate_limiter::limiters::AGENT_COMMAND_LIMITER
+                                                .check(agent_id)
+                                        {
                                             warn!("Rate limited mobile send_message for agent {} from {}: {}", agent_id, peer_addr, e);
-                                            let _ = write.send(Message::Text("{\"error\":\"rate_limited\"}".to_string())).await;
+                                            let _ = write
+                                                .send(Message::Text(
+                                                    "{\"error\":\"rate_limited\"}".to_string(),
+                                                ))
+                                                .await;
                                             continue;
                                         }
                                         // Pass the agent's individual chat session ID so forum sessions
                                         // never receive or contaminate the mobile conversation.
-                                        let session_id = payload.get("session_id")
+                                        let session_id = payload
+                                            .get("session_id")
                                             .and_then(|v| v.as_str())
                                             .filter(|s| !s.is_empty())
                                             .map(|s| s.to_string());
-                                        if let Ok(response_val) = crate::openclaw::send_message_internal(&*db_state, &app_handle, agent_id, text_msg, session_id).await {
+                                        if let Ok(response_val) =
+                                            crate::openclaw::send_message_internal(
+                                                &*db_state,
+                                                &app_handle,
+                                                agent_id,
+                                                text_msg,
+                                                session_id,
+                                            )
+                                            .await
+                                        {
                                             let res = RpcResponse {
                                                 msg_type: "chat_response".to_string(),
                                                 payload: serde_json::json!({
@@ -370,8 +449,42 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
                                 let _ = app_handle.emit("mobile_inbox_resolved", payload);
                             }
                         }
+                        "set_sensor_token" => {
+                            if let Some(payload) = req.payload {
+                                if let (Some(agent_id), Some(sensor_id), Some(token)) = (
+                                    payload.get("agent_id").and_then(|v| v.as_str()),
+                                    payload.get("sensor_id").and_then(|v| v.as_str()),
+                                    payload.get("token").and_then(|v| v.as_str()),
+                                ) {
+                                    let key = format!("agent_{}_{}_token", agent_id, sensor_id);
+                                    let _ = crate::keychain::store_secret(&key, token);
+
+                                    // Also notify the frontend that a sensor token was set
+                                    let _ = app_handle.emit(
+                                        "mobile_sensor_configured",
+                                        serde_json::json!({
+                                            "agent_id": agent_id,
+                                            "sensor_id": sensor_id
+                                        }),
+                                    );
+
+                                    let res = RpcResponse {
+                                        msg_type: "sensor_token_saved".to_string(),
+                                        payload: serde_json::json!({"success": true}),
+                                    };
+                                    if let Ok(json_str) = serde_json::to_string(&res) {
+                                        let _ = write.send(Message::Text(json_str)).await;
+                                    }
+                                }
+                            }
+                        }
                         _ => {
-                            let _ = write.send(Message::Text(format!("{{\"error\": \"Unknown command: {}\"}}", req.command))).await;
+                            let _ = write
+                                .send(Message::Text(format!(
+                                    "{{\"error\": \"Unknown command: {}\"}}",
+                                    req.command
+                                )))
+                                .await;
                         }
                     }
                 }
@@ -385,7 +498,7 @@ async fn handle_connection(stream: TcpStream, peer_addr: SocketAddr, state: Arc<
             _ => {}
         }
     }
-    
+
     info!("Connection closed: {}", peer_addr);
 }
 
@@ -395,17 +508,30 @@ mod tests {
 
     #[test]
     fn mobile_system_command_allowlist_accepts_known_commands() {
-        assert!(is_allowed_mobile_system_command("COMMAND: CAPTURE_NOTE:Remember the demo notes"));
-        assert!(is_allowed_mobile_system_command("COMMAND: CREATE_PROJECT_SPACE_AUTO"));
-        assert!(is_allowed_mobile_system_command("COMMAND: DISMISS_INBOX_ITEM:item_123"));
-        assert!(is_allowed_mobile_system_command("COMMAND: APPROVE_INBOX_ITEM:item_123"));
+        assert!(is_allowed_mobile_system_command(
+            "COMMAND: CAPTURE_NOTE:Remember the demo notes"
+        ));
+        assert!(is_allowed_mobile_system_command(
+            "COMMAND: CREATE_PROJECT_SPACE_AUTO"
+        ));
+        assert!(is_allowed_mobile_system_command(
+            "COMMAND: DISMISS_INBOX_ITEM:item_123"
+        ));
+        assert!(is_allowed_mobile_system_command(
+            "COMMAND: APPROVE_INBOX_ITEM:item_123"
+        ));
     }
 
     #[test]
     fn mobile_system_command_allowlist_rejects_unknown_or_oversized_commands() {
-        assert!(!is_allowed_mobile_system_command("COMMAND: DELETE_AGENT:agent-alpha"));
+        assert!(!is_allowed_mobile_system_command(
+            "COMMAND: DELETE_AGENT:agent-alpha"
+        ));
         assert!(!is_allowed_mobile_system_command("COMMAND: CAPTURE_NOTE:"));
-        assert!(!is_allowed_mobile_system_command(&format!("COMMAND: CAPTURE_NOTE:{}", "x".repeat(MAX_MOBILE_SYSTEM_COMMAND_CHARS))));
+        assert!(!is_allowed_mobile_system_command(&format!(
+            "COMMAND: CAPTURE_NOTE:{}",
+            "x".repeat(MAX_MOBILE_SYSTEM_COMMAND_CHARS)
+        )));
     }
 
     #[test]
@@ -414,6 +540,8 @@ mod tests {
         assert!(is_valid_mobile_message_text("hello"));
         assert!(crate::validators::agent::validate_id("agent-alpha;rm -rf").is_err());
         assert!(!is_valid_mobile_message_text("   "));
-        assert!(!is_valid_mobile_message_text(&"x".repeat(MAX_MOBILE_MESSAGE_CHARS + 1)));
+        assert!(!is_valid_mobile_message_text(
+            &"x".repeat(MAX_MOBILE_MESSAGE_CHARS + 1)
+        ));
     }
 }

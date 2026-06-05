@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 
 /// Bridge management — the security boundary between agents and data sources.
 /// Each bridge is a local MCP server that mediates access.
-
 use async_trait::async_trait;
 
 /// Standardized trait for executing bridge lifecycle and permission checks
@@ -12,7 +11,11 @@ use async_trait::async_trait;
 pub trait BridgeProvider: Send + Sync {
     async fn start_mcp_server(&self, agent_id: &str, config: &BridgeConfig) -> Result<(), String>;
     async fn stop_mcp_server(&self, agent_id: &str) -> Result<(), String>;
-    async fn validate_access(&self, requested_action: &str, permissions: &BridgePermissions) -> Result<bool, String>;
+    async fn validate_access(
+        &self,
+        requested_action: &str,
+        permissions: &BridgePermissions,
+    ) -> Result<bool, String>;
 }
 
 /// A dummy mock implementation for testing
@@ -21,21 +24,31 @@ pub struct MockBridgeProvider;
 #[async_trait]
 impl BridgeProvider for MockBridgeProvider {
     async fn start_mcp_server(&self, agent_id: &str, _config: &BridgeConfig) -> Result<(), String> {
-        tracing::info!("MockBridgeProvider: Starting MCP Server for agent {}", agent_id);
+        tracing::info!(
+            "MockBridgeProvider: Starting MCP Server for agent {}",
+            agent_id
+        );
         Ok(())
     }
-    
+
     async fn stop_mcp_server(&self, agent_id: &str) -> Result<(), String> {
-        tracing::info!("MockBridgeProvider: Stopping MCP Server for agent {}", agent_id);
+        tracing::info!(
+            "MockBridgeProvider: Stopping MCP Server for agent {}",
+            agent_id
+        );
         Ok(())
     }
-    
-    async fn validate_access(&self, requested_action: &str, permissions: &BridgePermissions) -> Result<bool, String> {
+
+    async fn validate_access(
+        &self,
+        requested_action: &str,
+        permissions: &BridgePermissions,
+    ) -> Result<bool, String> {
         match requested_action {
             "read" => Ok(permissions.read),
             "write" => Ok(permissions.write),
             "delete" => Ok(permissions.delete),
-            _ => Err("Unknown action".to_string())
+            _ => Err("Unknown action".to_string()),
         }
     }
 }
@@ -123,7 +136,7 @@ pub async fn enable_bridge(
     // Orchestrator: Start the MCP Server using the Mock Provider for now
     let provider = MockBridgeProvider;
     let _ = provider.start_mcp_server(&agent_id, &bridge.config).await;
-    
+
     // Simulate updating the agent's tool list by writing to the audit log
     let _ = db.log_audit(
         &agent_id,
@@ -168,7 +181,7 @@ pub async fn disable_bridge(
     // Orchestrator: Stop the MCP Server using the Mock Provider
     let provider = MockBridgeProvider;
     let _ = provider.stop_mcp_server(&bridge.agent_id).await;
-    
+
     // Simulate deregistering tools
     let _ = db.log_audit(
         &bridge.agent_id,
@@ -244,8 +257,8 @@ pub async fn get_bridge_status(
         bridge_id,
         enabled: bridge.enabled,
         connected: bridge.enabled, // For now, connected = enabled
-        last_event_at: None,        // TODO: Track from audit logs
-        error: None,                // TODO: Track from bridge runtime
+        last_event_at: None,       // TODO: Track from audit logs
+        error: None,               // TODO: Track from bridge runtime
     })
 }
 
@@ -339,9 +352,18 @@ mod tests {
     #[test]
     fn test_default_permissions_read_only() {
         let bridge = test_bridge();
-        assert!(bridge.permissions.read, "Bridge should have read by default");
-        assert!(!bridge.permissions.write, "Bridge should NOT have write by default");
-        assert!(!bridge.permissions.delete, "Bridge should NOT have delete by default");
+        assert!(
+            bridge.permissions.read,
+            "Bridge should have read by default"
+        );
+        assert!(
+            !bridge.permissions.write,
+            "Bridge should NOT have write by default"
+        );
+        assert!(
+            !bridge.permissions.delete,
+            "Bridge should NOT have delete by default"
+        );
     }
 
     #[test]
@@ -358,7 +380,10 @@ mod tests {
     #[test]
     fn test_delete_never_enabled_by_default() {
         let bridge = test_bridge();
-        assert!(!bridge.permissions.delete, "Delete should never be enabled by default");
+        assert!(
+            !bridge.permissions.delete,
+            "Delete should never be enabled by default"
+        );
     }
 
     #[test]
@@ -372,7 +397,10 @@ mod tests {
         bridge1.permissions.write = true;
 
         // Verify bridge2 is unaffected
-        assert!(!bridge2.permissions.write, "Permission change should not affect other bridges");
+        assert!(
+            !bridge2.permissions.write,
+            "Permission change should not affect other bridges"
+        );
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -382,7 +410,10 @@ mod tests {
     #[test]
     fn test_bridge_without_expiry_never_expires() {
         let bridge = test_bridge();
-        assert!(bridge.config.expires_at.is_none(), "Should allow indefinite access");
+        assert!(
+            bridge.config.expires_at.is_none(),
+            "Should allow indefinite access"
+        );
     }
 
     #[test]
@@ -398,7 +429,10 @@ mod tests {
             false
         };
 
-        assert!(!is_expired, "Bridge with future expiry should not be expired");
+        assert!(
+            !is_expired,
+            "Bridge with future expiry should not be expired"
+        );
     }
 
     #[test]
@@ -465,7 +499,10 @@ mod tests {
     #[test]
     fn test_push_disabled_by_default() {
         let bridge = test_bridge();
-        assert!(!bridge.config.push_enabled, "Push should be disabled by default");
+        assert!(
+            !bridge.config.push_enabled,
+            "Push should be disabled by default"
+        );
     }
 
     #[test]
@@ -516,7 +553,7 @@ mod tests {
         bridge.enabled = true;
         assert!(bridge.enabled);
     }
-    
+
     // ──────────────────────────────────────────────────────────────
     // MOCK PROVIDER TESTS
     // ──────────────────────────────────────────────────────────────
@@ -525,10 +562,31 @@ mod tests {
     async fn test_mock_bridge_provider_access() {
         let provider = MockBridgeProvider;
         let bridge = test_bridge(); // read=true, write=false, delete=false
-        
-        assert_eq!(provider.validate_access("read", &bridge.permissions).await.unwrap(), true);
-        assert_eq!(provider.validate_access("write", &bridge.permissions).await.unwrap(), false);
-        assert_eq!(provider.validate_access("delete", &bridge.permissions).await.unwrap(), false);
-        assert!(provider.validate_access("execute", &bridge.permissions).await.is_err());
+
+        assert_eq!(
+            provider
+                .validate_access("read", &bridge.permissions)
+                .await
+                .unwrap(),
+            true
+        );
+        assert_eq!(
+            provider
+                .validate_access("write", &bridge.permissions)
+                .await
+                .unwrap(),
+            false
+        );
+        assert_eq!(
+            provider
+                .validate_access("delete", &bridge.permissions)
+                .await
+                .unwrap(),
+            false
+        );
+        assert!(provider
+            .validate_access("execute", &bridge.permissions)
+            .await
+            .is_err());
     }
 }

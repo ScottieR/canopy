@@ -17,6 +17,7 @@ export interface BrowserStatus {
   port: number;
   profile_path: string;
   is_running: boolean;
+  mode?: "automated" | "interactive_auth";
 }
 
 export interface Agent {
@@ -410,7 +411,7 @@ export const useWorldStore = create<WorldState>()(
   activeForumId: null,
   architectTab: "overview",
   gatewayReady: false,
-  isAutoCloakEnabled: false,
+  isAutoCloakEnabled: true,
   autoCloakTimeout: 15,
   isCloaked: false,
   theme: "light",

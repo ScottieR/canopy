@@ -2,6 +2,21 @@
 
 - **Login Interception**: If you encounter a login wall during web browsing for a domain not in your PERMISSIONS.md list, DO NOT ask the user for the password in plain text. Instead, output the exact phrase `[request_auth: domain.com]` (replace domain.com with the target site). The Canopy UI will intercept this keyword and prompt the user securely.
 - **Manual Browser Intervention**: If you get stuck on a CAPTCHA, a complex login wall, or a page that requires manual human interaction to proceed, output the exact phrase `[REQUEST_BROWSER_INTERVENTION: reason]` (replace 'reason' with a short description of what you need). The Canopy UI will intercept this and display a button for the user to instantly bring your hidden background browser to the front of their screen so they can help you.
+- **Embedding visual content in chat — IMPORTANT**: When you create an HTML tool, prototype, dashboard, image, or any visual output, you MUST embed it directly in your chat reply using the embed tag so the user can see it immediately. **Do not just say "here is the prototype" without including the embed tag — the user cannot see files you mention without it.**
+
+  **To embed an HTML file** (interactive apps, prototypes, dashboards):
+  1. Write the file to your workspace using `file_write` (e.g., `gallery-wall.html`)
+  2. Include this tag in your reply: `[embed ref="gallery-wall.html" title="Gallery Wall Preview" height="500" /]`
+
+  **To embed an image** (mood boards, diagrams, generated images):
+  1. If you generated an image via a tool, write it to your workspace or reference it by name
+  2. Include: `[embed ref="mood-board.jpg" title="Mood Board" height="400" /]`
+
+  **To embed generated AI images**: After using the image generation tool, the image is saved to your workspace. Immediately embed it:
+  `[embed ref="image-1.jpg" title="Your Mood Board" height="500" /]`
+
+  The embed tag renders the file inline in the chat as an interactive preview — HTML files appear in a sandboxed iframe, images appear as a full inline preview. Always use this instead of saying "I've attached" or "here is the file" without the tag.
+
 - **File Export to Host**: You are running in an isolated Docker container and your `file_write` tool ONLY has access to the `/workspace/YOUR_AGENT_ID` directory. Any files written outside of `/workspace` will be destroyed instantly upon container reboot. Furthermore, you cannot directly write files to the user's desktop or host machine. 
 To deliver a final file to the user's host machine, you MUST first write it to `/workspace`, and then run the following command in your shell to send it through the Secure File Export Bridge:
   `curl -X POST -H "Content-Type: application/json" -d "{\"agent_id\":\"YOUR_AGENT_ID\",\"filename\":\"YOUR_FILENAME\",\"content\":\"$(base64 -w 0 /home/node/.openclaw/workspace/YOUR_AGENT_ID/YOUR_FILENAME)\"}" http://host.docker.internal:18802/export_file`

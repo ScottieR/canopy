@@ -3,7 +3,7 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity as ActivityIcon, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown
+  Mail, Calendar, ExternalLink, HardDrive, Lock, Unlock, ShieldCheck, Activity as ActivityIcon, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp } from "../../store/worldStore";
@@ -52,8 +52,8 @@ function MiniAppsDrawer({ agent, open, onClose }: { agent: AgentData; open: bool
       overflow: "hidden",
     }}>
       <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 8 }}>
-        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2.5} strokeLinecap="round">
-          <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+        <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
         </svg>
         <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-main)", flex: 1 }}>Mini Apps · {agent.name}</span>
         {selectedApp && <button onClick={() => setSelectedApp(null)} style={{ fontSize: 11, color: "var(--text-sub)", background: "transparent", border: "none", cursor: "pointer" }}>← Back</button>}
@@ -81,7 +81,9 @@ function MiniAppsDrawer({ agent, open, onClose }: { agent: AgentData; open: bool
             apps.map(app => (
               <div key={app.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
                 <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(129,140,248,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2} strokeLinecap="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+                  </svg>
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{app.name}</div>
@@ -175,6 +177,21 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
       window.speechSynthesis.cancel();
     }
   }, []);
+
+  const flipCloak = async (enabled: boolean) => {
+    const updatedVi = { ...(agent.visual_identity || {}), cloak_enabled: enabled };
+    const { setAgents } = useWorldStore.getState();
+    setAgents(useWorldStore.getState().agents.map(a =>
+      a.id === agent.id ? { ...a, visual_identity: updatedVi } as unknown as AgentData : a
+    ));
+    if (typeof invoke === 'function') {
+      try {
+        await invoke("update_agent_visuals", { agentId: agent.id, visualIdentity: updatedVi });
+      } catch (e) {
+        console.error("Failed to save visual identity", e);
+      }
+    }
+  };
 
   // Check email and calendar connection status
   useEffect(() => {
@@ -690,21 +707,6 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           What can you do?
         </button>
-        <button
-          disabled
-          title="Coming soon — your agent will be able to spin up small apps and tools tailored to what you're working on. This is where they'll live."
-          style={{
-            display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
-            background: "var(--surface-card)", border: "1px dashed var(--border-subtle)",
-            borderRadius: 12, fontSize: 13, fontWeight: 600, color: "var(--text-muted)",
-            cursor: "not-allowed", fontFamily: "inherit",
-          }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
-          Mini-apps
-          <span style={{ fontSize: 9, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 5px", borderRadius: 4, fontWeight: 700, letterSpacing: "0.02em" }}>SOON</span>
-        </button>
-
         {/* Files — opens a popover with the agent's workspace files. Sits
             next to Mini-apps because they're adjacent concepts (artifacts vs
             apps), but the popover and the future mini-apps panel stay
@@ -745,9 +747,9 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
             }}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
+              <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
             </svg>
-            Apps
+            Mini-apps
             {(agent.miniApps?.length ?? 0) > 0 && (
               <span style={{ fontSize: 10, background: "#818CF8", color: "#fff", borderRadius: 10, padding: "0 5px", marginLeft: 2, fontWeight: 700 }}>
                 {agent.miniApps!.length}
@@ -756,6 +758,39 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
           </button>
           <MiniAppsDrawer agent={agent} open={appsOpen} onClose={() => setAppsOpen(false)} />
         </div>
+
+        {/* Auto-Cloak Toggle */}
+        <button
+          onClick={() => flipCloak(agent.visual_identity?.cloak_enabled === false)}
+          title={
+            agent.visual_identity?.cloak_enabled !== false
+              ? `Auto-Cloak is ON for ${agent.name} — conversations will cloak when you are away.`
+              : `Auto-Cloak is OFF for ${agent.name} — conversations will never cloak.`
+          }
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "10px 14px",
+            background: agent.visual_identity?.cloak_enabled !== false ? "rgba(60,102,99,0.10)" : "var(--surface-card)",
+            border: agent.visual_identity?.cloak_enabled !== false ? "1px solid #3c6663" : "1px solid var(--border-subtle)",
+            borderRadius: 12,
+            fontSize: 13,
+            fontWeight: 600,
+            color: agent.visual_identity?.cloak_enabled !== false ? "#218380" : "var(--text-main)",
+            cursor: "pointer",
+            fontFamily: "inherit",
+            marginLeft: "auto",
+            transition: "all 0.15s ease",
+          }}
+        >
+          {agent.visual_identity?.cloak_enabled !== false ? (
+            <Lock size={16} />
+          ) : (
+            <Unlock size={16} />
+          )}
+          Cloak {agent.visual_identity?.cloak_enabled !== false ? "on" : "off"}
+        </button>
 
         {/* Voice toggle — single-turn TTS playback of agent replies via the
             browser Web Speech API. The "Go live" button next to it is a
@@ -773,7 +808,7 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
             border: voiceOn ? "1px solid #218380" : "1px solid var(--border-subtle)",
             borderRadius: 12, fontSize: 13, fontWeight: 600,
             color: voiceOn ? "#218380" : "var(--text-main)",
-            cursor: "pointer", fontFamily: "inherit", marginLeft: "auto",
+            cursor: "pointer", fontFamily: "inherit",
             transition: "all 0.15s ease",
           }}
         >

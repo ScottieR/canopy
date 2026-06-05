@@ -874,17 +874,47 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                 <div
                   style={{ fontSize: 10, color: "#218380", cursor: "pointer", fontWeight: 600, textTransform: "uppercase" }}
                   onClick={async () => {
-                    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                    new WebviewWindow('companion_' + Date.now(), {
-                      url: `/index.html?companion=${prov === "Grok" ? "xai" : prov.toLowerCase()}`,
-                      title: 'Setup Guide',
-                      width: 420,
-                      height: 760,
-                      x: window.screen.availWidth - 440,
-                      y: 50,
-                      alwaysOnTop: true,
-                      decorations: true,
-                    });
+                    const companionId = prov === "Grok" ? "xai" : prov.toLowerCase();
+                    const urls: Record<string, string> = {
+                      openai: "https://platform.openai.com/api-keys",
+                      gemini: "https://aistudio.google.com/app/apikey",
+                      anthropic: "https://console.anthropic.com/settings/keys",
+                      xai: "https://console.x.ai/"
+                    };
+                    const targetUrl = urls[companionId];
+
+                    try {
+                      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+                      const companionWindow = new WebviewWindow('companion_' + Date.now(), {
+                        url: `/index.html?companion=${companionId}`,
+                        title: 'Setup Guide',
+                        width: 420,
+                        height: 760,
+                        x: window.screen.availWidth - 440,
+                        y: 50,
+                        alwaysOnTop: true,
+                        decorations: true,
+                      });
+
+                      const launchBrowser = async () => {
+                        if (targetUrl) {
+                          const { open } = await import('@tauri-apps/plugin-shell');
+                          await open(targetUrl).catch(console.error);
+                        }
+                      };
+
+                      companionWindow.once('tauri://created', launchBrowser);
+                      companionWindow.once('tauri://error', (e) => {
+                        console.error("Window creation error", e);
+                        launchBrowser();
+                      });
+                    } catch (e) {
+                      console.error("Failed to spawn companion:", e);
+                      if (targetUrl) {
+                        const { open } = await import('@tauri-apps/plugin-shell');
+                        await open(targetUrl).catch(console.error);
+                      }
+                    }
                   }}
                 >
                   Setup Guide ↗
@@ -1919,8 +1949,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                       href="#" 
                       onClick={async (e) => {
                         e.preventDefault();
-                        window.open("https://github.com/settings/tokens/new?description=Canopy%20Agent", "_blank");
                         try {
+                          const { open } = await import('@tauri-apps/plugin-shell');
+                          await open("https://github.com/settings/tokens/new?description=Canopy%20Agent").catch(console.error);
+                          
                           const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                           new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
                             url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,

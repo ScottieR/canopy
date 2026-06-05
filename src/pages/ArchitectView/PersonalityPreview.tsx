@@ -59,6 +59,7 @@ export const PersonalityPreview = forwardRef<PersonalityPreviewHandle, { agent: 
         const response: any = await invoke("send_message", {
           agentId: agent.id,
           message: prompt,
+          sessionId: `preview_${agent.id}`,
         });
         // Stale request — a newer preview has been kicked off in the meantime.
         if (myReq !== reqIdRef.current) return;

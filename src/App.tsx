@@ -38,6 +38,7 @@ import { CanopyView } from './pages/CanopyView';
 import { ForumView } from './pages/ForumView';
 import { TopNav } from './components/shared/TopNav';
 import { ExportInterceptModal } from './components/ExportInterceptModal';
+import { deriveMobileInboxEffects } from "./utils/mobileInbox";
 import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
 import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
@@ -476,6 +477,7 @@ export function CanopyScene({
   useEffect(() => {
     // 2. Listen for mobile commands (e.g. Quick Capture)
     let unlistenFn: (() => void) | undefined;
+    let unlistenResolvedFn: (() => void) | undefined;
     async function setupMobileListener() {
       const { listen } = await import("@tauri-apps/api/event");
       const unlisten = await listen<{ command: string }>("mobile_system_command", (event) => {
@@ -516,10 +518,39 @@ export function CanopyScene({
         }
       });
       unlistenFn = unlisten;
+
+      const unlistenResolved = await listen<{ id?: string; resolution?: "approved" | "dismissed" }>(
+        "mobile_inbox_resolved",
+        (event) => {
+          const id = event.payload?.id?.trim();
+          const resolution = event.payload?.resolution === "approved" ? "approved" : "dismissed";
+          if (!id) return;
+
+          const state = useWorldStore.getState();
+          const item = state.inbox.find((entry) => entry.id === id);
+          if (!item) return;
+
+          const effects = deriveMobileInboxEffects({
+            item,
+            resolution,
+            fallbackAgentId: state.agents[0]?.id ?? null,
+          });
+
+          state.removeInboxItem(effects.removeId);
+          if (effects.createForumForAgentId) {
+            state.createForumSpace(effects.createForumForAgentId);
+          }
+          if (effects.navigateToCanopy) {
+            state.setActiveView("canopy");
+          }
+        }
+      );
+      unlistenResolvedFn = unlistenResolved;
     }
     setupMobileListener();
     return () => {
       if (unlistenFn) unlistenFn();
+      if (unlistenResolvedFn) unlistenResolvedFn();
     };
   }, []);
 
@@ -1389,12 +1420,30 @@ export default function App() {
           }
 
           setLoadStatus("Setting up UI Agent Models...");
+          // Fetch weekly token usage records to calculate compute
+          const weeklyRecords = await invoke<any[]>("get_token_usage_history", {
+            agentId: null,
+            conversationId: null,
+            days: 7
+          }).catch(err => {
+            console.error("Failed to load weekly token usage history:", err);
+            return [];
+          });
+
           // Enrich agents with UI data
           const enrichedAgents = loadedAgents.map(agent => {
             const roleInfo = AGENT_TYPE_INFO[agent.role] || AGENT_TYPE_INFO["Assistant"];
             const vi = agent.visual_identity || {};
             const dbPaused = (agent as any).paused === true || (agent as any).paused === 1;
             
+            const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
+            const tokensUsed = totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
+
+            const agentWeeklyCost = weeklyRecords
+              .filter(r => r.agent_id === agent.id)
+              .reduce((sum, r) => sum + (r.cost_usd || 0), 0);
+            const weeklyCompute = agentWeeklyCost.toFixed(3);
+
             return {
               ...agent,
               paused: dbPaused,
@@ -1410,8 +1459,8 @@ export default function App() {
               socialMotive: 0.5 + Math.random() * 0.3,
               energy: 0.6 + Math.random() * 0.3,
               uptime: `${Math.floor(agent.stats.uptime_seconds / 3600)} hrs`,
-              tokensUsed: "0k",
-              weeklyCompute: "0.000",
+              tokensUsed,
+              weeklyCompute,
               monthlySpend: Math.floor(agent.stats.total_cost_usd),
               spendLimit: 200,
               permissions: DEFAULT_PERMISSIONS.map(p => ({

@@ -144,9 +144,7 @@ struct ConnectionsOpenResponse {
 
 /// Start Slack OAuth flow by opening browser and listening for redirect
 #[tauri::command]
-pub async fn start_slack_oauth(
-    _app: tauri::AppHandle,
-) -> Result<String, String> {
+pub async fn start_slack_oauth(_app: tauri::AppHandle) -> Result<String, String> {
     // ── RATE LIMITING ──
     crate::rate_limiter::limiters::OAUTH_LIMITER
         .check("local-user")
@@ -162,9 +160,10 @@ pub async fn start_slack_oauth(
         .map_err(|_| "SLACK_CLIENT_SECRET not found in keychain or environment. Store it securely using the keychain for production use.".to_string())?;
 
     // Find available port for redirect listener
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| format!("Failed to bind port: {}", e))?;
-    let port = listener.local_addr()
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|e| format!("Failed to bind port: {}", e))?;
+    let port = listener
+        .local_addr()
         .map_err(|e| format!("Failed to get port: {}", e))?
         .port();
 
@@ -190,7 +189,8 @@ pub async fn start_slack_oauth(
 
     // Wait for redirect with timeout
     let timeout = std::time::Duration::from_secs(300); // 5 minutes
-    listener.set_nonblocking(false)
+    listener
+        .set_nonblocking(false)
         .map_err(|e| format!("Failed to configure listener: {}", e))?;
 
     // Read the HTTP request (blocking, with timeout)
@@ -245,12 +245,15 @@ pub async fn start_slack_oauth(
         .map_err(|e| format!("Failed to parse token response: {}", e))?;
 
     if !token_response.ok {
-        let error = token_response.error.unwrap_or_else(|| "Unknown error".to_string());
+        let error = token_response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
         error!("OAuth error: {}", error);
         return Err(format!("OAuth failed: {}", error));
     }
 
-    let token = token_response.access_token
+    let token = token_response
+        .access_token
         .ok_or_else(|| "No access token in response".to_string())?;
 
     // Store token in keychain
@@ -282,16 +285,16 @@ pub async fn start_slack_oauth(
 ///   through to the global slot is the intended behaviour.
 async fn get_bot_token(agent_id: Option<&str>) -> Result<String, String> {
     if let Some(id) = agent_id {
-        return keychain::get_secret(&format!("agent_{}_slack_bot_token", id))
-            .map_err(|_| format!(
+        return keychain::get_secret(&format!("agent_{}_slack_bot_token", id)).map_err(|_| {
+            format!(
                 "Slack is not connected for agent '{}'. Open this agent's Connections \
                  tab and complete the Slack setup. (Not falling back to the global \
                  token to avoid cross-agent context leaks.)",
                 id
-            ));
+            )
+        });
     }
-    keychain::get_secret("slack-bot-token")
-        .map_err(|e| format!("Failed to get bot token: {}", e))
+    keychain::get_secret("slack-bot-token").map_err(|e| format!("Failed to get bot token: {}", e))
 }
 
 async fn make_api_call(
@@ -305,8 +308,7 @@ async fn make_api_call(
 
     let mut last_error = String::new();
     for attempt in 0..2 {
-        let mut request = HTTP.request(method.clone(), &url)
-            .bearer_auth(&token);
+        let mut request = HTTP.request(method.clone(), &url).bearer_auth(&token);
 
         if let Some(p) = params {
             if method == reqwest::Method::GET {
@@ -323,7 +325,10 @@ async fn make_api_call(
                     .await
                     .map_err(|e| format!("Failed to parse response: {}", e))?;
 
-                let ok = json_resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                let ok = json_resp
+                    .get("ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
 
                 if !ok {
                     let error = json_resp
@@ -337,7 +342,10 @@ async fn make_api_call(
             }
             Err(e) => {
                 if attempt == 0 {
-                    tracing::warn!("Slack connection dropped, likely stale pool socket. Retrying once: {}", e);
+                    tracing::warn!(
+                        "Slack connection dropped, likely stale pool socket. Retrying once: {}",
+                        e
+                    );
                     continue;
                 }
                 last_error = e.to_string();
@@ -352,16 +360,25 @@ async fn make_api_call(
 #[tauri::command]
 pub async fn list_slack_channels(agent_id: Option<String>) -> Result<Vec<SlackChannel>, String> {
     let response: ConversationsListResponse = serde_json::from_value(
-        make_api_call(reqwest::Method::GET, "conversations.list", Some(&[("types", "public_channel,private_channel")]), agent_id.as_deref())
-            .await?
-    ).map_err(|e| format!("Failed to parse channels: {}", e))?;
+        make_api_call(
+            reqwest::Method::GET,
+            "conversations.list",
+            Some(&[("types", "public_channel,private_channel")]),
+            agent_id.as_deref(),
+        )
+        .await?,
+    )
+    .map_err(|e| format!("Failed to parse channels: {}", e))?;
 
     if !response.ok {
-        let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+        let error = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
         return Err(format!("Failed to list channels: {}", error));
     }
 
-    let channels: Vec<SlackChannel> = response.channels
+    let channels: Vec<SlackChannel> = response
+        .channels
         .unwrap_or_default()
         .into_iter()
         .map(|c| SlackChannel {
@@ -397,21 +414,22 @@ pub async fn read_slack_messages(
         make_api_call(
             reqwest::Method::GET,
             "conversations.history",
-            Some(&[
-                ("channel", &channel_id),
-                ("limit", &limit.to_string()),
-            ]),
+            Some(&[("channel", &channel_id), ("limit", &limit.to_string())]),
             Some(&agent_id),
         )
-        .await?
-    ).map_err(|e| format!("Failed to parse messages: {}", e))?;
+        .await?,
+    )
+    .map_err(|e| format!("Failed to parse messages: {}", e))?;
 
     if !response.ok {
-        let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+        let error = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
         return Err(format!("Failed to read messages: {}", error));
     }
 
-    let messages: Vec<SlackMessage> = response.messages
+    let messages: Vec<SlackMessage> = response
+        .messages
         .unwrap_or_default()
         .into_iter()
         .map(|m| SlackMessage {
@@ -423,7 +441,11 @@ pub async fn read_slack_messages(
         })
         .collect();
 
-    debug!("Read {} messages from channel {}", messages.len(), channel_id);
+    debug!(
+        "Read {} messages from channel {}",
+        messages.len(),
+        channel_id
+    );
     Ok(messages)
 }
 
@@ -453,21 +475,23 @@ pub async fn send_slack_message(
         make_api_call(
             reqwest::Method::POST,
             "chat.postMessage",
-            Some(&[
-                ("channel", &channel_id),
-                ("text", &text),
-            ]),
+            Some(&[("channel", &channel_id), ("text", &text)]),
             Some(&agent_id),
         )
-        .await?
-    ).map_err(|e| format!("Failed to parse response: {}", e))?;
+        .await?,
+    )
+    .map_err(|e| format!("Failed to parse response: {}", e))?;
 
     if !response.ok {
-        let error = response.error.unwrap_or_else(|| "Unknown error".to_string());
+        let error = response
+            .error
+            .unwrap_or_else(|| "Unknown error".to_string());
         return Err(format!("Failed to send message: {}", error));
     }
 
-    let ts = response.ts.ok_or_else(|| "No timestamp in response".to_string())?;
+    let ts = response
+        .ts
+        .ok_or_else(|| "No timestamp in response".to_string())?;
     info!("Sent message to channel {} with ts {}", channel_id, ts);
     Ok(ts)
 }
@@ -477,10 +501,7 @@ pub async fn send_slack_message(
 // ============================================================================
 
 /// Internal: get allowed channels from the Slack bridge in our DB
-fn get_allowed_channels_internal(
-    db: &Database,
-    agent_id: &str,
-) -> Result<Vec<String>, String> {
+fn get_allowed_channels_internal(db: &Database, agent_id: &str) -> Result<Vec<String>, String> {
     let bridge_id = format!("{}-slack", agent_id);
 
     match db.get_bridge(&bridge_id) {
@@ -602,19 +623,38 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 
         let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
         let cmd_future = crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "node", "-e", &patch_script])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "node",
+                "-e",
+                &patch_script,
+            ])
             .output();
 
-        if let Ok(Ok(output)) = tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await {
+        if let Ok(Ok(output)) =
+            tokio::time::timeout(std::time::Duration::from_secs(8), cmd_future).await
+        {
             if !output.status.success() {
-                tracing::warn!("Failed to patch channels.slack.channels: {}", String::from_utf8_lossy(&output.stderr));
+                tracing::warn!(
+                    "Failed to patch channels.slack.channels: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
             } else {
-                tracing::info!("Synced {} Slack channels to OpenClaw config", channels_obj.len());
+                tracing::info!(
+                    "Synced {} Slack channels to OpenClaw config",
+                    channels_obj.len()
+                );
             }
         }
     }
 
-    info!("Updated allowed channels for agent {}: {:?}", agent_id, channel_ids);
+    info!(
+        "Updated allowed channels for agent {}: {:?}",
+        agent_id, channel_ids
+    );
     Ok(())
 }
 
@@ -624,7 +664,9 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 
 /// Check if Slack is connected and get workspace/bot info
 #[tauri::command]
-pub async fn check_slack_connection(agent_id: Option<String>) -> Result<SlackConnectionStatus, String> {
+pub async fn check_slack_connection(
+    agent_id: Option<String>,
+) -> Result<SlackConnectionStatus, String> {
     let token_result = get_bot_token(agent_id.as_deref()).await;
 
     if let Err(e) = token_result {
@@ -638,13 +680,19 @@ pub async fn check_slack_connection(agent_id: Option<String>) -> Result<SlackCon
 
     // Test token with auth.test using POST and empty form to ensure Content-Type is set
     let response: AuthTestResponse = serde_json::from_value(
-        make_api_call(reqwest::Method::POST, "auth.test", Some(&[]), agent_id.as_deref())
-            .await
-            .unwrap_or_else(|e| {
-                tracing::error!("check_slack_connection api error: {}", e);
-                json!({"ok": false})
-            })
-    ).unwrap_or(AuthTestResponse {
+        make_api_call(
+            reqwest::Method::POST,
+            "auth.test",
+            Some(&[]),
+            agent_id.as_deref(),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::error!("check_slack_connection api error: {}", e);
+            json!({"ok": false})
+        }),
+    )
+    .unwrap_or(AuthTestResponse {
         ok: false,
         url: None,
         team: None,
@@ -699,28 +747,42 @@ pub async fn start_slack_listener(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: Option<String>,
 ) -> Result<String, String> {
-    let app_token_key = if let Some(id) = &agent_id { format!("agent_{}_slack_app_token", id) } else { "slack-app-token".to_string() };
-    let bot_token_key = if let Some(id) = &agent_id { format!("agent_{}_slack_bot_token", id) } else { "slack-bot-token".to_string() };
+    let app_token_key = if let Some(id) = &agent_id {
+        format!("agent_{}_slack_app_token", id)
+    } else {
+        "slack-app-token".to_string()
+    };
+    let bot_token_key = if let Some(id) = &agent_id {
+        format!("agent_{}_slack_bot_token", id)
+    } else {
+        "slack-bot-token".to_string()
+    };
 
-    let app_token = keychain::get_secret(&app_token_key)
-        .map_err(|_| {
-            "Slack App Token (xapp-...) not found in keychain. \
+    let app_token = keychain::get_secret(&app_token_key).map_err(|_| {
+        "Slack App Token (xapp-...) not found in keychain. \
              Create one in your Slack app dashboard under App-Level Tokens \
              with the connections:write scope, then save it via the Canopy settings panel."
-                .to_string()
-        })?;
+            .to_string()
+    })?;
 
-    let bot_token = keychain::get_secret(&bot_token_key)
-        .map_err(|_| "Slack Bot Token (xoxb-...) not found in keychain. Connect Slack via Settings first.".to_string())?;
+    let bot_token = keychain::get_secret(&bot_token_key).map_err(|_| {
+        "Slack Bot Token (xoxb-...) not found in keychain. Connect Slack via Settings first."
+            .to_string()
+    })?;
 
     let app_token = app_token.trim().to_string();
     let bot_token = bot_token.trim().to_string();
 
     if app_token.is_empty() {
-        return Err("Slack App Token is blank. Paste the xapp-... token in Settings → Slack.".to_string());
+        return Err(
+            "Slack App Token is blank. Paste the xapp-... token in Settings → Slack.".to_string(),
+        );
     }
     if bot_token.is_empty() {
-        return Err("Slack Bot Token is blank. Re-connect Slack via the OAuth flow in Settings.".to_string());
+        return Err(
+            "Slack Bot Token is blank. Re-connect Slack via the OAuth flow in Settings."
+                .to_string(),
+        );
     }
     if !app_token.starts_with("xapp-") {
         return Err(format!(
@@ -747,8 +809,10 @@ pub async fn start_slack_listener(
     //
     // String values below are JSON-encoded to handle any unusual characters in tokens
     // safely (newlines, quotes, etc.).
-    let bot_token_json = serde_json::to_string(&bot_token).map_err(|e| format!("Token serialize error: {}", e))?;
-    let app_token_json = serde_json::to_string(&app_token).map_err(|e| format!("Token serialize error: {}", e))?;
+    let bot_token_json =
+        serde_json::to_string(&bot_token).map_err(|e| format!("Token serialize error: {}", e))?;
+    let app_token_json =
+        serde_json::to_string(&app_token).map_err(|e| format!("Token serialize error: {}", e))?;
 
     let patch_script = format!(
         r#"const fs=require('fs');
@@ -772,24 +836,41 @@ console.log('slack config patched');
         app = app_token_json,
     );
 
-    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+    let container_name = agent_id
+        .as_deref()
+        .map(|id| crate::openclaw::get_agent_container_name(&db, id))
+        .unwrap_or_else(|| "canopy-gateway".to_string());
 
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
         crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "node", "-e", &patch_script])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "node",
+                "-e",
+                &patch_script,
+            ])
             .output(),
-    ).await {
+    )
+    .await
+    {
         Ok(Ok(o)) => o,
         Ok(Err(e)) => return Err(format!("Failed to patch Slack config: {}", e)),
-        Err(_) => return Err("Timed out patching Slack config. Is the gateway running?".to_string()),
+        Err(_) => {
+            return Err("Timed out patching Slack config. Is the gateway running?".to_string())
+        }
     };
 
     if !patch_out.status.success() {
         let stderr = String::from_utf8_lossy(&patch_out.stderr);
         let stdout = String::from_utf8_lossy(&patch_out.stdout);
         let mut combined = format!("{}\n{}", stdout, stderr).trim().to_string();
-        if combined.contains("cannot exec in a stopped container") || combined.contains("No such container") {
+        if combined.contains("cannot exec in a stopped container")
+            || combined.contains("No such container")
+        {
             combined = "Gateway container is stopped. Start infrastructure first.".to_string();
         }
         error!("Failed to patch Slack config: {}", combined);
@@ -804,7 +885,8 @@ console.log('slack config patched');
         crate::openclaw::get_docker_command()
             .args(["restart", &container_name])
             .output(),
-    ).await;
+    )
+    .await;
 
     // Brief wait for Socket Mode WebSocket to establish on the freshly-started gateway.
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
@@ -840,14 +922,27 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 console.log('slack disabled in config');
 "#;
 
-    let container_name = agent_id.as_deref().map(|id| crate::openclaw::get_agent_container_name(&db, id)).unwrap_or_else(|| "canopy-gateway".to_string());
+    let container_name = agent_id
+        .as_deref()
+        .map(|id| crate::openclaw::get_agent_container_name(&db, id))
+        .unwrap_or_else(|| "canopy-gateway".to_string());
 
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(8),
         crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "node", "-e", patch_script])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "node",
+                "-e",
+                patch_script,
+            ])
             .output(),
-    ).await {
+    )
+    .await
+    {
         Ok(res) => res.map_err(|e| format!("Failed to disable Slack in gateway config: {}", e))?,
         Err(_) => return Err("Timed out while disabling Slack.".into()),
     };
@@ -883,14 +978,23 @@ pub async fn disconnect_slack_for_agent(
     db: State<'_, Database>,
     agent_id: String,
 ) -> Result<String, String> {
-    if !agent_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-        return Err(format!("disconnect_slack_for_agent: invalid agent id {:?}", agent_id));
+    if !agent_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(format!(
+            "disconnect_slack_for_agent: invalid agent id {:?}",
+            agent_id
+        ));
     }
 
     let _ = keychain::delete_secret_internal(&format!("agent_{}_slack_app_token", agent_id));
     let _ = keychain::delete_secret_internal(&format!("agent_{}_slack_bot_token", agent_id));
 
-    let is_isolated = db.get_agent(&agent_id).map(|a| a.map(|a| a.isolated).unwrap_or(false)).unwrap_or(false);
+    let is_isolated = db
+        .get_agent(&agent_id)
+        .map(|a| a.map(|a| a.isolated).unwrap_or(false))
+        .unwrap_or(false);
 
     if is_isolated {
         let patch_script = r#"const fs=require('fs');
@@ -911,16 +1015,26 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(8),
             crate::openclaw::get_docker_command()
-                .args(["exec", "-u", "node", &container_name, "node", "-e", patch_script])
+                .args([
+                    "exec",
+                    "-u",
+                    "node",
+                    &container_name,
+                    "node",
+                    "-e",
+                    patch_script,
+                ])
                 .output(),
-        ).await;
+        )
+        .await;
 
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(15),
             crate::openclaw::get_docker_command()
                 .args(["restart", &container_name])
                 .output(),
-        ).await;
+        )
+        .await;
     } else {
         let changed = crate::openclaw::sync_gateway_channels_internal(&db).await?;
         if changed {
@@ -929,12 +1043,16 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
                 crate::openclaw::get_docker_command()
                     .args(["restart", "canopy-gateway"])
                     .output(),
-            ).await;
+            )
+            .await;
         }
     }
 
     info!("Slack disconnected for agent {}; tokens removed.", agent_id);
-    Ok(format!("Slack disconnected for {} and saved tokens removed.", agent_id))
+    Ok(format!(
+        "Slack disconnected for {} and saved tokens removed.",
+        agent_id
+    ))
 }
 
 /// Global Slack disconnect (legacy single-workspace path).
@@ -965,16 +1083,26 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         crate::openclaw::get_docker_command()
-            .args(["exec", "-u", "node", "canopy-gateway", "node", "-e", patch_script])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                "canopy-gateway",
+                "node",
+                "-e",
+                patch_script,
+            ])
             .output(),
-    ).await;
+    )
+    .await;
 
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         crate::openclaw::get_docker_command()
             .args(["restart", "canopy-gateway"])
             .output(),
-    ).await;
+    )
+    .await;
 
     info!("Global Slack integration disconnected; tokens removed.");
     Ok("Slack disconnected and saved tokens removed.".to_string())
@@ -1030,16 +1158,31 @@ mod tests {
     fn bot_token_prefix_check() {
         // Bot tokens from Slack's OAuth flow always start with "xoxb-".
         // start_slack_listener validates this — test that the validation logic is correct.
-        assert!("xoxb-12345-abc".starts_with("xoxb-"), "Valid bot token prefix check failed");
-        assert!(!"xapp-12345-abc".starts_with("xoxb-"), "App token should not pass bot prefix check");
-        assert!(!"xoxb-".starts_with("xoxb-a"), "Empty token should not pass");
+        assert!(
+            "xoxb-12345-abc".starts_with("xoxb-"),
+            "Valid bot token prefix check failed"
+        );
+        assert!(
+            !"xapp-12345-abc".starts_with("xoxb-"),
+            "App token should not pass bot prefix check"
+        );
+        assert!(
+            !"xoxb-".starts_with("xoxb-a"),
+            "Empty token should not pass"
+        );
     }
 
     #[test]
     fn app_token_prefix_check() {
         // App-Level tokens (Socket Mode) always start with "xapp-".
-        assert!("xapp-1-abc123".starts_with("xapp-"), "Valid app token prefix check failed");
-        assert!(!"xoxb-12345-abc".starts_with("xapp-"), "Bot token should not pass app prefix check");
+        assert!(
+            "xapp-1-abc123".starts_with("xapp-"),
+            "Valid app token prefix check failed"
+        );
+        assert!(
+            !"xoxb-12345-abc".starts_with("xapp-"),
+            "Bot token should not pass app prefix check"
+        );
     }
 
     #[test]
@@ -1062,7 +1205,11 @@ mod tests {
             "channels.slack.mode",
         ];
         for key in expected_config_keys {
-            assert!(key.starts_with("channels.slack."), "Config key '{}' must be under channels.slack.*", key);
+            assert!(
+                key.starts_with("channels.slack."),
+                "Config key '{}' must be under channels.slack.*",
+                key
+            );
         }
     }
 
@@ -1071,8 +1218,14 @@ mod tests {
         // The OAuth URL in start_slack_oauth must request the minimum scopes for
         // channel reading and message sending. Verify the scope string contains them.
         let scopes = "channels:read,channels:history,chat:write,users:read";
-        assert!(scopes.contains("channels:read"),   "Missing channels:read scope");
-        assert!(scopes.contains("channels:history"), "Missing channels:history scope");
-        assert!(scopes.contains("chat:write"),       "Missing chat:write scope");
+        assert!(
+            scopes.contains("channels:read"),
+            "Missing channels:read scope"
+        );
+        assert!(
+            scopes.contains("channels:history"),
+            "Missing channels:history scope"
+        );
+        assert!(scopes.contains("chat:write"), "Missing chat:write scope");
     }
 }

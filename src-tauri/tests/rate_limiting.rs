@@ -3,10 +3,10 @@
 
 #[cfg(test)]
 mod rate_limiting_tests {
-    use canopy_lib::rate_limiter::RateLimiter;
     use canopy_lib::errors::CanopyError;
-    use std::time::Duration;
+    use canopy_lib::rate_limiter::RateLimiter;
     use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn test_rate_limit_allows_within_quota() {
@@ -33,7 +33,7 @@ mod rate_limiting_tests {
 
         // 4th fails with RateLimit error
         match limiter.check("user-1") {
-            Err(CanopyError::RateLimit) => (),  // Expected
+            Err(CanopyError::RateLimit) => (), // Expected
             other => panic!("Expected RateLimit error, got: {:?}", other),
         }
     }
@@ -66,13 +66,13 @@ mod rate_limiting_tests {
         assert!(limiter.check("agent-1").is_ok());
         assert!(limiter.check("agent-1").is_ok());
         assert!(limiter.check("agent-1").is_ok());
-        assert!(limiter.check("agent-1").is_err());  // Agent 1 is limited
+        assert!(limiter.check("agent-1").is_err()); // Agent 1 is limited
 
         // Agent 2 still has quota
         assert!(limiter.check("agent-2").is_ok());
         assert!(limiter.check("agent-2").is_ok());
         assert!(limiter.check("agent-2").is_ok());
-        assert!(limiter.check("agent-2").is_err());  // Agent 2 is limited
+        assert!(limiter.check("agent-2").is_err()); // Agent 2 is limited
     }
 
     #[test]
@@ -82,7 +82,7 @@ mod rate_limiting_tests {
         // Fill quota
         assert!(limiter.check("user-1").is_ok());
         assert!(limiter.check("user-1").is_ok());
-        assert!(limiter.check("user-1").is_err());  // Limited
+        assert!(limiter.check("user-1").is_err()); // Limited
 
         // Wait for window to reset
         thread::sleep(Duration::from_millis(210));
@@ -141,7 +141,9 @@ mod rate_limiting_tests {
 
         // These should not panic
         assert!(limiters::AGENT_COMMAND_LIMITER.check("agent-test").is_ok());
-        assert!(limiters::VOICE_TRANSCRIBE_LIMITER.check("user-test").is_ok());
+        assert!(limiters::VOICE_TRANSCRIBE_LIMITER
+            .check("user-test")
+            .is_ok());
         assert!(limiters::PAYMENT_EVAL_LIMITER.check("user-test").is_ok());
         assert!(limiters::FILE_IO_LIMITER.check("user-test").is_ok());
         assert!(limiters::DOCKER_EXEC_LIMITER.check("user-test").is_ok());

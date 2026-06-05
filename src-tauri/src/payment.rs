@@ -1,8 +1,8 @@
-use crate::models::{AgentBudget, PurchaseDecision, PurchaseRecord, PurchaseRequest};
 use crate::errors::{CanopyError, Result};
+use crate::models::{AgentBudget, PurchaseDecision, PurchaseRecord, PurchaseRequest};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 
 /// The Deterministic Payment Gateway.
 ///
@@ -34,7 +34,11 @@ pub fn evaluate_purchase(
     let mut denial_reasons: Vec<String> = Vec::new();
 
     // ── Gate 1: Is the category allowed? ──
-    if !budget.allowed_categories.iter().any(|c| c == &request.category) {
+    if !budget
+        .allowed_categories
+        .iter()
+        .any(|c| c == &request.category)
+    {
         denial_reasons.push(format!(
             "Category '{}' is not in this agent's allowed categories",
             request.category
@@ -107,21 +111,20 @@ pub fn get_agent_budget(
     // Validate agent ID
     crate::validators::agent::validate_id(&agent_id)?;
 
-    let mut config = state.get_budget(&agent_id)?
-        .unwrap_or_else(|| AgentBudget {
-            agent_id: agent_id.clone(),
-            payments_enabled: false,
-            auto_approve_threshold_cents: 5000,
-            per_transaction_limit_cents: 20000,
-            daily_limit_cents: 50000,
-            monthly_limit_cents: 200000,
-            allowed_categories: vec![],
-            daily_spent_cents: 0,
-            monthly_spent_cents: 0,
-            require_approval_new_merchant: true,
-            require_approval_recurring: true,
-        });
-        
+    let mut config = state.get_budget(&agent_id)?.unwrap_or_else(|| AgentBudget {
+        agent_id: agent_id.clone(),
+        payments_enabled: false,
+        auto_approve_threshold_cents: 5000,
+        per_transaction_limit_cents: 20000,
+        daily_limit_cents: 50000,
+        monthly_limit_cents: 200000,
+        allowed_categories: vec![],
+        daily_spent_cents: 0,
+        monthly_spent_cents: 0,
+        require_approval_new_merchant: true,
+        require_approval_recurring: true,
+    });
+
     Ok(config)
 }
 
@@ -205,7 +208,9 @@ pub async fn issue_virtual_card(
         })?;
 
     if privacy_key.is_empty() {
-        return Err(CanopyError::Configuration("PRIVACY_API_KEY is empty".into()));
+        return Err(CanopyError::Configuration(
+            "PRIVACY_API_KEY is empty".into(),
+        ));
     }
 
     let client = Client::new();
@@ -231,19 +236,32 @@ pub async fn issue_virtual_card(
 
     if !response.status().is_success() {
         let err_text = response.text().await.unwrap_or_default();
-        return Err(CanopyError::Request(format!("Privacy.com rejected request: {}", err_text)));
+        return Err(CanopyError::Request(format!(
+            "Privacy.com rejected request: {}",
+            err_text
+        )));
     }
 
-    let card_data: PrivacyCardResponse = response
-        .json()
-        .await
-        .map_err(|e| CanopyError::Serialization(format!("Failed to parse Privacy.com response: {}", e)))?;
+    let card_data: PrivacyCardResponse = response.json().await.map_err(|e| {
+        CanopyError::Serialization(format!("Failed to parse Privacy.com response: {}", e))
+    })?;
 
-    let last4 = card_data.last_four.or(card_data.pan).unwrap_or_else(|| "****".to_string());
+    let last4 = card_data
+        .last_four
+        .or(card_data.pan)
+        .unwrap_or_else(|| "****".to_string());
 
     // We successfully minted a burner card
-    tracing::info!("Virtual card issued for agent {} (category: {})", agent_id, category);
-    Ok(format!("Successfully provisioned virtual card ending in {}. It is locked to ${:.2}.", last4, buffer_amount as f64 / 100.0))
+    tracing::info!(
+        "Virtual card issued for agent {} (category: {})",
+        agent_id,
+        category
+    );
+    Ok(format!(
+        "Successfully provisioned virtual card ending in {}. It is locked to ${:.2}.",
+        last4,
+        buffer_amount as f64 / 100.0
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -252,18 +270,21 @@ pub async fn issue_virtual_card(
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{AgentBudget, PurchaseDecision, PurchaseRequest};
     use super::*;
+    use crate::models::{AgentBudget, PurchaseDecision, PurchaseRequest};
 
     fn default_budget(agent_id: &str) -> AgentBudget {
         AgentBudget {
             agent_id: agent_id.to_string(),
             payments_enabled: true,
-            auto_approve_threshold_cents: 5000,     // $50
-            per_transaction_limit_cents: 100000,    // $1000
-            daily_limit_cents: 50000,               // $500
-            monthly_limit_cents: 200000,            // $2,000
-            allowed_categories: vec!["cleaning_supplies".to_string(), "office_supplies".to_string()],
+            auto_approve_threshold_cents: 5000,  // $50
+            per_transaction_limit_cents: 100000, // $1000
+            daily_limit_cents: 50000,            // $500
+            monthly_limit_cents: 200000,         // $2,000
+            allowed_categories: vec![
+                "cleaning_supplies".to_string(),
+                "office_supplies".to_string(),
+            ],
             daily_spent_cents: 0,
             monthly_spent_cents: 0,
             require_approval_new_merchant: true,
@@ -315,8 +336,11 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::Denied { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("not enabled")),
-                    "Expected 'not enabled' reason, got: {:?}", reasons);
+                assert!(
+                    reasons.iter().any(|r| r.contains("not enabled")),
+                    "Expected 'not enabled' reason, got: {:?}",
+                    reasons
+                );
             }
             _ => panic!("Expected Denied decision, got: {:?}", result),
         }
@@ -333,8 +357,8 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Approved => {},
-            PurchaseDecision::RequiresUserApproval { .. } => {},
+            PurchaseDecision::Approved => {}
+            PurchaseDecision::RequiresUserApproval { .. } => {}
             _ => panic!("Expected approval decision, got: {:?}", result),
         }
     }
@@ -347,8 +371,13 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::Denied { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("not in this agent's allowed categories")),
-                    "Expected category rejection, got: {:?}", reasons);
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|r| r.contains("not in this agent's allowed categories")),
+                    "Expected category rejection, got: {:?}",
+                    reasons
+                );
             }
             _ => panic!("Expected Denied, got: {:?}", result),
         }
@@ -363,7 +392,10 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::Denied { reasons } => {
-                assert!(!reasons.is_empty(), "Expected denial reason for empty allowlist");
+                assert!(
+                    !reasons.is_empty(),
+                    "Expected denial reason for empty allowlist"
+                );
             }
             _ => panic!("Expected Denied, got: {:?}", result),
         }
@@ -381,8 +413,8 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Approved => {},
-            PurchaseDecision::RequiresUserApproval { .. } => {},
+            PurchaseDecision::Approved => {}
+            PurchaseDecision::RequiresUserApproval { .. } => {}
             _ => panic!("Expected approval decision, got: {:?}", result),
         }
     }
@@ -395,8 +427,8 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Approved => {},
-            PurchaseDecision::RequiresUserApproval { .. } => {},
+            PurchaseDecision::Approved => {}
+            PurchaseDecision::RequiresUserApproval { .. } => {}
             _ => panic!("Expected approval decision, got: {:?}", result),
         }
     }
@@ -410,8 +442,13 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::Denied { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("exceeds per-transaction limit")),
-                    "Expected transaction limit reason, got: {:?}", reasons);
+                assert!(
+                    reasons
+                        .iter()
+                        .any(|r| r.contains("exceeds per-transaction limit")),
+                    "Expected transaction limit reason, got: {:?}",
+                    reasons
+                );
             }
             _ => panic!("Expected Denied, got: {:?}", result),
         }
@@ -429,8 +466,8 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Approved => {},
-            PurchaseDecision::RequiresUserApproval { .. } => {},
+            PurchaseDecision::Approved => {}
+            PurchaseDecision::RequiresUserApproval { .. } => {}
             _ => panic!("Expected approval decision, got: {:?}", result),
         }
     }
@@ -444,8 +481,11 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::Denied { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("exceed daily limit")),
-                    "Expected daily limit reason, got: {:?}", reasons);
+                assert!(
+                    reasons.iter().any(|r| r.contains("exceed daily limit")),
+                    "Expected daily limit reason, got: {:?}",
+                    reasons
+                );
             }
             _ => panic!("Expected Denied, got: {:?}", result),
         }
@@ -463,8 +503,8 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Approved => {},
-            PurchaseDecision::RequiresUserApproval { .. } => {},
+            PurchaseDecision::Approved => {}
+            PurchaseDecision::RequiresUserApproval { .. } => {}
             _ => panic!("Expected approval decision, got: {:?}", result),
         }
     }
@@ -478,8 +518,11 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::Denied { reasons } => {
-                assert!(reasons.iter().any(|r| r.contains("exceed monthly limit")),
-                    "Expected monthly limit reason, got: {:?}", reasons);
+                assert!(
+                    reasons.iter().any(|r| r.contains("exceed monthly limit")),
+                    "Expected monthly limit reason, got: {:?}",
+                    reasons
+                );
             }
             _ => panic!("Expected Denied, got: {:?}", result),
         }
@@ -496,7 +539,7 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Approved => {},
+            PurchaseDecision::Approved => {}
             _ => panic!("Expected Approved, got: {:?}", result),
         }
     }
@@ -509,8 +552,11 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::RequiresUserApproval { reason } => {
-                assert!(reason.contains("exceeds auto-approve threshold"),
-                    "Expected threshold reason, got: {}", reason);
+                assert!(
+                    reason.contains("exceeds auto-approve threshold"),
+                    "Expected threshold reason, got: {}",
+                    reason
+                );
             }
             _ => panic!("Expected RequiresUserApproval, got: {:?}", result),
         }
@@ -530,7 +576,11 @@ mod tests {
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
             PurchaseDecision::Denied { reasons } => {
-                assert!(reasons.len() >= 2, "Expected multiple reasons, got: {:?}", reasons);
+                assert!(
+                    reasons.len() >= 2,
+                    "Expected multiple reasons, got: {:?}",
+                    reasons
+                );
                 assert!(reasons.iter().any(|r| r.contains("allowed categories")));
                 assert!(reasons.iter().any(|r| r.contains("exceed daily limit")));
             }
@@ -549,7 +599,7 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Approved => {},
+            PurchaseDecision::Approved => {}
             _ => panic!("Expected Approved for $0 purchase, got: {:?}", result),
         }
     }
@@ -561,7 +611,7 @@ mod tests {
 
         let result = evaluate_purchase(request, budget).unwrap();
         match result {
-            PurchaseDecision::Denied { .. } => {}, // Should fail multiple gates
+            PurchaseDecision::Denied { .. } => {} // Should fail multiple gates
             _ => panic!("Expected Denied for huge amount, got: {:?}", result),
         }
     }
