@@ -44,7 +44,7 @@
     },
     "updater": {
       "endpoints": [
-        "http://127.0.0.1:3001/api/updates/{{target}}/{{current_version}}"
+        "https://canopy-admin-418538192879.us-central1.run.app/api/updates/{{target}}/{{current_version}}"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGQkYwRkFCRjg1ODI2NjAKUldSZ0psajRxdysvL3ljOHA0b1c1WHUzM3VqcktLTDRoUzJWY2RZbGtiWEFTUjZwMmdBVDBXYTEK"
     }

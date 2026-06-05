@@ -9,13 +9,33 @@ fn main() {
 }
 
 fn load_vite_api_url() -> Option<String> {
+    if let Ok(value) = env::var("VITE_API_URL") {
+        let trimmed = value.trim().trim_end_matches('/').to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").ok()?);
-    let env_files = [
-        manifest_dir.join("../.env.production.local"),
-        manifest_dir.join("../.env.production"),
-        manifest_dir.join("../.env.local"),
-        manifest_dir.join("../.env"),
-    ];
+    let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".into());
+    let mode_files = if profile == "release" {
+        vec![
+            manifest_dir.join("../.env.production.local"),
+            manifest_dir.join("../.env.production"),
+        ]
+    } else {
+        vec![
+            manifest_dir.join("../.env.development.local"),
+            manifest_dir.join("../.env.development"),
+        ]
+    };
+
+    let env_files = mode_files
+        .into_iter()
+        .chain([
+            manifest_dir.join("../.env.local"),
+            manifest_dir.join("../.env"),
+        ]);
 
     for env_file in env_files {
         let contents = match fs::read_to_string(&env_file) {
@@ -37,8 +57,5 @@ fn load_vite_api_url() -> Option<String> {
             }
         }
     }
-
-    env::var("VITE_API_URL")
-        .ok()
-        .map(|value| value.trim_end_matches('/').to_string())
+    None
 }
