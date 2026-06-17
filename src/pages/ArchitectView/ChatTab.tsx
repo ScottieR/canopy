@@ -64,7 +64,7 @@ function HtmlAppBubble({
         </svg>
         <span style={{ fontSize: 11, fontWeight: 600, color: "#4A9E96", flex: 1 }}>Interactive App</span>
         <button onClick={save} disabled={saved} style={{ fontSize: 10, fontWeight: 600, color: saved ? "#10b981" : "#4A9E96", background: "transparent", border: "none", cursor: saved ? "default" : "pointer" }}>
-          {saved ? "✓ Saved" : "Pin to shelf"}
+          {saved ? "✓ Saved" : "Save app"}
         </button>
         <button onClick={download} style={{ fontSize: 10, color: "var(--text-sub, #636E72)", background: "transparent", border: "none", cursor: "pointer" }}>
           ↓ Download
@@ -113,10 +113,11 @@ const formatMessageTime = (dateInput: Date | string | number) => {
 const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
 const HTML_EXTS  = /\.(html?|htm)$/i;
 
-function EmbedPreview({ agentId, refName, title, height }: { agentId: string; refName: string; title: string; height: string }) {
+function EmbedPreview({ agentId, refName, title, height, messageId }: { agentId: string; refName: string; title: string; height: string; messageId?: string }) {
   const [content, setContent] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
   const isImage = IMAGE_EXTS.test(refName);
 
@@ -130,10 +131,20 @@ function EmbedPreview({ agentId, refName, title, height }: { agentId: string; re
       // Load HTML / text file for iframe
       const filename = HTML_EXTS.test(refName) ? refName : `${refName}.html`;
       invoke<string>("read_workspace_file", { agentId, filename })
-        .then(body => setContent(body))
+        .then(body => {
+          setContent(body);
+          if (body && body.trim() !== "") {
+            useWorldStore.getState().addMiniApp(agentId, {
+              name: title || refName,
+              description: `Pinned from chat`,
+              entrypoint: filename,
+              sourceMessageId: messageId || refName,
+            });
+          }
+        })
         .catch(e => setError(String(e)));
     }
-  }, [agentId, refName, isImage]);
+  }, [agentId, refName, isImage, title]);
 
   return (
     <div style={{ margin: "12px 0", border: "1px solid var(--border-subtle)", borderRadius: 12, overflow: "hidden", background: "var(--surface-card)" }}>
@@ -156,7 +167,7 @@ function EmbedPreview({ agentId, refName, title, height }: { agentId: string; re
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--primary)" }}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         </button>
-        <span style={{ fontSize: 12, fontWeight: 600 }}>{title}</span>
+        <span style={{ fontSize: 12, fontWeight: 600, flex: 1 }}>{title}</span>
       </div>
       {error ? (
         <div style={{ padding: 16, fontSize: 12, color: "#E57373" }}>Failed to load: {error}</div>
@@ -172,8 +183,8 @@ function EmbedPreview({ agentId, refName, title, height }: { agentId: string; re
         </div>
       ) : (
         <iframe
-          srcDoc={content}
-          style={{ width: "100%", height: height ? `${height}px` : "400px", border: "none" }}
+          src={`canopy-workspace://${agentId}/${encodeURIComponent(HTML_EXTS.test(refName) ? refName : `${refName}.html`)}`}
+          style={{ width: "100%", height: height ? `${height}px` : "400px", border: "none", background: "#fff" }}
           sandbox="allow-scripts allow-same-origin"
           title={title}
         />
@@ -360,6 +371,10 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   // We use a ref of the last seen ID so we only re-seed on actual switches,
   // not on the routine setAgents calls that fire after every message.
   const lastSeenConvIdRef = useRef<string | null | undefined>(agent.activeConversationId);
+  // Throttle for background boot_sync re-registration after gateway timeouts
+  // (used in handleSendMessage's error recovery; was referenced without being
+  // declared — pre-existing compile error fixed June 9, 2026).
+  const lastBootSync = useRef<number>(0);
   useEffect(() => {
     if (lastSeenConvIdRef.current !== agent.activeConversationId) {
       lastSeenConvIdRef.current = agent.activeConversationId;
@@ -398,7 +413,30 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       setTimeout(() => handleSendMessage(detail.text), 0);
     };
     window.addEventListener("canopy:send-chat", onSendChat as EventListener);
-    return () => window.removeEventListener("canopy:send-chat", onSendChat as EventListener);
+
+    // Starter-task handoff from onboarding (activation A2 — "Watch [Name] work",
+    // spec-helper-agent-and-orchestrator.md Part 1C). The wizard queues the
+    // agent's first task in localStorage after deploy succeeds and lands the
+    // user here; we send it once, automatically, so the first thing the user
+    // sees is their agent producing real work.
+    let starterTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const raw = localStorage.getItem("canopy_starter_task");
+      if (raw) {
+        const st = JSON.parse(raw);
+        if (st && st.agentId === agent.id && typeof st.prompt === "string" && st.prompt.trim()) {
+          localStorage.removeItem("canopy_starter_task");
+          // Small delay so the freshly-mounted chat surface settles before the
+          // send kicks off (mirrors the one-tick defer in onSendChat above).
+          starterTimer = setTimeout(() => handleSendMessage(st.prompt), 800);
+        }
+      }
+    } catch { /* malformed payload — drop it rather than block chat */ }
+
+    return () => {
+      window.removeEventListener("canopy:send-chat", onSendChat as EventListener);
+      if (starterTimer) clearTimeout(starterTimer);
+    };
     // Intentionally re-binding when agent.id changes so the closure over
     // handleSendMessage always sees the current agent's state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -637,10 +675,13 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         isFetching = true;
         try {
           const currentAgent = agentRef.current;
-          const resp: any = await invoke("get_conversation_history", { agentId: currentAgent.id, limit: 100, sessionId: currentAgent.activeConversationId || null });
+          const sessionIdAtFetch = currentAgent.activeConversationId;
+          const resp: any = await invoke("get_conversation_history", { agentId: currentAgent.id, limit: 100, sessionId: sessionIdAtFetch || null });
           let localMessages: any[] = [];
           
           if (!isActive) return;
+          // Prevent race condition: if the user switched threads while we were fetching, discard the result
+          if (agentRef.current.activeConversationId !== sessionIdAtFetch) return;
 
           if (Array.isArray(resp) && resp.length > 0) {
             localMessages = resp.map(r => ({
@@ -854,8 +895,8 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         }
       }
 
-      let activeSessionId = overrideSessionId || agent.activeConversationId;
-      const convExists = agent.conversations?.some(c => c.id === activeSessionId);
+      let activeSessionId = overrideSessionId || agentRef.current.activeConversationId;
+      const convExists = agentRef.current.conversations?.some(c => c.id === activeSessionId);
       
       if (!activeSessionId || !convExists) {
         activeSessionId = activeSessionId || `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -905,7 +946,26 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         ts: Date.now(),
       };
 
-      setChatLog(prev => capLog([...prev, agentMsg]));
+      if (agentRef.current.activeConversationId === activeSessionId) {
+        setChatLog(prev => capLog([...prev, agentMsg]));
+      } else {
+        // User switched threads while agent was working.
+        // Save the message to the background thread.
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => {
+            if (a.id !== agentRef.current.id) return a;
+            let conversations = a.conversations;
+            if (conversations) {
+              conversations = conversations.map(c => c.id === activeSessionId ? {
+                ...c,
+                messages: [...c.messages, agentMsg],
+                lastActiveAt: Date.now()
+              } : c);
+            }
+            return { ...a, conversations };
+          })
+        }));
+      }
     } catch (error) {
       let friendlyError = String(error);
 
@@ -933,14 +993,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           const retryText = typeof retryResponse === 'object'
             ? retryResponse?.response || retryResponse?.content || JSON.stringify(retryResponse)
             : String(retryResponse);
-          const retryMsg: ChatMessage = {
+          const retryAgentMsg: ChatMessage = {
             id: (Date.now() + 1).toString(),
             sender: "agent",
-            text: retryText,
+            text: retryText || "I've sent a credential request to your WebVault.",
             time: formatMessageTime(new Date()),
             ts: Date.now(),
           };
-          setChatLog(prev => capLog([...prev, retryMsg]));
+
+          if (agentRef.current.activeConversationId === activeSessionId) {
+            setChatLog(prev => capLog([...prev, retryAgentMsg]));
+          } else {
+            useWorldStore.setState(state => ({
+              agents: state.agents.map(a => {
+                if (a.id !== agentRef.current.id) return a;
+                let conversations = a.conversations;
+                if (conversations) {
+                  conversations = conversations.map(c => c.id === activeSessionId ? {
+                    ...c,
+                    messages: [...c.messages, retryAgentMsg],
+                    lastActiveAt: Date.now()
+                  } : c);
+                }
+                return { ...a, conversations };
+              })
+            }));
+          }
           return;
         } catch (retryErr) {
           friendlyError =
@@ -963,7 +1041,18 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
         }
         friendlyError = "The agent is taking a while to respond. Registration is being refreshed — please try again in 30 seconds.";
-      } else if (friendlyError.includes("No API key found for provider")) {
+      } else if (friendlyError.includes("429") || /quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(friendlyError)) {
+        // Provider quota/rate-limit — the #1 cause of "my agent doesn't talk."
+        // (Part 1D playbook class: rate-limited key.) Name the provider and
+        // give the user a way out instead of surfacing the raw 429 blob.
+        const provMatch = friendlyError.match(/google|gemini|openai|anthropic|claude|xai|grok/i);
+        const provName = provMatch
+          ? { google: "Google Gemini", gemini: "Google Gemini", openai: "OpenAI", anthropic: "Anthropic", claude: "Anthropic", xai: "xAI", grok: "xAI" }[provMatch[0].toLowerCase()] || "your AI provider"
+          : "your AI provider";
+        friendlyError =
+          `**${agent.name} can't respond right now — your ${provName} key is out of quota.** ` +
+          `The provider rejected the request (rate limit / billing cap), so nothing Canopy retries will help until it resets. ` +
+          `Options: wait for the quota window to reset, upgrade the key's plan, or switch ${agent.name} to a different model under **Skills & Access → AI model**.`;
         const match = friendlyError.match(/No API key found for provider "([^"]+)"/);
         if (match) {
           friendlyError = `You have selected a **${match[1].toUpperCase()}** model, but no API key is configured. Please set your key in the Vault or run Diagnostics.`;
@@ -1369,6 +1458,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                                       refName={refName}
                                       title={title}
                                       height={height}
+                                      messageId={msg.ts?.toString()}
                                   />
                               );
                               lastIndex = embedRegex.lastIndex;

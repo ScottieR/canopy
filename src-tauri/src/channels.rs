@@ -851,6 +851,7 @@ pub struct ConnectionDiagnostic {
 fn check_slack_gateway_state(
     gateway_cfg: Option<&serde_json::Value>,
     agent_id: &str,
+    is_isolated: bool,
 ) -> (bool, String) {
     let cfg = match gateway_cfg {
         Some(c) => c,
@@ -885,23 +886,35 @@ fn check_slack_gateway_state(
     }
 
     let account = cfg.pointer(&format!("/channels/slack/accounts/{}", agent_id));
-    let bot_token_present = account
+    let account_bot_token_present = account
         .and_then(|a| a.get("botToken"))
         .and_then(|v| v.as_str())
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
-    let app_token_present = account
+    let account_app_token_present = account
         .and_then(|a| a.get("appToken"))
         .and_then(|v| v.as_str())
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
+    let legacy_bot_token_present = cfg
+        .pointer("/channels/slack/botToken")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let legacy_app_token_present = cfg
+        .pointer("/channels/slack/appToken")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    let bot_token_present = account_bot_token_present || legacy_bot_token_present;
+    let app_token_present = account_app_token_present || legacy_app_token_present;
 
     if !bot_token_present || !app_token_present {
         return (
             false,
             format!(
-                "No per-agent Slack account found in the gateway for '{}' (botToken_present={}, appToken_present={}). The keychain might have the tokens, but they haven't been pushed to the gateway — try \"Auto-Repair Configuration\".",
-                agent_id, bot_token_present, app_token_present
+                "No Slack credentials found in the gateway for '{}' (account_botToken_present={}, account_appToken_present={}, legacy_botToken_present={}, legacy_appToken_present={}). The keychain might have the tokens, but they haven't been pushed to the gateway — try \"Auto-Repair Configuration\".",
+                agent_id, account_bot_token_present, account_app_token_present, legacy_bot_token_present, legacy_app_token_present
             ),
         );
     }
@@ -917,12 +930,19 @@ fn check_slack_gateway_state(
             })
         })
         .unwrap_or(false);
-    if !has_binding {
+    if !has_binding && !is_isolated {
         return (
             false,
             format!(
                 "Slack account present but no binding route — inbound Slack messages won't reach this agent. Re-run sync_gateway_channels (or use Auto-Repair)."
             ),
+        );
+    }
+
+    if !has_binding && is_isolated && legacy_bot_token_present && legacy_app_token_present {
+        return (
+            true,
+            "Slack is configured using the legacy isolated single-bot shape; routing appears valid, but this agent should be migrated to the shared accounts+bindings format.".to_string(),
         );
     }
 
@@ -996,7 +1016,8 @@ pub async fn ping_agent_connections_internal(
                 //   - plugins.entries.slack.enabled == true
                 //   - bindings has a slack route for this agent
                 // Any miss = gateway-side misconfig regardless of token validity.
-                let (gw_ok, gw_reason) = check_slack_gateway_state(gateway_cfg.as_ref(), agent_id);
+                let (gw_ok, gw_reason) =
+                    check_slack_gateway_state(gateway_cfg.as_ref(), agent_id, agent.isolated);
 
                 if token_ok.0 && gw_ok {
                     diagnostics.push(ConnectionDiagnostic {

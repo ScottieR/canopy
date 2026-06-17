@@ -14,6 +14,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
   }
 };
 import { WorldScene } from "../components/World/WorldScene";
+import { OnboardingCompanion } from "../components/World/OnboardingCompanion";
 import { LoadingScreen } from "../components/LoadingScreen";
 import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
@@ -27,6 +28,45 @@ import rehypeSanitize from "rehype-sanitize";
 
 const safeStartGateway = async () => {
     try { return await invoke("start_gateway"); } catch(e){}
+};
+
+// ─── Activation: starter tasks ("Watch [Name] work") ─────────────────────────
+// Spec: spec-helper-agent-and-orchestrator.md Part 1C. The aha moment (A2) is
+// the user's own agent completing a real first task with a visible artifact —
+// not a wizard, not a chat about setup. One click, zero configuration.
+const STARTER_TASKS: Record<string, { teaser: string; prompt: string }> = {
+  "Researcher":  { teaser: "a one-page briefing on a topic picked for you",
+    prompt: "Pick one fascinating topic you think I'd enjoy based on your expertise, and put together a tight one-page briefing on it. Use clear markdown sections: why it matters, three key facts, and one surprising insight." },
+  "Assistant":   { teaser: "a ready-to-use daily priorities template",
+    prompt: "Build me a clean, reusable daily priorities template I can fill in each morning — top 3 priorities, schedule blocks, and a 'don't forget' section. Make it something I'd actually want to use tomorrow." },
+  "Accountant":  { teaser: "a sample monthly budget I can adapt",
+    prompt: "Create a sample monthly personal budget template with sensible categories, percentages, and a simple way to track actual vs. planned. Make it clear and adaptable." },
+  "Coder":       { teaser: "a small working tool, built live",
+    prompt: "Build me a small, genuinely useful interactive tool as a single HTML page — your pick (timer, unit converter, checklist — whatever shows your range). Make it polished." },
+  "Chef":        { teaser: "a 3-dinner weeknight plan + shopping list",
+    prompt: "Plan three easy weeknight dinners with broad appeal, then give me one combined shopping list organized by store section." },
+  "Travel Agent":{ teaser: "a sample weekend getaway itinerary",
+    prompt: "Draft a sample 2-day weekend getaway itinerary for a destination you'd recommend — morning/afternoon/evening blocks, one local-secret tip per day, and rough budget." },
+  "Strategist":  { teaser: "a one-page strategy template",
+    prompt: "Create a one-page strategy template I can reuse for any decision: situation, options, criteria, recommendation, first step. Fill it in with a brief worked example so I can see it in action." },
+  "Editor":      { teaser: "a before/after editing demo",
+    prompt: "Show me what you do: write one deliberately clunky paragraph, then your edited version side by side, with three notes on what you changed and why." },
+  "Trainer":     { teaser: "a simple one-week starter workout plan",
+    prompt: "Build a simple one-week starter workout plan for a busy beginner — 30 minutes a day, no equipment, with a rest day. Lay it out as a clean weekly table." },
+};
+const DEFAULT_STARTER_TASK = { teaser: "a first task picked to show their range",
+  prompt: "Introduce yourself briefly, then show me what you can do: pick one small, genuinely useful task in your specialty and complete it right now. Produce something tangible — a document, plan, or template I can actually use." };
+const getStarterTask = (role: string | null) => (role && STARTER_TASKS[role]) || DEFAULT_STARTER_TASK;
+
+// ─── Wizard progress — "show shape" (UX audit §5.1, spec Part 1C drift item 3)
+const PROGRESS_STAGES = ["Welcome", "Role", "Personality", "Intelligence", "Connections", "Launch"];
+const stageForStep = (s: number): number => {
+  if (s < 1) return 0;            // 0, 0.5
+  if (s < 2) return 1;            // 1, 1.8 (import)
+  if (s < 3) return 2;            // 2, 2.5
+  if (s < 4) return 3;            // 3 (API key)
+  if (s < 6) return 4;            // 4, 5 (plugins + testing)
+  return 5;                       // 6, 7 (celebrate + pair)
 };
 
 export function OnboardingWizard() {
@@ -134,9 +174,33 @@ export function OnboardingWizard() {
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
   const [deployedAgentId, setDeployedAgentId] = useState<string | null>(null);
+  // Preflight model health (Part 1D field-test fix): never offer the starter
+  // task into a dead key. null = not checked, "checking" = in flight.
+  const [modelHealth, setModelHealth] = useState<null | "checking" | { status: string; detail?: string; provider: string; model: string }>(null);
   const [pairingCode, setPairingCode] = useState("");
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState("");
+
+  // Preflight the chosen provider key when the user reaches the celebration
+  // step — a 1-token ping that catches invalid keys and quota-exhausted (429)
+  // keys before we promise "watch them work."
+  useEffect(() => {
+    if (step !== 6 || !apiKey.trim() || !llmProvider) { return; }
+    let cancelled = false;
+    setModelHealth("checking");
+    const recommendedModel = selectedRole
+      ? (getProviderRecommendedModel(selectedRole, llmProvider).id || undefined)
+      : undefined;
+    invoke<Array<{ status: string; detail?: string; provider: string; model: string }>>("check_model_health", {
+      provider: llmProvider,
+      model: recommendedModel,
+      keyOverride: apiKey.trim(),
+    })
+      .then(results => { if (!cancelled && results?.[0]) setModelHealth(results[0]); })
+      .catch(() => { if (!cancelled) setModelHealth(null); }); // check failed ≠ key dead; fail open
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
 
   useEffect(() => {
     if (step >= 0) {
@@ -435,7 +499,8 @@ export function OnboardingWizard() {
   useEffect(() => {
     fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/habitats`)
       .then(r => r.json())
-      .then(d => setHabitats(d))
+      // Eddy's reef cave (isEddyHabitat) is reserved for The Keeper.
+      .then(d => setHabitats(Array.isArray(d) ? d.filter((h: any) => !h.isEddyHabitat) : d))
       .catch(() => { });
   }, []);
 
@@ -466,6 +531,12 @@ export function OnboardingWizard() {
     .filter(([key, val]) => key !== "Custom" && (showAllRoles || val.suggest_in_onboarding))
     .map(([key, val]) => ({ key, ...val }))
     .sort((a: any, b: any) => {
+      // Suggested roles keep their positions; "See more roles" APPENDS the
+      // rest below instead of interleaving them by manual_order/popularity
+      // (which visually reshuffled the grid the user had already scanned).
+      const aSuggested = a.suggest_in_onboarding ? 0 : 1;
+      const bSuggested = b.suggest_in_onboarding ? 0 : 1;
+      if (aSuggested !== bSuggested) return aSuggested - bSuggested;
       const aOrder = a.manual_order;
       const bOrder = b.manual_order;
       if (aOrder != null && bOrder != null) return aOrder - bOrder;
@@ -491,8 +562,9 @@ export function OnboardingWizard() {
     }
   };
 
-  const handleCreateAgent = async () => {
+  const handleCreateAgent = async (opts?: { starterTask?: string }) => {
     if (!selectedRole || !agentName.trim()) return;
+    const starterTask = typeof opts?.starterTask === "string" ? opts.starterTask : null;
 
     setIsCreatingAgent(true);
     setCreateAgentError("");
@@ -686,7 +758,7 @@ export function OnboardingWizard() {
 
         if (plugins.slack) {
           await invoke("boot_sync_agents").catch(() => {});
-          await invoke("sync_gateway_channels").catch(() => {});
+          await invoke("sync_agent_slack_config", { agentId: newAgentData.id }).catch(() => {});
         }
         
         return newAgentData;
@@ -696,6 +768,32 @@ export function OnboardingWizard() {
     };
 
     addAgent(optimisticAgent);
+
+    // Starter task path (activation A2 — "Watch [Name] work"): wait for the
+    // real deploy, then land the user directly in the agent's chat where
+    // ChatTab picks up the queued first task and sends it automatically.
+    if (starterTask && !plugins.slack) {
+      try {
+        const newAgent = await deployAgentCore(tempId);
+        localStorage.setItem("canopy_starter_task", JSON.stringify({ agentId: newAgent.id, prompt: starterTask }));
+        localStorage.removeItem('canopy_onboarding_draft');
+        const store = useWorldStore.getState();
+        store.setSelectedAgent(newAgent.id);
+        if (typeof (store as any).setArchitectTab === "function") (store as any).setArchitectTab("overview");
+        store.setActiveView("architect");
+      } catch (err) {
+        console.error("Starter-task deployment failed:", err);
+        setCreateAgentError(String(err));
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => a.id === tempId
+            ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" }
+            : a)
+        }));
+      } finally {
+        setIsCreatingAgent(false);
+      }
+      return;
+    }
 
     if (plugins.slack) {
       try {
@@ -762,7 +860,63 @@ export function OnboardingWizard() {
           <X size={20} />
         </button>
       )}
-      {/* Step -1: Engine Boot */}
+
+      {/* Progress indicator — visible shape across the whole wizard */}
+      {step >= 0 && (
+        <div style={{
+          position: "absolute", top: 28, left: "50%", transform: "translateX(-50%)",
+          display: "flex", alignItems: "center", gap: 10, zIndex: 90,
+        }}>
+          {PROGRESS_STAGES.map((label, i) => {
+            const current = stageForStep(step);
+            const done = i < current;
+            const active = i === current;
+            return (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <div style={{
+                    width: active ? 10 : 8, height: active ? 10 : 8, borderRadius: "50%",
+                    background: done || active ? "#3c6663" : "var(--border-subtle)",
+                    boxShadow: active ? "0 0 0 4px rgba(60,102,99,0.15)" : "none",
+                    transition: "all 0.3s ease",
+                  }} />
+                  <span style={{
+                    fontSize: 10, fontWeight: active ? 700 : 500,
+                    color: done || active ? "#3c6663" : "var(--text-muted)",
+                    letterSpacing: "0.02em",
+                  }}>{label}</span>
+                </div>
+                {i < PROGRESS_STAGES.length - 1 && (
+                  <div style={{ width: 28, height: 2, borderRadius: 1, marginBottom: 14, background: done ? "#3c6663" : "var(--border-subtle)", transition: "background 0.3s ease" }} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Companion lobster — warmth on the anxiety-prone form steps.
+          (Step 0 already shows the full WorldScene; -1 is the loader.) */}
+      {step >= 0.5 && (
+        <div style={{
+          position: "absolute", bottom: 8, left: 16, width: 150, height: 150,
+          pointerEvents: "none", zIndex: 80,
+        }}>
+          <React.Suspense fallback={null}>
+            <Canvas camera={{ position: [0, 1.2, 3.2], fov: 35 }} gl={{ alpha: true }} style={{ background: "transparent" }}>
+              <ambientLight intensity={0.9} />
+              <directionalLight position={[3, 5, 2]} intensity={1.1} />
+              <OnboardingCompanion
+                position={[0, -0.7, 0]}
+                scale={0.85}
+                animationState="breathe"
+                baseColor={(selectedRole && agentTypeInfo[selectedRole]?.robeColor) || "#F28C63"}
+              />
+            </Canvas>
+          </React.Suspense>
+        </div>
+      )}
+
       {/* Step -1: Engine Boot */}
       {step === -1 && (
         <>
@@ -1220,37 +1374,19 @@ export function OnboardingWizard() {
             )}
 
             <div style={{ background: "var(--surface-base)", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
-              <div style={{ display: "flex", gap: 24 }}>
-                <div style={{ flex: 1 }}>
-                  <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Agent Personality</h3>
-                  <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>Edit their core instructions below. This drives how they think and communicate.</p>
+              <div>
+                <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Agent Personality</h3>
+                <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>
+                  This is how {agentName || "your agent"} thinks. We've written a starting personality — tighten the tone, add house rules, change their boundaries. Or skip; you can always edit later.
+                </p>
 
-                  <div data-color-mode="light" style={{ borderRadius: 12, overflow: "hidden", border: "1px solid rgba(0,0,0,0.1)" }}>
-                    <MDEditor
-                      value={personalityPrompt}
-                      onChange={(val) => setPersonalityPrompt(val || "")}
-                      preview="edit"
-                      height={400}
-                    />
-                  </div>
-                </div>
-                
-                {/* Example writeup */}
-                <div style={{ flex: 1, padding: "16px", background: "var(--surface-card)", borderRadius: 12, border: "1px solid rgba(0,0,0,0.05)" }}>
-                  <h4 style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontSize: 16 }}>💡</span> Example Role Description
-                  </h4>
-                  <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>
-                    {`You are an expert ${selectedRole === "Custom" ? "Assistant" : selectedRole}. Your goal is to be helpful, analytical, and precise.
-
-**Key Traits:**
-- Professional and courteous
-- Direct and to the point
-- Always verifies information before answering
-
-**Tone:**
-Maintain a calm, reassuring tone even when dealing with complex or stressful tasks. Avoid conversational fluff.`}
-                  </div>
+                <div data-color-mode="light" style={{ borderRadius: 12, overflow: "hidden", border: "1px solid rgba(0,0,0,0.1)" }}>
+                  <MDEditor
+                    value={personalityPrompt}
+                    onChange={(val) => setPersonalityPrompt(val || "")}
+                    preview="edit"
+                    height={400}
+                  />
                 </div>
               </div>
 
@@ -1563,18 +1699,30 @@ Maintain a calm, reassuring tone even when dealing with complex or stressful tas
             </div>
 
           </div>
-          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(2.5)} style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
+            {/* Key-free creation (spec Part 1B Layer 2): the key is a graduation
+                moment at first message, not a gate on creating the agent. */}
+            <button
+              onClick={() => { setApiKey(""); setApiKeyMode("hidden"); setStep(4); }}
+              title={`You can finish creating ${agentName || "your agent"} now and connect a key when you send their first message.`}
+              style={{
+                marginLeft: "auto", padding: "12px 20px", borderRadius: 12,
+                background: "transparent", border: "none", color: "var(--text-sub)",
+                fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                textDecoration: "underline", textUnderlineOffset: 3,
+              }}
+            >Skip — connect later</button>
             {(() => {
               const canAdvance = !!llmProvider && apiKey.trim().length > 0;
               return (
                 <button
                   onClick={() => { if (canAdvance) setStep(4); }}
                   disabled={!canAdvance}
-                  title={canAdvance ? "" : "Add an API key to continue — your agent can't think without one."}
+                  title={canAdvance ? "" : "Add a key here, or use Skip to connect one later."}
                   style={{
                     padding: "12px 28px", borderRadius: 12, border: "none",
                     background: canAdvance ? "#3c6663" : "var(--border-subtle)",
@@ -2279,11 +2427,14 @@ Maintain a calm, reassuring tone even when dealing with complex or stressful tas
                   </div>
 
                   <button onClick={async () => {
+                    // Must go through Rust: the JS shell plugin rejects
+                    // x-apple.systempreferences: URLs and the location.href
+                    // fallback is blocked by the webview — both were silent no-ops.
                     try {
-                      const { open: shellOpen } = await import('@tauri-apps/plugin-shell');
-                      await shellOpen("x-apple.systempreferences:com.apple.preference.security?Privacy_Photos");
+                      await invoke("open_photos_privacy_settings");
                     } catch (e) {
-                      window.location.href = "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos";
+                      console.error("Failed to open Photos privacy settings:", e);
+                      alert("Couldn't open System Settings automatically. Open System Settings → Privacy & Security → Photos and toggle Canopy on.");
                     }
                     // Auto-confirm when user switches back
                     const onFocus = () => {
@@ -2466,18 +2617,115 @@ Maintain a calm, reassuring tone even when dealing with complex or stressful tas
             </div>
           )}
 
-          <button onClick={handleCreateAgent} disabled={isCreatingAgent} style={{
-            padding: "16px 40px", borderRadius: 16, border: "none",
-            background: createAgentError ? "#E53E3E" : "linear-gradient(135deg, #3c6663, #609995)",
-            color: "var(--surface-card)", fontSize: 16, fontWeight: 600, cursor: isCreatingAgent ? "not-allowed" : "pointer",
-            boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
-            transition: "all 0.3s ease",
-            opacity: isCreatingAgent ? 0.7 : 1,
-            display: "inline-flex", justifyContent: "center", alignItems: "center", gap: 12
-          }}>
-            {isCreatingAgent && <span style={{ display: "inline-block", width: 16, height: 16, border: "3px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 1s linear infinite" }} />}
-            {isCreatingAgent ? "Deploying Agent..." : (createAgentError ? "Retry Deployment" : (plugins.slack ? "Deploy & Pair Slack" : "Deploy & Go to Dashboard"))}
-          </button>
+          {/* No-key notice — agent was created key-free (spec Part 1B Layer 2) */}
+          {!apiKey.trim() && (
+            <div style={{
+              display: "flex", gap: 12, alignItems: "center",
+              background: "rgba(212,160,74,0.08)", border: "1px solid rgba(212,160,74,0.25)",
+              borderRadius: 12, padding: "14px 18px", maxWidth: 420, margin: "0 auto 24px", textAlign: "left",
+            }}>
+              <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                <strong style={{ color: "var(--text-main)" }}>{agentName || "Your agent"} will be resting</strong> until you connect an AI model. We'll ask for your key when you send their first message.
+              </div>
+            </div>
+          )}
+
+          {(() => {
+            // Preflight verdict: fail OPEN on null (the check itself errored —
+            // don't block deploy on our own bug), fail CLOSED on a confirmed
+            // bad key (rate_limited / invalid_key / model_unavailable).
+            const checking = modelHealth === "checking";
+            const healthBad = typeof modelHealth === "object" && modelHealth !== null && modelHealth.status !== "ok";
+            const starterEligible = !plugins.slack && !!apiKey.trim() && !createAgentError && !healthBad && !checking;
+            const provLabel = llmProvider || "your AI provider";
+            const badCopy = healthBad ? (
+              (modelHealth as any).status === "rate_limited"
+                ? `Your ${provLabel} key is out of quota right now, so ${agentName || "your agent"} won't be able to respond until it resets. You can go back and pick a different provider, or deploy anyway and connect later.`
+                : (modelHealth as any).status === "invalid_key"
+                ? `${provLabel} rejected this key. Double-check it on the previous step before deploying.`
+                : (modelHealth as any).status === "model_unavailable"
+                ? `Your ${provLabel} key doesn't have access to the recommended model. Go back to pick another provider, or deploy and choose a model later.`
+                : `We couldn't verify your ${provLabel} connection (${(modelHealth as any).detail || "unknown error"}).`
+            ) : null;
+
+            return (<>
+              {/* Connection health verdict */}
+              {checking && !isCreatingAgent && (
+                <div style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 20, display: "flex", gap: 8, alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ display: "inline-block", width: 12, height: 12, border: "2px solid rgba(60,102,99,0.3)", borderTopColor: "#3c6663", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+                  Checking your {provLabel} connection…
+                </div>
+              )}
+              {healthBad && !isCreatingAgent && (
+                <div style={{
+                  background: "rgba(212,160,74,0.08)", border: "1px solid rgba(212,160,74,0.3)",
+                  borderRadius: 14, padding: "16px 20px", maxWidth: 440, margin: "0 auto 24px", textAlign: "left",
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#A4761B", marginBottom: 4 }}>
+                    Heads up — {agentName || "your agent"} won't be able to think yet
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 10 }}>{badCopy}</div>
+                  <button onClick={() => { setModelHealth(null); setStep(3); }} style={{
+                    padding: "8px 14px", borderRadius: 10, border: "1px solid rgba(164,118,27,0.4)",
+                    background: "transparent", color: "#A4761B", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
+                  }}>← Change provider or key</button>
+                </div>
+              )}
+
+              {/* Starter task — the fastest path to seeing real work (activation A2) */}
+              {starterEligible && !isCreatingAgent && (
+                <div style={{
+                  background: "rgba(60,102,99,0.06)", border: "1px solid rgba(60,102,99,0.15)",
+                  borderRadius: 14, padding: "16px 20px", maxWidth: 440, margin: "0 auto 24px", textAlign: "left",
+                }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#3c6663", marginBottom: 4, letterSpacing: "0.02em" }}>
+                    {agentName || "Your agent"}'s first task
+                  </div>
+                  <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                    Deploy and watch {agentName || "them"} get straight to work on {getStarterTask(selectedRole).teaser} — done in about a minute.
+                  </div>
+                </div>
+              )}
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "center" }}>
+                <button
+                  onClick={() => {
+                    if (checking) return;
+                    if (starterEligible) {
+                      handleCreateAgent({ starterTask: getStarterTask(selectedRole).prompt });
+                    } else {
+                      handleCreateAgent();
+                    }
+                  }}
+                  disabled={isCreatingAgent || checking}
+                  style={{
+                    padding: "16px 40px", borderRadius: 16, border: "none",
+                    background: createAgentError ? "#E53E3E" : "linear-gradient(135deg, #3c6663, #609995)",
+                    color: "var(--surface-card)", fontSize: 16, fontWeight: 600, cursor: (isCreatingAgent || checking) ? "not-allowed" : "pointer",
+                    boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
+                    transition: "all 0.3s ease",
+                    opacity: (isCreatingAgent || checking) ? 0.7 : 1,
+                    display: "inline-flex", justifyContent: "center", alignItems: "center", gap: 12
+                  }}>
+                  {isCreatingAgent && <span style={{ display: "inline-block", width: 16, height: 16, border: "3px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", animation: "spin 1s linear infinite" }} />}
+                  {isCreatingAgent ? "Deploying Agent..." : (createAgentError ? "Retry Deployment"
+                    : checking ? "Checking connection…"
+                    : (plugins.slack ? "Deploy & Pair Slack"
+                    : (starterEligible ? `Deploy & Watch ${agentName || "Them"} Work` : "Deploy & Go to Dashboard")))}
+                </button>
+                {starterEligible && !isCreatingAgent && (
+                  <button
+                    onClick={() => handleCreateAgent()}
+                    style={{
+                      padding: "8px 16px", borderRadius: 10, border: "none", background: "transparent",
+                      color: "var(--text-sub)", fontSize: 13, fontWeight: 600, cursor: "pointer",
+                      textDecoration: "underline", textUnderlineOffset: 3, fontFamily: "inherit",
+                    }}
+                  >Skip the first task — just go to dashboard</button>
+                )}
+              </div>
+            </>);
+          })()}
           
           {isCreatingAgent && (
             <div style={{ marginTop: 16, fontSize: 13, color: "var(--text-sub)", textAlign: "center", maxWidth: 300, margin: "16px auto 0" }}>
@@ -2545,7 +2793,7 @@ Maintain a calm, reassuring tone even when dealing with complex or stressful tas
                 setIsPairing(true);
                 setPairingError("");
                 try {
-                  await invoke("approve_slack_pairing", { code: pairingCode.trim() });
+                  await invoke("approve_slack_pairing", { code: pairingCode.trim(), agentId: deployedAgentId });
                   setStep(-1);
                   setAgentName("");
                   setSelectedRole(null);

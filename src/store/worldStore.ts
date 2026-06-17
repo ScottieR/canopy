@@ -89,14 +89,21 @@ export interface ChatMessage {
   ts?: number;
 }
 
+export interface MiniAppVersion {
+  id: string;
+  timestamp: number;
+  entrypoint: string;
+}
+
 /** A saved mini-app — an HTML tool produced by an agent and pinned for reuse. */
 export interface MiniApp {
   id: string;
   name: string;
   description?: string;
-  htmlContent: string;       // complete self-contained HTML
   createdAt: number;
   sourceMessageId?: string;  // which chat message it came from, for dedup
+  versions: MiniAppVersion[];
+  activeVersionId: string;
 }
 
 // A saved conversation thread for an agent. Titles are auto-derived from the
@@ -273,7 +280,8 @@ export interface WorldState {
   addInboxItem: (item: Omit<InboxItem, "id" | "timestamp">) => void;
   removeInboxItem: (id: string) => void;
   // ── Mini Apps ─────────────────────────────────────────────────────────────
-  addMiniApp: (agentId: string, app: Omit<MiniApp, "id" | "createdAt">) => void;
+  addMiniApp: (agentId: string, app: { name: string; description?: string; sourceMessageId?: string; entrypoint: string; }) => void;
+  updateMiniAppVersion: (agentId: string, appId: string, versionId: string) => void;
   deleteMiniApp: (agentId: string, appId: string) => void;
   // ── Decision Queue ────────────────────────────────────────────────────
   
@@ -708,15 +716,57 @@ export const useWorldStore = create<WorldState>()(
     agents: state.agents.map(a => {
       if (a.id !== agentId) return a;
       const existing = a.miniApps ?? [];
-      // Deduplicate by sourceMessageId if provided
-      if (app.sourceMessageId && existing.some(m => m.sourceMessageId === app.sourceMessageId)) return a;
+      
+      const newVersion: MiniAppVersion = {
+        id: `version_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: Date.now(),
+        entrypoint: app.entrypoint,
+      };
+
+      // If an app with the same name exists, append a new version
+      const existingAppIndex = existing.findIndex(m => m.name === app.name || (app.sourceMessageId && m.sourceMessageId === app.sourceMessageId));
+      if (existingAppIndex !== -1) {
+        const existingApp = existing[existingAppIndex];
+        
+        // If it's from the exact same message, it's just a secondary page of the same app. Ignore it.
+        if (app.sourceMessageId && existingApp.sourceMessageId === app.sourceMessageId) {
+          return a;
+        }
+
+        const updatedApp: MiniApp = {
+          ...existingApp,
+          versions: [newVersion, ...existingApp.versions],
+          activeVersionId: newVersion.id,
+        };
+        const newApps = [...existing];
+        newApps[existingAppIndex] = updatedApp;
+        return { ...a, miniApps: newApps };
+      }
+
+      // Otherwise create a new app
       const newApp: MiniApp = {
-        ...app,
         id: `miniapp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: app.name,
+        description: app.description,
         createdAt: Date.now(),
+        sourceMessageId: app.sourceMessageId,
+        versions: [newVersion],
+        activeVersionId: newVersion.id,
       };
       return { ...a, miniApps: [newApp, ...existing] };
     }),
+  })),
+
+  updateMiniAppVersion: (agentId, appId, versionId) => set((state) => ({
+    agents: state.agents.map(a => {
+      if (a.id !== agentId) return a;
+      return {
+        ...a,
+        miniApps: (a.miniApps ?? []).map(m => 
+          m.id === appId ? { ...m, activeVersionId: versionId } : m
+        )
+      };
+    })
   })),
 
   deleteMiniApp: (agentId, appId) => set((state) => ({

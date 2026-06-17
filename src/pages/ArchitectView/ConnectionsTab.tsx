@@ -1047,7 +1047,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                 setSlackPairingError("");
                 try {
                   const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
-                  await invoke("approve_slack_pairing", { code: trimmed });
+                  await invoke("approve_slack_pairing", { code: trimmed, agentId: agent.id });
                   await invoke("store_secret_cmd", { key: `agent_${agent.id}_slack_paired`, value: "true" });
                   setSlackPairingStatus("success");
                   setSlackPairingCode("");
@@ -1115,8 +1115,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                           [`agent_${agent.id}_slack_bot_token`]: slackBotToken
                        }
                      });
-                     // Restart gateway to drop old Socket mode connections and apply new tokens
-                     await invoke("sync_gateway_channels");
+                     await invoke("sync_agent_slack_config", { agentId: agent.id });
                   } catch (e) {
                      console.error(e);
                   }

@@ -9,6 +9,16 @@ use crate::models::*;
 
 // ─── Local Models for DB Layer ───────────────────────────────────────────────
 
+/// Represents an item in the user's universal inbox
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InboxItem {
+    pub id: String,
+    pub item_type: String,
+    pub status: String,
+    pub payload_json: String,
+    pub timestamp: String,
+}
+
 /// Represents a message in a conversation
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message {
@@ -306,6 +316,18 @@ impl Database {
             [],
         )?;
 
+        // Create inbox_items table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS inbox_items (
+                id TEXT PRIMARY KEY,
+                item_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            )",
+            [],
+        )?;
+
         // Create indexes for common queries
 
         let _ = conn.execute(
@@ -403,6 +425,52 @@ impl Database {
              ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
             params![value_json],
         )?;
+        Ok(())
+    }
+
+    // ─── Inbox Operations ────────────────────────────────────────────────────
+
+    pub fn get_inbox_items(&self) -> SqlResult<Vec<InboxItem>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, item_type, status, payload_json, timestamp FROM inbox_items ORDER BY timestamp DESC"
+        )?;
+
+        let items = stmt.query_map([], |row| {
+            Ok(InboxItem {
+                id: row.get(0)?,
+                item_type: row.get(1)?,
+                status: row.get(2)?,
+                payload_json: row.get(3)?,
+                timestamp: row.get(4)?,
+            })
+        })?.collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(items)
+    }
+
+    pub fn add_inbox_item(&self, item: &InboxItem) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO inbox_items (id, item_type, status, payload_json, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![&item.id, &item.item_type, &item.status, &item.payload_json, &item.timestamp],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_inbox_item_status(&self, id: &str, status: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE inbox_items SET status = ?1 WHERE id = ?2",
+            params![status, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_inbox_item(&self, id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM inbox_items WHERE id = ?1", params![id])?;
         Ok(())
     }
 

@@ -610,9 +610,13 @@ fn merge_json(a: &mut serde_json::Value, b: &serde_json::Value) {
 
 pub fn preflight_sanitize_and_merge_config(
     state_dir: &std::path::Path,
-    is_isolated: bool,
+    // `Some(agent_id)` → this is an isolated agent container; `None` → main gateway.
+    // The id is needed (not just a bool) so the isolated branch can compute the
+    // agent's deterministic JIT-proxy port for its `browser.cdpUrl`.
+    isolated_agent_id: Option<&str>,
     token: &str,
 ) {
+    let is_isolated = isolated_agent_id.is_some();
     let config_path = state_dir.join("openclaw.json");
 
     // ── 1. Delete OpenClaw's backup configs to prevent "size-drop" anomaly ──────
@@ -713,7 +717,7 @@ pub fn preflight_sanitize_and_merge_config(
         }
     });
 
-    // ── 5. Context-Aware Injections (Main Gateway Only) ────────────────────────
+    // ── 5. Context-Aware Injections (gateway vs isolated) ──────────────────────
     if !is_isolated {
         required_baseline["agents"]["defaults"]["memorySearch"] = serde_json::json!({
             "enabled": true,
@@ -739,6 +743,29 @@ pub fn preflight_sanitize_and_merge_config(
             serde_json::json!(false);
 
         cfg["agents"]["list"] = serde_json::json!([]);
+    } else if let Some(agent_id) = isolated_agent_id {
+        // Isolated containers previously received NO browser config at all — the
+        // plugin stayed disabled and there was no cdpUrl, so isolated agents
+        // reported "no connection to the browser" even with the browser
+        // capability turned on.
+        //
+        // Unlike the main gateway (which shares one bridge on SHARED_BRIDGE_PORT),
+        // an isolated agent points at its OWN JIT proxy. That keeps the isolation
+        // promise: its Chrome profile, cookies, and logins stay per-agent instead
+        // of landing in the shared-browser profile alongside other agents'
+        // sessions. The JIT proxy rewrites /json/version responses (same helper
+        // as the shared bridge), so OpenClaw's `attachOnly` preflight resolves a
+        // reachable webSocketDebuggerUrl through it.
+        required_baseline["plugins"]["entries"]["browser"]["enabled"] = serde_json::json!(true);
+        required_baseline["browser"] = serde_json::json!({
+            "noSandbox": true,
+            "attachOnly": true,
+            "cdpUrl": format!(
+                "http://host.docker.internal:{}",
+                crate::browser_manager::jit_proxy_port_for(agent_id)
+            ),
+            "defaultProfile": "openclaw"
+        });
     }
 
     // ── 6. Graceful Deep Merge ─────────────────────────────────────────────────
@@ -894,7 +921,7 @@ pub async fn start_gateway_internal(
     // → stop it so compose-up recreates it fresh with the new file.
     preflight_sanitize_and_merge_config(
         &state_dir,
-        false,
+        None,
         crate::model_constants::GATEWAY_INTERNAL_TOKEN,
     );
     let openclaw_path = state_dir.join("openclaw.json");
@@ -1487,6 +1514,22 @@ for (const file of files) {
             .await;
 
         tracing::info!("ensure_browser_dependencies: Background Chromium/Playwright installation complete for {}.", container_name);
+
+        let _ = crate::openclaw::get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "openclaw",
+                "plugins",
+                "install",
+                "@openclaw/slack@2026.5.26",
+            ])
+            .output()
+            .await;
+
+        tracing::info!("ensure_browser_dependencies: Background Slack plugin installation complete for {}.", container_name);
     });
 }
 
@@ -1624,5 +1667,61 @@ mod tests {
         assert!(compose.contains("- \"com.canopy.type=isolated\""));
         assert!(compose.contains("- \"com.canopy.agent-id=agent-123\""));
         assert!(compose.contains("isolated-agent-123"));
+    }
+
+    #[test]
+    fn isolated_preflight_injects_browser_config() {
+        // Regression: isolated containers previously got NO browser block and no
+        // browser plugin enable, so isolated agents could never reach a browser.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let agent_id = "agent-iso-test";
+
+        preflight_sanitize_and_merge_config(dir.path(), Some(agent_id), "test-token");
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
+        )
+        .expect("valid json");
+
+        assert_eq!(
+            cfg.pointer("/plugins/entries/browser/enabled"),
+            Some(&serde_json::json!(true)),
+            "browser plugin must be enabled for isolated containers"
+        );
+        let expected_url = format!(
+            "http://host.docker.internal:{}",
+            crate::browser_manager::jit_proxy_port_for(agent_id)
+        );
+        assert_eq!(
+            cfg.pointer("/browser/cdpUrl").and_then(|v| v.as_str()),
+            Some(expected_url.as_str()),
+            "cdpUrl must point at the agent's own JIT proxy"
+        );
+        assert_eq!(
+            cfg.pointer("/browser/attachOnly"),
+            Some(&serde_json::json!(true))
+        );
+    }
+
+    #[test]
+    fn gateway_preflight_uses_shared_bridge_not_jit() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        preflight_sanitize_and_merge_config(dir.path(), None, "test-token");
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
+        )
+        .expect("valid json");
+
+        let expected_url = format!(
+            "http://host.docker.internal:{}",
+            crate::browser_manager::SHARED_BRIDGE_PORT
+        );
+        assert_eq!(
+            cfg.pointer("/browser/cdpUrl").and_then(|v| v.as_str()),
+            Some(expected_url.as_str()),
+            "gateway must keep pointing at the shared bridge"
+        );
     }
 }

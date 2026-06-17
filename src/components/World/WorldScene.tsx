@@ -3,6 +3,7 @@ import agentsData from "../../../shared/agents.json";
 import habitatsData from "../../../shared/habitats.json";
 import { AgentNeighborhood } from "./AgentNeighborhood";
 import { OnboardingCompanion } from "./OnboardingCompanion";
+import { GLBAgent } from "./GLBAgent";
 import { useGLTF, Html } from "@react-three/drei";
 import * as THREE from "three";
 import React from "react";
@@ -180,7 +181,45 @@ export function ProjectForum({ space, position, onClick }: { space: any, positio
   );
 }
 
-export function WorldScene({ 
+// ─── The Keeper (Eddy) — golden lobster at the reef cave ─────────────────────
+// Spec: spec-helper-agent-and-orchestrator.md "Eddy's 3D Assets". Habitat is
+// Habitat_Eddy.glb (id 11, isEddyHabitat — surfboard baked in); the character
+// goes through GLBAgent — the exact same pipeline, scale (0.25), and color
+// override system as every user agent, so Eddy can never drift out of scale.
+// Rendered in its own fixed, non-rotating corner canvas (EddyCorner in
+// KeeperPanel.tsx), not inside the rotatable world.
+useGLTF.preload(getAssetUrl("/models/habitats/Habitat_Eddy.glb"));
+
+const EDDY_SHELL = "#D4A843";
+const EDDY_ACCENT = "#E8C060";
+
+export function EddyKeeper({ position }: { position?: THREE.Vector3 }) {
+  return (
+    <group position={position ? position.toArray() : [0, 0, 0]}>
+      <HabitatErrorBoundary fallback={<mesh><cylinderGeometry args={[1, 1, 0.4, 32]} /><meshStandardMaterial color="#4AADBE" /></mesh>}>
+        <React.Suspense fallback={<mesh><cylinderGeometry args={[1, 1, 0.4, 32]} /><meshStandardMaterial color="#4AADBE" /></mesh>}>
+          <TerrariumBase habitatId={11} modelUrl="/models/habitats/Habitat_Eddy.glb" />
+        </React.Suspense>
+      </HabitatErrorBoundary>
+
+      {/* Eddy at the cave mouth — same component, scale, and floor convention
+          as user agents (GLBAgent normalizes BaseLobsterRigged internally). */}
+      <group position={[-0.1, 0, -0.2]} rotation={[0, -0.3, 0]}>
+        <React.Suspense fallback={null}>
+          <GLBAgent
+            scale={0.25}
+            baseColor={EDDY_SHELL}
+            robeColor={EDDY_SHELL}
+            accentColor={EDDY_ACCENT}
+            agentStatus="active"
+          />
+        </React.Suspense>
+      </group>
+    </group>
+  );
+}
+
+export function WorldScene({
   agents, 
   onAgentClick, 
   onAgentHover, 

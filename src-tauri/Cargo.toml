@@ -45,6 +45,7 @@ png = "0.17"
 async-trait = "0.1.89"
 btleplug = "0.11"
 hex = "0.4"
+mime_guess = "2.0.5"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

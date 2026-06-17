@@ -14,6 +14,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
   }
 };
 import { WorldScene, TerrariumBase } from "./components/World/WorldScene";
+import { KeeperPanel } from "./components/Keeper/KeeperPanel";
 import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
@@ -1478,7 +1479,7 @@ export default function App() {
           const mergedAgents = (enrichedAgents as unknown as AgentData[]).map(ea => {
              const ca = currentAgents.find(x => x.id === ea.id);
              if (ca) {
-                 return { ...ea, conversations: ca.conversations || [], activeConversationId: ca.activeConversationId || null };
+                 return { ...ea, conversations: ca.conversations || [], activeConversationId: ca.activeConversationId || null, miniApps: ca.miniApps || [] };
              }
              return ea;
           });
@@ -1707,6 +1708,9 @@ export default function App() {
           <DiagnosticsView />
         </div>
       )}
+
+      {/* The Keeper (Eddy) — persistent helper pill on every view but loading */}
+      {activeView !== "loading" && <KeeperPanel />}
 
       {/* JIT Credential Auth Modal */}
       {pendingJitAuth && (() => {

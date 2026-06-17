@@ -85,7 +85,26 @@ impl BrowserManager {
         agent_id: &str,
         restore_last_session: bool,
     ) -> Result<BrowserStatus> {
-        self.stop_interactive_browser(agent_id).await?;
+        // Never silently kill a LIVE trusted-login window to make room for an
+        // automated Chrome — the user may be mid-sign-in (and Google logins
+        // can take minutes with 2FA). Callers that legitimately transition out
+        // of interactive mode (finish_interactive_auth_session) stop the
+        // interactive session explicitly BEFORE calling here. Dead entries
+        // (window closed by hand) are reaped so they don't block the spawn.
+        {
+            let mut interactive = self.interactive_browsers.lock().await;
+            let alive = match interactive.get_mut(agent_id) {
+                Some((child, _)) => matches!(child.try_wait(), Ok(None)),
+                None => false,
+            };
+            if alive {
+                return Err(anyhow::anyhow!(
+                    "A trusted-login window is open for {} — resume automation (or close it) before starting the automated browser",
+                    agent_id
+                ));
+            }
+            interactive.remove(agent_id);
+        }
         let mut active = self.active_browsers.lock().await;
 
         // Kill existing if any
@@ -209,9 +228,24 @@ impl BrowserManager {
         agent_id: &str,
         start_url: Option<&str>,
     ) -> Result<BrowserStatus> {
+        // Reuse the existing login window only if its Chrome is actually still
+        // running. A user who closed the window manually leaves a dead Child in
+        // the map — returning its status here would "activate" a window that no
+        // longer exists. Reap dead entries and fall through to a fresh spawn.
         if let Some(status) = {
-            let active = self.interactive_browsers.lock().await;
-            active.get(agent_id).map(|(_, status)| status.clone())
+            let mut active = self.interactive_browsers.lock().await;
+            // Two-phase probe/mutate — see get_status for why.
+            let alive = match active.get_mut(agent_id) {
+                Some((child, status)) => match child.try_wait() {
+                    Ok(None) => Some(status.clone()), // alive — reuse
+                    _ => None,
+                },
+                None => None,
+            };
+            if alive.is_none() {
+                active.remove(agent_id); // no-op when absent
+            }
+            alive
         } {
             activate_google_chrome().await;
             return Ok(status);
@@ -394,9 +428,39 @@ impl BrowserManager {
     }
 
     pub async fn get_status(&self, agent_id: &str) -> Result<Option<BrowserStatus>> {
-        let interactive = self.interactive_browsers.lock().await;
-        if let Some((_, status)) = interactive.get(agent_id) {
-            return Ok(Some(status.clone()));
+        // Reap-then-read for the interactive map. If the user closes the login
+        // window themselves (instead of clicking "resume automation"), the Child
+        // exits but its entry stays here — and that stale entry has port 0 and an
+        // EMPTY cdp_endpoint. Returning it shadows the automated browser forever:
+        // the JIT proxy and shared bridge get an unconnectable endpoint on every
+        // request, and the agent reports it "has no connection to the browser"
+        // until the app is restarted. try_wait() is non-blocking, so this check
+        // is effectively free.
+        {
+            let mut interactive = self.interactive_browsers.lock().await;
+            // Two-phase (probe, then mutate) so the `get_mut` borrow is fully
+            // released before `remove` — borrowck rejects a remove inside the
+            // match arms.
+            let alive_status = match interactive.get_mut(agent_id) {
+                Some((child, status)) => match child.try_wait() {
+                    Ok(None) => Some(status.clone()), // still alive
+                    _ => None,                        // exited or unknown
+                },
+                None => None,
+            };
+            match alive_status {
+                Some(status) => return Ok(Some(status)),
+                None => {
+                    // Exited (user closed the window) or unknown — drop the
+                    // stale entry and fall through to the automated map.
+                    if interactive.remove(agent_id).is_some() {
+                        tracing::info!(
+                            "get_status: reaping dead interactive-auth session for {}",
+                            agent_id
+                        );
+                    }
+                }
+            }
         }
 
         let active = self.active_browsers.lock().await;
@@ -411,6 +475,40 @@ impl BrowserManager {
         let active = self.active_browsers.lock().await;
         Ok(active.get(agent_id).map(|(_, status)| status.clone()))
     }
+}
+
+/// The profile id whose Chrome this agent actually browses with through
+/// OpenClaw's Chrome tool. Gateway agents all attach via the shared bridge, so
+/// their effective profile is "shared-browser"; isolated agents attach via
+/// their own JIT proxy, so it's their own agent id.
+///
+/// Trusted-login windows and the BrowserTab UI must target THIS profile, not
+/// the raw agent id. Before this mapping existed, trusted logins landed in the
+/// per-agent profile that gateway agents never browse — the agent then found
+/// itself logged out and attempted the sign-in itself inside the CDP-attached
+/// automated Chrome, which Google rejects with "This browser or app may not be
+/// secure".
+///
+/// If per-agent bridge routing lands later, gateway agents flip back to their
+/// own id HERE and everything downstream follows.
+fn effective_browsing_profile(app_handle: &tauri::AppHandle, agent_id: &str) -> String {
+    use tauri::Manager;
+    let db = app_handle.state::<crate::db::Database>();
+    match db.get_agent(agent_id) {
+        Ok(Some(agent)) if agent.isolated => agent_id.to_string(),
+        Ok(Some(_)) => "shared-browser".to_string(),
+        // Unknown id (already a profile id like "shared-browser", or a stale
+        // agent) — pass through unchanged.
+        _ => agent_id.to_string(),
+    }
+}
+
+/// True if this status describes a Chrome we can actually open a CDP connection
+/// to. Interactive-auth sessions run WITHOUT remote debugging (port 0, empty
+/// cdp_endpoint) and must never be handed to the JIT proxy or shared bridge —
+/// parsing their empty endpoint is what used to panic the JIT connection task.
+fn status_is_connectable(status: &BrowserStatus) -> bool {
+    status.mode == BrowserMode::Automated && !status.cdp_endpoint.is_empty() && status.port != 0
 }
 
 // ─── Tauri Commands ──────────────────────────────────────────────────────────
@@ -484,10 +582,15 @@ pub async fn stop_machine_browser(
 
 #[tauri::command]
 pub async fn get_browser_status(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<Option<BrowserStatus>, String> {
-    state.get_status(&agent_id).await.map_err(|e| e.to_string())
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
+    state
+        .get_status(&profile_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Called by BrowserTab on mount. Begins the 2 FPS visual-stream loop for this
@@ -498,8 +601,9 @@ pub async fn start_browser_stream(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<(), String> {
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
     state
-        .start_browser_stream(app_handle, &agent_id)
+        .start_browser_stream(app_handle, &profile_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -508,21 +612,27 @@ pub async fn start_browser_stream(
 /// Idempotent — safe to call even if no stream is running.
 #[tauri::command]
 pub async fn stop_browser_stream(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<(), String> {
-    state.stop_browser_stream(&agent_id).await;
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
+    state.stop_browser_stream(&profile_id).await;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn start_browser_interactive_auth(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
     start_url: Option<String>,
 ) -> Result<BrowserStatus, String> {
+    // Open the trusted-login window on the profile the agent actually browses
+    // with, so the session the user establishes is the one the agent sees.
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
     state
-        .start_interactive_auth_session(&agent_id, start_url.as_deref())
+        .start_interactive_auth_session(&profile_id, start_url.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -533,24 +643,33 @@ pub async fn finish_browser_interactive_auth(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<BrowserStatus, String> {
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
     state
-        .finish_interactive_auth_session(app_handle, &agent_id)
+        .finish_interactive_auth_session(app_handle, &profile_id)
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn ping_agent_browser(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<bool, String> {
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
     let status = state
-        .get_status(&agent_id)
+        .get_status(&profile_id)
         .await
         .map_err(|e| e.to_string())?;
 
     if let Some(status) = status {
         if !status.is_running {
+            return Ok(false);
+        }
+
+        // Interactive-auth sessions run without remote debugging (port 0) — there
+        // is no CDP HTTP server to ping. Don't waste a 3s timeout on localhost:0.
+        if status.port == 0 {
             return Ok(false);
         }
 
@@ -700,12 +819,28 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                         app: &tauri::AppHandle,
                     ) -> Option<(String, u16, String)> {
                         let cdp = match bm.get_status(SHARED_AGENT_ID).await {
-                            Ok(Some(status)) => {
+                            // Only reuse a status that is actually connectable. A status
+                            // with an empty cdp_endpoint (e.g. an interactive-auth entry,
+                            // which runs without remote debugging) would fail the URL
+                            // parse below and silently kill this connection — respawn
+                            // through start_browser instead.
+                            Ok(Some(status)) if status_is_connectable(&status) => {
                                 tracing::info!(
                                     "Shared bridge: reusing live Chrome at {}",
                                     status.cdp_endpoint
                                 );
                                 status.cdp_endpoint
+                            }
+                            // A live trusted-login window currently owns the shared
+                            // profile (the user is signing in to a site by hand).
+                            // Do NOT fall through to start_browser — that would kill
+                            // their window mid-login. Refuse loudly; agents get a
+                            // connection failure until the user resumes automation.
+                            Ok(Some(status)) if status.mode == BrowserMode::InteractiveAuth => {
+                                tracing::warn!(
+                                    "Shared bridge: trusted-login window open on shared profile — refusing CDP until automation resumes"
+                                );
+                                return None;
                             }
                             _ => match bm.start_browser(app.clone(), SHARED_AGENT_ID).await {
                                 Ok(status) => {
@@ -756,9 +891,9 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                                 // Recovery also goes through the resolve lock — otherwise N
                                 // concurrent failed connects each trigger a stop+start race.
                                 let _recover_guard = resolve_lock_for(SHARED_AGENT_ID).lock().await;
-                                // Drop the stale BrowserManager entry. stop_browser is
-                                // idempotent — it just removes from the map if present.
-                                let _ = browser_manager.stop_browser(SHARED_AGENT_ID).await;
+                                // Drop the stale AUTOMATED entry only — never touch a
+                                // trusted-login window that may have just opened.
+                                let _ = browser_manager.stop_automated_browser(SHARED_AGENT_ID).await;
                                 let Some((h, p, pth)) =
                                     resolve_endpoint(&*browser_manager, &app_handle_inner).await
                                 else {
@@ -889,7 +1024,10 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                         tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
                         if conn_counter.load(Ordering::SeqCst) == 0 {
                             tracing::info!("Shared bridge: idle 60s — stopping shared Chrome");
-                            let _ = browser_manager.stop_browser(SHARED_AGENT_ID).await;
+                            // Automated only: a trusted-login window on the shared
+                            // profile must survive idle shutdown (the user may take
+                            // minutes to finish signing in).
+                            let _ = browser_manager.stop_automated_browser(SHARED_AGENT_ID).await;
                         }
                     }
                 });
@@ -900,20 +1038,31 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
     Ok(())
 }
 
+/// Deterministic JIT-proxy port for an agent: `10000 + hash(agent_id) % 1000`.
+///
+/// Single source of truth — this same value is computed when (a) binding the
+/// proxy listener, (b) writing PLAYWRIGHT_CDP_ENDPOINT into the agent's env,
+/// and (c) writing `browser.cdpUrl` into an isolated container's openclaw.json.
+/// `DefaultHasher::new()` uses fixed keys, so the result is stable across
+/// processes and app restarts.
+pub fn jit_proxy_port_for(agent_id: &str) -> u16 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    agent_id.hash(&mut hasher);
+    10000 + (hasher.finish() % 1000) as u16
+}
+
 pub async fn enable_jit_proxy(
     app_handle: tauri::AppHandle,
     agent_id: String,
 ) -> Result<u16, String> {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
-    let mut hasher = DefaultHasher::new();
-    agent_id.hash(&mut hasher);
-    let proxy_port = 10000 + (hasher.finish() % 1000) as u16;
+    let proxy_port = jit_proxy_port_for(&agent_id);
 
     let listener = match TcpListener::bind(("0.0.0.0", proxy_port)).await {
         Ok(l) => l,
@@ -941,8 +1090,29 @@ pub async fn enable_jit_proxy(
                     use tauri::Manager;
                     let browser_manager = app_handle_inner.state::<BrowserManager>();
 
+                    // Resolve a CONNECTABLE endpoint. Two traps here:
+                    //
+                    //  1. `get_status` can return an InteractiveAuth status — that's the
+                    //     user-facing login window, which runs WITHOUT remote debugging
+                    //     (port 0, empty cdp_endpoint). It is not a CDP target. While a
+                    //     live login window is open we refuse the connection loudly; the
+                    //     agent's next attempt after "resume automation" will succeed.
+                    //
+                    //  2. NEVER .unwrap() the URL parse. The previous code panicked on
+                    //     the empty endpoint from (1), killing this spawned task — the
+                    //     agent's connection dropped with zero bytes and zero logs, which
+                    //     surfaced as "I don't have a connection to your browser".
                     let cdp_endpoint = match browser_manager.get_status(&agent_id_inner).await {
-                        Ok(Some(status)) => status.cdp_endpoint,
+                        Ok(Some(status)) if status_is_connectable(&status) => status.cdp_endpoint,
+                        Ok(Some(status)) if status.mode == BrowserMode::InteractiveAuth => {
+                            tracing::warn!(
+                                "JIT Proxy: {} has a live interactive login window — CDP unavailable until automation resumes",
+                                agent_id_inner
+                            );
+                            conn_counter.fetch_sub(1, Ordering::SeqCst);
+                            return;
+                        }
+                        // No browser, or a stale/unconnectable status → (re)spawn.
                         _ => {
                             match browser_manager
                                 .start_browser(app_handle_inner.clone(), &agent_id_inner)
@@ -958,14 +1128,86 @@ pub async fn enable_jit_proxy(
                         }
                     };
 
-                    let chrome_url = url::Url::parse(&cdp_endpoint).unwrap();
-                    let chrome_host = chrome_url.host_str().unwrap_or("127.0.0.1").to_string();
-                    let chrome_port = chrome_url.port().unwrap_or(0);
-                    let chrome_path = chrome_url.path().to_string();
+                    let chrome_url = match url::Url::parse(&cdp_endpoint) {
+                        Ok(u) => u,
+                        Err(e) => {
+                            tracing::error!(
+                                "JIT Proxy: unparseable CDP endpoint {:?} for {}: {}",
+                                cdp_endpoint,
+                                agent_id_inner,
+                                e
+                            );
+                            conn_counter.fetch_sub(1, Ordering::SeqCst);
+                            return;
+                        }
+                    };
+                    let mut chrome_host = chrome_url.host_str().unwrap_or("127.0.0.1").to_string();
+                    let mut chrome_port = chrome_url.port().unwrap_or(0);
+                    let mut chrome_path = chrome_url.path().to_string();
 
-                    if let Ok(mut chrome_stream) =
-                        TcpStream::connect((chrome_host.as_str(), chrome_port)).await
-                    {
+                    // Self-heal a dead cached Chrome, mirroring the shared bridge: if the
+                    // cached endpoint refuses the connection (Chrome crashed, was pkill'd,
+                    // or OOM'd while our map still says it's alive), drop the stale entry,
+                    // spawn a fresh Chrome, and retry once. Previously this silently
+                    // dropped the agent's connection — the "works on the second try"
+                    // flakiness users hit after any Chrome death.
+                    let connect_result = match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                            tracing::warn!(
+                                "JIT Proxy: cached Chrome at {}:{} is dead ({}); respawning for {}",
+                                chrome_host,
+                                chrome_port,
+                                e,
+                                agent_id_inner
+                            );
+                            let _ = browser_manager
+                                .stop_automated_browser(&agent_id_inner)
+                                .await;
+                            match browser_manager
+                                .start_browser(app_handle_inner.clone(), &agent_id_inner)
+                                .await
+                            {
+                                Ok(status) if !status.cdp_endpoint.is_empty() => {
+                                    match url::Url::parse(&status.cdp_endpoint) {
+                                        Ok(u) => {
+                                            // The fresh Chrome has a new port AND a new
+                                            // /devtools/browser/<guid> path — update all
+                                            // three so the header/path rewrite below
+                                            // targets the live instance, not the corpse.
+                                            chrome_host =
+                                                u.host_str().unwrap_or("127.0.0.1").to_string();
+                                            chrome_port = u.port().unwrap_or(0);
+                                            chrome_path = u.path().to_string();
+                                            TcpStream::connect((
+                                                chrome_host.as_str(),
+                                                chrome_port,
+                                            ))
+                                            .await
+                                        }
+                                        Err(_) => Err(std::io::Error::new(
+                                            std::io::ErrorKind::InvalidData,
+                                            "unparseable respawned CDP endpoint",
+                                        )),
+                                    }
+                                }
+                                Ok(_) => Err(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    "respawned Chrome returned empty CDP endpoint",
+                                )),
+                                Err(e) => Err(std::io::Error::other(e.to_string())),
+                            }
+                        }
+                        other => other,
+                    };
+
+                    if let Ok(mut chrome_stream) = connect_result.map_err(|e| {
+                        tracing::error!(
+                            "JIT Proxy: could not reach Chrome for {}: {}",
+                            agent_id_inner,
+                            e
+                        );
+                        e
+                    }) {
                         // Read the full HTTP request headers (up to "\r\n\r\n").
                         //
                         // Chrome DevTools enforces TWO protections we have to satisfy:
@@ -1032,11 +1274,31 @@ pub async fn enable_jit_proxy(
                             let _ = chrome_stream.write_all(body).await;
                         }
 
-                        // Tunnel the rest bidirectionally — this carries WebSocket frames
-                        // after the upgrade succeeds.
-                        let _ =
-                            tokio::io::copy_bidirectional(&mut client_stream, &mut chrome_stream)
-                                .await;
+                        // Relay Chrome's response with origin rewriting (same helper the
+                        // shared bridge uses):
+                        //   • 101 upgrades are tunnelled bidirectionally (WebSocket frames),
+                        //     identical to the old copy_bidirectional behaviour.
+                        //   • /json/version & /json/list responses leak Chrome's internal
+                        //     `127.0.0.1:<chrome_port>` in `webSocketDebuggerUrl`, which the
+                        //     container can't reach. Rewriting it to this proxy's origin is
+                        //     what lets OpenClaw's `attachOnly` preflight work when an
+                        //     isolated container's `browser.cdpUrl` points at the JIT proxy.
+                        let proxy_origin = format!("host.docker.internal:{}", proxy_port);
+                        let chrome_origin = format!("127.0.0.1:{}", chrome_port);
+                        if let Err(e) = relay_chrome_response_to_client(
+                            &mut chrome_stream,
+                            &mut client_stream,
+                            &chrome_origin,
+                            &proxy_origin,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                "JIT Proxy: response relay failed for {}: {}",
+                                agent_id_inner,
+                                e
+                            );
+                        }
                     }
 
                     let remaining = conn_counter.fetch_sub(1, Ordering::SeqCst) - 1;
@@ -1047,7 +1309,8 @@ pub async fn enable_jit_proxy(
                                 "JIT Proxy: No connections for 10s, stopping Chrome for {}",
                                 agent_id_inner
                             );
-                            let _ = browser_manager.stop_browser(&agent_id_inner).await;
+                            // Automated only — never reap a trusted-login window.
+                            let _ = browser_manager.stop_automated_browser(&agent_id_inner).await;
                         }
                     }
                 });
@@ -1474,6 +1737,53 @@ mod jit_proxy_tests {
 }
 
 #[cfg(test)]
+mod connectability_tests {
+    use super::{status_is_connectable, BrowserMode, BrowserStatus};
+
+    fn status(mode: BrowserMode, port: u16, endpoint: &str) -> BrowserStatus {
+        BrowserStatus {
+            agent_id: "agent-test".into(),
+            port,
+            cdp_endpoint: endpoint.into(),
+            profile_path: "/tmp/p".into(),
+            is_running: true,
+            mode,
+        }
+    }
+
+    #[test]
+    fn automated_with_endpoint_is_connectable() {
+        let s = status(
+            BrowserMode::Automated,
+            54198,
+            "ws://127.0.0.1:54198/devtools/browser/abc",
+        );
+        assert!(status_is_connectable(&s));
+    }
+
+    #[test]
+    fn interactive_auth_is_never_connectable() {
+        // Regression: interactive-auth statuses (port 0, empty endpoint) used to
+        // flow into the JIT proxy, where `Url::parse("").unwrap()` panicked the
+        // connection task — agents reported "no connection to your browser".
+        let s = status(BrowserMode::InteractiveAuth, 0, "");
+        assert!(!status_is_connectable(&s));
+    }
+
+    #[test]
+    fn automated_with_empty_endpoint_is_not_connectable() {
+        let s = status(BrowserMode::Automated, 54198, "");
+        assert!(!status_is_connectable(&s));
+    }
+
+    #[test]
+    fn automated_with_port_zero_is_not_connectable() {
+        let s = status(BrowserMode::Automated, 0, "ws://127.0.0.1:0/devtools/browser/abc");
+        assert!(!status_is_connectable(&s));
+    }
+}
+
+#[cfg(test)]
 mod browser_launch_tests {
     use super::{build_chrome_args, BrowserMode};
 
@@ -1534,11 +1844,13 @@ mod browser_launch_tests {
 
 #[tauri::command]
 pub async fn show_browser(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<(), String> {
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
     let status = state
-        .get_status(&agent_id)
+        .get_status(&profile_id)
         .await
         .map_err(|e| e.to_string())?;
     if let Some(status) = status {
@@ -1549,7 +1861,7 @@ pub async fn show_browser(
     }
 
     // 1) Move the window onto the primary monitor via CDP setWindowBounds.
-    move_browser(&state, &agent_id, 0, 0)
+    move_browser(&state, &profile_id, 0, 0)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1568,11 +1880,13 @@ pub async fn show_browser(
 
 #[tauri::command]
 pub async fn hide_browser(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<(), String> {
+    let profile_id = effective_browsing_profile(&app_handle, &agent_id);
     let status = state
-        .get_status(&agent_id)
+        .get_status(&profile_id)
         .await
         .map_err(|e| e.to_string())?;
     if let Some(status) = status {
@@ -1586,7 +1900,7 @@ pub async fn hide_browser(
     // Move the window back to the safe off-screen coordinate computed in
     // `compute_offscreen_position` (left of all monitors, above all monitors).
     let (x, y) = compute_offscreen_position();
-    move_browser(&state, &agent_id, x, y)
+    move_browser(&state, &profile_id, x, y)
         .await
         .map_err(|e| e.to_string())
 }

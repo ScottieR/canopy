@@ -106,7 +106,7 @@ export function SlackCompanion() {
       if (typeof invoke === "function") {
         if (!isNew) {
           await invoke("update_allowed_slack_channels", { agentId, channelIds: selectedChannels });
-          await invoke("sync_gateway_channels");
+          await invoke("sync_agent_slack_config", { agentId });
         }
         
         setTestStatus("success");

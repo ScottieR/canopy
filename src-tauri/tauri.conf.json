@@ -35,7 +35,7 @@
     ],
     "macOSPrivateApi": true,
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*; media-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com"
+      "csp": "default-src 'self' canopy-workspace:; frame-src 'self' canopy-workspace:; img-src 'self' data: blob: canopy-workspace: https: http://localhost:* http://127.0.0.1:*; media-src 'self' data: blob: canopy-workspace: https: http://localhost:* http://127.0.0.1:*; connect-src 'self' canopy-workspace: https: wss: http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; style-src 'self' 'unsafe-inline' canopy-workspace: https://fonts.googleapis.com; font-src 'self' canopy-workspace: https://fonts.gstatic.com"
     }
   },
   "plugins": {

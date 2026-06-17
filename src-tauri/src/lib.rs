@@ -29,6 +29,7 @@ mod jit_server;
 mod keychain;
 mod live_voice;
 mod model_constants; // Single source of truth for model strings, ports, and path helpers
+mod model_health; // Provider key preflight (Part 1D "rate-limited key" playbook)
 pub mod models;
 pub mod openclaw;
 mod payment;
@@ -542,6 +543,65 @@ pub fn run() {
     model_constants::init_model_registry();
 
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("canopy-workspace", move |_context, request, responder| {
+            let app_handle = _context.app_handle().clone();
+            tauri::async_runtime::spawn(async move {
+                // The URI looks like: canopy-workspace://localhost/agent-id/path/to/file.html
+                // Or canopy-workspace://agent-id/path/to/file.html depending on OS.
+                let uri = request.uri().to_string();
+                let without_scheme = uri.strip_prefix("canopy-workspace://").unwrap_or(&uri);
+                let without_host = without_scheme.strip_prefix("localhost/").unwrap_or(without_scheme);
+                
+                // Format: <agent_id>/<file_path>
+                let parts: Vec<&str> = without_host.splitn(2, '/').collect();
+                
+                if parts.len() < 2 {
+                    responder.respond(tauri::http::Response::builder().status(400).body(Vec::new()).unwrap());
+                    return;
+                }
+
+                let agent_id = parts[0];
+                let file_path = parts[1];
+
+                // Decode URI component (e.g. %20 -> space)
+                let file_path = urlencoding::decode(file_path).unwrap_or(std::borrow::Cow::Borrowed(file_path)).to_string();
+
+                let db = app_handle.state::<crate::db::Database>();
+                
+                match crate::openclaw::get_agent_workspace_dir(&db, agent_id) {
+                    Ok(workspace_dir) => {
+                        let full_path = workspace_dir.join(&file_path);
+                        
+                        // Security check: ensure path is within workspace
+                        if !full_path.starts_with(&workspace_dir) {
+                            responder.respond(tauri::http::Response::builder().status(403).body(Vec::new()).unwrap());
+                            return;
+                        }
+
+                        match tokio::fs::read(&full_path).await {
+                            Ok(bytes) => {
+                                let mime_type = mime_guess::from_path(&full_path).first_or_octet_stream().to_string();
+                                
+                                responder.respond(
+                                    tauri::http::Response::builder()
+                                        .status(200)
+                                        .header("Content-Type", mime_type)
+                                        .header("Access-Control-Allow-Origin", "*")
+                                        .body(bytes)
+                                        .unwrap()
+                                );
+                            }
+                            Err(_) => {
+                                responder.respond(tauri::http::Response::builder().status(404).body(Vec::new()).unwrap());
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        responder.respond(tauri::http::Response::builder().status(404).body(Vec::new()).unwrap());
+                    }
+                }
+            });
+        })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
@@ -732,6 +792,7 @@ pub fn run() {
             openclaw::preflight_cleanup,
             openclaw::boot_sync_agents,
             openclaw::sync_gateway_channels,
+            openclaw::sync_agent_slack_config,
             openclaw::get_available_models,
             openclaw::get_connectors_config,
             openclaw::get_library_books,
@@ -772,6 +833,8 @@ pub fn run() {
             // iMessage bridge
             imessage::check_full_disk_access,
             imessage::open_full_disk_access_settings,
+            imessage::open_photos_privacy_settings,
+            model_health::check_model_health,
             imessage::list_imessage_threads,
             imessage::read_imessage_messages,
             imessage::get_allowed_imessage_threads,

@@ -615,6 +615,18 @@ pub async fn open_full_disk_access_settings() -> Result<(), String> {
     Ok(())
 }
 
+/// Open System Settings to the Photos privacy page.
+/// Same pattern as open_full_disk_access_settings — the JS shell plugin
+/// rejects x-apple.systempreferences: URLs, so this must go through Rust.
+#[tauri::command]
+pub async fn open_photos_privacy_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")
+        .spawn()
+        .map_err(|e| format!("Failed to open system settings: {}", e))?;
+    Ok(())
+}
+
 /// List all available iMessage threads
 #[tauri::command]
 pub async fn list_imessage_threads() -> Result<Vec<IMessageThread>, String> {

@@ -22,8 +22,9 @@ pub struct DispatchState {
 
 impl DispatchState {
     pub fn new() -> Self {
+        let stored_token = crate::keychain::get_secret("mobile_pairing_token").ok();
         Self {
-            current_token: RwLock::new(None),
+            current_token: RwLock::new(stored_token),
             // Initial empty payload — both "forums" and "projects" keys are
             // pre-seeded so mobile's `list_forums` returns [] (not the older
             // "projects" leftover that caused empty Forums tabs on cold boot
@@ -54,6 +55,7 @@ pub async fn generate_pairing_token(
     // 2. Store it
     let mut writer = state.current_token.write().await;
     *writer = Some(token.clone());
+    let _ = crate::keychain::store_secret("mobile_pairing_token", &token);
 
     // 3. Get local IP
     let ip = get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
@@ -69,6 +71,7 @@ pub async fn generate_pairing_token(
 pub async fn revoke_pairing_token(state: State<'_, Arc<DispatchState>>) -> Result<(), String> {
     let mut writer = state.current_token.write().await;
     *writer = None;
+    let _ = crate::keychain::delete_secret_internal("mobile_pairing_token");
     Ok(())
 }
 

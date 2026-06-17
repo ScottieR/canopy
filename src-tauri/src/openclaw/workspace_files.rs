@@ -1,10 +1,39 @@
 use base64::Engine;
 
 fn validate_workspace_filename(filename: &str) -> Result<(), String> {
-    if filename.contains("..") || filename.contains('/') || filename.contains('\\') {
+    if filename.contains("..") || filename.starts_with('/') || filename.starts_with('\\') {
         return Err("Invalid filename".into());
     }
     Ok(())
+}
+
+fn find_file_in_workspace(dir: &std::path::Path, target_filename: &str) -> Option<std::path::PathBuf> {
+    // 1. Direct check
+    let direct = dir.join(target_filename);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    
+    // 2. Recursive check - only if target_filename doesn't contain path separators
+    if target_filename.contains('/') || target_filename.contains('\\') {
+        return None;
+    }
+    
+    let mut dirs_to_visit = vec![dir.to_path_buf()];
+    while let Some(current_dir) = dirs_to_visit.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current_dir) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        dirs_to_visit.push(entry.path());
+                    } else if file_type.is_file() && entry.file_name() == target_filename {
+                        return Some(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn is_app_managed_filename(filename: &str) -> bool {
@@ -42,10 +71,12 @@ pub async fn read_workspace_file(
 ) -> Result<String, String> {
     validate_workspace_filename(&filename)?;
     let workspace = super::get_agent_workspace_dir(&db, &agent_id)?;
-    let file_path = workspace.join(&filename);
-    if !file_path.exists() {
-        return Ok("".to_string());
-    }
+    
+    let file_path = match find_file_in_workspace(&workspace, &filename) {
+        Some(path) => path,
+        None => return Ok("".to_string()),
+    };
+    
     std::fs::read_to_string(&file_path).map_err(|e| e.to_string())
 }
 
@@ -109,10 +140,12 @@ pub async fn read_workspace_file_base64(
 ) -> Result<String, String> {
     validate_workspace_filename(&filename)?;
     let workspace = super::get_agent_workspace_dir(&db, &agent_id)?;
-    let file_path = workspace.join(&filename);
-    if !file_path.exists() {
-        return Ok("".to_string());
-    }
+    
+    let file_path = match find_file_in_workspace(&workspace, &filename) {
+        Some(path) => path,
+        None => return Ok("".to_string()),
+    };
+    
     let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
@@ -140,14 +173,15 @@ mod tests {
     #[test]
     fn filename_validation_rejects_path_escape() {
         assert!(validate_workspace_filename("../secret.txt").is_err());
-        assert!(validate_workspace_filename("nested/file.txt").is_err());
-        assert!(validate_workspace_filename("nested\\file.txt").is_err());
+        assert!(validate_workspace_filename("/etc/passwd").is_err());
+        assert!(validate_workspace_filename("\\windows\\system32").is_err());
     }
 
     #[test]
     fn filename_validation_accepts_plain_filenames() {
         assert!(validate_workspace_filename("notes.md").is_ok());
         assert!(validate_workspace_filename("screen-shot_1.png").is_ok());
+        assert!(validate_workspace_filename("nested/file.txt").is_ok());
     }
 
     #[test]

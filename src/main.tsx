@@ -11,12 +11,14 @@ import { BluetoothCompanion } from "./components/Companion/BluetoothCompanion";
 import { BrowserPopout } from "./components/BrowserPopout";
 import { GenUIRenderer } from "./components/GenUI/GenUIRenderer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { MiniAppStandalone } from "./components/MiniAppStandalone";
 import "./styles/globals.css";
 
 const companionType = new URLSearchParams(window.location.search).get("companion");
 const browserAgentId = new URLSearchParams(window.location.search).get("browser");
 const chatCompanionAgentId = new URLSearchParams(window.location.search).get("chatCompanion");
 const genuiPayload = new URLSearchParams(window.location.search).get("genui");
+const miniappPayload = new URLSearchParams(window.location.search).get("miniapp");
 
 // ── Global external-link interceptor ──────────────────────────────────────────
 //
@@ -90,12 +92,12 @@ function installGlobalExternalLinkHandler() {
 // Install only for the main app window — companion windows (Slack/Github/etc.)
 // and the BrowserPopout already manage their own link behaviour and depend on
 // in-window navigation for OAuth-style flows.
-if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload) {
+if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload && !miniappPayload) {
   installGlobalExternalLinkHandler();
 }
 
 const WindowWrapper = ({ children }: { children: React.ReactNode }) => {
-  if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload) return <>{children}</>;
+  if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload && !miniappPayload) return <>{children}</>;
   
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -204,7 +206,9 @@ root.render(
   <React.StrictMode>
     <ErrorBoundary showDetails={true} allowNavigation={true}>
       <WindowWrapper>
-        {genuiPayload ? (
+        {miniappPayload ? (
+          <MiniAppStandalone payload={miniappPayload} />
+        ) : genuiPayload ? (
           <div style={{ width: "100%", height: "100%", padding: 20, boxSizing: "border-box", background: "var(--surface-base)" }}>
             <GenUIRenderer 
               app={JSON.parse(decodeURIComponent(genuiPayload))} 

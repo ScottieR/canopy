@@ -747,6 +747,13 @@ pub async fn start_slack_listener(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: Option<String>,
 ) -> Result<String, String> {
+    start_slack_listener_internal(&db, agent_id.as_deref()).await
+}
+
+pub async fn start_slack_listener_internal(
+    db: &crate::db::Database,
+    agent_id: Option<&str>,
+) -> Result<String, String> {
     let app_token_key = if let Some(id) = &agent_id {
         format!("agent_{}_slack_app_token", id)
     } else {
@@ -803,9 +810,10 @@ pub async fn start_slack_listener(
     // loop — each one SIGTERMs the gateway, cascading into OOM with multiple agents
     // (OPENCLAW_INTEGRATION.md §8). One patch + one restart is far less churn.
     //
-    // ⚠️  groupPolicy MUST be "open" — `audit_openclaw::repair_openclaw_config` enforces
-    // this on every repair pass. Writing "allowlist" here would silently flip back to
-    // "open" on the next audit, leaving Slack DMs unanswered until the next reconfigure.
+    // ⚠️  groupPolicy MUST be "allowlist" — setting this to "open" breaks the pairing
+    // flow entirely, because OpenClaw will bypass the pairing challenge and route
+    // unregistered users directly to the LLM. "allowlist" ensures the agent asks
+    // for a pairing code if the DM is not in its allowed channels list.
     //
     // String values below are JSON-encoded to handle any unusual characters in tokens
     // safely (newlines, quotes, etc.).
@@ -814,8 +822,51 @@ pub async fn start_slack_listener(
     let app_token_json =
         serde_json::to_string(&app_token).map_err(|e| format!("Token serialize error: {}", e))?;
 
-    let patch_script = format!(
-        r#"const fs=require('fs');
+    let patch_script = if let Some(id) = agent_id {
+        let account_json = serde_json::json!({
+            "appToken": app_token,
+            "botToken": bot_token
+        });
+        let account_json =
+            serde_json::to_string(&account_json).map_err(|e| format!("Token serialize error: {}", e))?;
+        let binding_json = serde_json::json!({
+            "agentId": id,
+            "match": { "channel": "slack", "accountId": id }
+        });
+        let binding_json =
+            serde_json::to_string(&binding_json).map_err(|e| format!("Binding serialize error: {}", e))?;
+
+        format!(
+            r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+let c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.channels=c.channels||{{}};
+c.channels.slack=c.channels.slack||{{}};
+c.channels.slack.enabled=true;
+c.channels.slack.mode='socket';
+c.channels.slack.groupPolicy='allowlist';
+c.channels.slack.accounts=c.channels.slack.accounts||{{}};
+c.channels.slack.accounts[{agent_id}]={account};
+delete c.channels.slack.botToken;
+delete c.channels.slack.appToken;
+c.plugins=c.plugins||{{}};
+c.plugins.entries=c.plugins.entries||{{}};
+c.plugins.entries.slack=c.plugins.entries.slack||{{}};
+c.plugins.entries.slack.enabled=true;
+c.bindings=Array.isArray(c.bindings)?c.bindings:[];
+const newBinding={binding};
+c.bindings=c.bindings.filter(b => !(b && b.agentId===newBinding.agentId && b.match && b.match.channel==='slack'));
+c.bindings.push(newBinding);
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+console.log('slack config patched');
+"#,
+            agent_id = serde_json::to_string(id).unwrap_or_else(|_| "\"\"".to_string()),
+            account = account_json,
+            binding = binding_json,
+        )
+    } else {
+        format!(
+            r#"const fs=require('fs');
 const p='/home/node/.openclaw/openclaw.json';
 let c=JSON.parse(fs.readFileSync(p,'utf8'));
 c.channels=c.channels||{{}};
@@ -824,7 +875,7 @@ c.channels.slack.botToken={bot};
 c.channels.slack.appToken={app};
 c.channels.slack.enabled=true;
 c.channels.slack.mode='socket';
-c.channels.slack.groupPolicy='open';
+c.channels.slack.groupPolicy='allowlist';
 c.plugins=c.plugins||{{}};
 c.plugins.entries=c.plugins.entries||{{}};
 c.plugins.entries.slack=c.plugins.entries.slack||{{}};
@@ -832,13 +883,13 @@ c.plugins.entries.slack.enabled=true;
 fs.writeFileSync(p,JSON.stringify(c,null,2));
 console.log('slack config patched');
 "#,
-        bot = bot_token_json,
-        app = app_token_json,
-    );
+            bot = bot_token_json,
+            app = app_token_json,
+        )
+    };
 
     let container_name = agent_id
-        .as_deref()
-        .map(|id| crate::openclaw::get_agent_container_name(&db, id))
+        .map(|id| crate::openclaw::get_agent_container_name(db, id))
         .unwrap_or_else(|| "canopy-gateway".to_string());
 
     let patch_out = match tokio::time::timeout(
@@ -1036,7 +1087,9 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
         )
         .await;
     } else {
-        let changed = crate::openclaw::sync_gateway_channels_internal(&db).await?;
+        let active_agents = db.list_agents().unwrap_or_default();
+        let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
+        let changed = crate::openclaw::sync_container_channels_internal("canopy-gateway", &gateway_agents).await?;
         if changed {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(15),

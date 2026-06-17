@@ -7,7 +7,12 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
-    fs: { allow: [".."] }
+    fs: { allow: [".."] },
+    watch: {
+      // Don't trigger reloads on agent worktrees or Rust build output —
+      // both churn constantly during tauri dev and cause spurious full reloads.
+      ignored: ["**/.claude/**", "**/src-tauri/target/**"],
+    },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

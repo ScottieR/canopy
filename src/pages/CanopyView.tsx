@@ -16,6 +16,7 @@ import { CanopyScene } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { Toggle, ServiceRow, glass } from "../App";
 import { ForumBriefModal } from "./ForumView/ForumBriefModal";
+import { EddyCorner } from "../components/World/EddyCorner";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
   // CANOPY VIEW (3D World with overlay)
@@ -296,7 +297,11 @@ export // ═══════════════════════�
 
       </div>
 
-      {/* Bottom Right Edit Mode Trigger */}
+      {/* Eddy's reef cave — fixed corner fixture, never rotates with the world */}
+      {!isEditMode && <EddyCorner />}
+
+      {/* Bottom Right Edit Mode Trigger (Keeper pill hides on this view —
+          Eddy's cave bottom-left is the opener here) */}
       {!isEditMode && (
         <div
           onClick={() => setIsEditMode(true)}

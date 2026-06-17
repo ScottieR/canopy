@@ -147,40 +147,6 @@ pub async fn create_agent(
         );
     }
 
-    // ─── Step 2: Configure gateway (best effort — agent is already in SQLite) ──
-    //
-    // Previously this ran THREE rapid `openclaw config set` calls. Each one SIGTERMs
-    // the gateway process, so creating an agent triggered three back-to-back restarts —
-    // a cascade that sometimes OOM'd the container. See OPENCLAW_INTEGRATION.md §8.
-    //
-    // Replaced with one direct JSON patch via `node -e` (no SIGTERM) that sets ONLY
-    // the value not already covered by `docker::preflight_write_openclaw_json`:
-    //   - `gateway.mode = "local"`            ← already set by preflight on every boot
-    //   - `agents.defaults.model.primary`     ← per-agent override; see `--model` flag below
-    //   - `session.dmScope`                   ← apply here, hot-reloaded via file-watcher
-    //
-    // For `agents.defaults.model`, we no longer overwrite the global default (preflight
-    // already chooses one based on available API keys). Instead we pass `--model <id>`
-    // directly to `openclaw agents add` below, which scopes the model to THIS agent only.
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(8),
-        get_docker_command()
-            .args([
-                "exec",
-                "-u",
-                "node",
-                "canopy-gateway",
-                "node",
-                "-e",
-                "const fs=require('fs');const p='/home/node/.openclaw/openclaw.json';\
-                 let c=JSON.parse(fs.readFileSync(p,'utf8'));\
-                 c.session=c.session||{};c.session.dmScope='per-channel-peer';\
-                 fs.writeFileSync(p,JSON.stringify(c,null,2));",
-            ])
-            .output(),
-    )
-    .await;
-
     // If this agent has no chosen model AND we couldn't pick a default from keys,
     // run the audit/repair pass once to recover. (Keeps the previous fall-back semantics.)
     if personality.active_model.is_none() {
@@ -207,6 +173,13 @@ pub async fn create_agent(
         let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
         let _ = std::fs::write(&compose_path, compose_content);
 
+        let state_dir = data_dir.join("isolated").join(&agent_id).join("state");
+        crate::docker::preflight_sanitize_and_merge_config(
+            &state_dir,
+            Some(agent_id.as_str()),
+            crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+        );
+
         let _ = crate::docker::get_docker_compose_command()
             .args(["-f", compose_path.to_str().unwrap(), "up", "-d"])
             .output()
@@ -229,6 +202,30 @@ pub async fn create_agent(
         "--workspace",
         &workspace_path,
     ];
+
+    // ─── Step 3.6: Apply the shared session baseline to whichever gateway owns this agent ──
+    //
+    // Shared and isolated gateways should receive the same runtime session policy so
+    // channel routing behaves consistently. The only intended difference is agent count.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "node",
+                "-e",
+                "const fs=require('fs');const p='/home/node/.openclaw/openclaw.json';\
+                 let c=JSON.parse(fs.readFileSync(p,'utf8'));\
+                 c.session=c.session||{};c.session.dmScope='per-channel-peer';\
+                 fs.writeFileSync(p,JSON.stringify(c,null,2));",
+            ])
+            .output(),
+    )
+    .await;
+
     if let Some(ref model) = personality.active_model {
         add_args.push("--model");
         add_args.push(model.as_str());
@@ -2118,6 +2115,41 @@ pub async fn delete_agent(
     Ok(())
 }
 
+fn cleanup_agent_text(s: &str) -> String {
+    if let Some(start) = s.find("<final>") {
+        if let Some(end_offset) = s[start..].find("</final>") {
+            let inside = s[start + 7 .. start + end_offset].trim();
+            let mut outside_str = s.to_string();
+            outside_str.replace_range(start .. start + end_offset + 8, "");
+            let outside = outside_str.trim();
+            
+            if outside.is_empty() {
+                return inside.to_string();
+            }
+            if inside.is_empty() {
+                return outside.to_string();
+            }
+            
+            let inside_words: std::collections::HashSet<&str> = inside.split_whitespace().collect();
+            let outside_words: std::collections::HashSet<&str> = outside.split_whitespace().collect();
+            
+            let common_words = inside_words.intersection(&outside_words).count();
+            let min_len = std::cmp::min(inside_words.len(), outside_words.len());
+            
+            if min_len > 0 && (common_words as f64 / min_len as f64) > 0.5 {
+                if outside.len() > inside.len() {
+                    return outside.to_string();
+                } else {
+                    return inside.to_string();
+                }
+            } else {
+                return s.replace("<final>", "").replace("</final>", "");
+            }
+        }
+    }
+    s.to_string()
+}
+
 pub async fn send_message_internal(
     db: &crate::db::Database,
     app: &tauri::AppHandle,
@@ -2187,11 +2219,7 @@ pub async fn send_message_internal(
     }
 
     // Step 4: Send via native OpenClaw CLI — up to 3 attempts with 5s backoff on timeout.
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    agent_id.hash(&mut hasher);
-    let proxy_port = 10000 + (hasher.finish() % 1000) as u16;
+    let proxy_port = crate::browser_manager::jit_proxy_port_for(agent_id);
     let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
     let cdp_env = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
     // Timeouts are usually transient (Node event loop momentarily busy); a single retry
@@ -2340,7 +2368,7 @@ pub async fn send_message_internal(
     //
     // The `.unwrap_or_else(|| body.to_string())` last-resort would dump the entire
     // JSON blob as chat text — that's the bug: payloads[0].text MUST be checked first.
-    let response_text: String = body["result"]["payloads"]
+    let mut response_text: String = body["result"]["payloads"]
         .as_array()
         .or_else(|| body["payloads"].as_array())
         .and_then(|arr| arr.first())
@@ -2403,6 +2431,8 @@ pub async fn send_message_internal(
             );
             format!("[No response extracted — check logs]")
         });
+
+    response_text = cleanup_agent_text(&response_text);
 
     // OpenClaw emits "OpenClaw: <error>" lines when the agent is misconfigured.
     // Return these as errors so the UI can offer the repair flow.
@@ -2712,6 +2742,11 @@ pub async fn get_conversation_history(
                         if role != "user" && role != "assistant" && role != "agent" {
                             continue;
                         }
+                        
+                        let api = msg_obj.get("api").and_then(|v| v.as_str()).unwrap_or("");
+                        if api == "cli" {
+                            continue;
+                        }
 
                         let mut final_content = String::new();
 
@@ -2731,7 +2766,7 @@ pub async fn get_conversation_history(
                                     }
                                 } else if block_type == "text" {
                                     if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                        let clean_text = text.to_string();
+                                        let clean_text = cleanup_agent_text(text);
 
                                         final_content.push_str(clean_text.trim());
                                     }
@@ -2740,7 +2775,8 @@ pub async fn get_conversation_history(
                         } else if let Some(content_str) =
                             msg_obj.get("content").and_then(|v| v.as_str())
                         {
-                            final_content.push_str(content_str.trim());
+                            let clean_text = cleanup_agent_text(content_str);
+                            final_content.push_str(clean_text.trim());
                         }
 
                         if !final_content.is_empty() {
@@ -3859,8 +3895,8 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         name = agent.personality.name,
         role = agent.role,
         isolation = if agent.isolated { "Dedicated isolated container" } else { "Shared gateway container" },
-        browser = capability_status(caps.browser, "Use the browser for live websites, authenticated flows, and visual verification."),
-        gog = capability_status(caps.gog, "Use web search when recency, market conditions, public facts, or current availability matter."),
+        browser = capability_status(caps.browser, "Use the browser for live websites, authenticated flows, and visual verification. Always use the managed default profile (omit `profile` or pass \"openclaw\") — it already carries the user's saved logins. Never pass `profile: \"user\"`; that mode looks for a Chrome inside your container and always fails."),
+        gog = capability_status(caps.gog, "Use web search when recency, market conditions, public facts, or current availability matter. Do NOT use this to read emails, access Gmail, or interact with other integrations."),
         vision = capability_status(caps.vision, "Use vision for screenshots, images, and visual UI understanding."),
         canvas = capability_status(caps.canvas, "Use canvas for visual layout, markup, and artifact presentation."),
         genui = capability_status(caps.genui, "Use GenUI when a mini-app, dashboard, approval card, or interactive artifact beats prose."),
@@ -4739,9 +4775,18 @@ console.log('model updated to {model}');
     Ok(())
 }
 #[tauri::command]
-pub async fn approve_slack_pairing(code: String) -> Result<String, String> {
+pub async fn approve_slack_pairing(
+    db: tauri::State<'_, crate::db::Database>,
+    code: String,
+    agent_id: Option<String>,
+) -> Result<String, String> {
     // NODE_OPTIONS=--v8-pool-size=1: prevents uv_thread_create crash at Node startup
     // (same fix as send_message_internal — all openclaw CLI invocations need this).
+    let container_name = agent_id
+        .as_deref()
+        .map(|id| get_agent_container_name(&db, id))
+        .unwrap_or_else(|| "canopy-gateway".to_string());
+
     let output = get_docker_command()
         .args([
             "exec",
@@ -4749,7 +4794,7 @@ pub async fn approve_slack_pairing(code: String) -> Result<String, String> {
             "node",
             "-e",
             "NODE_OPTIONS=--v8-pool-size=1",
-            "canopy-gateway",
+            &container_name,
             "openclaw",
             "pairing",
             "approve",
@@ -5412,6 +5457,11 @@ async fn boot_sync_agents_internal(
         if agent.capabilities.browser {
             let id_clone = id.clone();
             let app_handle_clone = app_handle.clone();
+            // Resolve the agent's ACTUAL container before spawning. This was
+            // hardcoded to "canopy-gateway", which silently wrote the CDP env var
+            // into the wrong container for isolated agents — their browser env
+            // then never pointed anywhere after a reboot.
+            let container_name = get_agent_container_name(&db, id);
             tauri::async_runtime::spawn(async move {
                 if let Ok(port) =
                     crate::browser_manager::enable_jit_proxy(app_handle_clone, id_clone.clone())
@@ -5425,7 +5475,7 @@ async fn boot_sync_agents_internal(
                             "node",
                             "-e",
                             "NODE_OPTIONS=--v8-pool-size=1",
-                            "canopy-gateway",
+                            &container_name,
                             "openclaw",
                             "agents",
                             "edit",
@@ -5475,7 +5525,7 @@ async fn boot_sync_agents_internal(
                 let state_dir = data_dir.join("isolated").join(id.as_str()).join("state");
                 crate::docker::preflight_sanitize_and_merge_config(
                     &state_dir,
-                    true,
+                    Some(id.as_str()),
                     crate::model_constants::GATEWAY_INTERNAL_TOKEN,
                 );
 
@@ -5947,53 +5997,40 @@ async fn boot_sync_agents_internal(
             tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
         }
     }
+    // ── Apply per-agent Slack/Google config to ALL RUNNING containers ────────
+    // Group active agents by container name
+    let mut container_agents: std::collections::HashMap<String, Vec<crate::models::Agent>> = std::collections::HashMap::new();
+    for agent in &active_agents {
+        let container_name = get_agent_container_name(&db, &agent.id);
+        container_agents.entry(container_name).or_default().push((*agent).clone());
+    }
 
-    // ── Apply per-agent Slack/Google config to the RUNNING gateway ───────────
-    //
-    // Important sequencing detail: `preflight_write_openclaw_json` (in docker.rs)
-    // intentionally wipes `channels.slack.{enabled, botToken, appToken, accounts}`
-    // every gateway start to enforce per-agent isolation. The gateway then boots
-    // and reads openclaw.json with Slack DISABLED. By the time we get here, the
-    // gateway is already running with that empty Slack config cached in memory.
-    //
-    // `sync_gateway_channels_internal` writes the per-agent Slack accounts and
-    // bindings BACK into openclaw.json on disk — but the live OpenClaw process
-    // does NOT reload plugin state from the file. Tools like
-    // `openclaw agents list` read the file directly and happily report
-    // "Slack <agent>: configured", which is misleading: the running process is
-    // still operating with Slack disabled. Inbound Slack messages then surface
-    // the user-visible error "Slack bot token missing for account 'agent-X'".
-    //
-    // To make the live process actually pick up the config we just wrote, we
-    // restart the gateway once at the end of boot_sync_agents — but ONLY when
-    // the channel config changed (return value == true). After process restart
-    // the LAST_GATEWAY_CHANNELS_HASH cache is empty, so the first call always
-    // reports `true`, which is exactly what we want: one restart per boot,
-    // taking us from the preflight-wiped empty Slack state to the per-agent
-    // populated state in a single bounce.
-    let channels_changed = sync_gateway_channels_internal(&db).await.unwrap_or(false);
-    if channels_changed {
-        tracing::info!(
-            "boot_sync_agents: per-agent channel config (Slack/Google) was written — \
-             restarting gateway so the running process picks it up"
-        );
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            get_docker_command()
-                .args(["restart", "canopy-gateway"])
-                .output(),
-        )
-        .await;
-        // Give the gateway a chance to come back before downstream code (e.g. the
-        // per-agent JIT browser proxies) tries to talk to it. If readiness times
-        // out we don't fail boot_sync_agents — the gateway will catch up shortly
-        // after this function returns and chat will start working a beat later.
-        if let Err(e) = wait_for_gateway_ready(60, Some(app_handle.clone())).await {
-            tracing::warn!(
-                "boot_sync_agents: gateway didn't report ready after channel-sync restart: {}. \
-                 Continuing anyway; agents may take a moment to be reachable.",
-                e
+    for (container_name, agents) in container_agents {
+        let channels_changed = sync_container_channels_internal(&container_name, &agents).await.unwrap_or(false);
+        if channels_changed {
+            tracing::info!(
+                "boot_sync_agents: per-agent channel config was written — \
+                 restarting {} so the running process picks it up",
+                container_name
             );
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                get_docker_command()
+                    .args(["restart", &container_name])
+                    .output(),
+            )
+            .await;
+            
+            // Wait for gateway ready (only necessary for the main gateway)
+            if container_name == "canopy-gateway" {
+                if let Err(e) = wait_for_gateway_ready(60, Some(app_handle.clone())).await {
+                    tracing::warn!(
+                        "boot_sync_agents: gateway didn't report ready after channel-sync restart: {}. \
+                         Continuing anyway; agents may take a moment to be reachable.",
+                        e
+                    );
+                }
+            }
         }
     }
 
@@ -6093,6 +6130,7 @@ fn compute_channels_hash(
 /// may already be in sync, in which case we can skip the patch and the
 /// gateway restart entirely.
 async fn file_channels_match(
+    container_name: &str,
     desired_slack: &serde_json::Map<String, serde_json::Value>,
     desired_gmail: &serde_json::Map<String, serde_json::Value>,
     desired_calendar: &serde_json::Map<String, serde_json::Value>,
@@ -6107,7 +6145,7 @@ async fn file_channels_match(
                 "exec",
                 "-u",
                 "node",
-                "canopy-gateway",
+                container_name,
                 "cat",
                 "/home/node/.openclaw/openclaw.json",
             ])
@@ -6168,9 +6206,10 @@ async fn file_channels_match(
 ///                       OR matched the file on disk). Caller should NOT restart
 ///                       — restarting wastefully drops every agent's Socket Mode
 ///                       connection and is a major contributor to Slack flakiness.
-pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<bool, String> {
-    let active_agents = db.list_agents().unwrap_or_default();
-
+pub async fn sync_container_channels_internal(
+    container_name: &str,
+    agents: &[crate::models::Agent],
+) -> Result<bool, String> {
     // ── Configure Per-Agent Channels (Slack & Google) ───────────────────────
     let mut slack_accounts = serde_json::Map::new();
     let mut gmail_accounts = serde_json::Map::new();
@@ -6179,11 +6218,7 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
     let mut bindings = Vec::new();
     let mut imessage_enabled = false;
 
-    for agent in &active_agents {
-        if agent.isolated {
-            continue;
-        }
-
+    for agent in agents {
         if agent.integrations.contains(&"imessage".to_string()) {
             imessage_enabled = true;
         }
@@ -6253,17 +6288,7 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
         handle_google("drive", "google-drive", "googleDrive", &mut drive_accounts);
     }
 
-    // ── Short-circuit: nothing changed since the file's current state? ──────
-    //
-    // We compare against THE FILE, not just a process-local cache. The cache is
-    // a fast path that survives within one Canopy run; the file-state check is
-    // the correct authority and survives across Canopy restarts. Without the
-    // file-state check, the very first sync_gateway_channels call after every
-    // app launch would always report "changed" (cache empty) and trigger a
-    // restart even when openclaw.json was already perfectly aligned with the
-    // keychain — which is the common case for repeat users with stable
-    // connections. preflight_write_openclaw_json now preserves the per-agent
-    // account maps, so a no-op call here is genuinely a no-op end-to-end.
+    // We compare against THE FILE, not just a process-local cache.
     let new_hash = compute_channels_hash(
         &slack_accounts,
         &gmail_accounts,
@@ -6272,21 +6297,10 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
         &bindings,
         imessage_enabled,
     );
-    {
-        let cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
-        if cache.as_ref() == Some(&new_hash) {
-            tracing::info!(
-                "sync_gateway_channels: config unchanged (cache hit) — skipping patch + restart"
-            );
-            return Ok(false);
-        }
-    }
-    // Cache miss: check the file. This covers two important cases:
-    //   1. First call after Canopy launch — cache is empty but file may already
-    //      be in sync (preflight preserved channels.slack.accounts).
-    //   2. Concurrent edits via another tool that bypassed Canopy — unlikely
-    //      but harmless to detect.
+    
+    // Cache miss or isolated agent: check the file.
     if file_channels_match(
+        container_name,
         &slack_accounts,
         &gmail_accounts,
         &calendar_accounts,
@@ -6296,12 +6310,9 @@ pub async fn sync_gateway_channels_internal(db: &crate::db::Database) -> Result<
     )
     .await
     {
-        // File already correct — populate the cache so subsequent calls take
-        // the fast path, and return "no change" so callers skip restart.
-        let mut cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
-        *cache = Some(new_hash);
         tracing::info!(
-            "sync_gateway_channels: openclaw.json already matches keychain-derived channel state — skipping patch + restart"
+            "sync_container_channels ({}): openclaw.json already matches keychain-derived channel state — skipping patch + restart",
+            container_name
         );
         return Ok(false);
     }
@@ -6384,7 +6395,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
                 "exec",
                 "-u",
                 "node",
-                "canopy-gateway",
+                container_name,
                 "node",
                 "-e",
                 &patch_channels_script,
@@ -6409,12 +6420,9 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
         return Err("Patch script failed to execute or timed out".to_string());
     }
 
-    // Patch succeeded — record the new hash so the next no-op call can skip.
-    {
-        let mut cache = LAST_GATEWAY_CHANNELS_HASH.lock().unwrap();
-        *cache = Some(new_hash);
-    }
-
+    // Since we now call this for multiple containers, we rely purely on the file check
+    // instead of an in-memory hash cache, because the cache would thrash between containers.
+    
     Ok(true)
 }
 
@@ -6422,7 +6430,10 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 pub async fn sync_gateway_channels(
     db: tauri::State<'_, crate::db::Database>,
 ) -> Result<(), String> {
-    let changed = sync_gateway_channels_internal(&db).await?;
+    // Pass the active agents mapped to canopy-gateway
+    let active_agents = db.list_agents().unwrap_or_default();
+    let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
+    let changed = sync_container_channels_internal("canopy-gateway", &gateway_agents).await?;
 
     // Only bounce the gateway if the channels config actually changed.
     // Instead of a forceful `docker restart` (which kills all active browser sessions),
@@ -6458,6 +6469,67 @@ pub async fn sync_gateway_channels(
                         .output(),
                 )
                 .await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn sync_agent_slack_config(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<(), String> {
+    sync_agent_slack_config_internal(&db, &agent_id).await
+}
+
+pub async fn sync_agent_slack_config_internal(
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Result<(), String> {
+    let agent = db
+        .get_agent(agent_id)
+        .map_err(|e| format!("Failed to get agent: {}", e))?
+        .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+    if agent.isolated {
+        crate::slack::start_slack_listener_internal(db, Some(agent_id)).await?;
+    } else {
+        let active_agents = db.list_agents().unwrap_or_default();
+        let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
+        let changed = sync_container_channels_internal("canopy-gateway", &gateway_agents).await?;
+        if changed {
+            let hot_reload_result = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                get_docker_command()
+                    .args([
+                        "exec",
+                        "-u",
+                        "node",
+                        "canopy-gateway",
+                        "openclaw",
+                        "gateway",
+                        "restart",
+                    ])
+                    .output(),
+            )
+            .await;
+
+            match hot_reload_result {
+                Ok(Ok(out)) if out.status.success() => {
+                    tracing::info!("sync_agent_slack_config: gracefully hot-reloaded gateway");
+                }
+                _ => {
+                    tracing::warn!("sync_agent_slack_config: hot-reload failed or timed out, falling back to full container restart");
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(15),
+                        get_docker_command()
+                            .args(["restart", "canopy-gateway"])
+                            .output(),
+                    )
+                    .await;
+                }
             }
         }
     }
@@ -7237,14 +7309,37 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          ## Skills enabled\n\
          {skills}\n\n\
          ## Integrations connected\n\
-         {integrations}\n\n\
+         {integrations}\n\
+         *(Note: When an integration like `gmail` is connected, its dedicated MCP tools are automatically provided. Do NOT use `gog` or generic web search to access integration data.)*\n\n\
          ## LLM provider keys available\n\
          {providers}\n\n\
          ## Web access\n\
          {allowlist}\n\n\
+         ## Using the browser\n\
+         Your browser is a Chrome instance managed by Canopy that runs on the user's \
+         machine and is attached to you over CDP. To use it, always use the managed \
+         default profile — either omit the `profile` parameter entirely or pass \
+         `\"openclaw\"`.\n\n\
+         **Never pass `profile: \"user\"`.** There is no Chrome installed inside your \
+         container, so the \"user\" existing-session mode always fails with a \
+         DevToolsActivePort error. You are not missing anything by avoiding it: the \
+         managed profile is your signed-in browser. It persists cookies across \
+         sessions, and when you reach a login page for a domain with saved \
+         credentials, the WebVault auto-fill flow signs you in there — you never \
+         need the user's own Chrome.\n\n\
+         **If a site refuses the sign-in itself** — e.g. Google's \"This browser or \
+         app may not be secure\" page — do NOT retry or try other profiles. That wall \
+         detects automated (CDP-attached) browsers and will keep blocking you. \
+         Instead, ask the user to sign in for you via the request_attention endpoint \
+         described below, mentioning which site needs a trusted login. The user signs \
+         in through Canopy's trusted-login window (a non-automated Chrome on the same \
+         profile you browse with), and once they resume automation the session is \
+         yours.\n\n\
          ## Saved web logins\n\
-         The user has stored credentials for these domains. If you hit a login page on \
-         one of them, the credentials will be available via the WebVault auto-fill flow:\n\
+         The user has stored credentials for these domains. Open them with your \
+         managed browser profile (see \"Using the browser\" above — default profile, \
+         not \"user\"). When you hit a login page on one of them, the credentials \
+         will be available via the WebVault auto-fill flow:\n\
          {saved_logins}\n\n\
          If you hit a login page for a domain NOT in this list, you can ask the user to \
          securely provide credentials by including this exact tag anywhere in your chat reply: \

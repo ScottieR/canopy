@@ -382,9 +382,9 @@ pub async fn repair_openclaw_config(
         // Fix allowedOrigins so the port-alignment audit check passes.
         // This is CORS for the control UI — it doesn't affect agent API communication.
         ("gateway.controlUi.allowedOrigins", allowed_origins.as_str()),
-        // Enforce Slack groupPolicy to "open" so agents can respond to DMs
-        // If this reverts to "allowlist" during a crash, agents will silently ignore all Slack messages
-        ("channels.slack.groupPolicy", "open"),
+        // Enforce Slack groupPolicy to "allowlist" so agents properly require pairing codes
+        // for users not already in their allowed channels list. "open" breaks the pairing flow.
+        ("channels.slack.groupPolicy", "allowlist"),
     ];
 
     for (key, val) in fixes.iter() {

@@ -27,17 +27,26 @@ import { LiveVoiceOverlay } from "./LiveVoiceOverlay";
 
 function MiniAppsDrawer({ agent, open, onClose }: { agent: AgentData; open: boolean; onClose: () => void }) {
   const deleteMiniApp = useWorldStore(s => s.deleteMiniApp);
-  const [selectedApp, setSelectedApp] = React.useState<MiniApp | null>(null);
   const apps = agent.miniApps ?? [];
 
   if (!open) return null;
 
-  const download = (app: MiniApp) => {
-    const blob = new Blob([app.htmlContent], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `${app.name.replace(/\s+/g, "-").toLowerCase()}.html`;
-    a.click(); URL.revokeObjectURL(url);
+
+  const openMiniApp = async (app: MiniApp) => {
+    try {
+      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+      const payload = encodeURIComponent(JSON.stringify({ agentId: agent.id, appId: app.id }));
+      new WebviewWindow(`miniapp_${app.id}_${Date.now()}`, {
+        url: `/index.html?miniapp=${payload}`,
+        title: app.name,
+        width: 1000,
+        height: 700,
+        decorations: true,
+      });
+      onClose();
+    } catch (e) {
+      console.error("Failed to open mini app window", e);
+    }
   };
 
   return (
@@ -56,51 +65,54 @@ function MiniAppsDrawer({ agent, open, onClose }: { agent: AgentData; open: bool
           <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
         </svg>
         <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-main)", flex: 1 }}>Mini Apps · {agent.name}</span>
-        {selectedApp && <button onClick={() => setSelectedApp(null)} style={{ fontSize: 11, color: "var(--text-sub)", background: "transparent", border: "none", cursor: "pointer" }}>← Back</button>}
         <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 2 }}>✕</button>
       </div>
-      {selectedApp ? (
-        <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div style={{ padding: "7px 12px", background: "rgba(129,140,248,0.06)", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, flex: 1, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedApp.name}</span>
-            <button onClick={() => download(selectedApp)} style={{ fontSize: 10, color: "#818CF8", background: "transparent", border: "none", cursor: "pointer", fontWeight: 600 }}>↓ Download</button>
-          </div>
-          <iframe srcDoc={selectedApp.htmlContent} sandbox="allow-scripts allow-same-origin" style={{ flex: 1, border: "none", minHeight: 400 }} title={selectedApp.name} />
-        </div>
-      ) : (
         <div style={{ flex: 1, overflowY: "auto" }}>
           {apps.length === 0 ? (
             <div style={{ padding: "32px 20px", textAlign: "center" }}>
               <div style={{ fontSize: 28, marginBottom: 8 }}>🧩</div>
               <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", marginBottom: 6 }}>No mini-apps yet</div>
               <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.6, maxWidth: 260, margin: "0 auto" }}>
-                Ask {agent.name} to build a tool and click "Pin to shelf" on any HTML response to save it here.
+                Ask {agent.name} to build a web app or tool. It will automatically be saved here.
               </div>
             </div>
           ) : (
-            apps.map(app => (
+            apps.map(app => {
+              const activeVersion = app.versions?.find(v => v.id === app.activeVersionId) || app.versions?.[0];
+              if (!activeVersion) return null;
+
+              return (
               <div key={app.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", borderBottom: "1px solid rgba(0,0,0,0.04)" }}>
                 <div style={{ width: 36, height: 36, borderRadius: 8, background: "rgba(129,140,248,0.1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#818CF8" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                     <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
                   </svg>
                 </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{app.name}</div>
-                  {app.description && <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{app.description}</div>}
+                  
+                  {app.versions && app.versions.length > 1 && (
+                    <select 
+                      value={app.activeVersionId}
+                      onChange={(e) => useWorldStore.getState().updateMiniAppVersion(agent.id, app.id, e.target.value)}
+                      style={{ fontSize: 11, color: "var(--text-sub)", background: "transparent", border: "none", outline: "none", marginTop: 2, padding: 0, cursor: "pointer" }}
+                    >
+                      {app.versions.map((v, i) => (
+                        <option key={v.id} value={v.id}>
+                          v{app.versions.length - i} • {new Date(v.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
-                <button onClick={() => setSelectedApp(app)} style={{ fontSize: 11, color: "#818CF8", background: "rgba(129,140,248,0.1)", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontWeight: 600, flexShrink: 0 }}>Open</button>
-                <button onClick={() => download(app)} title="Download" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 4, flexShrink: 0 }}>
-                  <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                </button>
+                <button onClick={() => openMiniApp(app)} style={{ fontSize: 11, color: "#818CF8", background: "rgba(129,140,248,0.1)", border: "none", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontWeight: 600, flexShrink: 0 }}>Open</button>
                 <button onClick={() => deleteMiniApp(agent.id, app.id)} title="Remove" style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: 4, opacity: 0.45, flexShrink: 0 }}>
                   <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                 </button>
               </div>
-            ))
+            )})
           )}
         </div>
-      )}
     </div>
   );
 }

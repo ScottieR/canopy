@@ -83,7 +83,8 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
     const fetchHabitats = () => {
       fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/habitats`)
         .then(r => r.json())
-        .then(d => setHabitats(d))
+        // Eddy's reef cave is The Keeper's home, not a user-pickable habitat.
+        .then(d => setHabitats(Array.isArray(d) ? d.filter((h: any) => !h.isEddyHabitat) : d))
         .catch(() => { });
     };
     fetchHabitats();
