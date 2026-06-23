@@ -35,6 +35,7 @@ import { ArchiveView } from './pages/ArchiveView';
 import { UserProfileView } from './pages/UserProfileView';
 import { DiagnosticsView } from './pages/DiagnosticsView';
 import { CanopyView } from './pages/CanopyView';
+import { SpatialCanvas } from './components/Spatial';
 import { ForumView } from './pages/ForumView';
 import { TopNav } from './components/shared/TopNav';
 import { ExportInterceptModal } from './components/ExportInterceptModal';
@@ -1228,7 +1229,7 @@ export default function App() {
   useEffect(() => {
     const handleHash = () => {
       const hash = window.location.hash.replace('#/', '').replace('#', '');
-      const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
+      const validViews = ["spatial", "loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
       if (validViews.includes(hash)) {
         setActiveView(hash as any);
       }
@@ -1430,7 +1431,7 @@ export default function App() {
           }
 
           const hash = window.location.hash.replace('#/', '').replace('#', '');
-          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
+          const validViews = ["spatial", "loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
           if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
             setActiveView(hash as any);
           } else {
@@ -1579,6 +1580,7 @@ export default function App() {
       {activeView === "loading" && <LoadingScreen status={loadStatus} />}
       {activeView === "onboarding" && <OnboardingWizard />}
       {activeView === "canopy" && <CanopyView />}
+      {activeView === "spatial" && <SpatialCanvas />}
       {activeView === "forum" && <ForumView />}
       {activeView === "architect" && agent && <ArchitectView agent={agent} />}
       {activeView === "archive" && (

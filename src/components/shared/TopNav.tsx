@@ -61,6 +61,7 @@ function TopNav() {
 
   const navItems = [
     { id: "canopy" as const, label: "Canopy" },
+    { id: "spatial" as const, label: "Spatial" },
     { id: "architect" as const, label: "Agents" },
     { id: "forum" as const, label: "Projects" },
   ];
