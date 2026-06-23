@@ -42,6 +42,13 @@ export function DiscordCompanion() {
       if (typeof invoke === "function") {
         await invoke("configure_discord", { agentId, botToken: discordToken.trim() });
         setTestStatus("success");
+        try {
+          const { emit } = await import('@tauri-apps/api/event');
+          await emit("companion-finished", { type: "discord" });
+          await emit("refresh_integrations");
+        } catch (emitErr) {
+          console.warn("Discord companion emit failed", emitErr);
+        }
         window.dispatchEvent(new Event("refresh_integrations"));
         
         setTimeout(async () => {

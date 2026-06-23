@@ -10,6 +10,7 @@ pub mod validators;
 pub mod app_state;
 
 // Rate limiting for expensive operations
+pub mod computer_control;
 pub mod rate_limiter;
 
 mod activity_sniffer;
@@ -770,6 +771,7 @@ pub fn run() {
             openclaw::delete_agent,
             openclaw::send_message,
             openclaw::get_conversation_history,
+            openclaw::list_agent_conversations,
             openclaw::get_agent_health,
             openclaw::check_agent_status,
             openclaw::get_gateway_log_tail,
@@ -886,6 +888,7 @@ pub fn run() {
             channels::disconnect_twilio,
             channels::disconnect_twilio_for_agent,
             channels::disconnect_github,
+            channels::preflight_agent_connection,
             channels::ping_agent_connections,
             // Voice mode
             voice::get_voice_config,

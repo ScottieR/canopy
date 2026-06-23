@@ -46,7 +46,9 @@ fn normalize_model(provider: &str, model: Option<String>) -> String {
     match model {
         Some(m) if !m.trim().is_empty() => {
             let m = m.trim();
-            m.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or_else(|| m.to_string())
+            m.split_once('/')
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_else(|| m.to_string())
         }
         _ => default_model(provider).to_string(),
     }
@@ -69,13 +71,20 @@ fn status_from_http(code: u16, body_snippet: &str) -> (String, Option<String>) {
         ),
         _ => (
             "error".into(),
-            Some(format!("Provider returned HTTP {}: {}", code, body_snippet.chars().take(160).collect::<String>())),
+            Some(format!(
+                "Provider returned HTTP {}: {}",
+                code,
+                body_snippet.chars().take(160).collect::<String>()
+            )),
         ),
     }
 }
 
 async fn ping_provider(provider: &str, key: &str, model: &str) -> (String, Option<String>) {
-    let client = match reqwest::Client::builder().timeout(Duration::from_secs(8)).build() {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
         Ok(c) => c,
         Err(e) => return ("error".into(), Some(format!("HTTP client error: {}", e))),
     };
@@ -167,7 +176,12 @@ pub async fn check_model_health(
             let canon = canonical_provider(p);
             let model_str = normalize_model(&canon, model);
             let (status, detail) = ping_provider(&canon, k.trim(), &model_str).await;
-            return Ok(vec![ProviderHealth { provider: canon, status, detail, model: model_str }]);
+            return Ok(vec![ProviderHealth {
+                provider: canon,
+                status,
+                detail,
+                model: model_str,
+            }]);
         }
     }
     let targets: Vec<(String, String)> = match provider {
@@ -180,7 +194,10 @@ pub async fn check_model_health(
                 .unwrap_or_else(|| "GEMINI_API_KEY".to_string());
             vec![(canon, key_name)]
         }
-        None => KEY_NAMES.iter().map(|(p, k)| (p.to_string(), k.to_string())).collect(),
+        None => KEY_NAMES
+            .iter()
+            .map(|(p, k)| (p.to_string(), k.to_string()))
+            .collect(),
     };
 
     let mut results = Vec::new();
@@ -189,7 +206,12 @@ pub async fn check_model_health(
         match keychain::get_secret(&key_name) {
             Ok(key) if !key.trim().is_empty() => {
                 let (status, detail) = ping_provider(&prov, key.trim(), &model_str).await;
-                results.push(ProviderHealth { provider: prov, status, detail, model: model_str });
+                results.push(ProviderHealth {
+                    provider: prov,
+                    status,
+                    detail,
+                    model: model_str,
+                });
             }
             _ => {
                 // No global key — only report as missing when explicitly asked

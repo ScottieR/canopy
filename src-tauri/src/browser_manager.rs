@@ -893,7 +893,9 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                                 let _recover_guard = resolve_lock_for(SHARED_AGENT_ID).lock().await;
                                 // Drop the stale AUTOMATED entry only — never touch a
                                 // trusted-login window that may have just opened.
-                                let _ = browser_manager.stop_automated_browser(SHARED_AGENT_ID).await;
+                                let _ = browser_manager
+                                    .stop_automated_browser(SHARED_AGENT_ID)
+                                    .await;
                                 let Some((h, p, pth)) =
                                     resolve_endpoint(&*browser_manager, &app_handle_inner).await
                                 else {
@@ -1027,7 +1029,9 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                             // Automated only: a trusted-login window on the shared
                             // profile must survive idle shutdown (the user may take
                             // minutes to finish signing in).
-                            let _ = browser_manager.stop_automated_browser(SHARED_AGENT_ID).await;
+                            let _ = browser_manager
+                                .stop_automated_browser(SHARED_AGENT_ID)
+                                .await;
                         }
                     }
                 });
@@ -1151,54 +1155,55 @@ pub async fn enable_jit_proxy(
                     // spawn a fresh Chrome, and retry once. Previously this silently
                     // dropped the agent's connection — the "works on the second try"
                     // flakiness users hit after any Chrome death.
-                    let connect_result = match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
-                        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                            tracing::warn!(
+                    let connect_result =
+                        match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                                tracing::warn!(
                                 "JIT Proxy: cached Chrome at {}:{} is dead ({}); respawning for {}",
                                 chrome_host,
                                 chrome_port,
                                 e,
                                 agent_id_inner
                             );
-                            let _ = browser_manager
-                                .stop_automated_browser(&agent_id_inner)
-                                .await;
-                            match browser_manager
-                                .start_browser(app_handle_inner.clone(), &agent_id_inner)
-                                .await
-                            {
-                                Ok(status) if !status.cdp_endpoint.is_empty() => {
-                                    match url::Url::parse(&status.cdp_endpoint) {
-                                        Ok(u) => {
-                                            // The fresh Chrome has a new port AND a new
-                                            // /devtools/browser/<guid> path — update all
-                                            // three so the header/path rewrite below
-                                            // targets the live instance, not the corpse.
-                                            chrome_host =
-                                                u.host_str().unwrap_or("127.0.0.1").to_string();
-                                            chrome_port = u.port().unwrap_or(0);
-                                            chrome_path = u.path().to_string();
-                                            TcpStream::connect((
-                                                chrome_host.as_str(),
-                                                chrome_port,
-                                            ))
-                                            .await
+                                let _ = browser_manager
+                                    .stop_automated_browser(&agent_id_inner)
+                                    .await;
+                                match browser_manager
+                                    .start_browser(app_handle_inner.clone(), &agent_id_inner)
+                                    .await
+                                {
+                                    Ok(status) if !status.cdp_endpoint.is_empty() => {
+                                        match url::Url::parse(&status.cdp_endpoint) {
+                                            Ok(u) => {
+                                                // The fresh Chrome has a new port AND a new
+                                                // /devtools/browser/<guid> path — update all
+                                                // three so the header/path rewrite below
+                                                // targets the live instance, not the corpse.
+                                                chrome_host =
+                                                    u.host_str().unwrap_or("127.0.0.1").to_string();
+                                                chrome_port = u.port().unwrap_or(0);
+                                                chrome_path = u.path().to_string();
+                                                TcpStream::connect((
+                                                    chrome_host.as_str(),
+                                                    chrome_port,
+                                                ))
+                                                .await
+                                            }
+                                            Err(_) => Err(std::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                "unparseable respawned CDP endpoint",
+                                            )),
                                         }
-                                        Err(_) => Err(std::io::Error::new(
-                                            std::io::ErrorKind::InvalidData,
-                                            "unparseable respawned CDP endpoint",
-                                        )),
                                     }
+                                    Ok(_) => Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        "respawned Chrome returned empty CDP endpoint",
+                                    )),
+                                    Err(e) => Err(std::io::Error::other(e.to_string())),
                                 }
-                                Ok(_) => Err(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "respawned Chrome returned empty CDP endpoint",
-                                )),
-                                Err(e) => Err(std::io::Error::other(e.to_string())),
                             }
-                        }
-                        other => other,
-                    };
+                            other => other,
+                        };
 
                     if let Ok(mut chrome_stream) = connect_result.map_err(|e| {
                         tracing::error!(
@@ -1310,7 +1315,9 @@ pub async fn enable_jit_proxy(
                                 agent_id_inner
                             );
                             // Automated only — never reap a trusted-login window.
-                            let _ = browser_manager.stop_automated_browser(&agent_id_inner).await;
+                            let _ = browser_manager
+                                .stop_automated_browser(&agent_id_inner)
+                                .await;
                         }
                     }
                 });
@@ -1778,7 +1785,11 @@ mod connectability_tests {
 
     #[test]
     fn automated_with_port_zero_is_not_connectable() {
-        let s = status(BrowserMode::Automated, 0, "ws://127.0.0.1:0/devtools/browser/abc");
+        let s = status(
+            BrowserMode::Automated,
+            0,
+            "ws://127.0.0.1:0/devtools/browser/abc",
+        );
         assert!(!status_is_connectable(&s));
     }
 }

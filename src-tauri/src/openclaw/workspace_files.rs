@@ -7,18 +7,21 @@ fn validate_workspace_filename(filename: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn find_file_in_workspace(dir: &std::path::Path, target_filename: &str) -> Option<std::path::PathBuf> {
+fn find_file_in_workspace(
+    dir: &std::path::Path,
+    target_filename: &str,
+) -> Option<std::path::PathBuf> {
     // 1. Direct check
     let direct = dir.join(target_filename);
     if direct.is_file() {
         return Some(direct);
     }
-    
+
     // 2. Recursive check - only if target_filename doesn't contain path separators
     if target_filename.contains('/') || target_filename.contains('\\') {
         return None;
     }
-    
+
     let mut dirs_to_visit = vec![dir.to_path_buf()];
     while let Some(current_dir) = dirs_to_visit.pop() {
         if let Ok(entries) = std::fs::read_dir(&current_dir) {
@@ -71,12 +74,12 @@ pub async fn read_workspace_file(
 ) -> Result<String, String> {
     validate_workspace_filename(&filename)?;
     let workspace = super::get_agent_workspace_dir(&db, &agent_id)?;
-    
+
     let file_path = match find_file_in_workspace(&workspace, &filename) {
         Some(path) => path,
         None => return Ok("".to_string()),
     };
-    
+
     std::fs::read_to_string(&file_path).map_err(|e| e.to_string())
 }
 
@@ -140,12 +143,12 @@ pub async fn read_workspace_file_base64(
 ) -> Result<String, String> {
     validate_workspace_filename(&filename)?;
     let workspace = super::get_agent_workspace_dir(&db, &agent_id)?;
-    
+
     let file_path = match find_file_in_workspace(&workspace, &filename) {
         Some(path) => path,
         None => return Ok("".to_string()),
     };
-    
+
     let bytes = std::fs::read(&file_path).map_err(|e| e.to_string())?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
 

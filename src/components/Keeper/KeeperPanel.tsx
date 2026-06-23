@@ -229,6 +229,31 @@ function offlineDiagnosis(ctx: any, question: string = ""): string {
     }
     return `${named.name}'s Slack looks enabled and paired from here. The usual remaining suspects: the bot was removed from the channel (re-invite it), or the workspace tokens expired (re-enter them under Integrations). If neither helps, open Diagnostics and run the connection check — tell me what it says.${navTo("diagnostics", "Diagnostics")}`;
   }
+  if (named && q.includes("github")) {
+    if (!Array.isArray(named.integrations) || !named.integrations.includes("github")) {
+      return `${named.name} doesn't have GitHub connected yet. Open ${named.name} → Skills & Access, connect GitHub from that agent's page, and finish the repo selection step so the token and bindings stay isolated to ${named.name}.${navTo("connections", "GitHub")}`;
+    }
+    return `${named.name} has GitHub enabled. If it still can't work with a repo, the usual fixes are: reconnect the PAT from ${named.name}'s Skills & Access page, confirm the repo is selected in the GitHub setup step, and make sure the token still has repo access.${navTo("connections", "GitHub")}`;
+  }
+  if (named && q.includes("telegram")) {
+    if (!Array.isArray(named.integrations) || !named.integrations.includes("telegram")) {
+      return `${named.name} doesn't have Telegram connected yet. Telegram is configured per-agent, so open ${named.name} → Skills & Access and run the Telegram companion from there.${navTo("connections", "Telegram")}`;
+    }
+    return `${named.name} has Telegram enabled. If messages still aren't flowing, re-open ${named.name}'s Telegram setup, regenerate the BotFather token, and save it again for this specific agent.${navTo("connections", "Telegram")}`;
+  }
+  if (named && q.includes("discord")) {
+    if (!Array.isArray(named.integrations) || !named.integrations.includes("discord")) {
+      return `${named.name} doesn't have Discord connected yet. Discord is configured per-agent, so open ${named.name} → Skills & Access and run the Discord setup from there.${navTo("connections", "Discord")}`;
+    }
+    return `${named.name} has Discord enabled. If it still can't respond, re-open the Discord setup for ${named.name}, regenerate the bot token, and confirm the bot still has access to the server and channel you expect.${navTo("connections", "Discord")}`;
+  }
+  if (named && (q.includes("calendar") || q.includes("gmail") || q.includes("drive"))) {
+    const target =
+      q.includes("calendar") ? "Google Calendar" :
+      q.includes("drive") ? "Google Drive" :
+      "Gmail";
+    return `${named.name}'s ${target} access is configured per-agent. Open ${named.name} → Skills & Access and reconnect that Google permission there if the token expired or the scope needs to change.${navTo("connections", target)}`;
+  }
   if (named) {
     if (named.status === "error") {
       return `${named.name} is in an error state${named.last_action ? ` (${String(named.last_action).replace(/Docker|Container|OpenClaw/gi, "runtime")})` : ""}. Open ${named.name}'s Diagnostics tab and run repair — that fixes most startup problems. Tell me what it reports if it doesn't.${navTo("diagnostics", "Diagnostics")}`;

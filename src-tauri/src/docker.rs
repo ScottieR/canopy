@@ -305,7 +305,7 @@ process.on('unhandledRejection', (reason, promise) => {
             let path = std::path::Path::new(&dir);
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 extra_volumes.push_str(&format!(
-                    "      - {}:/home/node/.openclaw/workspace/mounts/{}\n",
+                    "      - \"{}:/home/node/.openclaw/workspace/mounts/{}\"\n",
                     dir, name
                 ));
             }
@@ -436,7 +436,7 @@ process.on('unhandledRejection', (reason, promise) => {
                     let path = std::path::Path::new(&dir);
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         extra_volumes.push_str(&format!(
-                            "      - {}:/home/node/.openclaw/workspace/mounts/{}\n",
+                            "      - \"{}:/home/node/.openclaw/workspace/mounts/{}\"\n",
                             dir, name
                         ));
                     }
@@ -608,13 +608,29 @@ fn merge_json(a: &mut serde_json::Value, b: &serde_json::Value) {
     }
 }
 
-pub fn preflight_sanitize_and_merge_config(
+#[derive(Clone, Copy, Debug)]
+struct ProviderKeyAvailability {
+    has_anthropic: bool,
+    has_openai: bool,
+    has_gemini: bool,
+}
+
+fn discover_provider_key_availability() -> ProviderKeyAvailability {
+    ProviderKeyAvailability {
+        has_anthropic: crate::keychain::get_secret("ANTHROPIC_API_KEY").is_ok(),
+        has_openai: crate::keychain::get_secret("OPENAI_API_KEY").is_ok(),
+        has_gemini: crate::keychain::get_secret("GEMINI_API_KEY").is_ok(),
+    }
+}
+
+fn preflight_sanitize_and_merge_config_with_keys(
     state_dir: &std::path::Path,
     // `Some(agent_id)` → this is an isolated agent container; `None` → main gateway.
     // The id is needed (not just a bool) so the isolated branch can compute the
     // agent's deterministic JIT-proxy port for its `browser.cdpUrl`.
     isolated_agent_id: Option<&str>,
     token: &str,
+    key_availability: ProviderKeyAvailability,
 ) {
     let is_isolated = isolated_agent_id.is_some();
     let config_path = state_dir.join("openclaw.json");
@@ -692,13 +708,10 @@ pub fn preflight_sanitize_and_merge_config(
         }
     }
 
-    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").is_ok();
-    let has_openai = crate::keychain::get_secret("OPENAI_API_KEY").is_ok();
-    let has_gemini = crate::keychain::get_secret("GEMINI_API_KEY").is_ok();
     let default_model = crate::model_constants::default_model_from_available_keys(
-        has_anthropic,
-        has_openai,
-        has_gemini,
+        key_availability.has_anthropic,
+        key_availability.has_openai,
+        key_availability.has_gemini,
     );
 
     cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": default_model });
@@ -777,6 +790,19 @@ pub fn preflight_sanitize_and_merge_config(
         let _ = std::fs::write(&config_path, updated);
         tracing::info!("preflight_sanitize_and_merge_config (isolated={}): ensured safe baseline config at {:?}", is_isolated, config_path);
     }
+}
+
+pub fn preflight_sanitize_and_merge_config(
+    state_dir: &std::path::Path,
+    isolated_agent_id: Option<&str>,
+    token: &str,
+) {
+    preflight_sanitize_and_merge_config_with_keys(
+        state_dir,
+        isolated_agent_id,
+        token,
+        discover_provider_key_availability(),
+    );
 }
 
 #[tauri::command]
@@ -1529,7 +1555,10 @@ for (const file of files) {
             .output()
             .await;
 
-        tracing::info!("ensure_browser_dependencies: Background Slack plugin installation complete for {}.", container_name);
+        tracing::info!(
+            "ensure_browser_dependencies: Background Slack plugin installation complete for {}.",
+            container_name
+        );
     });
 }
 
@@ -1676,7 +1705,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let agent_id = "agent-iso-test";
 
-        preflight_sanitize_and_merge_config(dir.path(), Some(agent_id), "test-token");
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            Some(agent_id),
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: false,
+                has_openai: false,
+                has_gemini: true,
+            },
+        );
 
         let cfg: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
@@ -1707,7 +1745,16 @@ mod tests {
     fn gateway_preflight_uses_shared_bridge_not_jit() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        preflight_sanitize_and_merge_config(dir.path(), None, "test-token");
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            None,
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: true,
+                has_openai: false,
+                has_gemini: false,
+            },
+        );
 
         let cfg: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
@@ -1722,6 +1769,39 @@ mod tests {
             cfg.pointer("/browser/cdpUrl").and_then(|v| v.as_str()),
             Some(expected_url.as_str()),
             "gateway must keep pointing at the shared bridge"
+        );
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary")
+                .and_then(|v| v.as_str()),
+            Some(crate::model_constants::DEFAULT_ANTHROPIC_MODEL),
+            "preflight model selection should be deterministic in tests and not depend on host keychain state"
+        );
+    }
+
+    #[test]
+    fn preflight_helper_unit_tests_do_not_touch_host_keychain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            None,
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: false,
+                has_openai: true,
+                has_gemini: false,
+            },
+        );
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
+        )
+        .expect("valid json");
+
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary")
+                .and_then(|v| v.as_str()),
+            Some(crate::model_constants::DEFAULT_OPENAI_MODEL)
         );
     }
 }

@@ -827,14 +827,14 @@ pub async fn start_slack_listener_internal(
             "appToken": app_token,
             "botToken": bot_token
         });
-        let account_json =
-            serde_json::to_string(&account_json).map_err(|e| format!("Token serialize error: {}", e))?;
+        let account_json = serde_json::to_string(&account_json)
+            .map_err(|e| format!("Token serialize error: {}", e))?;
         let binding_json = serde_json::json!({
             "agentId": id,
             "match": { "channel": "slack", "accountId": id }
         });
-        let binding_json =
-            serde_json::to_string(&binding_json).map_err(|e| format!("Binding serialize error: {}", e))?;
+        let binding_json = serde_json::to_string(&binding_json)
+            .map_err(|e| format!("Binding serialize error: {}", e))?;
 
         format!(
             r#"const fs=require('fs');
@@ -1089,7 +1089,9 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
     } else {
         let active_agents = db.list_agents().unwrap_or_default();
         let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
-        let changed = crate::openclaw::sync_container_channels_internal("canopy-gateway", &gateway_agents).await?;
+        let changed =
+            crate::openclaw::sync_container_channels_internal("canopy-gateway", &gateway_agents)
+                .await?;
         if changed {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(15),

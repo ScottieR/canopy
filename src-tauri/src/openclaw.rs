@@ -1585,6 +1585,8 @@ pub async fn update_agent_capabilities(
 ) -> Result<(), String> {
     // 1. Save to SQLite
     if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        crate::computer_control::validate_capabilities(&agent, &capabilities)
+            .map_err(|e| e.to_string())?;
         agent.capabilities = capabilities.clone();
         let _ = db.update_agent(&agent);
         let _ = db.log_audit(
@@ -2118,24 +2120,25 @@ pub async fn delete_agent(
 fn cleanup_agent_text(s: &str) -> String {
     if let Some(start) = s.find("<final>") {
         if let Some(end_offset) = s[start..].find("</final>") {
-            let inside = s[start + 7 .. start + end_offset].trim();
+            let inside = s[start + 7..start + end_offset].trim();
             let mut outside_str = s.to_string();
-            outside_str.replace_range(start .. start + end_offset + 8, "");
+            outside_str.replace_range(start..start + end_offset + 8, "");
             let outside = outside_str.trim();
-            
+
             if outside.is_empty() {
                 return inside.to_string();
             }
             if inside.is_empty() {
                 return outside.to_string();
             }
-            
+
             let inside_words: std::collections::HashSet<&str> = inside.split_whitespace().collect();
-            let outside_words: std::collections::HashSet<&str> = outside.split_whitespace().collect();
-            
+            let outside_words: std::collections::HashSet<&str> =
+                outside.split_whitespace().collect();
+
             let common_words = inside_words.intersection(&outside_words).count();
             let min_len = std::cmp::min(inside_words.len(), outside_words.len());
-            
+
             if min_len > 0 && (common_words as f64 / min_len as f64) > 0.5 {
                 if outside.len() > inside.len() {
                     return outside.to_string();
@@ -2742,7 +2745,7 @@ pub async fn get_conversation_history(
                         if role != "user" && role != "assistant" && role != "agent" {
                             continue;
                         }
-                        
+
                         let api = msg_obj.get("api").and_then(|v| v.as_str()).unwrap_or("");
                         if api == "cli" {
                             continue;
@@ -2861,6 +2864,16 @@ pub async fn get_conversation_history(
     }
 
     Ok(parsed_messages)
+}
+
+#[tauri::command]
+pub async fn list_agent_conversations(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::db::ConversationSummary>, String> {
+    db.list_agent_conversation_summaries(&agent_id, limit.unwrap_or(100))
+        .map_err(|e| format!("Failed to load conversations: {}", e))
 }
 
 #[tauri::command]
@@ -3861,6 +3874,29 @@ fn build_app_capabilities_md(agent: &crate::models::Agent) -> String {
             .join("\n")
     };
 
+    let mut mounted_folders_section = String::new();
+    if let Ok(path) = crate::workspace_manager::get_agent_workspace_config_path(&agent.id) {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&content) {
+                if !dirs.is_empty() {
+                    mounted_folders_section.push_str("## Live Mounted Host Folders\n");
+                    mounted_folders_section.push_str("The user has granted you direct, live access to specific folders on their host machine. These folders are mounted as volumes inside your container.\n");
+                    mounted_folders_section.push_str("**CRITICAL RULE**: To co-work with the user, you MUST edit the files located directly inside these mounted directories. Do not make duplicate sandbox copies.\n\n");
+                    for dir in dirs {
+                        let path = std::path::Path::new(&dir);
+                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                            mounted_folders_section.push_str(&format!(
+                                "- `{}` -> mounted at `/home/node/.openclaw/workspace/mounts/{}`\n",
+                                dir, name
+                            ));
+                        }
+                    }
+                    mounted_folders_section.push_str("\n");
+                }
+            }
+        }
+    }
+
     format!(
         "# APP_CAPABILITIES.md\n\n\
 _This file is app-managed and not user-editable. It describes what {name} can actually use right now._\n\n\
@@ -3889,6 +3925,7 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
 {spend_auto}\n\n\
 ## Connected Integrations\n\
 {integrations}\n\n\
+{mounted_folders}\
 ## Decision Rule\n\
 - Use the smallest enabled capability that gets the job done.\n\
 - If a missing capability would unlock meaningful user value, request it with a concrete rationale instead of repeatedly failing.\n",
@@ -3911,6 +3948,7 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         payments = capability_status(caps.payments, "Never spend or request money casually; follow approval thresholds and user intent strictly."),
         spend_auto = capability_status(caps.spend_auto, "Auto-approval is limited and should still be treated as high-trust behavior."),
         integrations = integrations,
+        mounted_folders = mounted_folders_section,
     )
 }
 
@@ -5999,14 +6037,20 @@ async fn boot_sync_agents_internal(
     }
     // ── Apply per-agent Slack/Google config to ALL RUNNING containers ────────
     // Group active agents by container name
-    let mut container_agents: std::collections::HashMap<String, Vec<crate::models::Agent>> = std::collections::HashMap::new();
+    let mut container_agents: std::collections::HashMap<String, Vec<crate::models::Agent>> =
+        std::collections::HashMap::new();
     for agent in &active_agents {
         let container_name = get_agent_container_name(&db, &agent.id);
-        container_agents.entry(container_name).or_default().push((*agent).clone());
+        container_agents
+            .entry(container_name)
+            .or_default()
+            .push((*agent).clone());
     }
 
     for (container_name, agents) in container_agents {
-        let channels_changed = sync_container_channels_internal(&container_name, &agents).await.unwrap_or(false);
+        let channels_changed = sync_container_channels_internal(&container_name, &agents)
+            .await
+            .unwrap_or(false);
         if channels_changed {
             tracing::info!(
                 "boot_sync_agents: per-agent channel config was written — \
@@ -6020,7 +6064,7 @@ async fn boot_sync_agents_internal(
                     .output(),
             )
             .await;
-            
+
             // Wait for gateway ready (only necessary for the main gateway)
             if container_name == "canopy-gateway" {
                 if let Err(e) = wait_for_gateway_ready(60, Some(app_handle.clone())).await {
@@ -6297,7 +6341,7 @@ pub async fn sync_container_channels_internal(
         &bindings,
         imessage_enabled,
     );
-    
+
     // Cache miss or isolated agent: check the file.
     if file_channels_match(
         container_name,
@@ -6422,7 +6466,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 
     // Since we now call this for multiple containers, we rely purely on the file check
     // instead of an in-memory hash cache, because the cache would thrash between containers.
-    
+
     Ok(true)
 }
 
@@ -7301,6 +7345,25 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
             .join("\n")
     };
 
+    let computer_control_block = match crate::computer_control::control_plane(caps) {
+        crate::computer_control::ComputerControlPlane::Disabled => "Disabled.".to_string(),
+        crate::computer_control::ComputerControlPlane::Container => {
+            "Enabled for an isolated container desktop only. This does not grant host macOS control."
+                .to_string()
+        }
+        crate::computer_control::ComputerControlPlane::Host => {
+            "Host macOS control is enabled in principle, but every live session still requires explicit human approval, a short timebox, and emergency-stop support."
+                .to_string()
+        }
+    };
+
+    let screen_record_block = if caps.screen_record {
+        "Enabled. Screenshots or accessibility snapshots may be provided for observation and audit."
+            .to_string()
+    } else {
+        "Disabled.".to_string()
+    };
+
     let content = format!(
         "# PERMISSIONS.md — What you have access to\n\n\
          _This file is regenerated whenever your permissions change. Read it at the start \
@@ -7335,6 +7398,10 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          in through Canopy's trusted-login window (a non-automated Chrome on the same \
          profile you browse with), and once they resume automation the session is \
          yours.\n\n\
+         ## Computer control\n\
+         {computer_control}\n\n\
+         ## Screen recording / observation\n\
+         {screen_record}\n\n\
          ## Saved web logins\n\
          The user has stored credentials for these domains. Open them with your \
          managed browser profile (see \"Using the browser\" above — default profile, \
@@ -7361,7 +7428,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          you'll get `{{\"status\":\"granted\",\"scope\":\"once|session|forever\"}}`; on deny, \
          `{{\"status\":\"denied\"}}` with HTTP 403.\n\n\
          Valid `permission_id` values:\n\
-         - Skill names: `browser`, `proxy`, `vision`, `canvas`, `coding`, `gog`, `summarize`, `genui`\n\
+         - Skill names: `browser`, `proxy`, `vision`, `canvas`, `coding`, `gog`, `summarize`, `genui`, `computer_control`, `screen_record`, `host_control`\n\
          - Integration names: `gmail`, `googleCalendar`, `googleDrive`, `slack`, `github`, etc.\n\
          - Domain access: `domain:example.com` (adds to your web allowlist)\n\n\
          ## Asking the user to look at your browser\n\n\
@@ -7400,6 +7467,8 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         integrations = integrations_block,
         providers   = providers_block,
         allowlist   = allowlist_block,
+        computer_control = computer_control_block,
+        screen_record = screen_record_block,
         saved_logins = saved_logins_block,
         isolation   = isolation_note,
     );

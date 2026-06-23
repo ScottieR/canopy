@@ -840,6 +840,137 @@ pub struct ConnectionDiagnostic {
     pub message: String,
 }
 
+async fn preflight_agent_connection_internal(
+    agent_id: &str,
+    integration: &str,
+) -> Result<ConnectionDiagnostic, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    match integration {
+        "github" => {
+            if let Ok(token) =
+                crate::keychain::get_secret(&format!("github-access-token-{}", agent_id))
+            {
+                let res = client
+                    .get("https://api.github.com/user")
+                    .header("User-Agent", "Canopy-Agent")
+                    .bearer_auth(token)
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "GitHub".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Authenticated successfully.".to_string()
+                    } else {
+                        "GitHub token invalid. Reconfigure in Connections tab.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "GitHub".to_string(),
+                    is_ok: false,
+                    message: "Missing GitHub token.".to_string(),
+                })
+            }
+        }
+        "telegram" => {
+            if let Ok(token) =
+                crate::keychain::get_secret(&format!("agent_{}_telegram_bot_token", agent_id))
+            {
+                let res = client
+                    .get(&format!("https://api.telegram.org/bot{}/getMe", token))
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "Telegram".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Bot is active.".to_string()
+                    } else {
+                        "Invalid Telegram token.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "Telegram".to_string(),
+                    is_ok: false,
+                    message: "Missing Telegram token.".to_string(),
+                })
+            }
+        }
+        "discord" => {
+            if let Ok(token) =
+                crate::keychain::get_secret(&format!("agent_{}_discord_bot_token", agent_id))
+            {
+                let res = client
+                    .get("https://discord.com/api/v10/users/@me")
+                    .header("Authorization", format!("Bot {}", token))
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "Discord".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Bot authenticated.".to_string()
+                    } else {
+                        "Invalid Discord token.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "Discord".to_string(),
+                    is_ok: false,
+                    message: "Missing Discord token.".to_string(),
+                })
+            }
+        }
+        "twilio" => {
+            if let (Ok(sid), Ok(token)) = (
+                crate::keychain::get_secret(&format!("agent_{}_twilio_account_sid", agent_id)),
+                crate::keychain::get_secret(&format!("agent_{}_twilio_auth_token", agent_id)),
+            ) {
+                let res = client
+                    .get(&format!(
+                        "https://api.twilio.com/2010-04-01/Accounts/{}.json",
+                        sid
+                    ))
+                    .basic_auth(&sid, Some(&token))
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "Twilio".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Account verified.".to_string()
+                    } else {
+                        "Invalid Twilio credentials.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "Twilio".to_string(),
+                    is_ok: false,
+                    message: "Missing Twilio credentials.".to_string(),
+                })
+            }
+        }
+        _ => Err(format!("Unsupported integration preflight: {}", integration)),
+    }
+}
+
+#[tauri::command]
+pub async fn preflight_agent_connection(
+    agent_id: String,
+    integration: String,
+) -> Result<ConnectionDiagnostic, String> {
+    preflight_agent_connection_internal(&agent_id, &integration).await
+}
+
 /// Returns `(gateway_state_is_healthy, human_readable_reason)`.
 ///
 /// Verifies that the live `openclaw.json` actually has this agent's Slack account
@@ -1058,104 +1189,13 @@ pub async fn ping_agent_connections_internal(
                 }
             }
             "github" => {
-                if let Ok(token) =
-                    crate::keychain::get_secret(&format!("github-access-token-{}", agent_id))
-                {
-                    let res = client
-                        .get("https://api.github.com/user")
-                        .header("User-Agent", "Canopy-Agent")
-                        .bearer_auth(token)
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "GitHub".to_string(),
-                                is_ok: true,
-                                message: "Authenticated successfully.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "GitHub".to_string(),
-                                is_ok: false,
-                                message: "GitHub token invalid. Reconfigure in Connections tab."
-                                    .to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "GitHub".to_string(),
-                        is_ok: false,
-                        message: "Missing GitHub token.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "github").await?);
             }
             "telegram" => {
-                if let Ok(token) =
-                    crate::keychain::get_secret(&format!("agent_{}_telegram_bot_token", agent_id))
-                {
-                    let res = client
-                        .get(&format!("https://api.telegram.org/bot{}/getMe", token))
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Telegram".to_string(),
-                                is_ok: true,
-                                message: "Bot is active.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Telegram".to_string(),
-                                is_ok: false,
-                                message: "Invalid Telegram token.".to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "Telegram".to_string(),
-                        is_ok: false,
-                        message: "Missing Telegram token.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "telegram").await?);
             }
             "discord" => {
-                if let Ok(token) =
-                    crate::keychain::get_secret(&format!("agent_{}_discord_bot_token", agent_id))
-                {
-                    let res = client
-                        .get("https://discord.com/api/v10/users/@me")
-                        .header("Authorization", format!("Bot {}", token))
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Discord".to_string(),
-                                is_ok: true,
-                                message: "Bot authenticated.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Discord".to_string(),
-                                is_ok: false,
-                                message: "Invalid Discord token.".to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "Discord".to_string(),
-                        is_ok: false,
-                        message: "Missing Discord token.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "discord").await?);
             }
             "whatsapp" => {
                 if crate::keychain::get_secret(&format!("agent_{}_whatsapp_api_token", agent_id))
@@ -1175,41 +1215,7 @@ pub async fn ping_agent_connections_internal(
                 }
             }
             "twilio" => {
-                if let (Ok(sid), Ok(token)) = (
-                    crate::keychain::get_secret(&format!("agent_{}_twilio_account_sid", agent_id)),
-                    crate::keychain::get_secret(&format!("agent_{}_twilio_auth_token", agent_id)),
-                ) {
-                    let res = client
-                        .get(&format!(
-                            "https://api.twilio.com/2010-04-01/Accounts/{}.json",
-                            sid
-                        ))
-                        .basic_auth(&sid, Some(&token))
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Twilio".to_string(),
-                                is_ok: true,
-                                message: "Account verified.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Twilio".to_string(),
-                                is_ok: false,
-                                message: "Invalid Twilio credentials.".to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "Twilio".to_string(),
-                        is_ok: false,
-                        message: "Missing Twilio credentials.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "twilio").await?);
             }
             other => {
                 if !other.starts_with("web_") {

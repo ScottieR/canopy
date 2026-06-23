@@ -42,6 +42,13 @@ export function TelegramCompanion() {
       if (typeof invoke === "function") {
         await invoke("configure_telegram", { agentId, botToken: telegramToken.trim() });
         setTestStatus("success");
+        try {
+          const { emit } = await import('@tauri-apps/api/event');
+          await emit("companion-finished", { type: "telegram" });
+          await emit("refresh_integrations");
+        } catch (emitErr) {
+          console.warn("Telegram companion emit failed", emitErr);
+        }
         window.dispatchEvent(new Event("refresh_integrations"));
         
         setTimeout(async () => {

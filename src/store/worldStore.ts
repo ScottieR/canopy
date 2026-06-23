@@ -51,6 +51,9 @@ export interface Agent {
     browser: boolean;
     proxy: boolean;
     vision: boolean;
+    computer_control?: boolean;
+    host_control?: boolean;
+    screen_record?: boolean;
     canvas: boolean;
     coding: boolean;
     gog: boolean;
@@ -322,6 +325,9 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "browser", label: "Web Browser", description: "Navigate websites and interact with DOM elements", enabled: true, category: "skills" },
   { id: "proxy", label: "Browser Proxy", description: "Intercept and proxy web requests", enabled: false, category: "skills" },
   { id: "vision", label: "Computer Vision", description: "Analyze images and screen content", enabled: false, category: "skills" },
+  { id: "computer_control", label: "Computer Control Sandbox", description: "Control an isolated container desktop using screenshots and typed input events", enabled: false, category: "skills" },
+  { id: "host_control", label: "Host Computer Control", description: "Request tightly time-boxed control of host macOS apps. Isolated agents only.", enabled: false, category: "execution" },
+  { id: "screen_record", label: "Screen Recording", description: "Receive screenshots or accessibility snapshots for observation, auditing, and teaching flows", enabled: false, category: "data" },
   { id: "canvas", label: "Canvas Editor", description: "Edit and manipulate visual layouts", enabled: false, category: "skills" },
   { id: "coding", label: "Code Execution", description: "Run scripts and evaluate code locally", enabled: true, category: "skills" },
   { id: "gog", label: "Search Engine", description: "Query the web for information", enabled: true, category: "skills" },

@@ -6,12 +6,14 @@ import { PasswordsCompanion } from "./components/Companion/PasswordsCompanion";
 import { GithubCompanion } from "./components/Companion/GithubCompanion";
 import { DiscordCompanion } from "./components/Companion/DiscordCompanion";
 import { TelegramCompanion } from "./components/Companion/TelegramCompanion";
+import { FigmaCompanion } from "./components/Companion/FigmaCompanion";
 import { ChatCompanion } from "./components/Companion/ChatCompanion";
 import { BluetoothCompanion } from "./components/Companion/BluetoothCompanion";
 import { BrowserPopout } from "./components/BrowserPopout";
 import { GenUIRenderer } from "./components/GenUI/GenUIRenderer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { MiniAppStandalone } from "./components/MiniAppStandalone";
+import { resolveStandaloneViewKind } from "./utils/standaloneView";
 import "./styles/globals.css";
 
 const companionType = new URLSearchParams(window.location.search).get("companion");
@@ -19,6 +21,13 @@ const browserAgentId = new URLSearchParams(window.location.search).get("browser"
 const chatCompanionAgentId = new URLSearchParams(window.location.search).get("chatCompanion");
 const genuiPayload = new URLSearchParams(window.location.search).get("genui");
 const miniappPayload = new URLSearchParams(window.location.search).get("miniapp");
+const standaloneViewKind = resolveStandaloneViewKind({
+  miniappPayload,
+  genuiPayload,
+  browserAgentId,
+  chatCompanionAgentId,
+  companionType,
+});
 
 // ── Global external-link interceptor ──────────────────────────────────────────
 //
@@ -206,9 +215,9 @@ root.render(
   <React.StrictMode>
     <ErrorBoundary showDetails={true} allowNavigation={true}>
       <WindowWrapper>
-        {miniappPayload ? (
+        {standaloneViewKind === "miniapp" ? (
           <MiniAppStandalone payload={miniappPayload} />
-        ) : genuiPayload ? (
+        ) : standaloneViewKind === "genui" ? (
           <div style={{ width: "100%", height: "100%", padding: 20, boxSizing: "border-box", background: "var(--surface-base)" }}>
             <GenUIRenderer 
               app={JSON.parse(decodeURIComponent(genuiPayload))} 
@@ -228,23 +237,25 @@ root.render(
               }} 
             />
           </div>
-        ) : browserAgentId ? (
+        ) : standaloneViewKind === "browser" ? (
           <BrowserPopout agentId={browserAgentId} />
-        ) : chatCompanionAgentId ? (
+        ) : standaloneViewKind === "chatCompanion" ? (
           <ChatCompanion />
-        ) : companionType === "slack" ? (
+        ) : standaloneViewKind === "slack" ? (
           <SlackCompanion />
-        ) : companionType === "passwords" ? (
+        ) : standaloneViewKind === "passwords" ? (
           <PasswordsCompanion />
-        ) : companionType === "github" ? (
+        ) : standaloneViewKind === "github" ? (
           <GithubCompanion />
-        ) : companionType === "discord" ? (
+        ) : standaloneViewKind === "discord" ? (
           <DiscordCompanion />
-        ) : companionType === "telegram" ? (
+        ) : standaloneViewKind === "telegram" ? (
           <TelegramCompanion />
-        ) : companionType === "bluetooth" ? (
+        ) : standaloneViewKind === "figma" ? (
+          <FigmaCompanion />
+        ) : standaloneViewKind === "bluetooth" ? (
           <BluetoothCompanion />
-        ) : companionType ? (
+        ) : standaloneViewKind === "companionGuide" ? (
           <CompanionGuide type={companionType} />
         ) : (
           <>

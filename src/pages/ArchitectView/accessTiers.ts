@@ -41,6 +41,7 @@ export const PERMISSION_RISK_BAND: Record<string, "low" | "medium" | "high"> = {
   coding: "medium",
   gog: "medium",
   photos: "medium",
+  computer_control: "medium",
 
   // high — can take real-world actions on the user's behalf or intercept traffic
   autonomous: "high",
@@ -49,6 +50,8 @@ export const PERMISSION_RISK_BAND: Record<string, "low" | "medium" | "high"> = {
   payments: "high",
   spend_auto: "high",
   imessage: "high",
+  screen_record: "high",
+  host_control: "high",
 };
 
 // The full unified tier definitions. Listing a permission as `false` means "turn off
@@ -83,6 +86,9 @@ export const ACCESS_TIERS: AccessTier[] = [
       imessage: false,
       photos: false,
       browser: false,
+      computer_control: false,
+      host_control: false,
+      screen_record: false,
       proxy: false,
       canvas: false,
       coding: false,
@@ -112,6 +118,9 @@ export const ACCESS_TIERS: AccessTier[] = [
       coding: true,
       gog: true,
       canvas: true,
+      computer_control: false,
+      host_control: false,
+      screen_record: false,
       // Autonomous execution + scheduling on by default — defense-in-depth
       // comes from capability permissions (payments/file_write/imessage all off).
       // Agents can chain reasoning loops; they just can't spend money or write files.
@@ -138,6 +147,7 @@ export const ACCESS_TIERS: AccessTier[] = [
     enabled: {
       memory_write: true, file_read: true, vision: true, summarize: true,
       ext_network: true, int_network: true, browser: true, coding: true, gog: true, canvas: true,
+      computer_control: false, host_control: false, screen_record: false,
       autonomous: true, scheduled: true, file_write: true, payments: true, spend_auto: true,
       imessage: true, photos: true, proxy: true,
     },

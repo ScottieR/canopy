@@ -5,6 +5,7 @@ This plan is the refactor guardrail for the Canopy desktop app and Canopy mobile
 ## Refactor Goals
 
 - Preserve the zero-trust credential model: agent integrations use per-agent keys only, especially Slack and other third-party access.
+- Preserve computer-control guardrails: host control stays isolated, opt-in, session-gated, and separately tested from container control.
 - Split oversized modules without changing user-visible behavior.
 - Keep Tauri command boundaries explicit, validated, rate limited where expensive, and covered by regression tests.
 - Keep mobile chat, note capture, inbox actions, and forum/project sync behavior stable while dispatch code is extracted.
@@ -147,6 +148,7 @@ Regression focus:
 | --- | --- | --- |
 | Backend validation | Rust unit | IPC secret keys, GitHub token characters, mobile command allowlist |
 | Backend safety | Rust integration | Injection payloads, workspace path safety, authorization, rate limits |
+| Computer control | Rust unit + Vitest | Capability-combination validation, emergency stop behavior, UI warning banners |
 | Frontend store | Vitest | Forum persistence, budget accounting, circuit breaker state |
 | Frontend security | Vitest | GenUI iframe sandbox, attachment source rewriting |
 | Desktop build | Vite build | TypeScript and production bundle compatibility |

@@ -30,12 +30,10 @@ fn load_vite_api_url() -> Option<String> {
         ]
     };
 
-    let env_files = mode_files
-        .into_iter()
-        .chain([
-            manifest_dir.join("../.env.local"),
-            manifest_dir.join("../.env"),
-        ]);
+    let env_files = mode_files.into_iter().chain([
+        manifest_dir.join("../.env.local"),
+        manifest_dir.join("../.env"),
+    ]);
 
     for env_file in env_files {
         let contents = match fs::read_to_string(&env_file) {

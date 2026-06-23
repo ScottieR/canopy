@@ -21,6 +21,8 @@ import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { getAssetUrl } from "../utils/assets";
+import { buildCompanionUrl } from "../utils/connectorCatalog";
+import { getOnboardingIntegrationIds } from "../utils/onboardingIntegrations";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
@@ -143,22 +145,24 @@ export function OnboardingWizard() {
   const [pendingHighRiskToggle, setPendingHighRiskToggle] = useState<{ id: string, enabled: boolean } | null>(null);
   const [showHighRiskModal, setShowHighRiskModal] = useState(false);
 
-  const isHighRisk = (id: string) => ["payments", "spend_auto", "file_write", "autonomous", "ext_network", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(id);
+  const isHighRisk = (id: string) => ["payments", "spend_auto", "file_write", "autonomous", "ext_network", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize", "computer_control", "host_control", "screen_record"].includes(id);
 
   const [folderAccessType, setFolderAccessType] = useState<"specific" | "all">("specific");
   const [selectedFolderPath, setSelectedFolderPath] = useState("");
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [testStatusMessage, setTestStatusMessage] = useState("");
 
   // Workspace-level service connection status (shared across all agents)
   const [wsSlackConnected, setWsSlackConnected] = useState(false);
   const [wsGmailConnected, setWsGmailConnected] = useState(false);
   const [wsCalConnected, setWsCalConnected] = useState(false);
 
-  // Only agent-local plugins go through Step 5 integration testing
-  const AGENT_LOCAL_PLUGINS = ["slack", "folders", "imessage", "photos"];
+  // Step 5 covers each connection the wizard can actively set up or verify
+  // before the real agent record is created.
+  const ONBOARDING_SETUP_PLUGINS = ["slack", "github", "telegram", "discord", "twilio", "folders", "imessage", "photos"];
   const enabledPlugins = Object.entries(plugins)
-    .filter(([k, v]) => v && AGENT_LOCAL_PLUGINS.includes(k))
+    .filter(([k, v]) => v && ONBOARDING_SETUP_PLUGINS.includes(k))
     .map(([k]) => k);
 
   const [slackAppToken, setSlackAppToken] = useState("");
@@ -170,6 +174,8 @@ export function OnboardingWizard() {
   const [selectedIMessageThreads, setSelectedIMessageThreads] = useState<string[]>([]);
   const [selectedSlackChannels, setSelectedSlackChannels] = useState<string[]>([]);
   const [imessageAccessLevel, setImessageAccessLevel] = useState<"read-only" | "read-send">("read-only");
+  const [pendingGithubRepos, setPendingGithubRepos] = useState<string[]>([]);
+  const [twilioDraft, setTwilioDraft] = useState({ accountSid: "", authToken: "", phoneNumber: "" });
 
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
@@ -245,7 +251,11 @@ export function OnboardingWizard() {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
         const nameMap: any = { slack: 'Slack', discord: 'Discord', telegram: 'Telegram', github: 'GitHub' };
         new WebviewWindow('companion_' + key + '_' + Date.now(), {
-          url: `/index.html?companion=${key}&agentName=${encodeURIComponent(agentName || 'Agent')}&isNew=true`,
+          url: buildCompanionUrl(key, {
+            agentId: optimisticId,
+            agentName: agentName || "Agent",
+            isNew: true,
+          }),
           title: `Setup ${nameMap[key]}`,
           width: 420,
           height: 760,
@@ -271,8 +281,7 @@ export function OnboardingWizard() {
           await invoke("start_imessage_watcher", { appHandle: null }).catch(() => {});
           const granted = await invoke<boolean>("check_full_disk_access");
           if (!granted) {
-            const { open } = await import('@tauri-apps/plugin-shell');
-            await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+            await invoke("open_full_disk_access_settings");
           }
           checkConnections();
         } catch (e) {}
@@ -286,13 +295,17 @@ export function OnboardingWizard() {
         const { listen: tauriListen } = await import('@tauri-apps/api/event');
         const listen = (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) ? tauriListen : async () => () => {};
         const unlisten1 = await listen('companion-finished', async (e: any) => {
-          const { type, key, channels, appToken, botToken } = e.payload || {};
+          const { type, key, channels, appToken, botToken, selectedRepos } = e.payload || {};
           if (type === "slack") {
             setWsSlackConnected(true);
             setPlugins(prev => ({ ...prev, slack: true }));
             if (channels) setSelectedSlackChannels(channels);
             if (appToken) setSlackAppToken(appToken);
             if (botToken) setSlackBotToken(botToken);
+          } else if (type === "github") {
+            setPlugins(prev => ({ ...prev, github: true }));
+            setPendingGithubRepos(Array.isArray(selectedRepos) ? selectedRepos : []);
+            setTestStatusMessage("GitHub token saved. Run verification here before launch.");
           } else if (key) {
             setApiKey(key);
             if (type === "gemini") setLlmProvider("Google Gemini");
@@ -342,6 +355,23 @@ export function OnboardingWizard() {
   const [isDeployingImport, setIsDeployingImport] = useState(false);
   const [createAgentError, setCreateAgentError] = useState("");
   const [isCreatingAgent, setIsCreatingAgent] = useState(false);
+
+  const runConnectionPreflight = async (integration: "github" | "telegram" | "discord" | "twilio") => {
+    setTestStatus("testing");
+    setTestStatusMessage("");
+    try {
+      const diagnostic = await invoke<{ service: string; is_ok: boolean; message: string }>("preflight_agent_connection", {
+        agentId: optimisticId,
+        integration,
+      });
+      setTestStatus(diagnostic.is_ok ? "success" : "error");
+      setTestStatusMessage(diagnostic.message);
+    } catch (e) {
+      console.error(`Failed to preflight ${integration}:`, e);
+      setTestStatus("error");
+      setTestStatusMessage(`Could not verify ${integration}.`);
+    }
+  };
 
   useEffect(() => {
     if (step === -1) {
@@ -737,11 +767,46 @@ export function OnboardingWizard() {
           }
         }
 
-        let initialIntegrations = [];
-        if (plugins.slack) initialIntegrations.push("slack");
-        if (plugins.email) initialIntegrations.push("email_read");
-        if (plugins.calendar) initialIntegrations.push("calendar_read");
-        if (plugins.imessage) initialIntegrations.push("imessage");
+        let githubReady = false;
+        let telegramReady = false;
+        let discordReady = false;
+        let twilioReady = false;
+
+        if (plugins.github) {
+          const githubToken = String(
+            await invoke("get_secret_cmd", { key: `github-access-token-${newAgentData.id}` }).catch(() => "") || ""
+          ).trim();
+          if (githubToken) {
+            try {
+              await invoke("configure_github", { agentId: newAgentData.id, personalAccessToken: githubToken });
+              githubReady = true;
+            } catch (e) {
+              console.warn("Failed to finalize GitHub setup", e);
+            }
+          }
+        }
+
+        telegramReady = !!String(
+          await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_telegram_bot_token` }).catch(() => "") || ""
+        ).trim();
+        discordReady = !!String(
+          await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_discord_bot_token` }).catch(() => "") || ""
+        ).trim();
+        twilioReady =
+          !!String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_twilio_account_sid` }).catch(() => "") || "").trim() &&
+          !!String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_twilio_auth_token` }).catch(() => "") || "").trim() &&
+          !!String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_twilio_phone_number` }).catch(() => "") || "").trim();
+
+        const initialIntegrations = getOnboardingIntegrationIds(
+          {
+            ...plugins,
+            github: githubReady,
+            telegram: telegramReady,
+            discord: discordReady,
+            twilio: twilioReady,
+          },
+          { githubRepos: pendingGithubRepos }
+        );
 
         if (initialIntegrations.length > 0) {
           try {
@@ -2095,7 +2160,11 @@ export function OnboardingWizard() {
                       if (typeof invoke === 'function') {
                         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                         new WebviewWindow('companion_slack_' + Date.now(), {
-                          url: `/index.html?companion=slack&agentId=${optimisticId}&agentName=${encodeURIComponent(agentName || "Agent")}&isNew=true`,
+                          url: buildCompanionUrl("slack", {
+                            agentId: optimisticId,
+                            agentName: agentName || "Agent",
+                            isNew: true,
+                          }),
                           title: 'Setup Slack',
                           width: 420,
                           height: 760,
@@ -2460,7 +2529,107 @@ export function OnboardingWizard() {
               </div>
             )}
 
-            {testStatus === "idle" && enabledPlugins[testPluginIndex] !== "slack" && enabledPlugins[testPluginIndex] !== "imessage" && enabledPlugins[testPluginIndex] !== "folders" && enabledPlugins[testPluginIndex] !== "email" && enabledPlugins[testPluginIndex] !== "calendar" && enabledPlugins[testPluginIndex] !== "photos" && (
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "github" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 12 }}>
+                  GitHub setup needs a Personal Access Token and repository selection.
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 20 }}>
+                  Launch the side-by-side guide, finish token creation, then verify access here before launch.
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={() => handleSetupIntegration("github")} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Launch GitHub Setup
+                  </button>
+                  <button onClick={() => runConnectionPreflight("github")} style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.25)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Verify GitHub Access
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "telegram" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 12 }}>
+                  Telegram uses a dedicated bot token from BotFather.
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={() => handleSetupIntegration("telegram")} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Launch Telegram Setup
+                  </button>
+                  <button onClick={() => runConnectionPreflight("telegram")} style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.25)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Verify Telegram Access
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "discord" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 12 }}>
+                  Discord needs a dedicated bot token from the Developer Portal.
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={() => handleSetupIntegration("discord")} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Launch Discord Setup
+                  </button>
+                  <button onClick={() => runConnectionPreflight("discord")} style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.25)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Verify Discord Access
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "twilio" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 16 }}>
+                  Twilio needs your Account SID, Auth Token, and a phone number to bind to this agent.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+                  <PasswordInput
+                    value={twilioDraft.accountSid}
+                    onChange={e => setTwilioDraft(prev => ({ ...prev, accountSid: e.target.value }))}
+                    placeholder="Account SID (AC...)"
+                    style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)" }}
+                  />
+                  <PasswordInput
+                    value={twilioDraft.authToken}
+                    onChange={e => setTwilioDraft(prev => ({ ...prev, authToken: e.target.value }))}
+                    placeholder="Auth Token"
+                    style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)" }}
+                  />
+                  <input
+                    value={twilioDraft.phoneNumber}
+                    onChange={e => setTwilioDraft(prev => ({ ...prev, phoneNumber: e.target.value }))}
+                    placeholder="+1 555 123 4567"
+                    style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 13, outline: "none", boxSizing: "border-box" }}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={async () => {
+                    setTestStatus("testing");
+                    setTestStatusMessage("");
+                    try {
+                      await invoke("configure_twilio", {
+                        agentId: optimisticId,
+                        accountSid: twilioDraft.accountSid,
+                        authToken: twilioDraft.authToken,
+                        phoneNumber: twilioDraft.phoneNumber,
+                      });
+                      await runConnectionPreflight("twilio");
+                    } catch (e) {
+                      console.error("Failed to configure Twilio:", e);
+                      setTestStatus("error");
+                      setTestStatusMessage("Twilio setup failed. Check the SID, token, and phone number.");
+                    }
+                  }} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Save and Verify Twilio
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] !== "slack" && enabledPlugins[testPluginIndex] !== "imessage" && enabledPlugins[testPluginIndex] !== "folders" && enabledPlugins[testPluginIndex] !== "email" && enabledPlugins[testPluginIndex] !== "calendar" && enabledPlugins[testPluginIndex] !== "photos" && enabledPlugins[testPluginIndex] !== "github" && enabledPlugins[testPluginIndex] !== "telegram" && enabledPlugins[testPluginIndex] !== "discord" && enabledPlugins[testPluginIndex] !== "twilio" && (
               <>
                 <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 16 }}>Test Action: Send a test ping to your {enabledPlugins[testPluginIndex]}.</div>
                 <button onClick={() => {
@@ -2483,7 +2652,7 @@ export function OnboardingWizard() {
               <div style={{ color: "#E53E3E", fontSize: 16, fontWeight: 600, textAlign: "center" }}>
                 <span style={{ fontSize: 32, display: "block", marginBottom: 8 }}>❌</span>
                 Connection Failed.
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>Make sure both tokens are valid and the app is installed.</div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>{testStatusMessage || "Make sure the required credentials are valid and setup is complete."}</div>
                 <button onClick={() => setTestStatus("idle")} style={{ marginTop: 16, padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", cursor: "pointer", fontSize: 13 }}>Try Again</button>
               </div>
             )}
@@ -2495,6 +2664,9 @@ export function OnboardingWizard() {
                 {enabledPlugins[testPluginIndex] === "slack" && slackWorkspaceMsg && (
                   <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>{slackWorkspaceMsg}</div>
                 )}
+                {!slackWorkspaceMsg && testStatusMessage && (
+                  <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>{testStatusMessage}</div>
+                )}
               </div>
             )}
           </div>
@@ -2504,9 +2676,11 @@ export function OnboardingWizard() {
               if (testPluginIndex > 0) {
                 setTestPluginIndex(testPluginIndex - 1);
                 setTestStatus("idle");
+                setTestStatusMessage("");
               } else {
                 setStep(4);
                 setTestStatus("idle");
+                setTestStatusMessage("");
               }
             }} style={{
               padding: "12px 24px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)",
@@ -2520,6 +2694,7 @@ export function OnboardingWizard() {
                 if (testPluginIndex < enabledPlugins.length - 1) {
                   setTestPluginIndex(testPluginIndex + 1);
                   setTestStatus("idle");
+                  setTestStatusMessage("");
                 } else {
                   setStep(6);
                 }

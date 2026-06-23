@@ -29,6 +29,18 @@ pub struct Message {
     pub timestamp: String,
 }
 
+/// Lightweight thread metadata for frontend hydration and recovery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConversationSummary {
+    pub id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: u32,
+    pub first_user_message: Option<String>,
+}
+
 /// Represents an audit log entry
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuditEntry {
@@ -436,15 +448,17 @@ impl Database {
             "SELECT id, item_type, status, payload_json, timestamp FROM inbox_items ORDER BY timestamp DESC"
         )?;
 
-        let items = stmt.query_map([], |row| {
-            Ok(InboxItem {
-                id: row.get(0)?,
-                item_type: row.get(1)?,
-                status: row.get(2)?,
-                payload_json: row.get(3)?,
-                timestamp: row.get(4)?,
-            })
-        })?.collect::<SqlResult<Vec<_>>>()?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok(InboxItem {
+                    id: row.get(0)?,
+                    item_type: row.get(1)?,
+                    status: row.get(2)?,
+                    payload_json: row.get(3)?,
+                    timestamp: row.get(4)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(items)
     }
@@ -454,7 +468,13 @@ impl Database {
         conn.execute(
             "INSERT INTO inbox_items (id, item_type, status, payload_json, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![&item.id, &item.item_type, &item.status, &item.payload_json, &item.timestamp],
+            params![
+                &item.id,
+                &item.item_type,
+                &item.status,
+                &item.payload_json,
+                &item.timestamp
+            ],
         )?;
         Ok(())
     }
@@ -880,6 +900,53 @@ impl Database {
 
         // Reverse to get oldest first
         Ok(messages.into_iter().rev().collect())
+    }
+
+    /// List durable conversation summaries for an agent, newest activity first.
+    pub fn list_agent_conversation_summaries(
+        &self,
+        agent_id: &str,
+        limit: u32,
+    ) -> SqlResult<Vec<ConversationSummary>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                c.id,
+                c.agent_id,
+                c.title,
+                c.created_at,
+                c.updated_at,
+                COUNT(m.id) AS message_count,
+                (
+                    SELECT content
+                    FROM messages fm
+                    WHERE fm.conversation_id = c.id
+                      AND fm.role = 'user'
+                    ORDER BY fm.timestamp ASC
+                    LIMIT 1
+                ) AS first_user_message
+             FROM conversations c
+             LEFT JOIN messages m ON m.conversation_id = c.id
+             WHERE c.agent_id = ?1
+             GROUP BY c.id, c.agent_id, c.title, c.created_at, c.updated_at
+             ORDER BY c.updated_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![agent_id, limit as i32], |row| {
+            Ok(ConversationSummary {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                title: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                message_count: row.get::<_, i64>(5)?.max(0) as u32,
+                first_user_message: row.get(6)?,
+            })
+        })?;
+
+        rows.collect::<SqlResult<Vec<_>>>()
     }
 
     // ─── Bridge Operations ──────────────────────────────────────────────────

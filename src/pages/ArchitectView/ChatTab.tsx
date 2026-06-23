@@ -113,6 +113,50 @@ const formatMessageTime = (dateInput: Date | string | number) => {
 const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
 const HTML_EXTS  = /\.(html?|htm)$/i;
 
+type BackendConversationSummary = {
+  id: string;
+  agent_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  first_user_message?: string | null;
+};
+
+function toUnixMs(value?: string | number | null): number {
+  if (typeof value === "number") return value;
+  if (!value) return Date.now();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function deriveConversationTitle(rawTitle?: string | null, firstUserMessage?: string | null): string {
+  const preferred = firstUserMessage?.trim() || rawTitle?.trim() || "Untitled conversation";
+  const fallbackTitle = rawTitle?.trim();
+  const titleSource =
+    !fallbackTitle ||
+    fallbackTitle === "New Conversation" ||
+    fallbackTitle.startsWith("Conversation with ")
+      ? preferred
+      : fallbackTitle;
+
+  return titleSource.length > 40 ? titleSource.slice(0, 40).trimEnd() + "…" : titleSource;
+}
+
+function sameMessages(a: ChatMessage[] = [], b: ChatMessage[] = []): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i];
+    const right = b[i];
+    if (left.id !== right.id) return false;
+    if (left.sender !== right.sender) return false;
+    if (left.text !== right.text) return false;
+    if ((left.attachments?.length || 0) !== (right.attachments?.length || 0)) return false;
+  }
+  return true;
+}
+
 function EmbedPreview({ agentId, refName, title, height, messageId }: { agentId: string; refName: string; title: string; height: string; messageId?: string }) {
   const [content, setContent] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
@@ -371,6 +415,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   // We use a ref of the last seen ID so we only re-seed on actual switches,
   // not on the routine setAgents calls that fire after every message.
   const lastSeenConvIdRef = useRef<string | null | undefined>(agent.activeConversationId);
+  const suppressThreadActivityTouchRef = useRef(false);
   // Throttle for background boot_sync re-registration after gateway timeouts
   // (used in handleSendMessage's error recovery; was referenced without being
   // declared — pre-existing compile error fixed June 9, 2026).
@@ -378,6 +423,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   useEffect(() => {
     if (lastSeenConvIdRef.current !== agent.activeConversationId) {
       lastSeenConvIdRef.current = agent.activeConversationId;
+      suppressThreadActivityTouchRef.current = true;
       setChatLog(capLog(agent.chatLog || []));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -625,13 +671,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     
     // Determine if we have actual new content
     const activeConv = currentAgent.conversations?.find(c => c.id === agent.activeConversationId);
-    const isNewContent = !activeConv || chatLog.length !== activeConv.messages.length || 
-                         chatLog[chatLog.length - 1]?.id !== activeConv.messages[activeConv.messages.length - 1]?.id;
+    const isNewContent = !activeConv || !sameMessages(chatLog, activeConv.messages);
     
     // If local state perfectly matches the global store, bail out early to prevent an infinite render loop.
-    if (currentAgent.chatLog === chatLog && !isNewContent) {
+    if (sameMessages(currentAgent.chatLog || [], chatLog) && !isNewContent) {
       return; 
     }
+
+    const preserveLastActiveAt = suppressThreadActivityTouchRef.current;
+    suppressThreadActivityTouchRef.current = false;
 
     useWorldStore.setState(state => ({
       agents: state.agents.map(a => {
@@ -644,7 +692,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             return {
               ...c, 
               messages: chatLog, 
-              lastActiveAt: isNewContent ? Date.now() : c.lastActiveAt 
+              lastActiveAt: isNewContent && !preserveLastActiveAt ? Date.now() : c.lastActiveAt 
             };
           });
         }
@@ -655,6 +703,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
   // When switching threads externally, update the local chatLog immediately
   useEffect(() => {
+    suppressThreadActivityTouchRef.current = true;
     setChatLog(agent.chatLog || []);
     // Ensure we start at the bottom of the newly loaded thread
     isAtBottomRef.current = true;
@@ -665,6 +714,79 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   useEffect(() => {
     agentRef.current = agent;
   }, [agent]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateConversations = async () => {
+      try {
+        const summaries = await invoke<BackendConversationSummary[]>("list_agent_conversations", {
+          agentId: agent.id,
+          limit: 100,
+        });
+        if (cancelled || !Array.isArray(summaries) || summaries.length === 0) return;
+
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => {
+            if (a.id !== agent.id) return a;
+
+            const merged = [...(a.conversations || [])];
+            const existing = new Map(merged.map(conv => [conv.id, conv]));
+
+            for (const summary of summaries) {
+              const nextTitle = deriveConversationTitle(summary.title, summary.first_user_message);
+              const createdAt = toUnixMs(summary.created_at);
+              const lastActiveAt = toUnixMs(summary.updated_at);
+              const existingConv = existing.get(summary.id);
+
+              if (existingConv) {
+                const nextExisting = {
+                  ...existingConv,
+                  title: deriveConversationTitle(existingConv.title, summary.first_user_message) || nextTitle,
+                  createdAt: existingConv.createdAt || createdAt,
+                  lastActiveAt: Math.max(existingConv.lastActiveAt || 0, lastActiveAt),
+                };
+                const index = merged.findIndex(conv => conv.id === summary.id);
+                if (index >= 0) merged[index] = nextExisting;
+                existing.set(summary.id, nextExisting);
+                continue;
+              }
+
+              const hydrated = {
+                id: summary.id,
+                title: nextTitle,
+                messages: [],
+                createdAt,
+                lastActiveAt,
+                type: "dm" as const,
+                status: "active" as const,
+              };
+              existing.set(summary.id, hydrated);
+              merged.push(hydrated);
+            }
+
+            const shouldRestoreLatest =
+              !a.activeConversationId &&
+              (!a.chatLog || a.chatLog.length === 0) &&
+              summaries.length > 0;
+
+            return {
+              ...a,
+              conversations: merged,
+              activeConversationId: shouldRestoreLatest ? summaries[0].id : a.activeConversationId,
+            };
+          })
+        }));
+      } catch (err) {
+        console.warn("Failed to hydrate conversation list:", err);
+      }
+    };
+
+    hydrateConversations();
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.id]);
 
   useEffect(() => {
     if (typeof invoke === 'function') {
@@ -699,6 +821,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             allMessages = allMessages.filter((m: any) => m.ts >= currentAgent.chatClearedAt!);
           }
 
+          suppressThreadActivityTouchRef.current = true;
           setChatLog(prev => {
             const nowMs = Date.now();
             const localOnly = prev.filter(msg => {
@@ -1206,8 +1329,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 {msg.attachments && msg.attachments.length > 0 && (
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
                     {msg.attachments.map((a, i) => (
-                      <div key={i} style={{ width: 80, height: 80, borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)" }}>
-                        <AttachmentThumbnail agentId={agent.id} attachment={a} />
+                      <div
+                        key={i}
+                        style={{
+                          width: 96,
+                          borderRadius: 8,
+                          overflow: "hidden",
+                          border: "1px solid rgba(255,255,255,0.2)",
+                          background: "rgba(255,255,255,0.08)",
+                        }}
+                      >
+                        <div style={{ width: 96, height: 80 }}>
+                          <AttachmentThumbnail agentId={agent.id} attachment={a} />
+                        </div>
+                        <div
+                          title={a.name}
+                          style={{
+                            padding: "6px 8px",
+                            fontSize: 10,
+                            lineHeight: 1.3,
+                            whiteSpace: "normal",
+                            wordBreak: "break-word",
+                            borderTop: "1px solid rgba(255,255,255,0.15)",
+                          }}
+                        >
+                          {a.name}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1227,6 +1374,20 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                     textTrimmed.startsWith("[Queued messages while agent was busy]")
                   ) {
                     return null;
+                  }
+
+                  if (msg.sender === "user") {
+                    return (
+                      <div
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          overflowWrap: "anywhere",
+                        }}
+                      >
+                        {msg.text}
+                      </div>
+                    );
                   }
 
                   // ── Image attachments from tool-delivered messages ────────────────────
@@ -1378,16 +1539,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                   text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/gi, "");
                   text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\][^\.\n]+\.\s*/gi, "");
                   text = text.replace(/\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*/gi, "");
-
-                  if (msg.sender === "user") {
-                      text = text.replace(/\[Queued messages while agent was busy\][\s\S]*?---\n?/i, "");
-                      text = text.replace(/Queued #\d+\s*\(from[^)]+\)\s*/gi, "");
-
-                      const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b);
-                      const deduped = blocks.filter((item, pos, arr) => pos === 0 || item !== arr[pos - 1]);
-                      text = deduped.join("\n\n");
-                      if (!text) text = "[System Event]";
-                  }
 
                   const elements: React.ReactNode[] = [];
                   const thoughtStartRegex = /\[THOUGHT_PROCESS\]/i;

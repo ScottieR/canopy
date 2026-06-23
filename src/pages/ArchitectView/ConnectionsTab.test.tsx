@@ -522,6 +522,29 @@ describe('ConnectionsTab - Regression Prevention', () => {
     expect(browserTimeout).toBeGreaterThan(0);
     expect(browserTimeout).toBeLessThan(10 * 1000); // Less than 10 seconds
   });
+
+  it('shows a warning when computer control permissions are enabled', async () => {
+    const agentWithComputerControl: AgentData = {
+      ...mockAgent,
+      permissions: [
+        ...mockAgent.permissions,
+        { id: 'computer_control', label: 'Computer Control Sandbox', description: 'Control an isolated desktop', enabled: true, category: 'skills' },
+        { id: 'screen_record', label: 'Screen Recording', description: 'Receive screenshots', enabled: true, category: 'data' },
+      ],
+      capabilities: {
+        ...mockAgent.capabilities,
+        computer_control: true,
+        screen_record: true,
+      },
+    };
+
+    const invokeMock = vi.fn().mockResolvedValue([]);
+    (window as any).__TAURI_INTERNALS__ = { invoke: invokeMock };
+
+    render(<ConnectionsTab agent={agentWithComputerControl} />);
+
+    expect(await screen.findByText(/computer control is separately gated/i)).toBeInTheDocument();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

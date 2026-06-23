@@ -201,6 +201,12 @@ pub struct AgentCapabilities {
     pub summarize: bool,
     #[serde(default)]
     pub genui: bool,
+    #[serde(default)]
+    pub computer_control: bool,
+    #[serde(default)]
+    pub host_control: bool,
+    #[serde(default)]
+    pub screen_record: bool,
 }
 
 impl Default for AgentCapabilities {
@@ -223,6 +229,9 @@ impl Default for AgentCapabilities {
             gog: true,
             summarize: true,
             genui: false,
+            computer_control: false,
+            host_control: false,
+            screen_record: false,
         }
     }
 }

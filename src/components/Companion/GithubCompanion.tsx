@@ -7,6 +7,7 @@ import { open } from "@tauri-apps/plugin-shell";
 export function GithubCompanion() {
   const searchParams = new URLSearchParams(window.location.search);
   const agentId = searchParams.get("agentId") || "";
+  const isNew = searchParams.get("isNew") === "true";
   const [githubToken, setGithubToken] = useState("");
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -30,7 +31,14 @@ export function GithubCompanion() {
     
     try {
       if (typeof invoke === "function") {
-        await invoke("configure_github", { agentId: agentId, personalAccessToken: githubToken.trim() });
+        if (isNew) {
+          await invoke("store_secret_cmd", {
+            key: `github-access-token-${agentId}`,
+            value: githubToken.trim(),
+          });
+        } else {
+          await invoke("configure_github", { agentId: agentId, personalAccessToken: githubToken.trim() });
+        }
         
         try {
           const fetchedRepos: any = await invoke("fetch_github_repos", { token: githubToken.trim() });
@@ -56,6 +64,29 @@ export function GithubCompanion() {
     setTestStatus("testing");
     try {
       if (typeof invoke === "function") {
+        const selectedRepoNames = repos
+          .filter(r => selectedRepos[r.id])
+          .map(r => r.full_name);
+
+        if (isNew) {
+          const { emit } = await import("@tauri-apps/api/event");
+          await emit("companion-finished", {
+            type: "github",
+            token: githubToken.trim(),
+            selectedRepos: selectedRepoNames,
+          });
+          setTestStatus("success");
+          setTimeout(async () => {
+            try {
+              const { getCurrentWindow, getAllWindows } = await import("@tauri-apps/api/window");
+              const mainWindow = (await getAllWindows()).find(w => w.label === "main");
+              if (mainWindow) await mainWindow.setFocus();
+              await getCurrentWindow().close();
+            } catch (e) {}
+          }, 3000);
+          return;
+        }
+
         // Save the configured repos into the agent's integrations array
         const { useWorldStore } = await import('../../store/worldStore');
         const agent = useWorldStore.getState().agents.find(a => a.id === agentId);
@@ -64,10 +95,8 @@ export function GithubCompanion() {
           // Remove old github_repo items
           newIntegrations = newIntegrations.filter(i => !i.startsWith("github_repo_"));
           // Add new ones
-          repos.forEach(r => {
-             if (selectedRepos[r.id]) {
-                 newIntegrations.push(`github_repo_${r.full_name}`);
-             }
+          selectedRepoNames.forEach(fullName => {
+            newIntegrations.push(`github_repo_${fullName}`);
           });
           if (!newIntegrations.includes("github")) newIntegrations.push("github");
           

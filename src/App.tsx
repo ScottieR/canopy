@@ -15,6 +15,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
 };
 import { WorldScene, TerrariumBase } from "./components/World/WorldScene";
 import { KeeperPanel } from "./components/Keeper/KeeperPanel";
+import { getConnectorSecretKey } from "./utils/connectorCatalog";
 import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
@@ -731,38 +732,62 @@ export const ServiceRow = ({
 // ── Multi-select picker
 export const MultiPicker = ({
   items, selected, onToggle, searchValue, onSearch, idKey, labelKey,
-  sublabelKey,
+  sublabelKey, searchKeys, allowCustomAdd = false, labelPrefix = "",
+  selectedHelpText, emptyStateText = "No results", disabled = false,
 }: {
   items: any[]; selected: string[]; onToggle: (id: string) => void;
   searchValue: string; onSearch: (v: string) => void;
   idKey: string; labelKey: string; sublabelKey?: string;
+  searchKeys?: string[]; allowCustomAdd?: boolean; labelPrefix?: string;
+  selectedHelpText?: string; emptyStateText?: string; disabled?: boolean;
 }) => {
-  const filtered = items.filter(i =>
-    i[labelKey]?.toLowerCase().includes(searchValue.toLowerCase())
-  );
+  const normalizedSearch = searchValue.trim().toLowerCase();
+  const effectiveSearchKeys = (searchKeys && searchKeys.length > 0)
+    ? searchKeys
+    : [labelKey];
+  const filtered = items.filter(i => {
+    if (!normalizedSearch) return true;
+    return effectiveSearchKeys.some(key => String(i?.[key] ?? "").toLowerCase().includes(normalizedSearch));
+  });
+  const selectedItems = selected.map(id => {
+    const item = items.find(candidate => String(candidate?.[idKey]) === String(id));
+    if (item) {
+      return {
+        id: String(item[idKey]),
+        label: String(item[labelKey] ?? item[idKey]),
+      };
+    }
+    return {
+      id: String(id),
+      label: String(id),
+    };
+  });
   return (
     <div>
       <input
         value={searchValue}
         onChange={e => onSearch(e.target.value)}
+        disabled={disabled}
         placeholder="Search…"
         style={{
           width: "100%", padding: "6px 10px", border: "1px solid var(--border-subtle)",
           borderRadius: 6, fontSize: 12, fontFamily: "inherit", marginBottom: 8,
           background: "var(--surface-card)", color: "var(--text-main)",
+          opacity: disabled ? 0.65 : 1,
+          cursor: disabled ? "not-allowed" : "text",
         }}
       />
       <div style={{ maxHeight: 180, overflow: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
         {filtered.length === 0 ? (
-          <div style={{ fontSize: 12, color: "var(--text-sub)", padding: "8px 0" }}>No results</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)", padding: "8px 0" }}>{emptyStateText}</div>
         ) : filtered.map(item => {
           const id = item[idKey];
           const checked = selected.includes(id);
           return (
             <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", cursor: "pointer", borderRadius: 5 }}>
-              <input type="checkbox" checked={checked} onChange={() => onToggle(id)} style={{ accentColor: "#3c6663" }} />
+              <input type="checkbox" checked={checked} disabled={disabled} onChange={() => onToggle(id)} style={{ accentColor: "#3c6663" }} />
               <span style={{ fontSize: 12, color: "var(--text-main)", fontWeight: checked ? 600 : 400 }}>
-                #{item[labelKey]}
+                {labelPrefix}{item[labelKey]}
                 {sublabelKey && item[sublabelKey] && (
                   <span style={{ fontSize: 10, color: "var(--text-sub)", marginLeft: 4, fontWeight: 400 }}>
                     · {item[sublabelKey]}
@@ -772,7 +797,7 @@ export const MultiPicker = ({
             </label>
           );
         })}
-        {searchValue.trim().length > 0 && !items.find(i => i[labelKey]?.toLowerCase() === searchValue.trim().toLowerCase()) && (
+        {allowCustomAdd && searchValue.trim().length > 0 && !items.find(i => String(i?.[labelKey] ?? "").toLowerCase() === searchValue.trim().toLowerCase()) && (
           <button
             onClick={() => {
               if (!selected.includes(searchValue.trim())) {
@@ -790,9 +815,31 @@ export const MultiPicker = ({
         )}
       </div>
       {selected.length > 0 && (
-        <div style={{ fontSize: 11, color: "#3c6663", marginTop: 6 }}>
-          {selected.length} selected — agent only receives messages from these
-        </div>
+        <>
+          <div style={{ fontSize: 11, color: "#3c6663", marginTop: 6 }}>
+            {selected.length} selected{selectedHelpText ? ` — ${selectedHelpText}` : ""}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+            {selectedItems.map(item => (
+              <span
+                key={item.id}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 8px",
+                  borderRadius: 999,
+                  background: "rgba(60, 102, 99, 0.10)",
+                  color: "#3c6663",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                {item.label}
+              </span>
+            ))}
+          </div>
+        </>
       )}
       {selected.length === 0 && (
         <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>
@@ -812,13 +859,46 @@ export const MultiPicker = ({
 // function LoadingScreen({ status }: { status?: string }) { Extracted
 
 export function CompanionGuide({ type }: { type: string }) {
-  const agentId = new URLSearchParams(window.location.search).get("agentId");
+  const searchParams = new URLSearchParams(window.location.search);
+  const agentId = searchParams.get("agentId");
+  const agentName = searchParams.get("agentName") || "Agent";
+  const requestedMode = searchParams.get("mode") || "read";
+  const requestedScope = searchParams.get("scope") || "all";
+  const isDevBuild = import.meta.env.DEV;
   const [step, setStep] = useState(0);
   const [tokens, setTokens] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [imessagePermissionGranted, setImessagePermissionGranted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const imessageAutoOpenedRef = useRef(false);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [step, status]);
+
+  const closeCompanionWindow = async () => {
+    try {
+      const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
+      const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
+      if (mainWindow) await mainWindow.setFocus();
+      await getCurrentWindow().close();
+    } catch (e) { }
+  };
+
+  const finishWithSuccess = async () => {
+    setStatus("success");
+    setTimeout(() => {
+      void closeCompanionWindow();
+    }, 2000);
+  };
+
+  const emitRefreshIntegrations = async () => {
+    try {
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit("refresh_integrations");
+    } catch (evtErr) { }
+    try {
+      window.dispatchEvent(new Event("refresh_integrations"));
+    } catch (domErr) { }
+  };
 
   const config = {
     openai: {
@@ -876,6 +956,99 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Almost done! Now click 'OAuth & Permissions' on the left sidebar." },
         { text: "Click the 'Install to Workspace' button and click Allow." },
         { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } }
+      ]
+    },
+    imessage: {
+      title: "iMessage Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'll walk you through enabling iMessage access for Canopy. Messages stay local on your Mac, but macOS requires Full Disk Access before Canopy can load your threads and contact names.",
+      steps: [
+        {
+          text: "Keep this companion open. We'll open the exact Full Disk Access screen for you, then come right back here.",
+          action: {
+            kind: "system_settings",
+            command: "open_full_disk_access_settings",
+            label: "Open Full Disk Access"
+          }
+        },
+        {
+          text: isDevBuild ? (
+            <span key="imessage-toggle-dev">
+              When the <strong>Full Disk Access</strong> list opens, make sure the app actually running Canopy has access.
+              In development that is usually your <strong>Terminal</strong> or <strong>IDE</strong>, so you do <strong>not</strong> need to drag the Canopy icon into the list.
+            </span>
+          ) : (
+            <span key="imessage-toggle-prod">
+              When the <strong>Full Disk Access</strong> list opens, drag <strong>Canopy</strong> into that list if it is not already there, then turn it on.
+            </span>
+          )
+        },
+        {
+          text: imessagePermissionGranted
+            ? "Full Disk Access is already enabled for this runtime. Switch back to Canopy and the iMessage thread picker should refresh automatically."
+            : "Return to Canopy after toggling access. The main iMessage panel will detect the permission and load your conversations so you can pick contacts and group threads."
+        }
+      ]
+    },
+    gmail: {
+      title: "Gmail Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Gmail for ${agentName}. This guide uses the same Google OAuth flow as onboarding, but saves the result directly into this agent's Connections tab.`,
+      steps: [
+        { text: `You're granting ${requestedMode === "write" ? "read + send" : "read-only"} Gmail access for this agent.` },
+        { text: "When the Google window opens, choose the account you want this specific agent to use." },
+        {
+          text: requestedMode === "write"
+            ? "This will let the agent read messages and send replies."
+            : "This will let the agent read messages without sending mail.",
+          action: {
+            kind: "google_oauth",
+            scopes: ["email"],
+            readOnly: requestedMode !== "write",
+            label: "Continue with Google"
+          }
+        }
+      ]
+    },
+    calendar: {
+      title: "Google Calendar Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Google Calendar for ${agentName}. This saves the OAuth grant directly back into the Skills & Access page for this agent.`,
+      steps: [
+        { text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} calendar access.` },
+        { text: "Pick the Google account you want this agent to work against when the browser opens." },
+        {
+          text: requestedMode === "write"
+            ? "This allows the agent to create and update events."
+            : "This allows the agent to read your schedule and detect conflicts.",
+          action: {
+            kind: "google_oauth",
+            scopes: ["calendar"],
+            readOnly: requestedMode !== "write",
+            label: "Continue with Google"
+          }
+        }
+      ]
+    },
+    drive: {
+      title: "Google Drive Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Google Drive for ${agentName}. This uses the current access settings from the Connections page so the result lands back in the right agent-scoped slot.`,
+      steps: [
+        { text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} Drive access.` },
+        { text: requestedScope === "granular"
+            ? "This companion will request granular file access so the agent is limited to files you explicitly authorize."
+            : "This companion will request your selected broad Drive scope for this agent." },
+        {
+          text: "Continue to Google to complete the Drive connection.",
+          action: {
+            kind: "google_oauth",
+            scopes: ["drive"],
+            readOnly: requestedMode !== "write",
+            granularDrive: requestedScope === "granular",
+            label: "Continue with Google"
+          }
+        }
       ]
     },
     email_dedicated: {
@@ -939,6 +1112,24 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Check the following scopes: 'repo', 'read:org', and 'user'." },
         { text: "Click 'Generate token' at the bottom of the page." },
         { text: "Copy the generated token (starts with ghp_ or github_pat_) and paste it into the input field in the main app window." }
+      ]
+    },
+    twilio: {
+      title: "Twilio Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll help connect a Twilio number for ${agentName}. This stores the credentials in this agent's scoped keychain entries and then returns you to the Connections page.`,
+      steps: [
+        { text: "First, open the Twilio Console and create or select the subaccount you want dedicated to this agent." },
+        { text: "Copy the Account SID from the Twilio dashboard.", input: { key: "twilio-account-sid", placeholder: "AC..." } },
+        { text: "Copy the Auth Token from the same Twilio account.", input: { key: "twilio-auth-token", placeholder: "Auth Token" } },
+        { text: "Copy the Twilio phone number this agent should use.", input: { key: "twilio-phone-number", placeholder: "+15551234567" } },
+        {
+          text: "When you're ready, save these credentials for this agent.",
+          action: {
+            kind: "twilio_connect",
+            label: "Save Twilio Credentials"
+          }
+        }
       ]
     },
     apple_health: {
@@ -1011,9 +1202,119 @@ export function CompanionGuide({ type }: { type: string }) {
 
   if (!config) return <div style={{ padding: 20 }}>Unknown configuration. You can close this window.</div>;
 
-  const currentStepData = config.steps[step];
+  const currentStepData: any = config.steps[step];
+
+  useEffect(() => {
+    if (type !== "imessage") return;
+
+    let cancelled = false;
+
+    const syncIMessagePermissionState = async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const granted = await invoke<boolean>("check_full_disk_access");
+        if (cancelled) return;
+
+        setImessagePermissionGranted(granted);
+
+        if (granted) {
+          await emitRefreshIntegrations();
+          setStatus("idle");
+          setStep(config.steps.length - 1);
+          return;
+        }
+
+        if (!imessageAutoOpenedRef.current) {
+          imessageAutoOpenedRef.current = true;
+          await invoke("open_full_disk_access_settings");
+          if (!cancelled) {
+            setStep(1);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to sync iMessage Full Disk Access state:", e);
+      }
+    };
+
+    const handleFocus = () => {
+      void syncIMessagePermissionState();
+    };
+
+    void syncIMessagePermissionState();
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [type]);
 
   const handleAction = async () => {
+    if (currentStepData.action) {
+      setStatus("saving");
+      try {
+        if (currentStepData.action.kind === "google_oauth") {
+          if (!agentId) throw new Error("Missing agentId for Google OAuth setup.");
+          const { invoke } = await import('@tauri-apps/api/core');
+          const result = await invoke<{ access_token?: string }>("start_google_oauth", {
+            agentId,
+            scopes: currentStepData.action.scopes,
+            readOnly: currentStepData.action.readOnly,
+            granularDrive: currentStepData.action.granularDrive,
+          });
+
+          if (!result?.access_token) {
+            throw new Error("Google OAuth did not return an access token.");
+          }
+
+          await invoke("sync_gateway_channels").catch(() => { });
+          await emitRefreshIntegrations();
+          await finishWithSuccess();
+          return;
+        }
+
+        if (currentStepData.action.kind === "system_settings") {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke(currentStepData.action.command);
+          setStatus("idle");
+          if (step < config.steps.length - 1) {
+            setStep(step + 1);
+          }
+          return;
+        }
+
+        if (currentStepData.action.kind === "twilio_connect") {
+          if (!agentId) throw new Error("Missing agentId for Twilio setup.");
+          const sid = tokens["twilio-account-sid"]?.trim();
+          const authToken = tokens["twilio-auth-token"]?.trim();
+          const phoneNumber = tokens["twilio-phone-number"]?.trim();
+          if (!sid || !authToken || !phoneNumber) {
+            throw new Error("Twilio setup requires Account SID, Auth Token, and Phone Number.");
+          }
+
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke("configure_twilio", {
+            agentId,
+            accountSid: sid,
+            authToken,
+            phoneNumber,
+          });
+
+          try {
+            const { emit } = await import('@tauri-apps/api/event');
+            await emit("companion-finished", { type: "twilio" });
+          } catch (evtErr) { }
+          await emitRefreshIntegrations();
+          await finishWithSuccess();
+          return;
+        }
+      } catch (e) {
+        console.error(e);
+        setStatus("error");
+        return;
+      }
+    }
+
     if (currentStepData.input) {
       if (!tokens[currentStepData.input.key]) return;
 
@@ -1021,9 +1322,11 @@ export function CompanionGuide({ type }: { type: string }) {
       setStatus("saving");
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive' || type === 'apple_health' || type === 'live_location' || type === 'shortcuts' || type === 'vision' || type === 'notifications' || type === 'homekit'))
+        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive'))
           ? `agent_${agentId}_${currentStepData.input.key.replace(/-/g, '_')}`
-          : currentStepData.input.key;
+          : agentId && ['apple_health', 'live_location', 'shortcuts', 'vision', 'notifications', 'homekit', 'bluetooth', 'figma'].includes(type)
+            ? getConnectorSecretKey(type, agentId)
+            : currentStepData.input.key;
         await invoke("store_secret_cmd", { key: secureKey, value: tokens[currentStepData.input.key].trim() });
 
         // If there are more steps, just advance
@@ -1054,13 +1357,8 @@ export function CompanionGuide({ type }: { type: string }) {
             }
           } catch (evtErr) { }
 
-          setTimeout(async () => {
-            try {
-              const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
-              const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
-              if (mainWindow) await mainWindow.setFocus();
-              await getCurrentWindow().close();
-            } catch (e) { }
+          setTimeout(() => {
+            void closeCompanionWindow();
           }, 2000);
         }
       } catch (e) {
@@ -1082,7 +1380,7 @@ export function CompanionGuide({ type }: { type: string }) {
         <LobsterIcon size={36} shellColor="#3c6663" accentColor="#D9B08C" />
         <div>
           <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>Setup Guide</div>
-          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>I'll walk you through creating your Slack app.</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>{config.title}</div>
         </div>
       </div>
 
@@ -1128,7 +1426,7 @@ export function CompanionGuide({ type }: { type: string }) {
                 <button onClick={handleAction} disabled={s.input && !tokens[s.input.key]} style={{
                   padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "var(--text-main)", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
                 }}>
-                  {s.input ? "Save & Continue" : "I've done this ->"}
+                  {s.action?.label || (s.input ? "Save & Continue" : "I've done this ->")}
                 </button>
               </div>
             )}
