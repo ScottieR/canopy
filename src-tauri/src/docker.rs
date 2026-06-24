@@ -388,7 +388,7 @@ process.on('unhandledRejection', (reason, promise) => {
       retries: 3
       
   canopy-chroma:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.4.24
     container_name: canopy-chroma
     restart: unless-stopped
     ports:

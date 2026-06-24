@@ -1717,6 +1717,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             </div>
             {webCredentials
               .filter(cred => cred.domain.toLowerCase().includes(webCredSearch.toLowerCase()) || cred.username.toLowerCase().includes(webCredSearch.toLowerCase()))
+              .sort((a, b) => {
+                const aHasAccess = agent.integrations.includes(`web_${a.domain}_${a.username}`);
+                const bHasAccess = agent.integrations.includes(`web_${b.domain}_${b.username}`);
+                if (aHasAccess && !bHasAccess) return -1;
+                if (!aHasAccess && bHasAccess) return 1;
+                return a.domain.localeCompare(b.domain);
+              })
               .map(cred => {
               const integrationKey = `web_${cred.domain}_${cred.username}`;
               const hasAccess = agent.integrations.includes(integrationKey);

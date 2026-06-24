@@ -883,6 +883,9 @@ fn excerpt_for_thread_state(text: &str, max_chars: usize) -> String {
     }
 }
 
+const THREAD_RECENT_HISTORY_LIMIT: usize = 40;
+const THREAD_TIMELINE_TARGET_EVENTS: usize = 18;
+
 fn generate_thread_state_md(
     agent_id: &str,
     session_id: &str,
@@ -946,8 +949,8 @@ _This file is app-managed and refreshed automatically to help you rejoin a speci
     }
 
     content.push_str("## Recent Milestones\n");
-    let milestone_slice = if messages.len() > 6 {
-        &messages[messages.len() - 6..]
+    let milestone_slice = if messages.len() > 10 {
+        &messages[messages.len() - 10..]
     } else {
         messages
     };
@@ -966,6 +969,48 @@ _This file is app-managed and refreshed automatically to help you rejoin a speci
     content
 }
 
+fn generate_thread_timeline_md(session_id: &str, messages: &[crate::db::Message]) -> String {
+    let mut content = String::from(
+        "# THREAD_TIMELINE.md\n\n\
+_This file is app-managed and preserves representative checkpoints across the full thread, including older turns that may no longer appear in recent history._\n\n",
+    );
+    content.push_str(&format!("**Session id:** {}\n\n", session_id));
+
+    if messages.is_empty() {
+        content.push_str("No timeline yet.\n");
+        return content;
+    }
+
+    let step = std::cmp::max(1, messages.len().div_ceil(THREAD_TIMELINE_TARGET_EVENTS));
+    for (idx, msg) in messages.iter().enumerate().step_by(step) {
+        content.push_str(&format!(
+            "## Turn {} — {} — {}\n{}\n\n",
+            idx + 1,
+            msg.role,
+            msg.timestamp,
+            excerpt_for_thread_state(&msg.content, 700)
+        ));
+    }
+
+    if let Some(last) = messages.last() {
+        let already_included = messages
+            .iter()
+            .enumerate()
+            .step_by(step)
+            .any(|(_, msg)| msg.id == last.id);
+        if !already_included {
+            content.push_str(&format!(
+                "## Final Turn — {} — {}\n{}\n",
+                last.role,
+                last.timestamp,
+                excerpt_for_thread_state(&last.content, 700)
+            ));
+        }
+    }
+
+    content
+}
+
 fn generate_recent_history_md(session_id: &str, messages: &[crate::db::Message]) -> String {
     let mut content = String::from(
         "# RECENT_HISTORY.md\n\n\
@@ -973,8 +1018,8 @@ _This file is app-managed and contains a compact recent transcript for the activ
     );
     content.push_str(&format!("**Session id:** {}\n\n", session_id));
 
-    let history_slice = if messages.len() > 12 {
-        &messages[messages.len() - 12..]
+    let history_slice = if messages.len() > THREAD_RECENT_HISTORY_LIMIT {
+        &messages[messages.len() - THREAD_RECENT_HISTORY_LIMIT..]
     } else {
         messages
     };
@@ -1011,9 +1056,10 @@ _This file is app-managed and points to the current conversation context._\n\n\
 - **Session id:** {session_id}\n\
 - **Thread directory:** {thread_dir}\n\
 - **Read first:** `{thread_dir}/THREAD_STATE.md`\n\
-- **Then read:** `{thread_dir}/RECENT_HISTORY.md`\n\n\
+- **Then read:** `{thread_dir}/RECENT_HISTORY.md`\n\
+- **If you need older thread context:** `{thread_dir}/THREAD_TIMELINE.md`\n\n\
 ## Why this exists\n\
-Use the files above to recover the active thread's current goal, recent decisions, and unresolved follow-ups before answering.\n\n\
+Use the files above to recover the active thread's current goal, recent decisions, unresolved follow-ups, and older milestones before answering.\n\n\
 ## Latest User Request\n\
 {latest_excerpt}\n",
         session_id = session_id,
@@ -1028,7 +1074,7 @@ fn refresh_thread_context_files(
     session_id: &str,
 ) -> Result<(), String> {
     let messages = db
-        .get_messages(session_id, 24)
+        .get_all_messages(session_id)
         .map_err(|e| format!("Failed to load thread messages: {}", e))?;
     let thread_dir = get_thread_context_dir(db, agent_id, session_id)?;
     std::fs::create_dir_all(&thread_dir).map_err(|e| e.to_string())?;
@@ -1042,6 +1088,11 @@ fn refresh_thread_context_files(
         generate_recent_history_md(session_id, &messages),
     )
     .map_err(|e| e.to_string())?;
+    std::fs::write(
+        thread_dir.join("THREAD_TIMELINE.md"),
+        generate_thread_timeline_md(session_id, &messages),
+    )
+    .map_err(|e| e.to_string())?;
     let workspace = get_agent_workspace_dir(db, agent_id)?;
     std::fs::write(
         workspace.join("ACTIVE_THREAD.md"),
@@ -1049,6 +1100,15 @@ fn refresh_thread_context_files(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn refresh_active_thread_context(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    session_id: String,
+) -> Result<(), String> {
+    refresh_thread_context_files(&db, &agent_id, &session_id)
 }
 
 fn shared_user_md_path_for_root(canopy_root: &std::path::Path) -> std::path::PathBuf {
@@ -3972,6 +4032,7 @@ _This file is app-managed and not user-editable. It defines the proactive operat
 1. Read `APP_PROTOCOLS.md`, `APP_CAPABILITIES.md`, `USER.md`, and `SOUL.md` before deciding how to help.\n\
 2. If present, read `MEMORY.md` and `HEARTBEAT.md` to recover continuity.\n\
 3. If `ACTIVE_THREAD.md` is present, read it, then read the referenced `THREAD_STATE.md` and `RECENT_HISTORY.md` before answering.\n\
+   Read `THREAD_TIMELINE.md` too when the thread has older context that might matter.\n\
 4. Inspect `DIAGNOSTICS.md` before proposing integration-dependent workflows.\n\n\
 ## Proactivity Standard\n\
 - Create leverage, not just answers.\n\
@@ -3986,7 +4047,7 @@ _This file is app-managed and not user-editable. It defines the proactive operat
 - `MEMORY.md` is private to this agent and should hold role-specific learnings, corrections, and project continuity.\n\
 - `HEARTBEAT.md` is private to this agent and should contain recurring monitors or checks this role owns.\n\
 - `ACTIVE_THREAD.md` points at the current per-conversation continuity files.\n\
-- `.threads/<session_id>/THREAD_STATE.md` and `RECENT_HISTORY.md` are per-conversation continuity files. Use them to resume the current thread without treating every thread detail as durable memory.\n\n\
+- `.threads/<session_id>/THREAD_STATE.md`, `RECENT_HISTORY.md`, and `THREAD_TIMELINE.md` are per-conversation continuity files. Use them to resume the current thread without treating every thread detail as durable memory.\n\n\
 ## Memory Hygiene\n\
 - Write only durable facts, decisions, constraints, and preferences.\n\
 - Avoid duplicate entries and transcript-like summaries.\n\
@@ -6884,18 +6945,14 @@ mod tests {
         db.insert_agent(&agent).unwrap();
 
         let conv_id = db.get_or_create_conversation(&agent.id).unwrap();
-        db.insert_message(
-            &conv_id,
-            "user",
-            "Please plan my Wednesday around a dentist visit.",
-        )
-        .unwrap();
-        db.insert_message(
-            &conv_id,
-            "assistant",
-            "I will build a schedule around your 2pm appointment.",
-        )
-        .unwrap();
+        for idx in 0..30 {
+            db.insert_message(
+                &conv_id,
+                if idx % 2 == 0 { "user" } else { "assistant" },
+                &format!("Thread turn {} about the material participation tracker", idx + 1),
+            )
+            .unwrap();
+        }
 
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CANOPY_DATA_DIR", tmp.path());
@@ -6904,6 +6961,7 @@ mod tests {
         let thread_dir = get_thread_context_dir(&db, &agent.id, &conv_id).unwrap();
         let state = std::fs::read_to_string(thread_dir.join("THREAD_STATE.md")).unwrap();
         let history = std::fs::read_to_string(thread_dir.join("RECENT_HISTORY.md")).unwrap();
+        let timeline = std::fs::read_to_string(thread_dir.join("THREAD_TIMELINE.md")).unwrap();
         let active = std::fs::read_to_string(
             get_agent_workspace_dir(&db, &agent.id)
                 .unwrap()
@@ -6911,12 +6969,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!(state.contains("Please plan my Wednesday"));
-        assert!(state.contains("I will build a schedule"));
+        assert!(state.contains("material participation tracker"));
         assert!(history.contains("assistant"));
-        assert!(history.contains("Wednesday"));
+        assert!(history.contains("Thread turn 30"));
+        assert!(timeline.contains("Thread turn 1"));
+        assert!(timeline.contains("Thread turn 30"));
         assert!(active.contains("ACTIVE_THREAD.md"));
         assert!(active.contains("THREAD_STATE.md"));
+        assert!(active.contains("THREAD_TIMELINE.md"));
         assert!(active.contains(&conv_id));
 
         std::env::remove_var("CANOPY_DATA_DIR");

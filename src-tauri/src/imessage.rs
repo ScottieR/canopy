@@ -207,16 +207,30 @@ fn try_resolve_contact_names() -> HashMap<String, String> {
         None => return map,
     };
 
-    // macOS stores contacts in one or more source directories under here.
-    let sources_dir = home.join("Library/Application Support/Contacts/Sources");
-    let db_paths: Vec<PathBuf> = match std::fs::read_dir(&sources_dir) {
-        Ok(entries) => entries
+    // macOS stores contacts in the AddressBook directory.
+    let addressbook_dir = home.join("Library/Application Support/AddressBook");
+    let mut db_paths: Vec<PathBuf> = Vec::new();
+
+    // 1. Add main local database if it exists
+    let main_db = addressbook_dir.join("AddressBook-v22.abcddb");
+    if main_db.exists() {
+        db_paths.push(main_db);
+    }
+
+    // 2. Add source databases (iCloud, Exchange, etc.)
+    let sources_dir = addressbook_dir.join("Sources");
+    if let Ok(entries) = std::fs::read_dir(&sources_dir) {
+        let source_dbs: Vec<PathBuf> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path().join("AddressBook-v22.abcddb"))
             .filter(|p| p.exists())
-            .collect(),
-        Err(_) => return map,
-    };
+            .collect();
+        db_paths.extend(source_dbs);
+    }
+
+    if db_paths.is_empty() {
+        return map;
+    }
 
     for db_path in &db_paths {
         let conn = match Connection::open_with_flags(

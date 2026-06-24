@@ -710,6 +710,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     setIsAtBottom(true);
   }, [agent.activeConversationId]);
 
+  useEffect(() => {
+    const sessionId = agent.activeConversationId;
+    if (!sessionId) return;
+    invoke("refresh_active_thread_context", {
+      agentId: agent.id,
+      sessionId,
+    }).catch(err => console.warn("Failed to refresh active thread context:", err));
+  }, [agent.id, agent.activeConversationId]);
+
   const agentRef = useRef(agent);
   useEffect(() => {
     agentRef.current = agent;

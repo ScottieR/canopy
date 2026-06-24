@@ -902,6 +902,30 @@ impl Database {
         Ok(messages.into_iter().rev().collect())
     }
 
+    /// Get the full message history for a conversation in chronological order.
+    pub fn get_all_messages(&self, conv_id: &str) -> SqlResult<Vec<Message>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, timestamp
+             FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY timestamp ASC",
+        )?;
+
+        let rows = stmt.query_map(params![conv_id], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                timestamp: row.get(4)?,
+            })
+        })?;
+
+        rows.collect::<SqlResult<Vec<_>>>()
+    }
+
     /// List durable conversation summaries for an agent, newest activity first.
     pub fn list_agent_conversation_summaries(
         &self,

@@ -867,10 +867,11 @@ export function CompanionGuide({ type }: { type: string }) {
   const isDevBuild = import.meta.env.DEV;
   const [step, setStep] = useState(0);
   const [tokens, setTokens] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "saving" | "waiting_oauth" | "success" | "error">("idle");
   const [imessagePermissionGranted, setImessagePermissionGranted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const imessageAutoOpenedRef = useRef(false);
+  const oauthTriggeredRef = useRef(false);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [step, status]);
 
@@ -993,14 +994,10 @@ export function CompanionGuide({ type }: { type: string }) {
     gmail: {
       title: "Gmail Setup",
       avatar: "/app-icon.png",
-      intro: `Hi! I'll connect Gmail for ${agentName}. This guide uses the same Google OAuth flow as onboarding, but saves the result directly into this agent's Connections tab.`,
+      intro: `Hi! I'll connect Gmail for ${agentName}.`,
       steps: [
-        { text: `You're granting ${requestedMode === "write" ? "read + send" : "read-only"} Gmail access for this agent.` },
-        { text: "When the Google window opens, choose the account you want this specific agent to use." },
         {
-          text: requestedMode === "write"
-            ? "This will let the agent read messages and send replies."
-            : "This will let the agent read messages without sending mail.",
+          text: `You're granting ${requestedMode === "write" ? "read + send" : "read-only"} Gmail access for this agent. When the Google window opens, choose the account you want this specific agent to use.`,
           action: {
             kind: "google_oauth",
             scopes: ["email"],
@@ -1013,14 +1010,10 @@ export function CompanionGuide({ type }: { type: string }) {
     calendar: {
       title: "Google Calendar Setup",
       avatar: "/app-icon.png",
-      intro: `Hi! I'll connect Google Calendar for ${agentName}. This saves the OAuth grant directly back into the Skills & Access page for this agent.`,
+      intro: `Hi! I'll connect Google Calendar for ${agentName}.`,
       steps: [
-        { text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} calendar access.` },
-        { text: "Pick the Google account you want this agent to work against when the browser opens." },
         {
-          text: requestedMode === "write"
-            ? "This allows the agent to create and update events."
-            : "This allows the agent to read your schedule and detect conflicts.",
+          text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} calendar access. Pick the Google account you want this agent to work against when the browser opens.`,
           action: {
             kind: "google_oauth",
             scopes: ["calendar"],
@@ -1033,14 +1026,10 @@ export function CompanionGuide({ type }: { type: string }) {
     drive: {
       title: "Google Drive Setup",
       avatar: "/app-icon.png",
-      intro: `Hi! I'll connect Google Drive for ${agentName}. This uses the current access settings from the Connections page so the result lands back in the right agent-scoped slot.`,
+      intro: `Hi! I'll connect Google Drive for ${agentName}.`,
       steps: [
-        { text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} Drive access.` },
-        { text: requestedScope === "granular"
-            ? "This companion will request granular file access so the agent is limited to files you explicitly authorize."
-            : "This companion will request your selected broad Drive scope for this agent." },
         {
-          text: "Continue to Google to complete the Drive connection.",
+          text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} Drive access. ${requestedScope === "granular" ? "This will request granular file access so the agent is limited to files you explicitly authorize." : "This will request broad Drive scope for this agent."}`,
           action: {
             kind: "google_oauth",
             scopes: ["drive"],
@@ -1205,6 +1194,13 @@ export function CompanionGuide({ type }: { type: string }) {
   const currentStepData: any = config.steps[step];
 
   useEffect(() => {
+    if (currentStepData?.action?.kind === "google_oauth" && status === "idle" && !oauthTriggeredRef.current) {
+      oauthTriggeredRef.current = true;
+      handleAction();
+    }
+  }, [currentStepData, status]);
+
+  useEffect(() => {
     if (type !== "imessage") return;
 
     let cancelled = false;
@@ -1251,7 +1247,11 @@ export function CompanionGuide({ type }: { type: string }) {
 
   const handleAction = async () => {
     if (currentStepData.action) {
-      setStatus("saving");
+      if (currentStepData.action.kind === "google_oauth") {
+        setStatus("waiting_oauth");
+      } else {
+        setStatus("saving");
+      }
       try {
         if (currentStepData.action.kind === "google_oauth") {
           if (!agentId) throw new Error("Missing agentId for Google OAuth setup.");
@@ -1397,7 +1397,7 @@ export function CompanionGuide({ type }: { type: string }) {
           <React.Fragment key={i}>
             <div style={{ display: "flex", gap: 12, alignItems: "flex-end", animation: "slideIn 0.3s ease" }}>
               <div style={{ width: 28, flexShrink: 0 }} />
-              <div style={{ width: "100%", background: i === step ? "#3c6663" : "var(--surface-card)", color: i === step ? "var(--surface-card)" : "var(--text-main)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
+              <div style={{ width: "100%", background: "var(--surface-card)", color: "var(--text-main)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
                 {s.text}
                 {s.input && i === step && (
                   <div style={{ marginTop: 12 }}>
@@ -1435,6 +1435,9 @@ export function CompanionGuide({ type }: { type: string }) {
 
         {status === "saving" && (
           <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-sub)", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
+        )}
+        {status === "waiting_oauth" && (
+          <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-sub)", fontStyle: "italic", animation: "pulse 1s infinite" }}>Waiting for Google authorization in your browser...</div>
         )}
         {status === "success" && (
           <div style={{ textAlign: "center", animation: "slideIn 0.3s ease" }}>
