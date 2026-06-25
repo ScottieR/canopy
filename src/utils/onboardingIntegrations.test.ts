@@ -13,6 +13,7 @@ describe("getOnboardingIntegrationIds", () => {
         telegram: true,
         discord: true,
         twilio: true,
+        photos: true,
       })
     ).toEqual([
       "slack",
@@ -23,6 +24,7 @@ describe("getOnboardingIntegrationIds", () => {
       "telegram",
       "discord",
       "twilio",
+      "apple_photos",
     ]);
   });
 

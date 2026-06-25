@@ -83,6 +83,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   const [githubConnected, setGithubConnected] = useState(false);
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [iMsgConnected, setIMsgConnected] = useState(false);
+  const [gPhotosConnected, setGPhotosConnected] = useState(false);
+  const [applePhotosConnected, setApplePhotosConnected] = useState(false);
   const [allowedDirs, setAllowedDirs] = useState<string[]>([]);
   const [foldersExpanded, setFoldersExpanded] = useState(false);
   const [pluginSetupTarget, setPluginSetupTarget] = useState<string | null>(null);
@@ -232,7 +234,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   }, [agent.id]);
 
   // Per-agent iMessage thread allowlist
+  const [telegramEnabled, setTelegramEnabled] = useState(agent.integrations.includes("telegram"));
   const [iMsgEnabled, setIMsgEnabled] = useState(agent.integrations.includes("imessage"));
+  const [gPhotosEnabled, setGPhotosEnabled] = useState(agent.integrations.includes("google_photos"));
+  const [applePhotosEnabled, setApplePhotosEnabled] = useState(agent.integrations.includes("apple_photos"));
   const [iMsgThreads, setIMsgThreads] = useState<Array<{ chat_identifier: string; display_name: string; last_message_date: string }>>([]);
   const [allowedThreads, setAllowedThreads] = useState<string[]>([]);
   const [iMsgPickerOpen, setIMsgPickerOpen] = useState(false);
@@ -560,8 +565,14 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     } catch { setGDriveConnected(false); }
 
     try {
+      const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_photos_access_token` });
+      setGPhotosConnected(!!tok);
+    } catch { setGPhotosConnected(false); }
+
+    try {
       const granted = await invoke<boolean>("check_full_disk_access");
       setIMsgConnected(granted);
+      setApplePhotosConnected(granted);
       if (granted) {
         const threads = await invoke<Array<{ chat_identifier: string; display_name: string; last_message_date: string }>>("list_imessage_threads").catch(() => []);
         setIMsgThreads(threads);
@@ -1388,6 +1399,100 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               </div>
             </div>
           </div>
+        </div>
+      </ServiceRow>
+
+      {/* Google Photos */}
+      <ServiceRow
+        icon={<Camera size={18} style={{ color: "#3c6663" }} />}
+        name="Google Photos"
+        subtitle="Allow this agent to read from your Google Photos library"
+        connected={gPhotosConnected}
+        enabled={gPhotosEnabled}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_gphotos_' + Date.now(), {
+            url: buildCompanionUrl("google_photos", {
+              agentId: agent.id,
+              agentName: agent.name
+            }),
+            title: "Setup Google Photos",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
+        onToggle={async (v) => {
+          setGPhotosEnabled(v);
+          await toggleIntegration("google_photos", v);
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
+          <span style={{ color: "var(--text-main)", fontSize: 12 }}>
+            Read-only — can view photo library metadata and download images.
+          </span>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+            <button
+              onClick={async () => {
+                try {
+                  const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                  const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['photos'], readOnly: true });
+                  if (res && res.access_token) {
+                    checkDynamicStatuses();
+                    await invoke("sync_gateway_channels");
+                  }
+                } catch (e) { console.error(e); }
+              }}
+              style={{
+                display: "flex", alignItems: "center", gap: 4,
+                background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)",
+                padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+                color: "var(--text-main)", fontWeight: 500
+              }}
+            >
+              <Camera size={12} />
+              {gPhotosConnected ? "Update Connection" : "Connect Account"}
+            </button>
+          </div>
+        </div>
+      </ServiceRow>
+
+      {/* Apple Photos */}
+      <ServiceRow
+        icon={<Camera size={18} style={{ color: "#34C759" }} />}
+        name="Apple Photos (Mac)"
+        subtitle="Allow this agent to read your local Apple Photos library"
+        connected={applePhotosConnected}
+        enabled={applePhotosEnabled}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_apple_photos_' + Date.now(), {
+            url: buildCompanionUrl("apple_photos", { agentId: agent.id, agentName: agent.name }),
+            title: "Setup Apple Photos",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
+        onToggle={async (enabled: boolean) => {
+          setApplePhotosEnabled(enabled);
+          await toggleIntegration("apple_photos", enabled);
+        }}
+      >
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
+          Local Database Access
+        </div>
+        <div style={{ fontSize: 11, color: "var(--text-main)", lineHeight: "1.4" }}>
+          {applePhotosConnected
+            ? "Full Disk Access is enabled. The agent can access your local Photos database."
+            : "Complete the Apple Photos setup to grant Full Disk Access to load your local photo library."}
         </div>
       </ServiceRow>
 

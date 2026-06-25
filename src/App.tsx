@@ -1040,6 +1040,52 @@ export function CompanionGuide({ type }: { type: string }) {
         }
       ]
     },
+    google_photos: {
+      title: "Google Photos Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Google Photos for ${agentName}.`,
+      steps: [
+        {
+          text: `You're granting read-only Google Photos access for this agent. When the Google window opens, choose the account you want this specific agent to use.`,
+          action: {
+            kind: "google_oauth",
+            scopes: ["photos"],
+            readOnly: true,
+            label: "Continue with Google"
+          }
+        }
+      ]
+    },
+    apple_photos: {
+      title: "Apple Photos Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'll walk you through enabling Apple Photos access for Canopy. Your photos stay local on your Mac, but macOS requires Full Disk Access before Canopy can read your Photos database.",
+      steps: [
+        {
+          text: "Keep this companion open. We'll open the exact Full Disk Access screen for you, then come right back here.",
+          action: {
+            kind: "system_settings",
+            command: "open_full_disk_access_settings",
+            label: "Open Full Disk Access"
+          }
+        },
+        {
+          text: isDevBuild ? (
+            <span key="photos-toggle-dev">
+              When the <strong>Full Disk Access</strong> list opens, make sure the app actually running Canopy has access.
+              In development that is usually your <strong>Terminal</strong> or <strong>IDE</strong>, so you do <strong>not</strong> need to drag the Canopy icon into the list.
+            </span>
+          ) : (
+            <span key="photos-toggle-prod">
+              When the <strong>Full Disk Access</strong> list opens, drag <strong>Canopy</strong> into that list if it is not already there, then turn it on.
+            </span>
+          )
+        },
+        {
+          text: "Return to Canopy after toggling access to allow the agent to connect to your local Apple Photos library."
+        }
+      ]
+    },
     email_dedicated: {
       title: "Email Dedicated Setup",
       avatar: "/app-icon.png",

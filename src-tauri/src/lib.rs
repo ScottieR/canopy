@@ -772,7 +772,6 @@ pub fn run() {
             openclaw::send_message,
             openclaw::get_conversation_history,
             openclaw::list_agent_conversations,
-            openclaw::refresh_active_thread_context,
             openclaw::get_agent_health,
             openclaw::check_agent_status,
             openclaw::get_gateway_log_tail,

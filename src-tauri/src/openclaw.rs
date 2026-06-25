@@ -80,6 +80,27 @@ pub fn get_agent_isolated_port(agent_id: &str) -> u16 {
     18805 + (hash % 195) as u16
 }
 
+fn derive_agent_id(name: &str) -> CanopyResult<String> {
+    crate::validators::agent::validate_name(name)?;
+
+    let slug = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    let trimmed = slug.chars().take(57).collect::<String>();
+    let agent_id = format!("agent-{}", if trimmed.is_empty() { "draft" } else { &trimmed });
+
+    crate::validators::agent::validate_id(&agent_id)?;
+    Ok(agent_id)
+}
+
 /// Interface to the OpenClaw Gateway API with SQLite persistence.
 /// All agent management goes through here with dual persistence:
 /// 1. Docker containers for runtime
@@ -96,16 +117,18 @@ pub async fn create_agent(
     isolated: bool,
     capabilities: crate::models::AgentCapabilities,
 ) -> Result<Agent, String> {
-    // ─── SECURITY: Validate agent_id to prevent command injection ───────────────
-    // Only allow alphanumeric, dash, underscore. No shell special characters.
-    let agent_id_base = name.to_lowercase().replace(' ', "-");
-    if !agent_id_base
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    let agent_id = derive_agent_id(&name).map_err(|e| e.to_string())?;
+
+    if db
+        .get_agent(&agent_id)
+        .map_err(|e| format!("Failed to check for existing agent: {}", e))?
+        .is_some()
     {
-        return Err(format!("Agent name contains invalid characters. Only letters, numbers, spaces, dashes, and underscores are allowed."));
+        return Err(format!(
+            "An agent named '{}' already exists. Choose a different name.",
+            name.trim()
+        ));
     }
-    let agent_id = format!("agent-{}", agent_id_base);
 
     // ─── Step 1: Persist to SQLite FIRST ────────────────────────────────────────
     // SQLite is always available locally. Persisting before any docker exec means
@@ -1100,15 +1123,6 @@ fn refresh_thread_context_files(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-#[tauri::command]
-pub async fn refresh_active_thread_context(
-    db: tauri::State<'_, crate::db::Database>,
-    agent_id: String,
-    session_id: String,
-) -> Result<(), String> {
-    refresh_thread_context_files(&db, &agent_id, &session_id)
 }
 
 fn shared_user_md_path_for_root(canopy_root: &std::path::Path) -> std::path::PathBuf {
@@ -6453,16 +6467,11 @@ c.channels.slack.accounts={};
 c.plugins.entries.slack=c.plugins.entries.slack||{{}};
 if (c.channels.slack.enabled === true) c.plugins.entries.slack.enabled=true;
 
-// iMessage / BlueBubbles
-c.channels.bluebubbles=c.channels.bluebubbles||{{}};
-c.channels.bluebubbles.enabled={};
-c.plugins.entries.bluebubbles=c.plugins.entries.bluebubbles||{{}};
-if (c.channels.bluebubbles.enabled === true) c.plugins.entries.bluebubbles.enabled=true;
-
 // Remove any broken channel injections
 if (c.channels.gmail) delete c.channels.gmail;
 if (c.channels.googleCalendar) delete c.channels.googleCalendar;
 if (c.channels.googleDrive) delete c.channels.googleDrive;
+if (c.channels.bluebubbles) delete c.channels.bluebubbles;
 
 // Enable google plugin if any accounts exist
 c.plugins.entries.google=c.plugins.entries.google||{{}};
@@ -6484,7 +6493,6 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
             "true"
         },
         serde_json::to_string(&slack_accounts).unwrap_or_else(|_| "{}".to_string()),
-        if imessage_enabled { "true" } else { "false" },
         if gmail_accounts.is_empty() && calendar_accounts.is_empty() && drive_accounts.is_empty() {
             "false"
         } else {
@@ -7070,6 +7078,17 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "My custom shelf");
     }
 
+    #[test]
+    fn derive_agent_id_matches_frontend_slugging() {
+        assert_eq!(derive_agent_id("  My Agent!!!  ").unwrap(), "agent-my-agent");
+        assert_eq!(derive_agent_id("A&B / C").unwrap(), "agent-a-b-c");
+    }
+
+    #[test]
+    fn derive_agent_id_rejects_control_characters() {
+        assert!(derive_agent_id("bad\nname").is_err());
+    }
+
     // ── SOUL.md path ──────────────────────────────────────────────────────
 
     #[test]
@@ -7424,6 +7443,29 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         "Disabled.".to_string()
     };
 
+    let mut custom_instructions = String::new();
+    if integrations.contains(&"google_photos") {
+        if let Ok(token) = crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id)) {
+            custom_instructions.push_str(&format!(
+                "**Google Photos**: You have read-only API access to the user's Google Photos. \n\
+                DO NOT try to use the browser to log in to Google Photos. \n\
+                Instead, use the Google Photos REST API (https://photoslibrary.googleapis.com/v1/) directly from your coding tools (e.g., using curl, Python, or Node) by passing this OAuth 2.0 Bearer token in the Authorization header: `{}`\n\n", 
+                token.trim()
+            ));
+        }
+    }
+    if integrations.contains(&"apple_photos") {
+        custom_instructions.push_str(
+            "**Apple Photos (Mac)**: You have Full Disk Access to the user's local Apple Photos database. \n\
+            DO NOT try to use the browser. You can query the SQLite database directly at `~/Pictures/Photos Library.photoslibrary/database/Photos.sqlite` using your coding tools.\n\n"
+        );
+    }
+    if integrations.contains(&"imessage") {
+        custom_instructions.push_str(
+            "**iMessage**: You receive and send iMessage messages via the background MCP bridge. Do NOT use the browser or bluebubbles.\n\n"
+        );
+    }
+
     let content = format!(
         "# PERMISSIONS.md — What you have access to\n\n\
          _This file is regenerated whenever your permissions change. Read it at the start \
@@ -7434,6 +7476,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          ## Integrations connected\n\
          {integrations}\n\
          *(Note: When an integration like `gmail` is connected, its dedicated MCP tools are automatically provided. Do NOT use `gog` or generic web search to access integration data.)*\n\n\
+         {custom_instructions}\
          ## LLM provider keys available\n\
          {providers}\n\n\
          ## Web access\n\
@@ -7525,6 +7568,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         agent_id    = agent.id,
         skills      = skills_block,
         integrations = integrations_block,
+        custom_instructions = custom_instructions,
         providers   = providers_block,
         allowlist   = allowlist_block,
         computer_control = computer_control_block,

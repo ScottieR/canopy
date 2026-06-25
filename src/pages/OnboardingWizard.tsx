@@ -71,6 +71,17 @@ const stageForStep = (s: number): number => {
   return 5;                       // 6, 7 (celebrate + pair)
 };
 
+const deriveAgentId = (name: string): string => {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 57);
+
+  return `agent-${slug || "draft"}`;
+};
+
 export function OnboardingWizard() {
 
   // --- Draft Persistence ---
@@ -132,7 +143,7 @@ export function OnboardingWizard() {
     return [existingAgents.length * 3.5, 0, Math.random() * 2 - 1];
   };
 
-  const optimisticId = `agent-${(agentName || "new").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, '')}`;
+  const optimisticId = deriveAgentId(agentName);
 
   const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
   const [isolated, setIsolated] = useState(draft?.isolated || false);
@@ -186,6 +197,33 @@ export function OnboardingWizard() {
   const [pairingCode, setPairingCode] = useState("");
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState("");
+
+  const resetWizardState = () => {
+    setStep(-1);
+    setAgentName("");
+    setSelectedRole(null);
+    setApiKey("");
+    setPersonalityPrompt("");
+    setRecentlyRead([]);
+    setCustomBookInput("");
+    setLlmProvider("");
+    setApiKeyMode("hidden");
+    setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
+    setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
+    setSelectedFolderPath("");
+    setFolderAccessType("specific");
+    setSelectedIMessageThreads([]);
+    setSelectedSlackChannels([]);
+    setPendingGithubRepos([]);
+    setTwilioDraft({ accountSid: "", authToken: "", phoneNumber: "" });
+    setGoogleTokens(null);
+    setDeployedAgentId(null);
+    setPairingCode("");
+    setPairingError("");
+    setCreateAgentError("");
+    setModelHealth(null);
+    localStorage.removeItem('canopy_onboarding_draft');
+  };
 
   // Preflight the chosen provider key when the user reaches the celebration
   // step — a 1-token ping that catches invalid keys and quota-exhausted (429)
@@ -752,19 +790,24 @@ export function OnboardingWizard() {
             expires_at: null,
             push_enabled: false
           };
+          const bridgePermissions = {
+            read: true,
+            write: true,
+            delete: false
+          };
+          await invoke("enable_bridge", {
+            agentId: newAgentData.id,
+            bridgeType: "files",
+            config: bridgeConfig
+          }).catch(async (err) => {
+            const message = String(err || "");
+            if (!message.toLowerCase().includes("unique")) throw err;
+          });
           await invoke("update_bridge_config", {
             bridgeId: `${newAgentData.id}-files`,
-            config: bridgeConfig
+            config: bridgeConfig,
+            permissions: bridgePermissions
           });
-        }
-
-        if (googleTokens) {
-          if (googleTokens.refresh_token) {
-            await invoke("store_secret_cmd", { key: `google_refresh_${newAgentData.id}`, value: googleTokens.refresh_token });
-          }
-          if (googleTokens.access_token) {
-            await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
-          }
         }
 
         let githubReady = false;
@@ -2445,6 +2488,7 @@ export function OnboardingWizard() {
                     if (typeof invoke === 'function') {
                       const readOnly = true; // Always read-only during onboarding; adjust in Connections tab
                       const tokens = await invoke("start_google_oauth", {
+                        agentId: optimisticId,
                         scopes: [enabledPlugins[testPluginIndex]],
                         readOnly,
                       });
@@ -2945,17 +2989,7 @@ export function OnboardingWizard() {
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <button 
               onClick={() => {
-                setStep(-1);
-                setAgentName("");
-                setSelectedRole(null);
-                setApiKey("");
-                setPersonalityPrompt("");
-                setRecentlyRead([]);
-                setCustomBookInput("");
-                setLlmProvider("");
-                setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
-                setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
-                localStorage.removeItem('canopy_onboarding_draft');
+                resetWizardState();
                 setActiveView("canopy");
               }}
               style={{ padding: "16px 24px", borderRadius: 16, background: "transparent", color: "var(--text-sub)", border: "none", fontSize: 16, fontWeight: 600, cursor: "pointer" }}
@@ -2969,17 +3003,7 @@ export function OnboardingWizard() {
                 setPairingError("");
                 try {
                   await invoke("approve_slack_pairing", { code: pairingCode.trim(), agentId: deployedAgentId });
-                  setStep(-1);
-                  setAgentName("");
-                  setSelectedRole(null);
-                  setApiKey("");
-                  setPersonalityPrompt("");
-                  setRecentlyRead([]);
-                  setCustomBookInput("");
-                  setLlmProvider("");
-                  setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
-                  setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
-                  localStorage.removeItem('canopy_onboarding_draft');
+                  resetWizardState();
                   setActiveView("canopy");
                 } catch (e) {
                   setPairingError(String(e));

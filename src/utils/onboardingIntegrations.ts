@@ -16,6 +16,7 @@ export function getOnboardingIntegrationIds(
   if (plugins.telegram) integrations.push("telegram");
   if (plugins.discord) integrations.push("discord");
   if (plugins.twilio) integrations.push("twilio");
+  if (plugins.photos) integrations.push("apple_photos");
 
   if (plugins.github) {
     for (const repo of options?.githubRepos || []) {
