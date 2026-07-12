@@ -26,7 +26,7 @@ import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
 import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, ChevronDown, ChevronUp, Activity, Terminal, Shield, RefreshCw, Layers, Lock, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, useWorldStore, pickNextAction, UserProfile } from "./store/worldStore";
+import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, pickNextAction, UserProfile } from "./store/worldStore";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { OnboardingWizard } from "./pages/OnboardingWizard";
 import { LockScreen } from "./components/LockScreen";
@@ -1690,20 +1690,28 @@ export default function App() {
 
         const loadedAgents = await invoke("list_agents") as Agent[];
 
-        // Sync real stats to admin dashboard periodically
+        // Anonymized usage telemetry — opt-in (Settings > Security & Privacy).
+        // Payload is a random per-install id plus aggregate event stats only:
+        // no agent id/name, no message content, no user-identifiable fields.
+        // See spec-global-usage-telemetry.md.
         const reportUsage = async () => {
+          if (!useWorldStore.getState().usageTelemetryEnabled) return;
+          const anonId = useWorldStore.getState().telemetryAnonId;
           for (const a of loadedAgents) {
             try {
-              await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/usage`, {
+              const activeModel = (a.personality as any)?.active_model || "";
+              await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/telemetry/event`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  agentId: a.id,
-                  role: a.role,
-                  tokensIn: a.stats?.total_tokens_in || 0,
-                  tokensOut: a.stats?.total_tokens_out || 0,
-                  messagesHandled: a.stats?.messages_handled || 0,
-                  tasksToday: a.stats?.tasks_today || 0
+                  anon_id: anonId,
+                  event_type: "usage_report",
+                  model_version: activeModel || null,
+                  persona_role: normalizePersonaRole(a.role),
+                  tokens_in: a.stats?.total_tokens_in || 0,
+                  tokens_out: a.stats?.total_tokens_out || 0,
+                  cost_usd: a.stats?.total_cost_usd || 0,
+                  timestamp: new Date().toISOString()
                 })
               });
             } catch (e) {}

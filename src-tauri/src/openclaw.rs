@@ -6255,7 +6255,9 @@ async fn file_channels_match(
     desired_calendar: &serde_json::Map<String, serde_json::Value>,
     desired_drive: &serde_json::Map<String, serde_json::Value>,
     desired_bindings: &[serde_json::Value],
-    desired_imessage_enabled: bool,
+    // iMessage is no longer wired through openclaw.json — kept for call-site
+    // compatibility but intentionally unused (see bluebubbles note below).
+    _desired_imessage_enabled: bool,
 ) -> bool {
     let cat_out = match tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -6292,26 +6294,42 @@ async fn file_channels_match(
     };
 
     let on_disk_slack = extract_accounts("/channels/slack/accounts");
-    let on_disk_gmail = extract_accounts("/channels/gmail/accounts");
-    let on_disk_calendar = extract_accounts("/channels/googleCalendar/accounts");
-    let on_disk_drive = extract_accounts("/channels/googleDrive/accounts");
+    
+    // Google channels are no longer injected into openclaw.json; instead, the
+    // `google` plugin is enabled if ANY google accounts are desired.
+    let on_disk_google_enabled = cfg
+        .pointer("/plugins/entries/google/enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let desired_google_enabled = !desired_gmail.is_empty() 
+        || !desired_calendar.is_empty() 
+        || !desired_drive.is_empty();
+
     let on_disk_bindings: Vec<serde_json::Value> = cfg
         .pointer("/bindings")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
+    // iMessage no longer lives in openclaw.json: it runs over the background MCP
+    // bridge, and the patch script now DELETES any `bluebubbles` channel entry.
+    // The desired on-disk state is therefore always "no bluebubbles", regardless
+    // of whether iMessage is enabled. Previously this compared the (now always
+    // false) on-disk value against `desired_imessage_enabled`; for any agent with
+    // iMessage on that comparison was `false == true`, so the config NEVER matched
+    // and the gateway was re-patched and restarted on every sync — an endless
+    // restart loop that surfaced as "could not connect to the server" on boot.
+    // Match now only requires that bluebubbles is absent/disabled on disk.
     let on_disk_bluebubbles_enabled = cfg
         .pointer("/channels/bluebubbles/enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     &on_disk_slack == desired_slack
-        && &on_disk_gmail == desired_gmail
-        && &on_disk_calendar == desired_calendar
-        && &on_disk_drive == desired_drive
+        && on_disk_google_enabled == desired_google_enabled
         && on_disk_bindings.as_slice() == desired_bindings
-        && on_disk_bluebubbles_enabled == desired_imessage_enabled
+        && !on_disk_bluebubbles_enabled
 }
 
 /// Rebuild the gateway's per-agent `channels.*.accounts` maps and `bindings` from
@@ -7462,7 +7480,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
     }
     if integrations.contains(&"imessage") {
         custom_instructions.push_str(
-            "**iMessage**: You receive and send iMessage messages via the background MCP bridge. Do NOT use the browser or bluebubbles.\n\n"
+            "**iMessage**: You receive and send iMessage messages via the background MCP bridge. Do NOT use the browser or bluebubbles. Do NOT try to enable `channels.imessage` in the OpenClaw configuration file (it is intentionally disabled because we use MCP instead).\n\n"
         );
     }
 

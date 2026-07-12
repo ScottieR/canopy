@@ -159,9 +159,23 @@ function UserProfileView() {
             </div>
           </>
         )}
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Share Anonymized Usage Stats</div>
+            <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>
+              Helps us understand overall product usage. Sent with a random ID only — no message content,
+              agent names, or anything else that could identify you or your agents.
+            </div>
+          </div>
+          <Toggle
+            enabled={useWorldStore(s => s.usageTelemetryEnabled)}
+            onChange={() => useWorldStore.getState().setUsageTelemetryEnabled(!useWorldStore.getState().usageTelemetryEnabled)}
+          />
+        </div>
       </div>
 
-      
+
       <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Global Token Spend</h3>
         <TokenSpendChart />

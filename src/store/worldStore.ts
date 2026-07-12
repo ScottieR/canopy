@@ -259,6 +259,14 @@ export interface WorldState {
   setAutoCloakEnabled: (enabled: boolean) => void;
   setAutoCloakTimeout: (timeout: number) => void;
   setIsCloaked: (cloaked: boolean) => void;
+  // ── Anonymized usage telemetry ───────────────────────────────────────────
+  // telemetryAnonId is a random UUID generated once on first launch and
+  // persisted locally — it is never derived from the user's name, email, or
+  // any agent id/name, and nothing that could identify a specific person or
+  // agent is ever sent alongside it. See spec-global-usage-telemetry.md.
+  telemetryAnonId: string;
+  usageTelemetryEnabled: boolean; // opt-in, defaults to false
+  setUsageTelemetryEnabled: (enabled: boolean) => void;
   togglePermission: (agentId: string, permissionId: string) => void;
   updateAgentPosition: (id: string, pos: [number, number, number]) => void;
   updateAgentTarget: (id: string, target: [number, number, number]) => void;
@@ -400,6 +408,18 @@ export function getDefaultPersonality(role: string, name: string, agentTypeInfo:
   return basePrompt;
 }
 
+// Normalizes an agent's role into a value safe to send in anonymized usage
+// telemetry. Suggested personas (present as a real key in AGENT_TYPE_INFO,
+// excluding the "Custom" placeholder entry) report their persona key as-is;
+// anything else — including agents built from scratch via the "Custom" flow,
+// or a suggested persona whose role text was later hand-edited — reports as
+// "custom" rather than leaking free-text agent naming into the aggregate.
+// See spec-global-usage-telemetry.md.
+export function normalizePersonaRole(role: string | undefined, agentTypeInfo: Record<string, any> = AGENT_TYPE_INFO): string {
+  if (role && role !== "Custom" && agentTypeInfo[role]) return role;
+  return "custom";
+}
+
 export function injectPrincipalContext(basePrompt: string, profile: UserProfile | null) {
   if (!profile || profile.name === "Admin" && !profile.global_directives) return basePrompt;
 
@@ -428,6 +448,8 @@ export const useWorldStore = create<WorldState>()(
   isAutoCloakEnabled: true,
   autoCloakTimeout: 15,
   isCloaked: false,
+  telemetryAnonId: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `anon-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  usageTelemetryEnabled: false,
   theme: "light",
   toggleTheme: () => set((state) => {
     const nextTheme = state.theme === "light" ? "dark" : "light";
@@ -443,6 +465,7 @@ export const useWorldStore = create<WorldState>()(
   setAutoCloakEnabled: (enabled) => set({ isAutoCloakEnabled: enabled }),
   setAutoCloakTimeout: (timeout) => set({ autoCloakTimeout: timeout }),
   setIsCloaked: (cloaked) => set({ isCloaked: cloaked }),
+  setUsageTelemetryEnabled: (enabled) => set({ usageTelemetryEnabled: enabled }),
   togglePermission: (agentId, permissionId) =>
     set((state) => ({
       agents: state.agents.map((a) =>
@@ -805,8 +828,10 @@ export const useWorldStore = create<WorldState>()(
       }))
     })),
     inbox: state.inbox,
-    isAutoCloakEnabled: state.isAutoCloakEnabled, 
-    autoCloakTimeout: state.autoCloakTimeout 
+    isAutoCloakEnabled: state.isAutoCloakEnabled,
+    autoCloakTimeout: state.autoCloakTimeout,
+    telemetryAnonId: state.telemetryAnonId,
+    usageTelemetryEnabled: state.usageTelemetryEnabled
   }),
 }
 ));

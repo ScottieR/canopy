@@ -543,7 +543,7 @@ pub fn run() {
     // The async oracle fetch below will overwrite this once the admin server responds.
     model_constants::init_model_registry();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol("canopy-workspace", move |_context, request, responder| {
             let app_handle = _context.app_handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -606,9 +606,14 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .setup(|app| {
+        .plugin(tauri_plugin_dialog::init());
+
+    #[cfg(feature = "updater")]
+    {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+
+    builder.setup(|app| {
             let handle = app.handle().clone();
 
             // Initialize AppState with user context

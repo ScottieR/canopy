@@ -558,6 +558,14 @@ export function OnboardingWizard() {
   };
 
   const { setActiveView, addAgent } = useWorldStore();
+  const handleBackFromRoleStep = () => {
+    if (agents.length > 0) {
+      resetWizardState();
+      setActiveView("canopy");
+      return;
+    }
+    setStep(0);
+  };
 
   const [agentTypeInfo, setAgentTypeInfo] = useState(AGENT_TYPE_INFO);
   const [globalLibrary, setGlobalLibrary] = useState<any[]>([]);
@@ -1369,7 +1377,7 @@ export function OnboardingWizard() {
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
-            <button onClick={() => setStep(0)} style={{
+            <button onClick={handleBackFromRoleStep} style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
