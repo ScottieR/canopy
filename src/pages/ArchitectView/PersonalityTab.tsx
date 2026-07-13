@@ -219,11 +219,8 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
         const modelToSave = typeof modelIdToSave === 'string' ? modelIdToSave : selectedModel;
         const finalModel = modelToSave || defaultModelInfo?.id || "google/gemini-3.5-flash";
 
-        // Synchronize updated keys to OpenClaw's auth-profiles.json layer for THIS agent
-        // only. We use `sync_agent_api_keys` (which reads keychain + applies the per-agent
-        // → global precedence via `get_creds_for_agent`) instead of the older
-        // `sync_credentials` that only wrote the explicit map and would silently drop the
-        // global fallback if a per-agent key was cleared. Other agents are NOT affected.
+        // Synchronize only this agent's explicitly scoped credentials. Clearing a
+        // key disconnects that provider instead of inheriting global state.
         await invoke("sync_agent_api_keys", { agentId: agent.id });
 
         // Push personality state to SQLite. Use the full provider/model-name string.

@@ -936,6 +936,13 @@ pub fn run() {
             dispatch::generate_pairing_token,
             dispatch::revoke_pairing_token,
             dispatch::sync_mobile_state,
+            dispatch::create_companion_pairing,
+            dispatch::list_companion_assignments,
+            dispatch::revoke_companion_assignment,
+            dispatch::update_companion_assignment,
+            dispatch::publish_companion_resource,
+            dispatch::list_companion_resources_for_profile,
+            dispatch::generate_companion_report,
             // Bluetooth
             bluetooth::scan_bluetooth_devices,
             bluetooth::whitelist_bluetooth_device,

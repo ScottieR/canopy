@@ -36,6 +36,7 @@ import { ArchitectView } from './pages/ArchitectView';
 import { ArchiveView } from './pages/ArchiveView';
 import { UserProfileView } from './pages/UserProfileView';
 import { DiagnosticsView } from './pages/DiagnosticsView';
+import { Dashboard } from './pages/Dashboard';
 import { CanopyView } from './pages/CanopyView';
 import { ForumView } from './pages/ForumView';
 import { TopNav } from './components/shared/TopNav';
@@ -47,9 +48,17 @@ import { LobsterIcon } from './components/World/LobsterIcon';
 import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
 import { useForumStore } from './store/forumStore';
 let gatewayBootPromise: Promise<any> | null = null;
+const withStartupTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) => window.setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)),
+      timeoutMs,
+    )),
+  ]);
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
-    gatewayBootPromise = invoke("start_gateway");
+    gatewayBootPromise = withStartupTimeout(invoke("start_gateway"), 10_000, "Gateway startup");
     gatewayBootPromise.catch(() => { gatewayBootPromise = null; });
   }
   return gatewayBootPromise;
@@ -1598,6 +1607,19 @@ export default function App() {
   const [pendingJitAuth, setPendingJitAuth] = useState<any>(null);
   const [jitDuration, setJitDuration] = useState("session");
 
+  // Startup services are recoverable in the background. Never let an optional
+  // Docker/admin/keychain operation hold the entire desktop UI indefinitely.
+  useEffect(() => {
+    if (initialized) return;
+    const watchdog = window.setTimeout(() => {
+      console.warn("Startup watchdog elapsed; opening Canopy while services continue warming up");
+      setLoadStatus("Opening Canopy — services are still warming up…");
+      setActiveView("canopy");
+      setInitialized(true);
+    }, 30_000);
+    return () => window.clearTimeout(watchdog);
+  }, [initialized, setActiveView]);
+
   // Auto-cloak implementation
   useIdleTimer(
     autoCloakTimeout,
@@ -1679,16 +1701,28 @@ export default function App() {
       try {
         // Sync preferences template from admin API to Rust before boot
         try {
-          const settingsRes = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/settings`);
-          const settings = await settingsRes.json();
+          const settingsRes = await withStartupTimeout(
+            fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/settings`),
+            5_000,
+            "Admin settings",
+          );
+          const settings = await withStartupTimeout(settingsRes.json(), 3_000, "Admin settings response");
           if (settings.preferencesTemplate) {
-            await invoke("set_preferences_template", { content: settings.preferencesTemplate });
+            await withStartupTimeout(
+              invoke("set_preferences_template", { content: settings.preferencesTemplate }),
+              5_000,
+              "Preferences template",
+            );
           }
         } catch (e) {
           console.warn("Could not fetch preferences template from admin API:", e);
         }
 
-        const loadedAgents = await invoke("list_agents") as Agent[];
+        const loadedAgents = await withStartupTimeout(
+          invoke("list_agents") as Promise<Agent[]>,
+          8_000,
+          "Agent database load",
+        );
 
         // Anonymized usage telemetry — opt-in (Settings > Security & Privacy).
         // Payload is a random per-install id plus aggregate event stats only:
@@ -1729,7 +1763,7 @@ export default function App() {
           // entries (e.g. "main", "test1", incompletely-deleted agents) cause a
           // 18 → 300+ PID retry spiral within 30 seconds of startup.
           setLoadStatus("Running pre-flight checks...");
-          await invoke("preflight_cleanup").catch((e) =>
+          await withStartupTimeout(invoke("preflight_cleanup"), 8_000, "Pre-flight cleanup").catch((e) =>
             console.warn("preflight_cleanup non-fatal:", e)
           );
 
@@ -1743,7 +1777,8 @@ export default function App() {
           await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
 
           setLoadStatus("Registering agents with gateway...");
-          await invoke("boot_sync_agents").catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
+          await withStartupTimeout(invoke("boot_sync_agents"), 15_000, "Agent registration")
+            .catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
           unlisten();
 
           setLoadStatus("Checking DB for Agents...");
@@ -1767,12 +1802,12 @@ export default function App() {
             const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
             const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
 
-            await invoke("sync_credentials", { agentId: ag.id, keys: {
+            await withStartupTimeout(invoke("sync_credentials", { agentId: ag.id, keys: {
               "ANTHROPIC_API_KEY": agAnthropic,
               "OPENAI_API_KEY":    agOpenAI,
               "GEMINI_API_KEY":    agGemini,
               "XAI_API_KEY":       agGrok,
-            }}).catch(console.warn);
+            }}), 1_000, `Credential sync for ${ag.id}`).catch(console.warn);
           }
 
           setLoadStatus("Setting up UI Agent Models...");
@@ -1848,7 +1883,7 @@ export default function App() {
           // (or 60 s elapses, in which case we proceed with a warning banner).
           {
             const agentIds = loadedAgents.map(a => a.id);
-            const READY_TIMEOUT_MS = 60_000;
+            const READY_TIMEOUT_MS = 15_000;
             const POLL_INTERVAL_MS = 2_500;
             const deadline = Date.now() + READY_TIMEOUT_MS;
             let agentsReady = false;
@@ -2056,6 +2091,11 @@ export default function App() {
       {activeView === "profile" && (
         <div style={{ flex: 1, overflow: "auto" }}>
           <UserProfileView />
+        </div>
+      )}
+      {activeView === "dashboard" && (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <Dashboard />
         </div>
       )}
       {activeView === "diagnostics" && (

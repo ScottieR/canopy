@@ -177,7 +177,15 @@ function UserProfileView() {
 
 
       <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
-        <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: "0 0 16px 0", borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>Global Token Spend</h3>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>
+          <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: 0 }}>Global Token Spend</h3>
+          <button
+            onClick={() => useWorldStore.getState().setActiveView("dashboard")}
+            style={{ fontSize: 12, fontWeight: 600, color: "#3c6663", background: "transparent", border: "none", cursor: "pointer", padding: 0 }}
+          >
+            View full usage dashboard →
+          </button>
+        </div>
         <TokenSpendChart />
       </div>
 

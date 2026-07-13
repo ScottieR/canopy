@@ -259,7 +259,7 @@ export // ═══════════════════════�
         })}
 
         {/* Action Buttons */}
-        <div style={{ display: "flex", gap: 8, marginTop: 4, position: "relative", zIndex: 2 }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
           {/* Add Agent Button */}
           <div onClick={() => setActiveView("onboarding")} style={{
             background: "rgba(255,255,255,0.2)", backdropFilter: "blur(24px)", WebkitBackdropFilter: "blur(24px)",

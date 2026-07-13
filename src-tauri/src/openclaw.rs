@@ -2234,6 +2234,20 @@ pub async fn send_message_internal(
     message: &str,
     session_id: Option<String>,
 ) -> Result<Value, String> {
+    send_message_internal_with_context(db, app, agent_id, message, session_id, None).await
+}
+
+/// Send a message while keeping app-managed companion context out of the
+/// persisted user transcript. The visible `message` is stored as authored;
+/// `runtime_context` is supplied only to the model invocation.
+pub async fn send_message_internal_with_context(
+    db: &crate::db::Database,
+    app: &tauri::AppHandle,
+    agent_id: &str,
+    message: &str,
+    session_id: Option<String>,
+    runtime_context: Option<&str>,
+) -> Result<Value, String> {
     // Step 1: Get or create conversation
     let conv_id = match session_id {
         Some(id) => {
@@ -2299,6 +2313,14 @@ pub async fn send_message_internal(
     let proxy_port = crate::browser_manager::jit_proxy_port_for(agent_id);
     let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
     let cdp_env = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
+    let runtime_message = runtime_context
+        .map(|context| {
+            format!(
+                "<canopy_companion_context>\n{}\n</canopy_companion_context>\n\n<user_message>\n{}\n</user_message>",
+                context, message
+            )
+        })
+        .unwrap_or_else(|| message.to_string());
     // Timeouts are usually transient (Node event loop momentarily busy); a single retry
     // resolves the majority of "LLM request timeout" failures without user intervention.
     let max_attempts: u32 = 3;
@@ -2329,7 +2351,7 @@ pub async fn send_message_internal(
             "--agent",
             agent_id,
             "--message",
-            message,
+            &runtime_message,
             "--json",
             "--session-id",
             &conv_id,

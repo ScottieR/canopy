@@ -16,7 +16,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
 import { WorldScene } from "../components/World/WorldScene";
 import { OnboardingCompanion } from "../components/World/OnboardingCompanion";
 import { LoadingScreen } from "../components/LoadingScreen";
-import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission } from "../store/worldStore";
+import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission, fireActivationEvent } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
@@ -102,6 +102,32 @@ export function OnboardingWizard() {
   const { agents } = useWorldStore();
   const initialStepTarget = agents.length > 0 ? 1 : 0;
   const [step, setStep] = useState(draft?.step !== undefined ? draft.step : -1);
+
+  // Maps each wizard step value to a stable name for funnel telemetry, so we
+  // can see step-by-step drop-off, not just whether a user reached the end.
+  // See spec-global-usage-telemetry.md.
+  const ONBOARDING_STEP_NAMES: Record<string, string> = {
+    "-1": "engine_check",
+    "0": "welcome",
+    "0.5": "user_identity",
+    "1": "create_agent_intro",
+    "1.8": "import_existing_agent",
+    "2": "agent_name",
+    "2.5": "agent_appearance",
+    "3": "power_up",
+    "4": "skills_access",
+    "5": "plugin_test",
+    "6": "deploying",
+    "7": "slack_pairing",
+  };
+  useEffect(() => {
+    const name = ONBOARDING_STEP_NAMES[String(step)];
+    if (name) {
+      // Fire-once per step value, see fireActivationEvent.
+      fireActivationEvent(`onboarding_step_reached_${name}`, { step, step_name: name });
+    }
+  }, [step]);
+
   const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "found" | "starting" | "ready">("checking");
   const [foundEngine, setFoundEngine] = useState<"OrbStack" | "Docker" | null>(null);
   const [engineError, setEngineError] = useState("");
@@ -122,7 +148,7 @@ export function OnboardingWizard() {
   });
   const [recentlyRead, setRecentlyRead] = useState<string[]>([]);
   const [customBookInput, setCustomBookInput] = useState("");
-  const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "xAI Grok" | "">("");
+  const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "xAI Grok" | "">(draft?.llmProvider || "");
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any; habitatId?: number; color?: string; decor?: string[]; decorTransforms?: any }>({ baseModelUrl: null, accessories: [], decor: [] });
 
@@ -208,6 +234,12 @@ export function OnboardingWizard() {
     setCustomBookInput("");
     setLlmProvider("");
     setApiKeyMode("hidden");
+    setAutoProvisionProvider(null);
+    setManagementConnected(false);
+    setManagementCredential("");
+    setManagementScopeId("");
+    setManagementStatus("idle");
+    setManagementError("");
     setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
     setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
     setSelectedFolderPath("");
@@ -346,6 +378,7 @@ export function OnboardingWizard() {
             setTestStatusMessage("GitHub token saved. Run verification here before launch.");
           } else if (key) {
             setApiKey(key);
+            setAutoProvisionProvider(null);
             if (type === "gemini") setLlmProvider("Google Gemini");
             else if (type === "openai") setLlmProvider("OpenAI");
             else if (type === "anthropic") setLlmProvider("Anthropic");
@@ -759,16 +792,12 @@ export function OnboardingWizard() {
         }
 
         {
-          const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
-          const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
-          const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
-          const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
-                                      || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
-
-          const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
-          const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
-          const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
-          const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
+          // SECURITY: New agents receive only credentials explicitly entered for
+          // them. Never inherit a global provider key.
+          const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_anthropic_key` }).catch(() => "") || "");
+          const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_openai_key` }).catch(() => "") || "");
+          const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_gemini_key` }).catch(() => "") || "");
+          const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_grok_key` }).catch(() => "") || "");
 
           await invoke("sync_credentials", { agentId: newAgentData.id, keys: {
             "ANTHROPIC_API_KEY": agAnthropic,
@@ -876,7 +905,10 @@ export function OnboardingWizard() {
           await invoke("boot_sync_agents").catch(() => {});
           await invoke("sync_agent_slack_config", { agentId: newAgentData.id }).catch(() => {});
         }
-        
+
+        // A0 activation: agent successfully deployed. Fire-once, see fireActivationEvent.
+        fireActivationEvent("activation_a0_deployed");
+
         return newAgentData;
       } else {
         throw new Error("Tauri invoke not found");
@@ -1695,7 +1727,7 @@ export function OnboardingWizard() {
             <div style={{ marginBottom: 24, display: "flex", flexWrap: "wrap", gap: 12 }}>
               {["OpenAI", "Google Gemini", "Anthropic", "xAI Grok"].map(prov => (
                 <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--surface-card)", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
-                  <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => { setLlmProvider(prov as any); setApiKeyMode("hidden"); setApiKey(""); }} />
+                  <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => { setLlmProvider(prov as any); setApiKeyMode("hidden"); setApiKey(""); setAutoProvisionProvider(null); }} />
                   <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{prov}</span>
                 </label>
               ))}
@@ -1709,6 +1741,7 @@ export function OnboardingWizard() {
               <div style={{ display: "flex", gap: 16, flexDirection: "column" }}>
                 <button onClick={async () => {
                   if (!llmProvider) return;
+                  setAutoProvisionProvider(null);
                   setApiKeyMode("scan");
                   try {
                     const providerMap: any = { "OpenAI": "OPENAI", "Google Gemini": "GEMINI", "Anthropic": "ANTHROPIC", "xAI Grok": "XAI" };
@@ -1720,7 +1753,7 @@ export function OnboardingWizard() {
                     alert("No existing key found in keychain.");
                   }
                 }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: !llmProvider ? "1px solid rgba(0,0,0,0.1)" : "1px solid #3c6663", background: "rgba(60,102,99,0.05)", color: !llmProvider ? "var(--text-muted)" : "#3c6663", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
-                  Scan for existing API key
+                  Use an existing key for this agent
                 </button>
                 <div style={{ textAlign: "center", fontSize: 12, color: "var(--text-sub)", margin: "-6px 0" }}>— or —</div>
                 <button onClick={async () => {
@@ -1823,7 +1856,7 @@ export function OnboardingWizard() {
             {/* Key-free creation (spec Part 1B Layer 2): the key is a graduation
                 moment at first message, not a gate on creating the agent. */}
             <button
-              onClick={() => { setApiKey(""); setApiKeyMode("hidden"); setStep(4); }}
+              onClick={() => { setApiKey(""); setApiKeyMode("hidden"); setAutoProvisionProvider(null); setStep(4); }}
               title={`You can finish creating ${agentName || "your agent"} now and connect a key when you send their first message.`}
               style={{
                 marginLeft: "auto", padding: "12px 20px", borderRadius: 12,

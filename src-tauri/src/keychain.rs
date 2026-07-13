@@ -76,24 +76,26 @@ pub fn delete_secret_internal(key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Helper: Get an agent's API key with fallback to the global provider key
+/// Helper: Get an agent's explicitly scoped API key.
+///
+/// SECURITY: Provider credentials must never fall back to a global key. An
+/// agent without its own credential remains disconnected.
 pub fn get_agent_api_key(agent_id: &str, provider_id: &str) -> Result<String> {
-    // 1. Check agent-specific override
-    let agent_key = format!("agent_{}_api_key", agent_id);
-    if let Ok(key) = get_secret(&agent_key) {
-        return Ok(key);
+    let suffix = match provider_id.to_ascii_lowercase().as_str() {
+        "anthropic" => "anthropic_key",
+        "openai" => "openai_key",
+        "google" | "gemini" => "gemini_key",
+        "xai" | "grok" => "grok_key",
+        _ => return Err(CanopyError::Validation("Unsupported provider".into())),
+    };
+    let key = get_secret(&format!("agent_{}_{}", agent_id, suffix))?;
+    if key.trim().is_empty() {
+        return Err(CanopyError::NotFound(format!(
+            "No API key found for agent {} and provider {}",
+            agent_id, provider_id
+        )));
     }
-
-    // 2. Fall back to global provider key
-    let global_key = format!("{}_API_KEY", provider_id.to_uppercase());
-    if let Ok(key) = get_secret(&global_key) {
-        return Ok(key);
-    }
-
-    Err(CanopyError::NotFound(format!(
-        "No API key found for agent {} or provider {}",
-        agent_id, provider_id
-    )))
+    Ok(key)
 }
 
 // ─── Tauri Commands (take owned Strings for IPC deserialization) ────────────

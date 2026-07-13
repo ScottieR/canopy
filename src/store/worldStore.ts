@@ -95,7 +95,8 @@ export interface ChatMessage {
 export interface MiniAppVersion {
   id: string;
   timestamp: number;
-  entrypoint: string;
+  entrypoint?: string;
+  htmlContent?: string;
 }
 
 /** A saved mini-app — an HTML tool produced by an agent and pinned for reuse. */
@@ -107,6 +108,8 @@ export interface MiniApp {
   sourceMessageId?: string;  // which chat message it came from, for dedup
   versions: MiniAppVersion[];
   activeVersionId: string;
+  /** Legacy storage used before HTML moved into version records. */
+  htmlContent?: string;
 }
 
 // A saved conversation thread for an agent. Titles are auto-derived from the
@@ -241,7 +244,7 @@ export interface WorldState {
   inbox: InboxItem[];
   selectedAgent: string | null;
   hoveredAgent: string | null;
-  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum";
+  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum" | "dashboard";
   activeForumId: string | null;
   architectTab: string;
   gatewayReady: boolean;
@@ -249,7 +252,7 @@ export interface WorldState {
   toggleTheme: () => void;
   setSelectedAgent: (id: string | null) => void;
   setHoveredAgent: (id: string | null) => void;
-  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum") => void;
+  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum" | "dashboard") => void;
   setActiveForumId: (id: string | null) => void;
   setArchitectTab: (tab: string) => void;
   setGatewayReady: (ready: boolean) => void;
@@ -267,6 +270,11 @@ export interface WorldState {
   telemetryAnonId: string;
   usageTelemetryEnabled: boolean; // opt-in, defaults to false
   setUsageTelemetryEnabled: (enabled: boolean) => void;
+  // firedTelemetryEvents tracks which one-time milestone/funnel events (e.g.
+  // onboarding_a0_deployed, onboarding_step_reached_2) have already fired for
+  // this install, so re-visiting a screen or reloading the app doesn't send
+  // duplicates. Keyed by event_type string. See fireActivationEvent() below.
+  firedTelemetryEvents: Record<string, boolean>;
   togglePermission: (agentId: string, permissionId: string) => void;
   updateAgentPosition: (id: string, pos: [number, number, number]) => void;
   updateAgentTarget: (id: string, target: [number, number, number]) => void;
@@ -291,7 +299,7 @@ export interface WorldState {
   addInboxItem: (item: Omit<InboxItem, "id" | "timestamp">) => void;
   removeInboxItem: (id: string) => void;
   // ── Mini Apps ─────────────────────────────────────────────────────────────
-  addMiniApp: (agentId: string, app: { name: string; description?: string; sourceMessageId?: string; entrypoint: string; }) => void;
+  addMiniApp: (agentId: string, app: { name: string; description?: string; sourceMessageId?: string; entrypoint?: string; htmlContent?: string; }) => void;
   updateMiniAppVersion: (agentId: string, appId: string, versionId: string) => void;
   deleteMiniApp: (agentId: string, appId: string) => void;
   // ── Decision Queue ────────────────────────────────────────────────────
@@ -420,6 +428,54 @@ export function normalizePersonaRole(role: string | undefined, agentTypeInfo: Re
   return "custom";
 }
 
+// Fires a one-time funnel/milestone event (activation A0-A3, onboarding step
+// reached, companion pairing, etc). Dedupes against the persisted
+// firedTelemetryEvents map keyed by eventType, so reloads/re-renders never
+// double-report the same milestone. No-ops when usage telemetry is disabled
+// (opt-in, Settings > Security & Privacy). Fire-and-forget: failures are
+// swallowed so telemetry can never block the UI. Payload carries only the
+// random per-install anon_id, the event name, and optional non-identifying
+// properties (e.g. step number/name) — never message content or PII.
+// See spec-global-usage-telemetry.md.
+export function fireActivationEvent(eventType: string, properties?: Record<string, any>) {
+  const state = useWorldStore.getState();
+  if (!state.usageTelemetryEnabled) return;
+  if (state.firedTelemetryEvents[eventType]) return;
+  useWorldStore.setState((s) => ({
+    firedTelemetryEvents: { ...s.firedTelemetryEvents, [eventType]: true }
+  }));
+  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/telemetry/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      anon_id: state.telemetryAnonId,
+      event_type: eventType,
+      properties: properties || null,
+      timestamp: new Date().toISOString()
+    })
+  }).catch(() => {});
+}
+
+// Reports a recurring (non-deduped) usage event — e.g. "companion_paired",
+// which can legitimately happen more than once per install (multiple
+// devices). Same opt-in gating and anonymized payload shape as
+// fireActivationEvent, just without the fire-once bookkeeping.
+// See spec-global-usage-telemetry.md.
+export function reportTelemetryEvent(eventType: string, properties?: Record<string, any>) {
+  const state = useWorldStore.getState();
+  if (!state.usageTelemetryEnabled) return;
+  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/telemetry/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      anon_id: state.telemetryAnonId,
+      event_type: eventType,
+      properties: properties || null,
+      timestamp: new Date().toISOString()
+    })
+  }).catch(() => {});
+}
+
 export function injectPrincipalContext(basePrompt: string, profile: UserProfile | null) {
   if (!profile || profile.name === "Admin" && !profile.global_directives) return basePrompt;
 
@@ -450,6 +506,7 @@ export const useWorldStore = create<WorldState>()(
   isCloaked: false,
   telemetryAnonId: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `anon-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   usageTelemetryEnabled: false,
+  firedTelemetryEvents: {},
   theme: "light",
   toggleTheme: () => set((state) => {
     const nextTheme = state.theme === "light" ? "dark" : "light";
@@ -639,6 +696,10 @@ export const useWorldStore = create<WorldState>()(
         } : a),
       };
     });
+    if (savedId) {
+      // A3 activation: first forum space created. Fire-once, see fireActivationEvent.
+      fireActivationEvent("activation_a3_first_forum");
+    }
     return savedId;
   },
 
@@ -750,6 +811,7 @@ export const useWorldStore = create<WorldState>()(
         id: `version_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         timestamp: Date.now(),
         entrypoint: app.entrypoint,
+        htmlContent: app.htmlContent,
       };
 
       // If an app with the same name exists, append a new version
@@ -831,7 +893,8 @@ export const useWorldStore = create<WorldState>()(
     isAutoCloakEnabled: state.isAutoCloakEnabled,
     autoCloakTimeout: state.autoCloakTimeout,
     telemetryAnonId: state.telemetryAnonId,
-    usageTelemetryEnabled: state.usageTelemetryEnabled
+    usageTelemetryEnabled: state.usageTelemetryEnabled,
+    firedTelemetryEvents: state.firedTelemetryEvents
   }),
 }
 ));

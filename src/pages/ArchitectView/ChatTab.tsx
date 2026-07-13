@@ -6,7 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip,
   AlertTriangle
 } from "lucide-react";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, fireActivationEvent } from "../../store/worldStore";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { useForumStore } from "../../store/forumStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
@@ -474,7 +474,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           localStorage.removeItem("canopy_starter_task");
           // Small delay so the freshly-mounted chat surface settles before the
           // send kicks off (mirrors the one-tick defer in onSendChat above).
-          starterTimer = setTimeout(() => handleSendMessage(st.prompt), 800);
+          starterTimer = setTimeout(() => handleSendMessage(st.prompt, undefined, undefined, true), 800);
         }
       }
     } catch { /* malformed payload — drop it rather than block chat */ }
@@ -977,7 +977,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     setQueuedMessages([]); // Clear queue on stop
   };
 
-  const handleSendMessage = async (overrideText?: string, overrideAttachments?: any[], overrideSessionId?: string) => {
+  const handleSendMessage = async (overrideText?: string, overrideAttachments?: any[], overrideSessionId?: string, isStarterTask?: boolean) => {
     if (loading) return;
     const baseText = (overrideText ?? message).trim();
     const activeAttachments = overrideAttachments ?? attachments;
@@ -1051,6 +1051,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         if (!overrideText) setMessage(baseText);
         setChatLog(prev => prev.filter(m => m.id !== userMsg.id));
         return;
+      }
+
+      // A1 activation: first agent reply seen. A2: first deliverable, specifically
+      // the reply to the onboarding starter task ("watch [agent] work" — the
+      // product's "aha moment"). Fire-once, see fireActivationEvent. Only the
+      // milestone name is sent, never reply content.
+      fireActivationEvent("activation_a1_first_reply");
+      if (isStarterTask) {
+        fireActivationEvent("activation_a2_first_deliverable");
       }
 
       let responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);

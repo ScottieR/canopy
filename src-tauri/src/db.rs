@@ -63,6 +63,95 @@ pub struct ActivityHeatmapEntry {
     pub total: u32,
 }
 
+/// A person using one or more agents through the focused companion app.
+/// Profiles are deliberately separate from the desktop owner's global profile.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionProfile {
+    pub id: String,
+    pub display_name: String,
+    pub profile_type: String,
+    pub context_json: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A revocable, device-bound grant for a constrained subset of agents.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionDeviceGrant {
+    pub device_id: String,
+    pub profile_id: String,
+    pub device_name: String,
+    pub experience: String,
+    pub allowed_agent_ids: Vec<String>,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionLearningEvent {
+    pub id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub subject: Option<String>,
+    pub skill: Option<String>,
+    pub outcome: Option<String>,
+    pub score: Option<f64>,
+    pub confidence: Option<f64>,
+    pub evidence: Option<String>,
+    pub recommended_next: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionReport {
+    pub id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub report_json: serde_json::Value,
+    pub created_at: String,
+}
+
+/// Versioned content published into a companion assignment. `mini_app` is the
+/// first resource type; learning plans and other parent-managed material use
+/// the same transport without coupling the grant layer to tutoring.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionResource {
+    pub id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub resource_type: String,
+    pub title: String,
+    pub version: i64,
+    pub content_json: serde_json::Value,
+    pub source: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionResourceEvent {
+    pub id: String,
+    pub resource_id: String,
+    pub device_id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub action: String,
+    pub data_json: serde_json::Value,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BrowserHistoryEntry {
     pub timestamp: String,
@@ -378,6 +467,123 @@ impl Database {
                 resolved INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(agent_id) REFERENCES agents(id)
             )",
+            [],
+        )?;
+
+        // Managed companion/family foundation. The same grant model supports a
+        // child with a Tutor, a teammate with a Developer, or a guest with any
+        // other explicitly shared agent. Provider credentials remain agent-scoped.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_profiles (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                profile_type TEXT NOT NULL,
+                context_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_device_grants (
+                device_id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                experience TEXT NOT NULL,
+                allowed_agent_ids_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_learning_events (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                subject TEXT,
+                skill TEXT,
+                outcome TEXT,
+                score REAL,
+                confidence REAL,
+                evidence TEXT,
+                recommended_next TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_reports (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                report_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_resources (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                content_json TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_resource_events (
+                id TEXT PRIMARY KEY,
+                resource_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(resource_id) REFERENCES companion_resources(id),
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_grants_profile ON companion_device_grants(profile_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_events_profile_agent ON companion_learning_events(profile_id, agent_id, created_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_reports_profile_agent ON companion_reports(profile_id, agent_id, created_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_resources_profile_agent ON companion_resources(profile_id, agent_id, status, updated_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_resource_events_resource ON companion_resource_events(resource_id, created_at)",
             [],
         )?;
 
@@ -1902,6 +2108,347 @@ impl Database {
         )?;
         Ok(())
     }
+
+    // ─── Managed companion profiles, grants, resources, and reports ────────
+
+    pub fn insert_companion_profile(&self, profile: &CompanionProfile) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_profiles
+                (id, display_name, profile_type, context_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                profile.id,
+                profile.display_name,
+                profile.profile_type,
+                profile.context_json.to_string(),
+                profile.created_at,
+                profile.updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_companion_profile(&self, profile_id: &str) -> SqlResult<Option<CompanionProfile>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, display_name, profile_type, context_json, created_at, updated_at
+             FROM companion_profiles WHERE id = ?1",
+            params![profile_id],
+            |row| {
+                let context: String = row.get(3)?;
+                Ok(CompanionProfile {
+                    id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    profile_type: row.get(2)?,
+                    context_json: serde_json::from_str(&context).unwrap_or_else(|_| json!({})),
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn update_companion_profile(&self, profile: &CompanionProfile) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_profiles
+             SET display_name = ?1, profile_type = ?2, context_json = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![
+                profile.display_name,
+                profile.profile_type,
+                profile.context_json.to_string(),
+                profile.updated_at,
+                profile.id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_companion_grant(&self, grant: &CompanionDeviceGrant) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_device_grants
+                (device_id, profile_id, device_name, experience, allowed_agent_ids_json,
+                 created_at, last_seen_at, revoked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                grant.device_id,
+                grant.profile_id,
+                grant.device_name,
+                grant.experience,
+                serde_json::to_string(&grant.allowed_agent_ids).unwrap_or_else(|_| "[]".into()),
+                grant.created_at,
+                grant.last_seen_at,
+                grant.revoked
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_companion_grant(&self, device_id: &str) -> SqlResult<Option<CompanionDeviceGrant>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT device_id, profile_id, device_name, experience, allowed_agent_ids_json,
+                    created_at, last_seen_at, revoked
+             FROM companion_device_grants WHERE device_id = ?1",
+            params![device_id],
+            |row| {
+                let allowed: String = row.get(4)?;
+                Ok(CompanionDeviceGrant {
+                    device_id: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    device_name: row.get(2)?,
+                    experience: row.get(3)?,
+                    allowed_agent_ids: serde_json::from_str(&allowed).unwrap_or_default(),
+                    created_at: row.get(5)?,
+                    last_seen_at: row.get(6)?,
+                    revoked: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn update_companion_grant(&self, grant: &CompanionDeviceGrant) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_device_grants
+             SET device_name = ?1, experience = ?2, allowed_agent_ids_json = ?3
+             WHERE device_id = ?4 AND revoked = 0",
+            params![
+                grant.device_name,
+                grant.experience,
+                serde_json::to_string(&grant.allowed_agent_ids).unwrap_or_else(|_| "[]".into()),
+                grant.device_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_companion_grants(&self) -> SqlResult<Vec<CompanionDeviceGrant>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT device_id, profile_id, device_name, experience, allowed_agent_ids_json,
+                    created_at, last_seen_at, revoked
+             FROM companion_device_grants ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let allowed: String = row.get(4)?;
+            Ok(CompanionDeviceGrant {
+                device_id: row.get(0)?,
+                profile_id: row.get(1)?,
+                device_name: row.get(2)?,
+                experience: row.get(3)?,
+                allowed_agent_ids: serde_json::from_str(&allowed).unwrap_or_default(),
+                created_at: row.get(5)?,
+                last_seen_at: row.get(6)?,
+                revoked: row.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn touch_companion_grant(&self, device_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_device_grants SET last_seen_at = ?1 WHERE device_id = ?2",
+            params![Utc::now().to_rfc3339(), device_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn revoke_companion_grant(&self, device_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_device_grants SET revoked = 1 WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_companion_learning_event(&self, event: &CompanionLearningEvent) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_learning_events
+                (id, profile_id, agent_id, session_id, event_type, subject, skill,
+                 outcome, score, confidence, evidence, recommended_next, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                event.id,
+                event.profile_id,
+                event.agent_id,
+                event.session_id,
+                event.event_type,
+                event.subject,
+                event.skill,
+                event.outcome,
+                event.score,
+                event.confidence,
+                event.evidence,
+                event.recommended_next,
+                event.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_companion_messages(
+        &self,
+        profile_id: &str,
+        agent_id: &str,
+    ) -> SqlResult<Vec<Message>> {
+        let grants = self.list_companion_grants()?;
+        let mut messages = Vec::new();
+        for grant in grants.into_iter().filter(|grant| {
+            !grant.revoked
+                && grant.profile_id == profile_id
+                && grant.allowed_agent_ids.iter().any(|id| id == agent_id)
+        }) {
+            let session_id = format!("companion_{}_{}", grant.device_id, agent_id);
+            messages.extend(self.get_all_messages(&session_id)?);
+        }
+        messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        Ok(messages)
+    }
+
+    pub fn insert_companion_report(&self, report: &CompanionReport) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_reports
+                (id, profile_id, agent_id, period_start, period_end, report_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                report.id,
+                report.profile_id,
+                report.agent_id,
+                report.period_start,
+                report.period_end,
+                report.report_json.to_string(),
+                report.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_companion_reports(
+        &self,
+        profile_id: &str,
+        agent_id: &str,
+    ) -> SqlResult<Vec<CompanionReport>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, agent_id, period_start, period_end, report_json, created_at
+             FROM companion_reports
+             WHERE profile_id = ?1 AND agent_id = ?2
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![profile_id, agent_id], |row| {
+            let report: String = row.get(5)?;
+            Ok(CompanionReport {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                agent_id: row.get(2)?,
+                period_start: row.get(3)?,
+                period_end: row.get(4)?,
+                report_json: serde_json::from_str(&report).unwrap_or_else(|_| json!({})),
+                created_at: row.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn upsert_companion_resource(&self, resource: &CompanionResource) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_resources
+                (id, profile_id, agent_id, resource_type, title, version, content_json,
+                 source, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                version = companion_resources.version + 1,
+                content_json = excluded.content_json,
+                source = excluded.source,
+                status = excluded.status,
+                updated_at = excluded.updated_at",
+            params![
+                resource.id,
+                resource.profile_id,
+                resource.agent_id,
+                resource.resource_type,
+                resource.title,
+                resource.version,
+                resource.content_json.to_string(),
+                resource.source,
+                resource.status,
+                resource.created_at,
+                resource.updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_companion_resources(
+        &self,
+        profile_id: &str,
+        allowed_agent_ids: &[String],
+    ) -> SqlResult<Vec<CompanionResource>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, agent_id, resource_type, title, version, content_json,
+                    source, status, created_at, updated_at
+             FROM companion_resources
+             WHERE profile_id = ?1 AND status = 'published'
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map(params![profile_id], |row| {
+            let content: String = row.get(6)?;
+            Ok(CompanionResource {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                agent_id: row.get(2)?,
+                resource_type: row.get(3)?,
+                title: row.get(4)?,
+                version: row.get(5)?,
+                content_json: serde_json::from_str(&content).unwrap_or_else(|_| json!({})),
+                source: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })?;
+        let mut resources = Vec::new();
+        for row in rows {
+            let resource = row?;
+            if allowed_agent_ids.iter().any(|id| id == &resource.agent_id) {
+                resources.push(resource);
+            }
+        }
+        Ok(resources)
+    }
+
+    pub fn insert_companion_resource_event(&self, event: &CompanionResourceEvent) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_resource_events
+                (id, resource_id, device_id, profile_id, agent_id, action, data_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                event.id,
+                event.resource_id,
+                event.device_id,
+                event.profile_id,
+                event.agent_id,
+                event.action,
+                event.data_json.to_string(),
+                event.created_at
+            ],
+        )?;
+        Ok(())
+    }
 }
 
 // ─── Helper Functions ────────────────────────────────────────────────────────
@@ -2187,5 +2734,43 @@ mod tests {
         let updated = db.get_budget("agent-1").unwrap().unwrap();
         assert_eq!(updated.daily_spent_cents, 1500);
         assert_eq!(updated.monthly_spent_cents, 5500);
+    }
+
+    #[test]
+    fn companion_profiles_and_device_grants_are_scoped_and_revocable() {
+        let db = create_test_db();
+        let now = Utc::now().to_rfc3339();
+        let profile = CompanionProfile {
+            id: "profile-child-1".into(),
+            display_name: "Maya".into(),
+            profile_type: "child".into(),
+            context_json: json!({"grade": 5}),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        db.insert_companion_profile(&profile).unwrap();
+        let grant = CompanionDeviceGrant {
+            device_id: "device-ipad-1".into(),
+            profile_id: profile.id.clone(),
+            device_name: "Maya's iPad".into(),
+            experience: "learning".into(),
+            allowed_agent_ids: vec!["tutor-maya".into()],
+            created_at: now,
+            last_seen_at: None,
+            revoked: false,
+        };
+        db.insert_companion_grant(&grant).unwrap();
+
+        let stored = db.get_companion_grant(&grant.device_id).unwrap().unwrap();
+        assert_eq!(stored.allowed_agent_ids, vec!["tutor-maya"]);
+        assert!(!stored.revoked);
+
+        db.revoke_companion_grant(&grant.device_id).unwrap();
+        assert!(
+            db.get_companion_grant(&grant.device_id)
+                .unwrap()
+                .unwrap()
+                .revoked
+        );
     }
 }

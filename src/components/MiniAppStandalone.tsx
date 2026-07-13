@@ -63,7 +63,9 @@ export function MiniAppStandalone({ payload }: { payload: string }) {
   return (
     <div style={{ width: "100%", height: "100vh", background: "#fff", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <iframe
-        src={`canopy-workspace://${agentId}/${encodeURIComponent(activeVersion.entrypoint)}`}
+        {...(activeVersion.htmlContent
+          ? { srcDoc: activeVersion.htmlContent }
+          : { src: `canopy-workspace://${agentId}/${encodeURIComponent(activeVersion.entrypoint || "")}` })}
         style={{ flex: 1, border: "none", width: "100%" }}
         sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
         title={app.name}

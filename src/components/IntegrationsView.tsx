@@ -365,7 +365,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
           <>
             <SectionHeader
               title="AI Providers"
-              subtitle="Global API keys used by all agents. Individual agents can override with their own keys in their Overview tab."
+              subtitle="Legacy provider vault. Keys here are not assigned automatically; connect or provision a dedicated key from each agent's Skills & Access tab."
             />
             <ProvidersVault />
           </>
