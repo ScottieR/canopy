@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
 import { ConnectionsTab } from './ConnectionsTab';
-import { AgentData } from '../../store/worldStore';
+import { AgentData, useWorldStore } from '../../store/worldStore';
+
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 
 // ────────────────────────────────────────────────────────────────────────────
 // TEST SETUP AND FIXTURES
@@ -76,6 +80,66 @@ const mockAgent: AgentData = {
     summarize: false,
   },
 };
+
+describe('ConnectionsTab - Workspace Folder Access', () => {
+  const invokeMock = invoke as unknown as Mock;
+  const dialogOpenMock = open as unknown as Mock;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invokeMock.mockImplementation(async (command: string) => (
+      command === 'get_agent_allowed_directories' ? [] : null
+    ));
+    dialogOpenMock.mockResolvedValue(null);
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockResolvedValue([]),
+    };
+    useWorldStore.setState({ agents: [mockAgent] });
+  });
+
+  it('offers an inline isolation action when custom folders are blocked', async () => {
+    render(<ConnectionsTab agent={mockAgent} />);
+
+    fireEvent.click(await screen.findByText('Allowed Folders (0)'));
+
+    expect(screen.getByRole('button', { name: 'Add Folder' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch to Isolated Mode' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('toggle_agent_isolation', {
+        agentId: mockAgent.id,
+        isolated: true,
+      });
+    });
+  });
+
+  it('opens the folder picker and persists selections for isolated agents', async () => {
+    const isolatedAgent: AgentData = { ...mockAgent, isolated: true };
+    const selectedFolder = '/tmp/canopy-folder-access-test';
+    dialogOpenMock.mockResolvedValue([selectedFolder]);
+    useWorldStore.setState({ agents: [isolatedAgent] });
+
+    render(<ConnectionsTab agent={isolatedAgent} />);
+
+    fireEvent.click(await screen.findByText('Allowed Folders (0)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Folder' }));
+
+    await waitFor(() => {
+      expect(dialogOpenMock).toHaveBeenCalledWith({
+        directory: true,
+        multiple: true,
+        title: 'Select Allowed Folders',
+      });
+      expect(invokeMock).toHaveBeenCalledWith('update_agent_allowed_directories', {
+        agentId: isolatedAgent.id,
+        directories: [selectedFolder],
+      });
+    });
+
+    expect(invokeMock.mock.calls.some(([command]) => command === 'start_gateway')).toBe(false);
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────────
 // GITHUB CONNECTION TESTS

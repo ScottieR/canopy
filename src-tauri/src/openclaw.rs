@@ -502,10 +502,27 @@ fn agent_registration_missing_for_root(
 }
 
 fn agent_registration_missing(db: &crate::db::Database, agent_id: &str) -> bool {
-    let Some(data_dir) = dirs::data_dir() else {
+    let Ok(canopy_root) = canopy_data_root() else {
         return false;
     };
-    agent_registration_missing_for_root(db, &data_dir.join("Canopy"), agent_id)
+    agent_registration_missing_for_root(db, &canopy_root, agent_id)
+}
+
+async fn wait_for_agent_registration(
+    db: &crate::db::Database,
+    agent_id: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !agent_registration_missing(db, agent_id) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 lazy_static::lazy_static! {
@@ -2604,6 +2621,24 @@ pub async fn send_message_internal_with_context(
         .or_else(|| body["result"]["meta"]["model"].as_str())
         .unwrap_or("unknown");
 
+    // DIAGNOSTIC (2026-07): unlike the `payloads[0].text` extraction above
+    // (comment: "confirmed from live run"), the usage/token paths here were
+    // never verified against a real openclaw --json payload — git history
+    // shows they were added without a citation or sample response. Every
+    // downstream cost/token figure (agent.stats.total_cost_usd,
+    // token_usage_history, the My Usage dashboard, admin telemetry) reads
+    // zero as a direct result whenever this stays 0 despite a real reply.
+    // Log the full body (not just the 500-char stdout_preview above) the
+    // first time this happens so the real `meta` shape can be read off and
+    // the extraction paths above fixed precisely instead of re-guessed.
+    if prompt_tokens == 0 && completion_tokens == 0 && !response_text.trim().is_empty() {
+        tracing::warn!(
+            "send_message_internal: token extraction found 0 tokens despite a non-empty reply for agent={} — full body follows (compare against body[\"meta\"][\"usage\"][\"prompt_tokens\"]/[\"completion_tokens\"] paths in the code above this log line): {}",
+            agent_id,
+            body
+        );
+    }
+
     if prompt_tokens > 0 || completion_tokens > 0 {
         if let Ok(Some(mut agent)) = db.get_agent(agent_id) {
             agent
@@ -2693,9 +2728,18 @@ async fn ensure_agent_runtime_registration(
         "ensure_agent_runtime_registration: agent {} missing from OpenClaw registry, running boot sync repair",
         agent_id
     );
-    let _ = boot_sync_agents_internal(app.clone(), db).await?;
+    let sync_was_already_running = BOOT_SYNC_RUNNING.load(Ordering::SeqCst);
+    let boot_sync_result = boot_sync_agents_internal(app.clone(), db).await?;
 
     if agent_registration_missing(db, agent_id) {
+        let wait_budget = if sync_was_already_running || boot_sync_result == "Already running" {
+            std::time::Duration::from_secs(45)
+        } else {
+            std::time::Duration::from_secs(10)
+        };
+        if wait_for_agent_registration(db, agent_id, wait_budget).await {
+            return Ok(());
+        }
         return Err(format!(
             "Agent {} is still missing from the OpenClaw registry after repair. Please restart the gateway or run re-initialize setup.",
             agent_id
@@ -6984,6 +7028,37 @@ mod tests {
             &canopy_root,
             "agent-sloane"
         ));
+    }
+
+    #[tokio::test]
+    async fn wait_for_agent_registration_observes_repair_completion() {
+        let db = create_test_db();
+        let agent = test_agent("agent-sloane", "Sloane", "Executive Assistant");
+        db.insert_agent(&agent).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CANOPY_DATA_DIR", tmp.path());
+        let canopy_root = tmp.path().join("Canopy");
+        std::fs::create_dir_all(canopy_root.join("openclaw-state")).unwrap();
+        let config_path = canopy_root.join("openclaw-state").join("openclaw.json");
+        std::fs::write(&config_path, r#"{ "agents": { "list": [] } }"#).unwrap();
+
+        let config_path_clone = config_path.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            std::fs::write(
+                config_path_clone,
+                r#"{ "agents": { "list": [{ "id": "agent-sloane" }] } }"#,
+            )
+            .unwrap();
+        });
+
+        assert!(
+            wait_for_agent_registration(&db, "agent-sloane", std::time::Duration::from_secs(2))
+                .await
+        );
+
+        std::env::remove_var("CANOPY_DATA_DIR");
     }
 
     #[test]

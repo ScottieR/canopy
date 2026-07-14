@@ -4,16 +4,40 @@ import { Dashboard } from './Dashboard';
 import { AgentData, useWorldStore } from '../store/worldStore';
 
 // Dashboard reads agents from the already-loaded Zustand store (like every
-// other page in the app) rather than fetching its own copy — so tests seed
-// useWorldStore directly instead of mocking a "list_agents" invoke call.
-// It still calls invoke() itself for the aggregate heatmap
-// (get_agent_activity_heatmap, once per agent) and the aggregate work log
-// (get_global_audit_log) — both mocked to resolve empty arrays by default so
-// tests can focus on the agent-derived aggregation math.
-const mockInvoke = vi.fn();
+// other page in the app) rather than fetching its own copy. It calls
+// invoke() for three things:
+//   - get_agent_activity_heatmap (once per agent) — source of truth for
+//     message/tool-call counts, since agent.stats.messages_handled/
+//     tasks_today are never incremented anywhere in the Rust codebase.
+//   - get_token_usage_history (once, agentId: null) — source of truth for
+//     tokens/cost, since agent.stats.total_cost_usd is only updated in the
+//     same (currently broken) code path that feeds this same ledger table.
+//   - get_global_audit_log (once) — the Work Log list.
+// Tests mock all three per-command so the aggregation math under test
+// exercises the real (ledger-based) data path, not the dead `agent.stats`
+// counters.
+const mockInvoke = vi.fn((cmd: string, args?: any) => {
+  if (cmd === "get_agent_activity_heatmap") {
+    if (args?.agentId === "agent-1") {
+      return Promise.resolve([{ date: "2026-07-11", interactions: 5, tools: 2, system: 0, total: 7 }]);
+    }
+    if (args?.agentId === "agent-2") {
+      return Promise.resolve([{ date: "2026-07-11", interactions: 2, tools: 0, system: 0, total: 2 }]);
+    }
+    return Promise.resolve([]);
+  }
+  if (cmd === "get_token_usage_history") {
+    return Promise.resolve([
+      { id: "u1", agent_id: "agent-1", conversation_id: null, timestamp: "2026-07-11T12:00:00Z", model: "claude-sonnet-4-6", provider: "anthropic", tokens_in: 1000, tokens_out: 500, cost_usd: 0.45 },
+      { id: "u2", agent_id: "agent-2", conversation_id: null, timestamp: "2026-07-11T12:00:00Z", model: "claude-sonnet-4-6", provider: "anthropic", tokens_in: 200, tokens_out: 100, cost_usd: 0.12 },
+    ]);
+  }
+  if (cmd === "get_global_audit_log") return Promise.resolve([]);
+  return Promise.resolve([]);
+});
 
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: (...args: any[]) => mockInvoke(...args),
+  invoke: (...args: any[]) => (mockInvoke as any)(...args),
 }));
 
 function makeAgent(overrides: Partial<AgentData>): AgentData {
@@ -21,7 +45,7 @@ function makeAgent(overrides: Partial<AgentData>): AgentData {
     id: overrides.id || "agent-x",
     name: overrides.name || "Agent X",
     role: overrides.role || "assistant",
-    emoji: overrides.emoji || "🦞",
+    emoji: overrides.emoji || "agent",
     color: "#34D399",
     status: overrides.status || "active",
     isolated: overrides.isolated ?? false,
@@ -29,6 +53,7 @@ function makeAgent(overrides: Partial<AgentData>): AgentData {
     container_id: null,
     title: overrides.name || "Agent X",
     description: "Test agent",
+    image: overrides.image,
     robeColor: "#34D399",
     accentColor: "#34D399",
     position: [0, 0, 0],
@@ -64,8 +89,7 @@ function makeAgent(overrides: Partial<AgentData>): AgentData {
 
 describe('Dashboard (My Usage)', () => {
   beforeEach(() => {
-    mockInvoke.mockReset();
-    mockInvoke.mockResolvedValue([]);
+    mockInvoke.mockClear();
     useWorldStore.setState({ agents: [] });
   });
 
@@ -73,11 +97,9 @@ describe('Dashboard (My Usage)', () => {
     const agents = [
       makeAgent({
         id: 'agent-1', name: 'The Assistant', role: 'assistant', status: 'active', isolated: false, spendLimit: 100,
-        stats: { tasks_today: 5, messages_handled: 12, uptime_seconds: 3600, total_cost_usd: 0.45, total_tokens_in: 1000, total_tokens_out: 500 },
       }),
       makeAgent({
         id: 'agent-2', name: 'The Accountant', role: 'accountant', status: 'sleeping', isolated: true, spendLimit: 50,
-        stats: { tasks_today: 2, messages_handled: 0, uptime_seconds: 7200, total_cost_usd: 0.12, total_tokens_in: 200, total_tokens_out: 100 },
       }),
     ];
 
@@ -92,27 +114,30 @@ describe('Dashboard (My Usage)', () => {
       });
     });
 
-    it('shows every role represented among the agents', async () => {
+    it('shows each agent\'s given name and role', async () => {
       render(<Dashboard />);
       await waitFor(() => {
+        expect(screen.getByText('The Assistant')).toBeDefined();
+        expect(screen.getByText('The Accountant')).toBeDefined();
         expect(screen.getByText('assistant')).toBeDefined();
         expect(screen.getByText('accountant')).toBeDefined();
       });
     });
 
-    it('shows per-role task/message aggregates', async () => {
+    it('shows per-agent message/tool-call counts from the activity heatmap', async () => {
       render(<Dashboard />);
       await waitFor(() => {
-        const textNodes = screen.getAllByText(/tasks/);
-        expect(textNodes.some(n => n.textContent?.includes('5 tasks'))).toBeTruthy();
-        expect(textNodes.some(n => n.textContent?.includes('2 tasks'))).toBeTruthy();
+        const textNodes = screen.getAllByText(/msgs/);
+        expect(textNodes.some(n => n.textContent?.includes('5') && n.textContent?.includes('msgs'))).toBeTruthy();
+        expect(textNodes.some(n => n.textContent?.includes('2') && n.textContent?.includes('msgs'))).toBeTruthy();
       });
     });
 
-    it('sums cost across all agents in the total cost card', async () => {
+    it('sums cost across all agents from the token usage ledger, not agent.stats', async () => {
       render(<Dashboard />);
       await waitFor(() => {
-        // 0.45 + 0.12 = 0.57
+        // 0.45 + 0.12 = 0.57, from get_token_usage_history — agent.stats.total_cost_usd
+        // is intentionally ignored since it's never reliably populated.
         expect(screen.getByText('$0.57')).toBeDefined();
       });
     });
@@ -129,6 +154,24 @@ describe('Dashboard (My Usage)', () => {
       render(<Dashboard />);
       await waitFor(() => {
         expect(screen.getByText(/1 active · 1 idle · 1 isolated/)).toBeDefined();
+      });
+    });
+
+    it('defaults the date range filter to the last 7 days', async () => {
+      render(<Dashboard />);
+      await waitFor(() => {
+        expect(screen.getByText('Resource Use (7d)')).toBeDefined();
+        expect(screen.getByText('Cost (7d)')).toBeDefined();
+      });
+    });
+
+    it('requests a wider ledger window when the range filter changes', async () => {
+      render(<Dashboard />);
+      await waitFor(() => expect(screen.getByText('My Usage')).toBeDefined());
+      mockInvoke.mockClear();
+      screen.getByText('Last 30d').click();
+      await waitFor(() => {
+        expect(mockInvoke).toHaveBeenCalledWith('get_token_usage_history', { agentId: null, conversationId: null, days: 30 });
       });
     });
   });

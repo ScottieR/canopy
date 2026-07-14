@@ -299,19 +299,6 @@ process.on('unhandledRejection', (reason, promise) => {
         .map(|(k, v)| format!("      - {}={}\n", k, v))
         .collect();
 
-    let mut extra_volumes = String::new();
-    if let Ok(dirs) = crate::workspace_manager::get_all_agents_allowed_directories() {
-        for dir in dirs {
-            let path = std::path::Path::new(&dir);
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                extra_volumes.push_str(&format!(
-                    "      - \"{}:/home/node/.openclaw/workspace/mounts/{}\"\n",
-                    dir, name
-                ));
-            }
-        }
-    }
-
     format!(
         r#"services:
   canopy-gateway:
@@ -331,7 +318,7 @@ process.on('unhandledRejection', (reason, promise) => {
       # workspace → /home/node/.openclaw/workspace  (SOUL.md, IDENTITY.md, state/, etc.)
       # ⚠️  Must be INSIDE .openclaw, not a sibling dir — verified from working reference agent
       - {data}/openclaw-state/workspace:/home/node/.openclaw/workspace
-{extra_volumes}    environment:
+    environment:
       - NODE_ENV=production
       - NODE_OPTIONS=--require /home/node/.openclaw/crash_guard.cjs
 {extra_env}    extra_hosts:
@@ -410,8 +397,20 @@ volumes:
 "#,
         data = data_dir.display(),
         extra_env = extra_env,
-        extra_volumes = extra_volumes,
     )
+}
+
+fn format_allowed_directory_volume(directory: &str) -> Option<String> {
+    let name = std::path::Path::new(directory)
+        .file_name()
+        .and_then(|name| name.to_str())?;
+    let mount = format!(
+        "{}:/home/node/.openclaw/workspace/mounts/{}",
+        directory, name
+    );
+    serde_json::to_string(&mount)
+        .ok()
+        .map(|quoted| format!("      - {}\n", quoted))
 }
 
 /// Generate docker-compose for an isolated agent container
@@ -433,12 +432,8 @@ process.on('unhandledRejection', (reason, promise) => {
         if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&content) {
                 for dir in dirs {
-                    let path = std::path::Path::new(&dir);
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        extra_volumes.push_str(&format!(
-                            "      - \"{}:/home/node/.openclaw/workspace/mounts/{}\"\n",
-                            dir, name
-                        ));
+                    if let Some(volume) = format_allowed_directory_volume(&dir) {
+                        extra_volumes.push_str(&volume);
                     }
                 }
             }
@@ -1682,6 +1677,30 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_compose_never_mounts_agent_custom_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let compose = generate_compose_file(&dir.path().to_path_buf(), &HashMap::new());
+
+        assert!(
+            !compose.contains("/home/node/.openclaw/workspace/mounts/"),
+            "custom folders must never cross into the shared gateway"
+        );
+    }
+
+    #[test]
+    fn custom_directory_volume_is_yaml_escaped() {
+        let volume =
+            format_allowed_directory_volume("/tmp/folder\"with\ncontrols").expect("volume entry");
+
+        assert!(volume.contains("\\\""));
+        assert!(volume.contains("\\n"));
+        assert!(
+            !volume.trim_end().contains('\n'),
+            "path control characters must remain escaped inside one YAML entry"
+        );
+    }
 
     #[test]
     fn test_generate_isolated_compose() {

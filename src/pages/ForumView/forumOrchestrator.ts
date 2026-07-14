@@ -157,6 +157,13 @@ function diagnoseError(err: unknown, agentName?: string): Diagnosis {
       fix: "Open the agent's settings in the Agents tab and check the model name is correct.",
     };
   }
+  if (lower.includes("missing from the openclaw registry") || lower.includes("unknown agent id")) {
+    return {
+      summary: `Agent runtime is still warming up${who}`,
+      detail: raw.slice(0, 200),
+      fix: "The gateway is still re-registering agents after startup or a restart. Wait a moment, then retry the forum.",
+    };
+  }
 
   return {
     summary: `Agent call failed${who}`,

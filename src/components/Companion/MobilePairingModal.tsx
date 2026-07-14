@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { BookOpen, Code2, Smartphone, X } from 'lucide-react';
+import { ArrowLeft, BookOpen, Code2, Share2, Smartphone, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { MiniApp, useWorldStore, reportTelemetryEvent } from '../../store/worldStore';
 
@@ -25,6 +25,12 @@ interface PairingData {
   profile: CompanionProfile;
   experience: 'focused' | 'learning';
   allowedAgentIds: string[];
+}
+
+interface MobilePairingData {
+  token: string;
+  ip: string;
+  port: number;
 }
 
 interface CompanionAssignment {
@@ -57,6 +63,8 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
   defaultAgentId,
 }) => {
   const agents = useWorldStore((state) => state.agents);
+  const [view, setView] = useState<'pair-device' | 'share-agent'>('pair-device');
+  const [mobilePairingData, setMobilePairingData] = useState<MobilePairingData | null>(null);
   const [pairingData, setPairingData] = useState<PairingData | null>(null);
   const [assignments, setAssignments] = useState<CompanionAssignment[]>([]);
   const [displayName, setDisplayName] = useState('');
@@ -78,15 +86,64 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
     setAssignments(result);
   };
 
+  const generateMobilePairing = async () => {
+    setMobilePairingData(null);
+    setError(null);
+    try {
+      const data = await invoke<MobilePairingData>('generate_pairing_token');
+      setMobilePairingData(data);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setView('pair-device');
+      setMobilePairingData(null);
+      setPairingData(null);
+      setError(null);
+      invoke('revoke_pairing_token').catch(console.error);
+      return;
+    }
+
+    setView('pair-device');
+    setMobilePairingData(null);
     setPairingData(null);
     setEditingDeviceId(null);
     setReport(null);
     setError(null);
     setSelectedAgentIds(defaultAgentId ? [defaultAgentId] : agents[0]?.id ? [agents[0].id] : []);
+    generateMobilePairing();
+  }, [isOpen, defaultAgentId]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  const openShareAgent = async () => {
+    // Do not leave the broad mobile pairing token active while creating a scoped share.
+    await invoke('revoke_pairing_token').catch(console.error);
+    setMobilePairingData(null);
+    setPairingData(null);
+    setEditingDeviceId(null);
+    setReport(null);
+    setError(null);
+    setView('share-agent');
     refreshAssignments().catch((err) => setError(String(err)));
-  }, [isOpen, defaultAgentId, agents]);
+  };
+
+  const returnToMobilePairing = () => {
+    setView('pair-device');
+    setPairingData(null);
+    setError(null);
+    generateMobilePairing();
+  };
 
   const activeAssignments = useMemo(
     () => assignments.filter((assignment) => !assignment.grant.revoked),
@@ -252,69 +309,184 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
 
   if (!isOpen) return null;
 
+  if (view === 'pair-device') {
+    return (
+      <div
+        role="presentation"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose();
+        }}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-5"
+        style={{ fontFamily: "'Manrope', system-ui, -apple-system, sans-serif" }}
+      >
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="mobile-pairing-title"
+          className="w-full max-w-md overflow-hidden rounded-[20px] border border-black/10 bg-[#faf9f6] shadow-2xl"
+        >
+          <div className="flex items-center gap-3 border-b border-black/10 bg-[#f3f1ec] px-5 py-4">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#218380]/10 text-[#218380]">
+              <Smartphone size={20} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h2
+                id="mobile-pairing-title"
+                className="m-0 text-xl font-bold text-[#303330]"
+                style={{ fontFamily: "'Noto Serif', Georgia, serif" }}
+              >
+                Pair Mobile Device
+              </h2>
+              <p className="m-0 mt-0.5 text-xs text-[#636e72]">Link the Canopy app on your phone or iPad.</p>
+            </div>
+            <button
+              type="button"
+              aria-label="Close mobile pairing"
+              onClick={onClose}
+              className="flex h-8 w-8 items-center justify-center rounded-lg border-0 bg-transparent text-[#7a8381] hover:bg-black/5 hover:text-[#303330]"
+            >
+              <X size={19} />
+            </button>
+          </div>
+
+          <div className="flex min-h-[360px] flex-col items-center justify-center px-7 py-7 text-center">
+            {error ? (
+              <div role="alert" className="w-full rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                <div className="mb-3">{error}</div>
+                <button
+                  type="button"
+                  onClick={generateMobilePairing}
+                  className="rounded-lg border-0 bg-[#218380] px-3.5 py-2 text-xs font-semibold text-white"
+                >
+                  Try again
+                </button>
+              </div>
+            ) : !mobilePairingData ? (
+              <div className="text-sm text-[#636e72] animate-pulse">Generating a secure pairing code…</div>
+            ) : (
+              <>
+                <div className="mb-5 rounded-2xl border border-[#218380]/15 bg-white p-3 shadow-lg">
+                  <QRCodeSVG
+                    value={JSON.stringify(mobilePairingData)}
+                    size={200}
+                    level="H"
+                    includeMargin
+                  />
+                </div>
+                <p className="m-0 mb-1.5 text-[15px] font-bold text-[#303330]">Scan with the Canopy mobile app</p>
+                <p className="m-0 max-w-xs text-[13px] leading-relaxed text-[#636e72]">
+                  Make sure this Mac and your mobile device are connected to the same Wi-Fi network.
+                </p>
+                <div className="mt-5 flex items-center gap-2 rounded-full bg-[#f0eee9] px-3 py-1.5 font-mono text-[11px] text-[#7a8381]">
+                  <span className="h-2 w-2 rounded-full bg-[#4a9e96]" />
+                  Relay active on {mobilePairingData.ip}:{mobilePairingData.port}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 border-t border-black/10 bg-[#f3f1ec] px-5 py-4">
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-bold text-[#303330]">Sharing with someone else?</div>
+              <div className="mt-0.5 text-[11px] text-[#7a8381]">Give them access to selected agents only.</div>
+            </div>
+            <button
+              type="button"
+              onClick={openShareAgent}
+              className="flex shrink-0 items-center gap-2 rounded-lg border border-[#218380]/30 bg-[#faf9f6] px-3 py-2 text-xs font-bold text-[#218380] hover:bg-[#218380]/5"
+            >
+              <Share2 size={15} />
+              Share agent
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <div className="bg-[#111111] border border-white/10 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
-        <div className="sticky top-0 z-10 flex justify-between items-center px-6 py-4 border-b border-white/10 bg-[#111111]">
+    <div
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-5"
+      style={{ fontFamily: "'Manrope', system-ui, -apple-system, sans-serif" }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="share-agent-title"
+        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-[20px] border border-black/10 bg-[#faf9f6] shadow-2xl"
+      >
+        <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-black/10 bg-[#f3f1ec] px-5 py-4">
+          <button
+            type="button"
+            aria-label="Back to mobile pairing"
+            onClick={returnToMobilePairing}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-black/10 bg-[#faf9f6] text-[#218380] hover:bg-[#218380]/5"
+          >
+            <ArrowLeft size={17} />
+          </button>
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-500/10 rounded-lg">
-              <Smartphone className="w-5 h-5 text-emerald-400" />
+            <div className="rounded-xl bg-[#218380]/10 p-2.5 text-[#218380]">
+              <Share2 size={19} />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white m-0">Share agents to a companion device</h2>
-              <p className="text-xs text-zinc-500 m-0 mt-1">Every device receives only the agents explicitly selected here.</p>
+              <h2 id="share-agent-title" className="m-0 text-xl font-bold text-[#303330]" style={{ fontFamily: "'Noto Serif', Georgia, serif" }}>Share an agent</h2>
+              <p className="m-0 mt-0.5 text-xs text-[#636e72]">Give another person access to selected agents, without sharing your full mobile workspace.</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-zinc-400 hover:text-white transition-colors">
+          <button type="button" aria-label="Close agent sharing" onClick={onClose} className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg border-0 bg-transparent text-[#7a8381] hover:bg-black/5 hover:text-[#303330]">
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="p-6 grid gap-6 md:grid-cols-[1.2fr_0.8fr]">
+        <div className="p-6">
           <div>
             <div className="grid grid-cols-2 gap-3 mb-5">
               <button
                 onClick={() => selectExperience('focused')}
-                className={`text-left rounded-xl border p-4 ${experience === 'focused' ? 'border-emerald-400 bg-emerald-500/10' : 'border-white/10 bg-white/5'}`}
+                className={`text-left rounded-xl border p-4 ${experience === 'focused' ? 'border-[#218380] bg-[#218380]/5' : 'border-black/10 bg-white/60'}`}
               >
-                <Code2 className="w-5 h-5 text-emerald-400 mb-2" />
-                <div className="text-sm font-semibold text-white">Focused companion</div>
-                <div className="text-xs text-zinc-400 mt-1">Share any agent type: Developer, Researcher, Assistant, or a custom agent.</div>
+                <Code2 className="w-5 h-5 text-[#218380] mb-2" />
+                <div className="text-sm font-semibold text-[#303330]">Selected agents</div>
+                <div className="text-xs text-[#636e72] mt-1">Share any agent type: Developer, Researcher, Assistant, or a custom agent.</div>
               </button>
               <button
                 onClick={() => selectExperience('learning')}
-                className={`text-left rounded-xl border p-4 ${experience === 'learning' ? 'border-violet-400 bg-violet-500/10' : 'border-white/10 bg-white/5'}`}
+                className={`text-left rounded-xl border p-4 ${experience === 'learning' ? 'border-[#8b6aae] bg-[#8b6aae]/5' : 'border-black/10 bg-white/60'}`}
               >
-                <BookOpen className="w-5 h-5 text-violet-400 mb-2" />
-                <div className="text-sm font-semibold text-white">Learning companion</div>
-                <div className="text-xs text-zinc-400 mt-1">One dedicated agent, child-scoped context, learning events, and progress reports.</div>
+                <BookOpen className="w-5 h-5 text-[#8b6aae] mb-2" />
+                <div className="text-sm font-semibold text-[#303330]">Learning companion</div>
+                <div className="text-xs text-[#636e72] mt-1">One child-specific agent with learning context and progress reports.</div>
               </button>
             </div>
 
             <div className="grid grid-cols-2 gap-3 mb-4">
-              <label className="text-xs text-zinc-400">
-                Companion name
-                <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="e.g. Maya" className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none" />
+              <label className="text-xs font-semibold text-[#636e72]">
+                Person's name
+                <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="e.g. Maya" className="mt-1 w-full rounded-lg border border-black/10 bg-white/70 px-3 py-2 text-sm text-[#303330] outline-none focus:border-[#218380]" />
               </label>
-              <label className="text-xs text-zinc-400">
+              <label className="text-xs font-semibold text-[#636e72]">
                 Device name
-                <input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="e.g. Maya's iPad" className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none" />
+                <input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} placeholder="e.g. Maya's iPad" className="mt-1 w-full rounded-lg border border-black/10 bg-white/70 px-3 py-2 text-sm text-[#303330] outline-none focus:border-[#218380]" />
               </label>
             </div>
 
             <div className="mb-4">
-              <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-2">
+              <div className="text-xs font-semibold text-[#636e72] mb-2">
                 {experience === 'learning' ? 'Choose the dedicated learning agent' : 'Choose agents to share'}
               </div>
               <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
                 {agents.map((agent) => {
                   const selected = selectedAgentIds.includes(agent.id);
                   return (
-                    <button key={agent.id} onClick={() => toggleAgent(agent.id)} className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-left ${selected ? 'border-emerald-400 bg-emerald-500/10' : 'border-white/10 bg-white/5'}`}>
+                    <button key={agent.id} onClick={() => toggleAgent(agent.id)} className={`flex items-center gap-3 rounded-lg border px-3 py-2 text-left ${selected ? 'border-[#218380] bg-[#218380]/5' : 'border-black/10 bg-white/60'}`}>
                       <span className="text-lg">{agent.emoji || '◉'}</span>
                       <span className="min-w-0">
-                        <span className="block text-sm font-medium text-white truncate">{agent.name}</span>
-                        <span className="block text-xs text-zinc-500 truncate">{agent.role}</span>
+                        <span className="block text-sm font-medium text-[#303330] truncate">{agent.name}</span>
+                        <span className="block text-xs text-[#7a8381] truncate">{agent.role}</span>
                       </span>
                     </button>
                   );
@@ -322,46 +494,42 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
               </div>
             </div>
 
-            <label className="block text-xs text-zinc-400 mb-4">
-              {experience === 'learning' ? 'Parent-provided learning context' : 'Scoped companion context'}
+            <label className="block text-xs font-semibold text-[#636e72] mb-4">
+              {experience === 'learning' ? 'Learning context from a parent or guardian' : 'Context for this shared experience'}
               <textarea
                 value={profileContext}
                 onChange={(event) => setProfileContext(event.target.value)}
                 rows={3}
                 placeholder={experience === 'learning' ? 'Grade, current goals, interests, material being studied, and anything the agent should adapt to.' : 'Only information this companion’s assigned agents should know.'}
-                className="mt-1 w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white outline-none resize-y"
+                className="mt-1 w-full rounded-lg border border-black/10 bg-white/70 px-3 py-2 text-sm text-[#303330] outline-none resize-y focus:border-[#218380]"
               />
             </label>
 
-            <button onClick={createPairing} disabled={loading} className="w-full rounded-xl bg-emerald-500 px-4 py-3 text-sm font-semibold text-black disabled:opacity-50">
-              {loading ? 'Saving secure assignment…' : editingDeviceId ? 'Save and update the child app' : 'Create pairing QR'}
+            <button onClick={createPairing} disabled={loading} className="w-full rounded-xl bg-[#218380] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50">
+              {loading ? 'Saving secure share…' : editingDeviceId ? 'Update share' : 'Create share QR'}
             </button>
-            {error && <div className="mt-3 text-sm text-red-400">{error}</div>}
+            {error && <div role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
-            {!pairingData ? (
-              <div className="h-full min-h-64 flex items-center justify-center text-center text-sm text-zinc-500">
-                Configure the assignment, then generate a device-bound QR code.
-              </div>
-            ) : (
+          {pairingData && (
+            <div className="mt-6 rounded-2xl border border-[#218380]/20 bg-[#218380]/5 p-5">
               <div className="flex flex-col items-center">
                 <div className="bg-white p-3 rounded-xl shadow-lg mb-4">
                   <QRCodeSVG value={JSON.stringify(pairingData)} size={190} level="H" includeMargin />
                 </div>
-                <div className="text-sm font-semibold text-white">Scan with Canopy Mobile</div>
-                <div className="text-xs text-zinc-500 text-center mt-2">
+                <div className="text-sm font-semibold text-[#303330]">Scan with Canopy Mobile</div>
+                <div className="text-xs text-[#636e72] text-center mt-2">
                   {pairingData.profile.displayName} will see only {pairingData.allowedAgentIds.length === 1 ? 'the selected agent' : `${pairingData.allowedAgentIds.length} selected agents`}.
                 </div>
-                <div className="mt-4 text-[11px] text-zinc-500">This pairing remains valid until you revoke it.</div>
+                <div className="mt-4 text-[11px] text-[#7a8381]">This share remains valid until you revoke it.</div>
               </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         {activeAssignments.length > 0 && (
-          <div className="border-t border-white/10 px-6 py-5">
-            <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500 mb-3">Active companion devices</div>
+          <div className="border-t border-black/10 bg-[#f3f1ec] px-6 py-5">
+            <div className="text-xs font-semibold uppercase tracking-wide text-[#7a8381] mb-3">Active shares</div>
             <div className="space-y-2">
               {activeAssignments.map((assignment) => {
                 const shareableApps = assignment.grant.allowedAgentIds.flatMap((agentId) => {
@@ -369,23 +537,23 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
                   return (agent?.miniApps ?? []).map((app) => ({ agentId, agentName: agent?.name ?? agentId, app }));
                 });
                 return (
-                <div key={assignment.grant.deviceId} className="rounded-lg border border-white/10 bg-white/5 px-4 py-3">
+                <div key={assignment.grant.deviceId} className="rounded-lg border border-black/10 bg-[#faf9f6] px-4 py-3">
                   <div className="flex items-center gap-3">
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium text-white">{assignment.profile.displayName} · {assignment.grant.deviceName}</div>
-                      <div className="text-xs text-zinc-500 mt-1">{assignment.grant.experience} · {assignment.grant.allowedAgentIds.length} agent{assignment.grant.allowedAgentIds.length === 1 ? '' : 's'}</div>
+                      <div className="text-sm font-medium text-[#303330]">{assignment.profile.displayName} · {assignment.grant.deviceName}</div>
+                      <div className="text-xs text-[#7a8381] mt-1">{assignment.grant.experience === 'learning' ? 'Learning companion' : 'Selected agents'} · {assignment.grant.allowedAgentIds.length} agent{assignment.grant.allowedAgentIds.length === 1 ? '' : 's'}</div>
                     </div>
                     {assignment.grant.experience === 'learning' && (
-                      <button onClick={() => generateReport(assignment)} disabled={reportLoadingFor === assignment.grant.deviceId} className="rounded-lg border border-violet-400/30 bg-violet-500/10 px-3 py-1.5 text-xs font-semibold text-violet-300">
+                      <button onClick={() => generateReport(assignment)} disabled={reportLoadingFor === assignment.grant.deviceId} className="rounded-lg border border-[#8b6aae]/30 bg-[#8b6aae]/5 px-3 py-1.5 text-xs font-semibold text-[#755794]">
                         {reportLoadingFor === assignment.grant.deviceId ? 'Generating…' : 'Progress report'}
                       </button>
                     )}
-                    <button onClick={() => editAssignment(assignment)} className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-semibold text-zinc-300">Edit</button>
-                    <button onClick={() => revoke(assignment.grant.deviceId)} className="rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-1.5 text-xs font-semibold text-red-300">Revoke</button>
+                    <button onClick={() => editAssignment(assignment)} className="rounded-lg border border-black/10 bg-white/60 px-3 py-1.5 text-xs font-semibold text-[#303330]">Edit</button>
+                    <button onClick={() => revoke(assignment.grant.deviceId)} className="rounded-lg border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-semibold text-red-700">Revoke</button>
                   </div>
                   {shareableApps.length > 0 && (
-                    <div className="mt-3 border-t border-white/10 pt-3">
-                      <div className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500 mb-2">Saved mini-apps</div>
+                    <div className="mt-3 border-t border-black/10 pt-3">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-[#7a8381] mb-2">Saved mini-apps</div>
                       <div className="flex flex-wrap gap-2">
                         {shareableApps.map(({ agentId, agentName, app }) => {
                           const activeVersion = app.versions?.find((version) => version.id === app.activeVersionId) ?? app.versions?.[0];
@@ -399,26 +567,26 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
                               onClick={() => publishMiniApp(assignment, agentId, app)}
                               disabled={isPublishing}
                               title={`Publish ${app.name} from ${agentName} to ${assignment.profile.displayName}`}
-                              className="rounded-lg border border-cyan-400/25 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-200 disabled:opacity-50"
+                              className="rounded-lg border border-[#218380]/25 bg-[#218380]/5 px-3 py-1.5 text-xs font-semibold text-[#218380] disabled:opacity-50"
                             >
                               {isPublishing ? 'Publishing…' : isPublished ? `✓ ${app.name}` : `Publish ${app.name}`}
                             </button>
                           );
                         })}
                       </div>
-                      <div className="mt-2 text-[10px] text-zinc-600">Self-contained HTML is sandboxed on the device; external network and file access stay blocked.</div>
+                      <div className="mt-2 text-[10px] text-[#7a8381]">Self-contained HTML is sandboxed on the device; external network and file access stay blocked.</div>
                     </div>
                   )}
                 </div>
               )})}
             </div>
             {report && (
-              <div className="mt-4 rounded-xl border border-violet-400/20 bg-violet-500/5 p-4">
-                <div className="text-sm font-semibold text-violet-200 mb-2">Latest progress report</div>
-                <div className="text-sm text-zinc-300 leading-relaxed">{report.reportJson.summary}</div>
-                {report.reportJson.strengths && report.reportJson.strengths.length > 0 && <div className="mt-3 text-xs text-zinc-400"><strong className="text-zinc-300">Strengths:</strong> {report.reportJson.strengths.join(' · ')}</div>}
-                {report.reportJson.needsPractice && report.reportJson.needsPractice.length > 0 && <div className="mt-2 text-xs text-zinc-400"><strong className="text-zinc-300">Keep working on:</strong> {report.reportJson.needsPractice.join(' · ')}</div>}
-                {report.reportJson.recommendedNext && report.reportJson.recommendedNext.length > 0 && <div className="mt-2 text-xs text-zinc-400"><strong className="text-zinc-300">Next:</strong> {report.reportJson.recommendedNext.join(' · ')}</div>}
+              <div className="mt-4 rounded-xl border border-[#8b6aae]/20 bg-[#8b6aae]/5 p-4">
+                <div className="text-sm font-semibold text-[#755794] mb-2">Latest progress report</div>
+                <div className="text-sm text-[#303330] leading-relaxed">{report.reportJson.summary}</div>
+                {report.reportJson.strengths && report.reportJson.strengths.length > 0 && <div className="mt-3 text-xs text-[#636e72]"><strong className="text-[#303330]">Strengths:</strong> {report.reportJson.strengths.join(' · ')}</div>}
+                {report.reportJson.needsPractice && report.reportJson.needsPractice.length > 0 && <div className="mt-2 text-xs text-[#636e72]"><strong className="text-[#303330]">Keep working on:</strong> {report.reportJson.needsPractice.join(' · ')}</div>}
+                {report.reportJson.recommendedNext && report.reportJson.recommendedNext.length > 0 && <div className="mt-2 text-xs text-[#636e72]"><strong className="text-[#303330]">Next:</strong> {report.reportJson.recommendedNext.join(' · ')}</div>}
               </div>
             )}
           </div>

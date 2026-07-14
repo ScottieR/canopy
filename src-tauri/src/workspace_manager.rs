@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn get_agent_workspace_config_path(agent_id: &str) -> Result<PathBuf> {
+    crate::validators::agent::validate_id(agent_id).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
     let data_dir = dirs::data_dir().context("Could not find data directory")?;
     let path = data_dir
         .join("Canopy")
@@ -16,20 +18,76 @@ pub fn get_agent_workspace_config_path(agent_id: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-#[tauri::command]
-pub async fn get_agent_allowed_directories(agent_id: String) -> Result<Vec<String>, String> {
-    let path = get_agent_workspace_config_path(&agent_id).map_err(|e| e.to_string())?;
-
+fn read_allowed_directories(path: &Path) -> Result<Vec<String>, String> {
     if !path.exists() {
         return Ok(Vec::new());
     }
 
-    let content = std::fs::read_to_string(&path)
+    let content = std::fs::read_to_string(path)
         .map_err(|e| format!("Failed to read allowed directories: {}", e))?;
 
-    let directories: Vec<String> = serde_json::from_str(&content).unwrap_or_default();
+    serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse allowed directories: {}", e))
+}
 
-    Ok(directories)
+fn ensure_directory_update_allowed(
+    is_isolated: bool,
+    existing: &[String],
+    requested: &[String],
+) -> Result<(), String> {
+    if !is_isolated && requested.iter().any(|dir| !existing.contains(dir)) {
+        return Err(
+            "Custom folder access requires Isolated Mode. Shared agents may only remove previously saved folders."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn normalize_allowed_directories(directories: Vec<String>) -> Result<Vec<String>, String> {
+    if directories.len() > 64 {
+        return Err("An agent can access at most 64 custom folders.".to_string());
+    }
+
+    let mut normalized = Vec::with_capacity(directories.len());
+    for directory in directories {
+        if directory.trim().is_empty() {
+            return Err("Allowed folder paths cannot be empty.".to_string());
+        }
+
+        let path = Path::new(&directory);
+        if !path.is_absolute() {
+            return Err(format!(
+                "Allowed folder path must be absolute: {}",
+                directory
+            ));
+        }
+
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|e| format!("Could not access allowed folder '{}': {}", directory, e))?;
+        if !canonical.is_dir() {
+            return Err(format!(
+                "Allowed folder path is not a directory: {}",
+                directory
+            ));
+        }
+
+        let canonical = canonical
+            .into_os_string()
+            .into_string()
+            .map_err(|_| "Allowed folder path is not valid UTF-8.".to_string())?;
+        if !normalized.contains(&canonical) {
+            normalized.push(canonical);
+        }
+    }
+
+    Ok(normalized)
+}
+
+#[tauri::command]
+pub async fn get_agent_allowed_directories(agent_id: String) -> Result<Vec<String>, String> {
+    let path = get_agent_workspace_config_path(&agent_id).map_err(|e| e.to_string())?;
+    read_allowed_directories(&path)
 }
 
 #[tauri::command]
@@ -39,6 +97,19 @@ pub async fn update_agent_allowed_directories(
     directories: Vec<String>,
 ) -> Result<(), String> {
     let path = get_agent_workspace_config_path(&agent_id).map_err(|e| e.to_string())?;
+    let existing = read_allowed_directories(&path)?;
+    let agent = db
+        .get_agent(&agent_id)
+        .map_err(|e| format!("Failed to load agent: {}", e))?
+        .ok_or_else(|| format!("Agent not found: {}", agent_id))?;
+    let is_isolated = agent.isolated;
+
+    ensure_directory_update_allowed(is_isolated, &existing, &directories)?;
+    let directories = if is_isolated {
+        normalize_allowed_directories(directories)?
+    } else {
+        directories
+    };
 
     let content = serde_json::to_string_pretty(&directories)
         .map_err(|e| format!("Failed to serialize allowed directories: {}", e))?;
@@ -46,13 +117,7 @@ pub async fn update_agent_allowed_directories(
     std::fs::write(&path, content)
         .map_err(|e| format!("Failed to write allowed directories: {}", e))?;
 
-    // If the agent is isolated, we must restart its specific container to pick up the new volume mounts
-    let is_isolated = db
-        .get_agent(&agent_id)
-        .ok()
-        .flatten()
-        .map(|a| a.isolated)
-        .unwrap_or(false);
+    // Isolated containers must be recreated to pick up the new volume mounts.
     if is_isolated {
         let data_dir = dirs::data_dir().unwrap().join("Canopy");
         let port = crate::openclaw::get_agent_isolated_port(&agent_id);
@@ -81,26 +146,60 @@ pub async fn update_agent_allowed_directories(
     Ok(())
 }
 
-pub fn get_all_agents_allowed_directories() -> Result<Vec<String>> {
-    let mut all_dirs = Vec::new();
-    let data_dir = dirs::data_dir().context("Could not find data directory")?;
-    let workspaces_dir = data_dir.join("Canopy").join("agent-workspaces");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if let Ok(entries) = std::fs::read_dir(workspaces_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path().join("allowed_directories.json");
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(mut dirs) = serde_json::from_str::<Vec<String>>(&content) {
-                        for dir in dirs {
-                            if !all_dirs.contains(&dir) {
-                                all_dirs.push(dir);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    #[test]
+    fn shared_agents_cannot_add_custom_directories() {
+        let existing = vec!["/already/saved".to_string()];
+        let requested = vec!["/already/saved".to_string(), "/new/folder".to_string()];
+
+        let error = ensure_directory_update_allowed(false, &existing, &requested)
+            .expect_err("shared agents must not gain custom folder access");
+
+        assert!(error.contains("requires Isolated Mode"));
     }
-    Ok(all_dirs)
+
+    #[test]
+    fn shared_agents_can_remove_previously_saved_directories() {
+        let existing = vec!["/keep".to_string(), "/remove".to_string()];
+        let requested = vec!["/keep".to_string()];
+
+        assert!(ensure_directory_update_allowed(false, &existing, &requested).is_ok());
+    }
+
+    #[test]
+    fn isolated_directory_updates_are_canonical_and_deduplicated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().to_string_lossy().to_string();
+
+        let normalized =
+            normalize_allowed_directories(vec![path.clone(), path]).expect("valid directories");
+
+        assert_eq!(normalized.len(), 1);
+        assert_eq!(
+            normalized[0],
+            std::fs::canonicalize(dir.path())
+                .expect("canonical path")
+                .to_string_lossy()
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn directory_validation_rejects_relative_paths_and_files() {
+        assert!(normalize_allowed_directories(vec!["relative/path".to_string()]).is_err());
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("not-a-directory.txt");
+        std::fs::write(&file, "test").expect("test file");
+
+        assert!(normalize_allowed_directories(vec![file.to_string_lossy().to_string()]).is_err());
+    }
+
+    #[test]
+    fn workspace_config_path_rejects_agent_id_traversal() {
+        assert!(get_agent_workspace_config_path("../shared").is_err());
+    }
 }

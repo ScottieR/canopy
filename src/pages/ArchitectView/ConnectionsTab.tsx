@@ -87,6 +87,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   const [applePhotosConnected, setApplePhotosConnected] = useState(false);
   const [allowedDirs, setAllowedDirs] = useState<string[]>([]);
   const [foldersExpanded, setFoldersExpanded] = useState(false);
+  const [isolationBusy, setIsolationBusy] = useState(false);
+  const [isolationError, setIsolationError] = useState("");
+  const [folderAccessBusy, setFolderAccessBusy] = useState(false);
+  const [folderAccessError, setFolderAccessError] = useState("");
   const [pluginSetupTarget, setPluginSetupTarget] = useState<string | null>(null);
 
   // Fetch allowed directories for the agent
@@ -128,6 +132,28 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       setShowHighRiskModal(true);
     } else {
       action();
+    }
+  };
+
+  const setAgentIsolation = async (isolated: boolean) => {
+    if (isolationBusy || agent.isolated === isolated) return;
+
+    setIsolationBusy(true);
+    setIsolationError("");
+    try {
+      await invoke("toggle_agent_isolation", { agentId: agent.id, isolated });
+
+      // Set the exact value returned by the successful backend operation. Using
+      // the old toggle helper here could invert newer state after a slow reboot.
+      const store = useWorldStore.getState();
+      store.setAgents(store.agents.map(a => (
+        a.id === agent.id ? { ...a, isolated } : a
+      )));
+    } catch (e) {
+      console.error("Failed to toggle isolation:", e);
+      setIsolationError(`Could not switch workspace mode: ${String(e)}`);
+    } finally {
+      setIsolationBusy(false);
     }
   };
 
@@ -665,26 +691,24 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           </div>
         </div>
         <button
-          onClick={async () => {
-            const wasIsolated = agent.isolated;
-            try {
-              if (typeof invoke === 'function') {
-                await invoke("toggle_agent_isolation", { agentId: agent.id, isolated: !wasIsolated });
-                useWorldStore.getState().toggleIsolation(agent.id);
-              }
-            } catch (e) {
-              console.error("Failed to toggle isolation:", e);
-            }
-          }}
+          type="button"
+          disabled={isolationBusy}
+          onClick={() => { void setAgentIsolation(!agent.isolated); }}
           style={{
             padding: "6px 14px", borderRadius: 8, border: "1px solid #6B6BAE",
             background: agent.isolated ? "#6B6BAE" : "transparent",
             color: agent.isolated ? "var(--surface-card)" : "#6B6BAE",
-            fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+            fontSize: 12, fontWeight: 600, cursor: isolationBusy ? "wait" : "pointer", fontFamily: "inherit",
+            opacity: isolationBusy ? 0.65 : 1,
             transition: "all 0.2s", whiteSpace: "nowrap",
           }}
-        >{agent.isolated ? "Make shared" : "Isolate"}</button>
+        >{isolationBusy ? "Switching..." : agent.isolated ? "Make shared" : "Isolate"}</button>
       </div>
+      {isolationError && (
+        <div role="alert" style={{ marginTop: -8, marginBottom: 16, padding: "8px 12px", borderRadius: 6, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 11 }}>
+          {isolationError}
+        </div>
+      )}
 
       {/* ── Access Level ────────────────────────────────────────────────────
           The single tier preset for the whole agent. Replaces the previous
@@ -1651,43 +1675,53 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           {foldersExpanded && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 4 }}>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button 
-                  disabled={!agent.isolated}
-                onClick={async () => {
-                  if (!agent.isolated) return;
-                  try {
-                    const selected = await open({
-                      directory: true,
-                      multiple: true,
-                      title: "Select Allowed Folders"
-                    });
-                    if (selected) {
-                      const newDirs = Array.isArray(selected) ? selected : [selected];
-                      const uniqueDirs = Array.from(new Set([...allowedDirs, ...newDirs]));
-                      setAllowedDirs(uniqueDirs);
-                      await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: uniqueDirs });
-                      // Force a restart of the gateway to pick up the new volumes
-                      await invoke("start_gateway");
+                <button
+                  type="button"
+                  disabled={!agent.isolated || folderAccessBusy}
+                  onClick={async () => {
+                    if (!agent.isolated) return;
+                    setFolderAccessBusy(true);
+                    setFolderAccessError("");
+                    try {
+                      const selected = await open({
+                        directory: true,
+                        multiple: true,
+                        title: "Select Allowed Folders"
+                      });
+                      if (selected) {
+                        const newDirs = Array.isArray(selected) ? selected : [selected];
+                        const uniqueDirs = Array.from(new Set([...allowedDirs, ...newDirs]));
+                        await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: uniqueDirs });
+                        setAllowedDirs(uniqueDirs);
+                      }
+                    } catch (e) {
+                      console.error("Failed to select directories:", e);
+                      setFolderAccessError(`Could not add folder access: ${String(e)}`);
+                    } finally {
+                      setFolderAccessBusy(false);
                     }
-                  } catch (e) {
-                    console.error("Failed to select directories:", e);
-                  }
-                }}
-                style={{ 
-                  display: "flex", alignItems: "center", gap: 4, 
-                  background: agent.isolated ? "transparent" : "var(--bg-subtle)", 
-                  border: "1px solid var(--border-subtle)", 
-                  padding: "4px 8px", borderRadius: 6, fontSize: 11, 
-                  cursor: agent.isolated ? "pointer" : "not-allowed",
-                  color: agent.isolated ? "var(--text-main)" : "var(--text-muted)",
-                  opacity: agent.isolated ? 1 : 0.6
-                }}
-                title={!agent.isolated ? "Agent must be isolated to add custom folders" : ""}
-              >
-                <Plus size={12} />
-                Add Folder
-              </button>
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 4,
+                    background: agent.isolated ? "transparent" : "var(--bg-subtle)",
+                    border: "1px solid var(--border-subtle)",
+                    padding: "4px 8px", borderRadius: 6, fontSize: 11,
+                    cursor: folderAccessBusy ? "wait" : agent.isolated ? "pointer" : "not-allowed",
+                    color: agent.isolated ? "var(--text-main)" : "var(--text-muted)",
+                    opacity: agent.isolated && !folderAccessBusy ? 1 : 0.6
+                  }}
+                  title={!agent.isolated ? "Agent must be isolated to add custom folders" : ""}
+                >
+                  <Plus size={12} />
+                  {folderAccessBusy ? "Adding..." : "Add Folder"}
+                </button>
             </div>
+
+            {folderAccessError && (
+              <div role="alert" style={{ padding: "8px 12px", borderRadius: 6, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 11 }}>
+                {folderAccessError}
+              </div>
+            )}
             
             {allowedDirs.length === 0 ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
@@ -1695,9 +1729,24 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                 {!agent.isolated && (
                   <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-main)", display: "flex", alignItems: "flex-start", gap: 6 }}>
                     <ShieldCheck size={14} style={{ flexShrink: 0, marginTop: 1, color: "var(--brand-main)" }} />
-                    <span style={{ fontSize: 11, lineHeight: "1.4" }}>
-                      <strong>Strict Isolation Required:</strong> Custom folder access must be explicitly scoped per-agent. To enforce this security boundary, you must switch this agent to <strong>Isolated Mode</strong> before selecting custom folders. Alternatively, for agents in the Shared Gateway, consider connecting Google Drive where folder access can be scoped explicitly per-agent via OAuth.
+                    <span style={{ fontSize: 11, lineHeight: "1.4", flex: 1 }}>
+                      <strong>Strict Isolation Required:</strong> Custom folder access must be explicitly scoped per-agent. Switch this agent to <strong>Isolated Mode</strong>, then select the folders it can access. Alternatively, agents in the Shared Gateway can use Google Drive, where OAuth scopes access per agent.
                     </span>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        disabled={isolationBusy}
+                        onClick={() => { void setAgentIsolation(true); }}
+                        style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #6B6BAE", background: "transparent", color: "#6B6BAE", fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: isolationBusy ? "wait" : "pointer", opacity: isolationBusy ? 0.65 : 1, whiteSpace: "nowrap" }}
+                      >
+                        {isolationBusy ? "Switching..." : "Switch to Isolated Mode"}
+                      </button>
+                      {isolationError && (
+                        <span role="alert" style={{ color: "#b91c1c", fontSize: 11, maxWidth: 260 }}>
+                          {isolationError}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1713,10 +1762,15 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                     </div>
                     <button 
                       onClick={async () => {
+                        setFolderAccessError("");
                         const newDirs = allowedDirs.filter(d => d !== dir);
-                        setAllowedDirs(newDirs);
-                        await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: newDirs });
-                        await invoke("start_gateway");
+                        try {
+                          await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: newDirs });
+                          setAllowedDirs(newDirs);
+                        } catch (e) {
+                          console.error("Failed to remove directory:", e);
+                          setFolderAccessError(`Could not remove folder access: ${String(e)}`);
+                        }
                       }}
                       style={{ background: "transparent", border: "none", cursor: "pointer", padding: 4, display: "flex", alignItems: "center", color: "var(--text-muted)" }}
                       title="Remove folder"
@@ -1729,7 +1783,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   <div style={{ marginTop: 8, padding: "8px 12px", background: "#fefce8", border: "1px solid #fef08a", borderRadius: 6, color: "#854d0e", display: "flex", alignItems: "flex-start", gap: 6 }}>
                     <Shield size={14} style={{ flexShrink: 0, marginTop: 1, color: "#ca8a04" }} />
                     <span style={{ fontSize: 11, lineHeight: "1.4" }}>
-                      <strong>Warning:</strong> These folders were added during a previous session. Because this agent is currently in the Shared Gateway, these folders are mounted into the shared container and could theoretically be accessed by other non-isolated agents. <strong>Please switch to Isolated Mode for strict security scoping, or consider using Google Drive for secure file access in the Shared Gateway.</strong>
+                      <strong>Inactive in Shared Mode:</strong> These folders were saved during a previous isolated session, but they are not mounted into the Shared Gateway. Switch to <strong>Isolated Mode</strong> to use them, or remove access you no longer need.
                     </span>
                   </div>
                 )}
