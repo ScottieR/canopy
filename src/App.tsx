@@ -1757,6 +1757,10 @@ export default function App() {
         if (loadedAgents.length === 0) {
           setActiveView("onboarding");
         } else {
+          // A durable first-run marker keeps transient database/gateway startup
+          // failures from sending an established installation through the local
+          // engine setup gate again.
+          localStorage.setItem("canopy_initial_setup_complete", "true");
           // Pre-flight: clean stale agents from openclaw.json and fix corrupted
           // auth-profiles.json files on the host bind-mount BEFORE the container starts.
           // OpenClaw reads these files the instant it boots — corrupted JSON or stale

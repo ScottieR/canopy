@@ -20,6 +20,7 @@ mod bluetooth;
 mod bridge;
 mod browser_manager;
 mod channels;
+mod canopy_helper;
 pub mod db;
 mod dispatch;
 mod docker;
@@ -34,6 +35,7 @@ mod model_health; // Provider key preflight (Part 1D "rate-limited key" playbook
 pub mod models;
 pub mod openclaw;
 mod payment;
+mod provider_provisioning;
 mod security_scanner;
 mod slack;
 mod voice;
@@ -857,6 +859,15 @@ pub fn run() {
             keychain::get_web_credentials_cmd,
             keychain::verify_cloak_passcode,
             keychain::authenticate_mac_user,
+            // Eddy inference routing (hosted bootstrap, direct provider, or Ollama)
+            canopy_helper::get_canopy_helper_config,
+            canopy_helper::configure_canopy_helper,
+            canopy_helper::send_canopy_helper_message,
+            // One-time provider management connections and per-agent keys
+            provider_provisioning::get_provider_management_status,
+            provider_provisioning::connect_provider_management,
+            provider_provisioning::disconnect_provider_management,
+            provider_provisioning::provision_agent_provider_key,
             // Payment gateway (deterministic)
             payment::evaluate_purchase,
             payment::get_agent_budget,

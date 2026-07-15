@@ -23,6 +23,7 @@ import { LobsterIcon } from "../components/World/LobsterIcon";
 import { getAssetUrl } from "../utils/assets";
 import { buildCompanionUrl } from "../utils/connectorCatalog";
 import { getOnboardingIntegrationIds } from "../utils/onboardingIntegrations";
+import { getInitialOnboardingStep } from "../utils/onboardingFlow";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
@@ -100,8 +101,22 @@ export function OnboardingWizard() {
   const draft = loadDraft();
 
   const { agents } = useWorldStore();
-  const initialStepTarget = agents.length > 0 ? 1 : 0;
-  const [step, setStep] = useState(draft?.step !== undefined ? draft.step : -1);
+  const hasCompletedInitialSetup = agents.length > 0
+    || localStorage.getItem("canopy_initial_setup_complete") === "true";
+  const initialStepTarget = hasCompletedInitialSetup ? 1 : 0;
+  // The engine gate belongs only to first-run onboarding. Returning users and
+  // the Add Agent flow start at agent creation, even if an older draft saved
+  // the legacy engine step (-1).
+  const [step, setStep] = useState(
+    getInitialOnboardingStep(draft?.step, hasCompletedInitialSetup)
+  );
+
+  useEffect(() => {
+    if (agents.length > 0) {
+      localStorage.setItem("canopy_initial_setup_complete", "true");
+      if (step === -1) setStep(1);
+    }
+  }, [agents.length, step]);
 
   // Maps each wizard step value to a stable name for funnel telemetry, so we
   // can see step-by-step drop-off, not just whether a user reached the end.
@@ -150,6 +165,12 @@ export function OnboardingWizard() {
   const [customBookInput, setCustomBookInput] = useState("");
   const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "xAI Grok" | "">(draft?.llmProvider || "");
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
+  const [autoProvisionProvider, setAutoProvisionProvider] = useState<"openai" | "xai" | null>(draft?.autoProvisionProvider || null);
+  const [managementConnected, setManagementConnected] = useState(false);
+  const [managementCredential, setManagementCredential] = useState("");
+  const [managementScopeId, setManagementScopeId] = useState("");
+  const [managementBusy, setManagementBusy] = useState(false);
+  const [managementError, setManagementError] = useState("");
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any; habitatId?: number; color?: string; decor?: string[]; decorTransforms?: any }>({ baseModelUrl: null, accessories: [], decor: [] });
 
   const getNonOverlappingPosition = (existingAgents: AgentData[]): [number, number, number] => {
@@ -170,6 +191,42 @@ export function OnboardingWizard() {
   };
 
   const optimisticId = deriveAgentId(agentName);
+
+  const managedProviderId = llmProvider === "OpenAI" ? "openai" : llmProvider === "xAI Grok" ? "xai" : null;
+  useEffect(() => {
+    if (!managedProviderId) {
+      setManagementConnected(false);
+      setAutoProvisionProvider(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<any>("get_provider_management_status", { provider: managedProviderId })
+      .then(status => { if (!cancelled) setManagementConnected(Boolean(status?.connected)); })
+      .catch(() => { if (!cancelled) setManagementConnected(false); });
+    return () => { cancelled = true; };
+  }, [managedProviderId]);
+
+  const connectManagementForOnboarding = async () => {
+    if (!managedProviderId) return;
+    setManagementBusy(true);
+    setManagementError("");
+    try {
+      await invoke("connect_provider_management", {
+        provider: managedProviderId,
+        credential: managementCredential.trim(),
+        scopeId: managementScopeId.trim(),
+      });
+      setManagementConnected(true);
+      setAutoProvisionProvider(managedProviderId);
+      setApiKey("");
+      setApiKeyMode("hidden");
+      setManagementCredential("");
+    } catch (error) {
+      setManagementError(String(error));
+    } finally {
+      setManagementBusy(false);
+    }
+  };
 
   const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
   const [isolated, setIsolated] = useState(draft?.isolated || false);
@@ -225,7 +282,7 @@ export function OnboardingWizard() {
   const [pairingError, setPairingError] = useState("");
 
   const resetWizardState = () => {
-    setStep(-1);
+    setStep(initialStepTarget);
     setAgentName("");
     setSelectedRole(null);
     setApiKey("");
@@ -281,10 +338,10 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (step >= 0) {
       localStorage.setItem('canopy_onboarding_draft', JSON.stringify({
-        step, agentName, selectedRole, plugins, customIdentity, isolated
+        step, agentName, selectedRole, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider
       }));
     }
-  }, [step, agentName, selectedRole, plugins, customIdentity, isolated]);
+  }, [step, agentName, selectedRole, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider]);
 
   const checkConnections = async () => {
       try {
@@ -780,7 +837,12 @@ export function OnboardingWizard() {
           }
         }
 
-        if (apiKey.trim()) {
+        if (autoProvisionProvider) {
+          await invoke("provision_agent_provider_key", {
+            agentId: newAgentData.id,
+            provider: autoProvisionProvider,
+          });
+        } else if (apiKey.trim()) {
           const providerKeyName: Record<string, string> = {
             "Google Gemini": `agent_${newAgentData.id}_gemini_key`,
             "Anthropic":     `agent_${newAgentData.id}_anthropic_key`,
@@ -829,7 +891,9 @@ export function OnboardingWizard() {
           };
           const bridgePermissions = {
             read: true,
-            write: true,
+            // Shared agents receive brokered read-only access. Direct writes are
+            // available only when onboarding explicitly selected Isolated Mode.
+            write: isolated,
             delete: false
           };
           await invoke("enable_bridge", {
@@ -1758,6 +1822,12 @@ export function OnboardingWizard() {
                 <div style={{ textAlign: "center", fontSize: 12, color: "var(--text-sub)", margin: "-6px 0" }}>— or —</div>
                 <button onClick={async () => {
                   if (!llmProvider) return;
+                  if (managedProviderId) {
+                    setApiKey("");
+                    setApiKeyMode("hidden");
+                    setAutoProvisionProvider(managementConnected ? managedProviderId : null);
+                    return;
+                  }
                   setApiKeyMode("manual");
 
                   try {
@@ -1806,9 +1876,40 @@ export function OnboardingWizard() {
                     await open(urls[llmProvider]);
                   }
                 }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: "none", background: !llmProvider ? "var(--border-subtle)" : "#3c6663", color: !llmProvider ? "var(--text-muted)" : "var(--surface-card)", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
-                  Set up new API key ✨
+                  {managedProviderId ? `Create a dedicated ${llmProvider} key automatically ✨` : "Set up new API key ✨"}
                 </button>
               </div>
+
+              {managedProviderId && !managementConnected && (
+                <div style={{ marginTop: 16, padding: 16, borderRadius: 12, border: "1px solid rgba(33,131,128,0.22)", background: "rgba(33,131,128,0.05)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 5 }}>Connect {llmProvider} management once</div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 10 }}>
+                    Canopy creates a separate key for each agent. The management credential stays in your Mac Keychain and is never sent to Eddy or the Canopy server.
+                  </div>
+                  <PasswordInput
+                    placeholder={managedProviderId === "xai" ? "xAI Management API key" : "OpenAI organization Admin key"}
+                    value={managementCredential}
+                    onChange={e => setManagementCredential(e.target.value)}
+                    style={{ width: "100%", padding: "11px 13px", borderRadius: 9, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 8 }}
+                  />
+                  <input
+                    placeholder={managedProviderId === "xai" ? "xAI team ID" : "OpenAI project ID"}
+                    value={managementScopeId}
+                    onChange={e => setManagementScopeId(e.target.value)}
+                    style={{ width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 9, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 8 }}
+                  />
+                  <button onClick={connectManagementForOnboarding} disabled={managementBusy || !managementCredential.trim() || !managementScopeId.trim()} style={{ width: "100%", padding: "10px 14px", borderRadius: 9, border: "none", background: "#218380", color: "white", fontWeight: 700, cursor: "pointer" }}>
+                    {managementBusy ? "Validating…" : "Connect once & use automatic keys"}
+                  </button>
+                  {managementError && <div style={{ marginTop: 8, fontSize: 12, color: "#b42318" }}>{managementError}</div>}
+                </div>
+              )}
+
+              {managedProviderId && managementConnected && autoProvisionProvider === managedProviderId && (
+                <div style={{ marginTop: 14, padding: "11px 13px", borderRadius: 10, background: "rgba(33,131,128,0.09)", color: "#218380", fontSize: 12, fontWeight: 700 }}>
+                  ✓ A dedicated {llmProvider} key will be created for {agentName || "this agent"} during deployment.
+                </div>
+              )}
 
               {apiKeyMode !== "hidden" && (
                 <div style={{ marginTop: 24 }}>
@@ -1824,6 +1925,9 @@ export function OnboardingWizard() {
               {/* Required-field guidance */}
               {(() => {
                 const hasKey = apiKey.trim().length > 0;
+                if (autoProvisionProvider) {
+                  return <div style={{ marginTop: 14, fontSize: 12, color: "#218380", fontWeight: 600 }}>Dedicated-key provisioning is ready. No inference key needs to be pasted.</div>;
+                }
                 if (hasKey) {
                   return (
                     <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#218380", fontWeight: 600 }}>
@@ -1866,7 +1970,7 @@ export function OnboardingWizard() {
               }}
             >Skip — connect later</button>
             {(() => {
-              const canAdvance = !!llmProvider && apiKey.trim().length > 0;
+              const canAdvance = !!llmProvider && (apiKey.trim().length > 0 || autoProvisionProvider !== null);
               return (
                 <button
                   onClick={() => { if (canAdvance) setStep(4); }}

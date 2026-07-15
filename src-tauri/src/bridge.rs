@@ -1,16 +1,18 @@
 use crate::models::{Bridge, BridgeConfig, BridgePermissions, BridgeType};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::path::{Component, Path, PathBuf};
 
 /// Bridge management — the security boundary between agents and data sources.
-/// Each bridge is a local MCP server that mediates access.
+/// Providers mediate lifecycle and permission checks for agent-scoped data sources.
 use async_trait::async_trait;
 
 /// Standardized trait for executing bridge lifecycle and permission checks
 #[async_trait]
 pub trait BridgeProvider: Send + Sync {
-    async fn start_mcp_server(&self, agent_id: &str, config: &BridgeConfig) -> Result<(), String>;
-    async fn stop_mcp_server(&self, agent_id: &str) -> Result<(), String>;
+    async fn start_bridge(&self, agent_id: &str, config: &BridgeConfig) -> Result<(), String>;
+    async fn stop_bridge(&self, agent_id: &str) -> Result<(), String>;
     async fn validate_access(
         &self,
         requested_action: &str,
@@ -23,19 +25,13 @@ pub struct MockBridgeProvider;
 
 #[async_trait]
 impl BridgeProvider for MockBridgeProvider {
-    async fn start_mcp_server(&self, agent_id: &str, _config: &BridgeConfig) -> Result<(), String> {
-        tracing::info!(
-            "MockBridgeProvider: Starting MCP Server for agent {}",
-            agent_id
-        );
+    async fn start_bridge(&self, agent_id: &str, _config: &BridgeConfig) -> Result<(), String> {
+        tracing::info!("MockBridgeProvider: Starting bridge for agent {}", agent_id);
         Ok(())
     }
 
-    async fn stop_mcp_server(&self, agent_id: &str) -> Result<(), String> {
-        tracing::info!(
-            "MockBridgeProvider: Stopping MCP Server for agent {}",
-            agent_id
-        );
+    async fn stop_bridge(&self, agent_id: &str) -> Result<(), String> {
+        tracing::info!("MockBridgeProvider: Stopping bridge for agent {}", agent_id);
         Ok(())
     }
 
@@ -51,6 +47,521 @@ impl BridgeProvider for MockBridgeProvider {
             _ => Err("Unknown action".to_string()),
         }
     }
+}
+
+/// Concrete host-side provider for custom local folders.
+///
+/// Shared agents never receive a host bind mount. Instead, a per-agent capability
+/// token authorizes bounded list/read/search calls against the grants stored by the
+/// workspace manager. Isolated agents continue to use direct Docker mounts.
+pub struct FilesBridgeProvider;
+
+#[async_trait]
+impl BridgeProvider for FilesBridgeProvider {
+    async fn start_bridge(&self, agent_id: &str, config: &BridgeConfig) -> Result<(), String> {
+        crate::validators::agent::validate_id(agent_id).map_err(|e| e.to_string())?;
+        if !config.scope.is_object() {
+            return Err("Files Bridge scope must be an object".to_string());
+        }
+        Ok(())
+    }
+
+    async fn stop_bridge(&self, agent_id: &str) -> Result<(), String> {
+        crate::validators::agent::validate_id(agent_id).map_err(|e| e.to_string())?;
+        remove_files_broker_runtime(agent_id);
+        Ok(())
+    }
+
+    async fn validate_access(
+        &self,
+        requested_action: &str,
+        permissions: &BridgePermissions,
+    ) -> Result<bool, String> {
+        match requested_action {
+            "read" | "list" | "search" => Ok(permissions.read),
+            "write" => Ok(permissions.write),
+            "delete" => Ok(permissions.delete),
+            _ => Err("Unknown Files Bridge action".to_string()),
+        }
+    }
+}
+
+const FILES_BRIDGE_MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
+const FILES_BRIDGE_MAX_LIST_ENTRIES: usize = 500;
+const FILES_BRIDGE_MAX_SEARCH_FILES: usize = 2_000;
+const FILES_BRIDGE_MAX_SEARCH_RESULTS: usize = 50;
+const FILES_BRIDGE_MAX_SEARCH_DEPTH: usize = 8;
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FilesListRequest {
+    pub root_id: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FilesReadRequest {
+    pub root_id: String,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct FilesSearchRequest {
+    pub root_id: String,
+    pub query: String,
+}
+
+fn files_bridge_secret_key(agent_id: &str) -> String {
+    format!("agent_{}_files_bridge_token", agent_id)
+}
+
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.as_bytes()
+        .iter()
+        .zip(right.as_bytes())
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}
+
+fn ensure_files_bridge_token(agent_id: &str) -> Result<String, String> {
+    let key = files_bridge_secret_key(agent_id);
+    if let Ok(token) = crate::keychain::get_secret(&key) {
+        if token.starts_with(&format!("{}:", agent_id)) {
+            return Ok(token);
+        }
+    }
+
+    let token = format!(
+        "{}:{}{}",
+        agent_id,
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    crate::keychain::store_secret(&key, &token).map_err(|e| e.to_string())?;
+    Ok(token)
+}
+
+fn authenticate_files_bridge_token(token: &str) -> Result<String, String> {
+    let (agent_id, _) = token
+        .split_once(':')
+        .ok_or_else(|| "Invalid Files Bridge capability token".to_string())?;
+    crate::validators::agent::validate_id(agent_id).map_err(|e| e.to_string())?;
+    let expected = crate::keychain::get_secret(&files_bridge_secret_key(agent_id))
+        .map_err(|_| "Files Bridge capability is not active".to_string())?;
+    if !constant_time_eq(token, &expected) {
+        return Err("Invalid Files Bridge capability token".to_string());
+    }
+    Ok(agent_id.to_string())
+}
+
+fn shared_broker_dir(agent_id: &str) -> Option<PathBuf> {
+    std::env::var_os("CANOPY_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(dirs::data_dir)
+        .map(|root| {
+            root.join("Canopy")
+                .join("openclaw-state")
+                .join("workspace")
+                .join(agent_id)
+                .join(".canopy")
+        })
+}
+
+const FILES_BRIDGE_CLIENT: &str = r#"#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+
+const [command, rootId, ...args] = process.argv.slice(2);
+const usage = 'Usage: ./.canopy/files-bridge <list|read|search> <folder-id> [path|query]';
+if (!['list', 'read', 'search'].includes(command) || !rootId) {
+  console.error(usage);
+  process.exit(2);
+}
+
+const token = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), 'files-bridge-token'), 'utf8').trim();
+const payload = command === 'search'
+  ? { root_id: rootId, query: args.join(' ') }
+  : { root_id: rootId, path: args[0] || '' };
+const response = await fetch(`http://host.docker.internal:18802/files/${command}`, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(payload),
+});
+const body = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+if (!response.ok) {
+  console.error(body.error || `Files Bridge request failed (${response.status})`);
+  process.exit(1);
+}
+if (command === 'read') process.stdout.write(body.content || '');
+else process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
+"#;
+
+fn install_files_broker_runtime(agent_id: &str) -> Result<(), String> {
+    let token = ensure_files_bridge_token(agent_id)?;
+    let dir = shared_broker_dir(agent_id)
+        .ok_or_else(|| "Could not locate the shared agent workspace".to_string())?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create Files Bridge runtime: {}", e))?;
+    let client_path = dir.join("files-bridge");
+    let token_path = dir.join("files-bridge-token");
+    std::fs::write(&client_path, FILES_BRIDGE_CLIENT)
+        .map_err(|e| format!("Failed to install Files Bridge client: {}", e))?;
+    std::fs::write(&token_path, token)
+        .map_err(|e| format!("Failed to install Files Bridge capability: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&client_path, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Failed to secure Files Bridge client: {}", e))?;
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to secure Files Bridge capability: {}", e))?;
+    }
+    Ok(())
+}
+
+fn remove_files_broker_runtime(agent_id: &str) {
+    if let Some(dir) = shared_broker_dir(agent_id) {
+        let _ = std::fs::remove_file(dir.join("files-bridge"));
+        let _ = std::fs::remove_file(dir.join("files-bridge-token"));
+    }
+    let _ = crate::keychain::delete_secret_internal(&files_bridge_secret_key(agent_id));
+}
+
+pub(crate) fn sync_files_bridge(
+    db: &crate::db::Database,
+    agent: &crate::models::Agent,
+    grants: &[crate::workspace_manager::FolderGrant],
+) -> Result<(), String> {
+    let bridge_id = format!("{}-files", agent.id);
+    let delivery = if agent.isolated {
+        "direct_mount"
+    } else {
+        "brokered_read_only"
+    };
+    let enabled = grants.iter().any(|grant| grant.active);
+    let permissions = BridgePermissions {
+        read: enabled,
+        write: enabled
+            && agent.isolated
+            && grants.iter().any(|grant| {
+                grant.active
+                    && grant.access == crate::workspace_manager::FolderAccessMode::ReadWrite
+            }),
+        delete: false,
+    };
+    let bridge = Bridge {
+        id: bridge_id.clone(),
+        name: "Files".to_string(),
+        bridge_type: BridgeType::Files,
+        enabled,
+        agent_id: agent.id.clone(),
+        config: BridgeConfig {
+            scope: json!({
+                "version": 2,
+                "delivery": delivery,
+                "grants": grants,
+                "allowed_paths": grants.iter().map(|grant| grant.path.clone()).collect::<Vec<_>>(),
+            }),
+            expires_at: None,
+            push_enabled: false,
+        },
+        permissions,
+    };
+
+    if db
+        .get_bridge(&bridge_id)
+        .map_err(|e| format!("Failed to load Files Bridge: {}", e))?
+        .is_some()
+    {
+        db.update_bridge(&bridge)
+            .map_err(|e| format!("Failed to update Files Bridge: {}", e))?;
+    } else if enabled {
+        db.insert_bridge(&bridge)
+            .map_err(|e| format!("Failed to create Files Bridge: {}", e))?;
+    }
+
+    if enabled && !agent.isolated {
+        install_files_broker_runtime(&agent.id)?;
+    } else {
+        remove_files_broker_runtime(&agent.id);
+    }
+
+    let _ = db.log_audit(
+        &agent.id,
+        "files_bridge_synced",
+        Some("files"),
+        &format!(
+            "{} folder grant(s) delivered via {}",
+            grants.len(),
+            delivery
+        ),
+        None,
+    );
+    Ok(())
+}
+
+fn authorized_folder_grant(
+    db: &crate::db::Database,
+    token: &str,
+    root_id: &str,
+) -> Result<(String, crate::workspace_manager::FolderGrant), String> {
+    let agent_id = authenticate_files_bridge_token(token)?;
+    crate::rate_limiter::limiters::FILE_IO_LIMITER
+        .check(&agent_id)
+        .map_err(|e| e.to_string())?;
+    let agent = db
+        .get_agent(&agent_id)
+        .map_err(|e| format!("Failed to load Files Bridge agent: {}", e))?
+        .ok_or_else(|| "Files Bridge agent no longer exists".to_string())?;
+    if agent.isolated {
+        return Err("The broker is available to shared agents only".to_string());
+    }
+
+    let bridge = db
+        .get_bridge(&format!("{}-files", agent_id))
+        .map_err(|e| format!("Failed to load Files Bridge: {}", e))?
+        .ok_or_else(|| "Files Bridge is not configured".to_string())?;
+    if !bridge.enabled || bridge.bridge_type != BridgeType::Files || !bridge.permissions.read {
+        return Err("Files Bridge read access is disabled".to_string());
+    }
+    if bridge
+        .config
+        .expires_at
+        .map(|expires| expires <= Utc::now())
+        .unwrap_or(false)
+    {
+        return Err("Files Bridge access has expired".to_string());
+    }
+
+    let grant = select_active_grant(
+        crate::workspace_manager::get_folder_grants_for_agent(&agent_id)?,
+        root_id,
+    )?;
+    Ok((agent_id, grant))
+}
+
+fn select_active_grant(
+    grants: Vec<crate::workspace_manager::FolderGrant>,
+    root_id: &str,
+) -> Result<crate::workspace_manager::FolderGrant, String> {
+    grants
+        .into_iter()
+        .find(|grant| grant.active && grant.id == root_id)
+        .ok_or_else(|| "Folder is not granted to this agent".to_string())
+}
+
+fn scoped_existing_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let relative_path = Path::new(relative);
+    if relative_path.is_absolute()
+        || relative_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err("Folder-relative path cannot escape its granted root".to_string());
+    }
+
+    let canonical_root = std::fs::canonicalize(root)
+        .map_err(|e| format!("Granted folder is no longer available: {}", e))?;
+    let candidate = std::fs::canonicalize(canonical_root.join(relative_path))
+        .map_err(|e| format!("Requested path is unavailable: {}", e))?;
+    if !candidate.starts_with(&canonical_root) {
+        return Err("Requested path resolves outside the granted folder".to_string());
+    }
+    Ok(candidate)
+}
+
+fn relative_display(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .to_string()
+}
+
+pub(crate) fn broker_list(
+    db: &crate::db::Database,
+    token: &str,
+    request: FilesListRequest,
+) -> Result<serde_json::Value, String> {
+    let (agent_id, grant) = authorized_folder_grant(db, token, &request.root_id)?;
+    let root = std::fs::canonicalize(&grant.path)
+        .map_err(|e| format!("Granted folder is unavailable: {}", e))?;
+    let target = scoped_existing_path(&root, &request.path)?;
+    if !target.is_dir() {
+        return Err("List target is not a directory".to_string());
+    }
+
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&target)
+        .map_err(|e| format!("Failed to list folder: {}", e))?
+        .flatten()
+        .take(FILES_BRIDGE_MAX_LIST_ENTRIES)
+    {
+        let path = match std::fs::canonicalize(entry.path()) {
+            Ok(path) if path.starts_with(&root) => path,
+            _ => continue,
+        };
+        let metadata = match path.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        entries.push(json!({
+            "name": entry.file_name().to_string_lossy(),
+            "path": relative_display(&root, &path),
+            "kind": if metadata.is_dir() { "directory" } else { "file" },
+            "size_bytes": if metadata.is_file() { Some(metadata.len()) } else { None },
+        }));
+    }
+    entries.sort_by(|a, b| a["path"].as_str().cmp(&b["path"].as_str()));
+    let _ = db.log_audit(
+        &agent_id,
+        "bridge_access",
+        Some("files"),
+        &format!("Listed {}:{}", grant.id, request.path),
+        None,
+    );
+    Ok(json!({ "root_id": grant.id, "entries": entries }))
+}
+
+pub(crate) fn broker_read(
+    db: &crate::db::Database,
+    token: &str,
+    request: FilesReadRequest,
+) -> Result<serde_json::Value, String> {
+    if request.path.trim().is_empty() {
+        return Err("A folder-relative file path is required".to_string());
+    }
+    let (agent_id, grant) = authorized_folder_grant(db, token, &request.root_id)?;
+    let root = std::fs::canonicalize(&grant.path)
+        .map_err(|e| format!("Granted folder is unavailable: {}", e))?;
+    let target = scoped_existing_path(&root, &request.path)?;
+    let metadata = target
+        .metadata()
+        .map_err(|e| format!("Failed to inspect requested file: {}", e))?;
+    if !metadata.is_file() {
+        return Err("Read target is not a regular file".to_string());
+    }
+    if metadata.len() > FILES_BRIDGE_MAX_READ_BYTES {
+        return Err(format!(
+            "File exceeds the {} byte Files Bridge read limit",
+            FILES_BRIDGE_MAX_READ_BYTES
+        ));
+    }
+    let bytes = std::fs::read(&target).map_err(|e| format!("Failed to read file: {}", e))?;
+    let content = String::from_utf8(bytes)
+        .map_err(|_| "Files Bridge read supports UTF-8 text files only".to_string())?;
+    let relative = relative_display(&root, &target);
+    let _ = db.log_audit(
+        &agent_id,
+        "bridge_access",
+        Some("files"),
+        &format!("Read {}:{} ({} bytes)", grant.id, relative, metadata.len()),
+        None,
+    );
+    Ok(json!({
+        "root_id": grant.id,
+        "path": relative,
+        "size_bytes": metadata.len(),
+        "content": content,
+    }))
+}
+
+pub(crate) fn broker_search(
+    db: &crate::db::Database,
+    token: &str,
+    request: FilesSearchRequest,
+) -> Result<serde_json::Value, String> {
+    let query = request.query.trim();
+    if query.is_empty() || query.len() > 256 {
+        return Err("Search query must be between 1 and 256 characters".to_string());
+    }
+    let query_lower = query.to_lowercase();
+    let (agent_id, grant) = authorized_folder_grant(db, token, &request.root_id)?;
+    let root = std::fs::canonicalize(&grant.path)
+        .map_err(|e| format!("Granted folder is unavailable: {}", e))?;
+    let mut pending = vec![(root.clone(), 0usize)];
+    let mut scanned_files = 0usize;
+    let mut matches = Vec::new();
+
+    while let Some((directory, depth)) = pending.pop() {
+        if depth > FILES_BRIDGE_MAX_SEARCH_DEPTH
+            || scanned_files >= FILES_BRIDGE_MAX_SEARCH_FILES
+            || matches.len() >= FILES_BRIDGE_MAX_SEARCH_RESULTS
+        {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if file_type.is_dir() {
+                pending.push((path, depth + 1));
+                continue;
+            }
+            if !file_type.is_file() || scanned_files >= FILES_BRIDGE_MAX_SEARCH_FILES {
+                continue;
+            }
+            scanned_files += 1;
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.len() > FILES_BRIDGE_MAX_READ_BYTES {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for (index, line) in content.lines().enumerate() {
+                if line.to_lowercase().contains(&query_lower) {
+                    matches.push(json!({
+                        "path": relative_display(&root, &path),
+                        "line": index + 1,
+                        "snippet": line.chars().take(300).collect::<String>(),
+                    }));
+                    if matches.len() >= FILES_BRIDGE_MAX_SEARCH_RESULTS {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = db.log_audit(
+        &agent_id,
+        "bridge_access",
+        Some("files"),
+        &format!(
+            "Searched {} ({} file(s), {} result(s))",
+            grant.id,
+            scanned_files,
+            matches.len()
+        ),
+        None,
+    );
+    Ok(json!({
+        "root_id": grant.id,
+        "query": query,
+        "scanned_files": scanned_files,
+        "matches": matches,
+        "truncated": scanned_files >= FILES_BRIDGE_MAX_SEARCH_FILES
+            || matches.len() >= FILES_BRIDGE_MAX_SEARCH_RESULTS,
+    }))
 }
 
 /// Information about an available bridge type
@@ -69,6 +580,43 @@ pub struct BridgeStatus {
     pub connected: bool,
     pub last_event_at: Option<chrono::DateTime<Utc>>,
     pub error: Option<String>,
+}
+
+fn files_scope_paths(config: &BridgeConfig) -> Result<Vec<String>, String> {
+    if let Some(paths) = config
+        .scope
+        .get("allowed_paths")
+        .and_then(|value| value.as_array())
+    {
+        return paths
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .ok_or_else(|| "Files Bridge allowed_paths entries must be strings".to_string())
+            })
+            .collect();
+    }
+
+    if let Some(grants) = config
+        .scope
+        .get("grants")
+        .and_then(|value| value.as_array())
+    {
+        return grants
+            .iter()
+            .map(|grant| {
+                grant
+                    .get("path")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .ok_or_else(|| "Files Bridge grants require a path".to_string())
+            })
+            .collect();
+    }
+
+    Ok(Vec::new())
 }
 
 /// List all bridges for an agent, filtering out expired ones
@@ -102,6 +650,23 @@ pub async fn enable_bridge(
     config: BridgeConfig,
     db: tauri::State<'_, crate::db::Database>,
 ) -> Result<Bridge, String> {
+    if bridge_type == BridgeType::Files {
+        let provider = FilesBridgeProvider;
+        provider.start_bridge(&agent_id, &config).await?;
+        let paths = files_scope_paths(&config)?;
+        crate::workspace_manager::set_agent_allowed_directories(
+            &db,
+            &agent_id,
+            paths,
+            crate::workspace_manager::FolderAccessMode::ReadOnly,
+        )
+        .await?;
+        return db
+            .get_bridge(&format!("{}-files", agent_id))
+            .map_err(|e| format!("Failed to load Files Bridge: {}", e))?
+            .ok_or_else(|| "Files Bridge requires at least one allowed folder".to_string());
+    }
+
     // Generate bridge_id as {agent_id}-{bridge_type_str}
     let bridge_type_str = format!("{:?}", bridge_type).to_lowercase();
     let bridge_id = format!("{}-{}", agent_id, bridge_type_str);
@@ -133,9 +698,9 @@ pub async fn enable_bridge(
         None,
     );
 
-    // Orchestrator: Start the MCP Server using the Mock Provider for now
+    // Non-files integrations still use the placeholder lifecycle provider.
     let provider = MockBridgeProvider;
-    let _ = provider.start_mcp_server(&agent_id, &bridge.config).await;
+    let _ = provider.start_bridge(&agent_id, &bridge.config).await;
 
     // Simulate updating the agent's tool list by writing to the audit log
     let _ = db.log_audit(
@@ -161,6 +726,19 @@ pub async fn disable_bridge(
         .map_err(|e| format!("DB error: {}", e))?
         .ok_or_else(|| format!("Bridge not found: {}", bridge_id))?;
 
+    if bridge.bridge_type == BridgeType::Files {
+        crate::workspace_manager::set_agent_allowed_directories(
+            &db,
+            &bridge.agent_id,
+            Vec::new(),
+            crate::workspace_manager::FolderAccessMode::ReadOnly,
+        )
+        .await?;
+        let provider = FilesBridgeProvider;
+        provider.stop_bridge(&bridge.agent_id).await?;
+        return Ok(());
+    }
+
     // Update enabled flag
     bridge.enabled = false;
 
@@ -178,9 +756,9 @@ pub async fn disable_bridge(
         None,
     );
 
-    // Orchestrator: Stop the MCP Server using the Mock Provider
+    // Non-files integrations still use the placeholder lifecycle provider.
     let provider = MockBridgeProvider;
-    let _ = provider.stop_mcp_server(&bridge.agent_id).await;
+    let _ = provider.stop_bridge(&bridge.agent_id).await;
 
     // Simulate deregistering tools
     let _ = db.log_audit(
@@ -219,6 +797,28 @@ pub async fn update_bridge_config(
         .map_err(|e| format!("DB error: {}", e))?
         .ok_or_else(|| format!("Bridge not found: {}", bridge_id))?;
 
+    if bridge.bridge_type == BridgeType::Files {
+        let provider = FilesBridgeProvider;
+        provider.start_bridge(&bridge.agent_id, &config).await?;
+        let paths = files_scope_paths(&config)?;
+        let access = if permissions.write {
+            crate::workspace_manager::FolderAccessMode::ReadWrite
+        } else {
+            crate::workspace_manager::FolderAccessMode::ReadOnly
+        };
+        crate::workspace_manager::set_agent_allowed_directories(
+            &db,
+            &bridge.agent_id,
+            paths,
+            access,
+        )
+        .await?;
+        return db
+            .get_bridge(&bridge_id)
+            .map_err(|e| format!("Failed to reload Files Bridge: {}", e))?
+            .ok_or_else(|| "Files Bridge is not configured".to_string());
+    }
+
     // Update config and permissions
     bridge.config = config;
     bridge.permissions = permissions;
@@ -237,7 +837,7 @@ pub async fn update_bridge_config(
         None,
     );
 
-    // TODO: Update MCP server config if running
+    // TODO: Push live configuration into non-files providers when implemented.
 
     Ok(bridge)
 }
@@ -588,5 +1188,47 @@ mod tests {
             .validate_access("execute", &bridge.permissions)
             .await
             .is_err());
+    }
+
+    #[test]
+    fn files_bridge_grants_are_agent_scoped() {
+        let agent_a_grant = crate::workspace_manager::FolderGrant {
+            id: "folder-agent-a".to_string(),
+            path: "/tmp/agent-a".to_string(),
+            name: "agent-a".to_string(),
+            access: crate::workspace_manager::FolderAccessMode::ReadOnly,
+            active: true,
+        };
+
+        assert!(select_active_grant(vec![agent_a_grant.clone()], "folder-agent-a").is_ok());
+        assert!(select_active_grant(vec![agent_a_grant], "folder-agent-b").is_err());
+    }
+
+    #[test]
+    fn files_bridge_rejects_path_traversal() {
+        let root = tempfile::tempdir().expect("root");
+        assert!(scoped_existing_path(root.path(), "../outside.txt").is_err());
+        assert!(scoped_existing_path(root.path(), "/etc/passwd").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_bridge_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("root");
+        let outside = tempfile::tempdir().expect("outside");
+        let secret = outside.path().join("secret.txt");
+        std::fs::write(&secret, "secret").expect("secret");
+        symlink(&secret, root.path().join("escape.txt")).expect("symlink");
+
+        assert!(scoped_existing_path(root.path(), "escape.txt").is_err());
+    }
+
+    #[test]
+    fn capability_comparison_checks_every_byte() {
+        assert!(constant_time_eq("agent-a:abcdef", "agent-a:abcdef"));
+        assert!(!constant_time_eq("agent-a:abcdef", "agent-a:abcdeg"));
+        assert!(!constant_time_eq("short", "longer"));
     }
 }

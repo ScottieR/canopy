@@ -95,7 +95,14 @@ fn derive_agent_id(name: &str) -> CanopyResult<String> {
         .join("-");
 
     let trimmed = slug.chars().take(57).collect::<String>();
-    let agent_id = format!("agent-{}", if trimmed.is_empty() { "draft" } else { &trimmed });
+    let agent_id = format!(
+        "agent-{}",
+        if trimmed.is_empty() {
+            "draft"
+        } else {
+            &trimmed
+        }
+    );
 
     crate::validators::agent::validate_id(&agent_id)?;
     Ok(agent_id)
@@ -113,11 +120,15 @@ pub async fn create_agent(
     name: String,
     role: String,
     emoji: String,
-    personality: AgentPersonality,
+    mut personality: AgentPersonality,
     isolated: bool,
     capabilities: crate::models::AgentCapabilities,
 ) -> Result<Agent, String> {
     let agent_id = derive_agent_id(&name).map_err(|e| e.to_string())?;
+
+    if let Some(model) = personality.active_model.clone() {
+        personality.active_model = Some(crate::model_constants::resolve_model_string(&model)?);
+    }
 
     if db
         .get_agent(&agent_id)
@@ -355,6 +366,7 @@ pub async fn list_agents(db: tauri::State<'_, crate::db::Database>) -> Result<Ve
 
     let configured_models = load_configured_agent_models();
     for agent in &mut agents {
+        let mut needs_persist = false;
         if agent
             .personality
             .active_model
@@ -364,7 +376,20 @@ pub async fn list_agents(db: tauri::State<'_, crate::db::Database>) -> Result<Ve
             .is_empty()
         {
             if let Some(model) = configured_models.get(&agent.id) {
-                agent.personality.active_model = Some(model.clone());
+                agent.personality.active_model =
+                    Some(crate::model_constants::canonicalize_model_string(model));
+                needs_persist = true;
+            }
+        }
+
+        if let Some(current_model) = agent.personality.active_model.clone() {
+            let canonical = crate::model_constants::resolve_model_string(&current_model)?;
+            if canonical != current_model {
+                agent.personality.active_model = Some(canonical.clone());
+                needs_persist = true;
+            }
+            if needs_persist {
+                let _ = db.update_agent(agent);
             }
         }
     }
@@ -1355,8 +1380,12 @@ pub async fn get_agent(
 pub async fn update_agent_personality(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
-    personality: AgentPersonality,
+    mut personality: AgentPersonality,
 ) -> Result<(), String> {
+    if let Some(model) = personality.active_model.clone() {
+        personality.active_model = Some(crate::model_constants::resolve_model_string(&model)?);
+    }
+
     let soul_path = agent_soul_path(&agent_id);
     let custom_instructions = personality.custom_instructions.trim();
     let escaped_prefs = custom_instructions.replace('\'', "'\\''");
@@ -1680,6 +1709,7 @@ pub async fn update_agent_capabilities(
             .map_err(|e| e.to_string())?;
         agent.capabilities = capabilities.clone();
         let _ = db.update_agent(&agent);
+        crate::workspace_manager::refresh_folder_delivery(&db, &agent_id, true).await?;
         let _ = db.log_audit(
             &agent_id,
             "update_capabilities",
@@ -1798,6 +1828,11 @@ pub async fn toggle_agent_isolation(
     } else {
         return Err("Agent not found".to_string());
     }
+
+    // Rebind custom-folder delivery to the new trust boundary before either
+    // container is started. Shared agents are downgraded to the authenticated
+    // read-only broker; isolated agents retain their explicit mount modes.
+    crate::workspace_manager::refresh_folder_delivery(&db, &agent_id, false).await?;
 
     // 1. Remove the agent from the shared gateway (best-effort).
     // NODE_OPTIONS=--v8-pool-size=1 prevents uv_thread_create EAGAIN under PID pressure
@@ -3061,8 +3096,7 @@ pub async fn import_agent(
     let imported_model = agent_data
         .get("model")
         .and_then(|v| v.as_str())
-        .and_then(|m| crate::model_constants::validate_model_string(m).ok())
-        .map(|s| s.to_string())
+        .and_then(|m| crate::model_constants::resolve_model_string(m).ok())
         .unwrap_or_else(|| {
             crate::model_constants::default_model_from_available_keys(
                 has_anthropic,
@@ -4015,25 +4049,40 @@ fn build_app_capabilities_md(agent: &crate::models::Agent) -> String {
     };
 
     let mut mounted_folders_section = String::new();
-    if let Ok(path) = crate::workspace_manager::get_agent_workspace_config_path(&agent.id) {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&content) {
-                if !dirs.is_empty() {
-                    mounted_folders_section.push_str("## Live Mounted Host Folders\n");
-                    mounted_folders_section.push_str("The user has granted you direct, live access to specific folders on their host machine. These folders are mounted as volumes inside your container.\n");
-                    mounted_folders_section.push_str("**CRITICAL RULE**: To co-work with the user, you MUST edit the files located directly inside these mounted directories. Do not make duplicate sandbox copies.\n\n");
-                    for dir in dirs {
-                        let path = std::path::Path::new(&dir);
-                        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                            mounted_folders_section.push_str(&format!(
-                                "- `{}` -> mounted at `/home/node/.openclaw/workspace/mounts/{}`\n",
-                                dir, name
-                            ));
-                        }
-                    }
-                    mounted_folders_section.push_str("\n");
-                }
+    if let Ok(grants) = crate::workspace_manager::get_folder_grants_for_agent(&agent.id) {
+        let saved_grant_count = grants.len();
+        let grants = grants
+            .into_iter()
+            .filter(|grant| grant.active)
+            .collect::<Vec<_>>();
+        if !grants.is_empty() && agent.isolated {
+            mounted_folders_section.push_str("## Live Mounted Host Folders\n");
+            mounted_folders_section.push_str("These folders are direct bind mounts inside your dedicated container. The mount mode below is enforced by Docker.\n\n");
+            for grant in grants {
+                let access = match grant.access {
+                    crate::workspace_manager::FolderAccessMode::ReadOnly => "read-only",
+                    crate::workspace_manager::FolderAccessMode::ReadWrite => "read & write",
+                };
+                mounted_folders_section.push_str(&format!(
+                    "- **{}** (`{}`) — {} at `/home/node/.openclaw/workspace/mounts/{}`\n",
+                    grant.name, grant.path, access, grant.id
+                ));
             }
+            mounted_folders_section.push_str("\nNever attempt to write to a read-only mount. For read & write mounts, edit the mounted file directly instead of making a duplicate sandbox copy.\n\n");
+        } else if !grants.is_empty() {
+            mounted_folders_section.push_str("## Brokered Read-Only Host Folders\n");
+            mounted_folders_section.push_str("These host folders are not mounted into the shared gateway. Access them only through the per-agent Files Bridge client. The broker supports bounded list, UTF-8 text read, and text search operations; it cannot write or delete.\n\n");
+            mounted_folders_section.push_str("Commands:\n- `./.canopy/files-bridge list <folder-id> [relative-directory]`\n- `./.canopy/files-bridge read <folder-id> <relative-file>`\n- `./.canopy/files-bridge search <folder-id> <query>`\n\nGranted folders:\n");
+            for grant in grants {
+                mounted_folders_section.push_str(&format!(
+                    "- **{}** (`{}`) — folder id `{}` (read-only broker)\n",
+                    grant.name, grant.path, grant.id
+                ));
+            }
+            mounted_folders_section.push_str("\nDo not try to reach these host paths directly or request write access through the broker. Direct write access requires Isolated Mode.\n\n");
+        } else if saved_grant_count > 0 {
+            mounted_folders_section.push_str("## Saved Host Folders (Inactive)\n");
+            mounted_folders_section.push_str("Custom folder grants are saved, but File System Read is disabled. Do not attempt to access them unless the user enables that capability.\n\n");
         }
     }
 
@@ -4144,6 +4193,15 @@ pub(crate) fn write_app_managed_instruction_files(
     agent: &crate::models::Agent,
     db: &crate::db::Database,
 ) {
+    if let Ok(grants) = crate::workspace_manager::get_folder_grants_for_agent(&agent.id) {
+        if let Err(error) = crate::bridge::sync_files_bridge(db, agent, &grants) {
+            tracing::warn!(
+                "Failed to refresh Files Bridge runtime for {}: {}",
+                agent.id,
+                error
+            );
+        }
+    }
     let Ok(workspace) = get_agent_workspace_dir(db, &agent.id) else {
         return;
     };
@@ -4902,6 +4960,8 @@ pub async fn update_agent_model(
     agent_id: String,
     model: String,
 ) -> Result<(), String> {
+    let model = crate::model_constants::resolve_model_string(&model)?;
+
     // Write directly into openclaw.json via Node.js — this triggers OpenClaw's hot reload
     // (file watcher detects the change and applies it without restarting the process).
     // Do NOT use `docker restart` here: a full restart takes 10-15s and loses in-memory
@@ -4949,6 +5009,11 @@ console.log('model updated to {model}');
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("Model update failed: {}", err));
+    }
+
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.personality.active_model = Some(model);
+        let _ = db.update_agent(&agent);
     }
 
     Ok(())
@@ -5786,7 +5851,8 @@ async fn boot_sync_agents_internal(
                     .personality
                     .active_model
                     .clone()
-                    .unwrap_or_else(|| "google/gemini-3.1-pro-preview".to_string());
+                    .map(|model| crate::model_constants::canonicalize_model_string(&model))
+                    .unwrap_or_else(|| crate::model_constants::DEFAULT_GEMINI_MODEL.to_string());
                 add_args.push("--model");
                 add_args.push(&active_model);
 
@@ -5820,7 +5886,7 @@ async fn boot_sync_agents_internal(
             // Also, we MUST validate the model. If an invalid/deprecated model like
             // 'google/gemini-flash-latest' is pushed, LiteLLM enters an infinite crash loop.
             let active_model = agent.personality.active_model.clone().unwrap_or_default();
-            let model_to_set = crate::model_constants::validate_model_string(&active_model)
+            let model_to_set = crate::model_constants::resolve_model_string(&active_model)
                 .ok()
                 .filter(|m| {
                     crate::model_constants::all_models()
@@ -5939,7 +6005,7 @@ async fn boot_sync_agents_internal(
 
         let active_model = agent.personality.active_model.clone().unwrap_or_default();
         let keys_existing = get_creds_for_agent(&id);
-        let model_to_set = crate::model_constants::validate_model_string(&active_model)
+        let model_to_set = crate::model_constants::resolve_model_string(&active_model)
             .ok()
             .filter(|m| {
                 crate::model_constants::all_models()
@@ -6360,7 +6426,7 @@ async fn file_channels_match(
     };
 
     let on_disk_slack = extract_accounts("/channels/slack/accounts");
-    
+
     // Google channels are no longer injected into openclaw.json; instead, the
     // `google` plugin is enabled if ANY google accounts are desired.
     let on_disk_google_enabled = cfg
@@ -6368,9 +6434,8 @@ async fn file_channels_match(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let desired_google_enabled = !desired_gmail.is_empty() 
-        || !desired_calendar.is_empty() 
-        || !desired_drive.is_empty();
+    let desired_google_enabled =
+        !desired_gmail.is_empty() || !desired_calendar.is_empty() || !desired_drive.is_empty();
 
     let on_disk_bindings: Vec<serde_json::Value> = cfg
         .pointer("/bindings")
@@ -7072,7 +7137,10 @@ mod tests {
             db.insert_message(
                 &conv_id,
                 if idx % 2 == 0 { "user" } else { "assistant" },
-                &format!("Thread turn {} about the material participation tracker", idx + 1),
+                &format!(
+                    "Thread turn {} about the material participation tracker",
+                    idx + 1
+                ),
             )
             .unwrap();
         }
@@ -7195,7 +7263,10 @@ mod tests {
 
     #[test]
     fn derive_agent_id_matches_frontend_slugging() {
-        assert_eq!(derive_agent_id("  My Agent!!!  ").unwrap(), "agent-my-agent");
+        assert_eq!(
+            derive_agent_id("  My Agent!!!  ").unwrap(),
+            "agent-my-agent"
+        );
         assert_eq!(derive_agent_id("A&B / C").unwrap(), "agent-a-b-c");
     }
 
@@ -7560,7 +7631,9 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
 
     let mut custom_instructions = String::new();
     if integrations.contains(&"google_photos") {
-        if let Ok(token) = crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id)) {
+        if let Ok(token) =
+            crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id))
+        {
             custom_instructions.push_str(&format!(
                 "**Google Photos**: You have read-only API access to the user's Google Photos. \n\
                 DO NOT try to use the browser to log in to Google Photos. \n\

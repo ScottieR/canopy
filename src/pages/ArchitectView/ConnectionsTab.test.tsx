@@ -47,6 +47,8 @@ const mockAgent: AgentData = {
     { id: 'browser', label: 'Web Browser', description: 'Navigate websites', enabled: false, category: 'skills' },
     { id: 'ext_network', label: 'External Network', description: 'Make external requests', enabled: false, category: 'network' },
     { id: 'coding', label: 'Coding', description: 'Write and execute code', enabled: false, category: 'skills' },
+    { id: 'file_read', label: 'File Read', description: 'Read scoped files', enabled: true, category: 'data' },
+    { id: 'file_write', label: 'File Write', description: 'Write scoped files', enabled: false, category: 'data' },
   ],
   recentSpend: [],
   chatLog: [],
@@ -67,7 +69,7 @@ const mockAgent: AgentData = {
     autonomous: false,
     scheduled: false,
     memory_write: false,
-    file_read: false,
+    file_read: true,
     file_write: false,
     payments: false,
     spend_auto: false,
@@ -97,21 +99,23 @@ describe('ConnectionsTab - Workspace Folder Access', () => {
     useWorldStore.setState({ agents: [mockAgent] });
   });
 
-  it('offers an inline isolation action when custom folders are blocked', async () => {
+  it('persists shared-agent folders as brokered read-only grants', async () => {
+    const selectedFolder = '/tmp/canopy-shared-read-test';
+    dialogOpenMock.mockResolvedValue([selectedFolder]);
     render(<ConnectionsTab agent={mockAgent} />);
 
     fireEvent.click(await screen.findByText('Allowed Folders (0)'));
-
-    expect(screen.getByRole('button', { name: 'Add Folder' })).toBeDisabled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Switch to Isolated Mode' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Folder' }));
 
     await waitFor(() => {
-      expect(invokeMock).toHaveBeenCalledWith('toggle_agent_isolation', {
+      expect(invokeMock).toHaveBeenCalledWith('update_agent_allowed_directories', {
         agentId: mockAgent.id,
-        isolated: true,
+        directories: [selectedFolder],
+        access: 'read_only',
       });
     });
+    expect(screen.getByText(/Read-only Files Bridge/)).toBeInTheDocument();
+    expect(invokeMock.mock.calls.some(([command]) => command === 'toggle_agent_isolation')).toBe(false);
   });
 
   it('opens the folder picker and persists selections for isolated agents', async () => {
@@ -134,6 +138,7 @@ describe('ConnectionsTab - Workspace Folder Access', () => {
       expect(invokeMock).toHaveBeenCalledWith('update_agent_allowed_directories', {
         agentId: isolatedAgent.id,
         directories: [selectedFolder],
+        access: 'read_only',
       });
     });
 

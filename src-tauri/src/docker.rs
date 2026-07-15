@@ -400,17 +400,20 @@ volumes:
     )
 }
 
-fn format_allowed_directory_volume(directory: &str) -> Option<String> {
-    let name = std::path::Path::new(directory)
-        .file_name()
-        .and_then(|name| name.to_str())?;
-    let mount = format!(
-        "{}:/home/node/.openclaw/workspace/mounts/{}",
-        directory, name
-    );
-    serde_json::to_string(&mount)
-        .ok()
-        .map(|quoted| format!("      - {}\n", quoted))
+fn format_allowed_directory_volume(
+    grant: &crate::workspace_manager::FolderGrant,
+) -> Option<String> {
+    let source = serde_json::to_string(&grant.path).ok()?;
+    let target = serde_json::to_string(&format!(
+        "/home/node/.openclaw/workspace/mounts/{}",
+        grant.id
+    ))
+    .ok()?;
+    let read_only = grant.access == crate::workspace_manager::FolderAccessMode::ReadOnly;
+    Some(format!(
+        "      - type: bind\n        source: {}\n        target: {}\n        read_only: {}\n",
+        source, target, read_only
+    ))
 }
 
 /// Generate docker-compose for an isolated agent container
@@ -428,14 +431,10 @@ process.on('unhandledRejection', (reason, promise) => {
     let _ = std::fs::write(state_dir.join("crash_guard.cjs"), crash_guard_js);
 
     let mut extra_volumes = String::new();
-    if let Ok(path) = crate::workspace_manager::get_agent_workspace_config_path(agent_id) {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&content) {
-                for dir in dirs {
-                    if let Some(volume) = format_allowed_directory_volume(&dir) {
-                        extra_volumes.push_str(&volume);
-                    }
-                }
+    if let Ok(grants) = crate::workspace_manager::get_folder_grants_for_agent(agent_id) {
+        for grant in grants.into_iter().filter(|grant| grant.active) {
+            if let Some(volume) = format_allowed_directory_volume(&grant) {
+                extra_volumes.push_str(&volume);
             }
         }
     }
@@ -1690,16 +1689,34 @@ mod tests {
     }
 
     #[test]
-    fn custom_directory_volume_is_yaml_escaped() {
-        let volume =
-            format_allowed_directory_volume("/tmp/folder\"with\ncontrols").expect("volume entry");
+    fn custom_directory_volume_is_yaml_escaped_and_read_only() {
+        let grant = crate::workspace_manager::FolderGrant {
+            id: "folder-test".to_string(),
+            path: "/tmp/folder\"with\ncontrols".to_string(),
+            name: "folder".to_string(),
+            access: crate::workspace_manager::FolderAccessMode::ReadOnly,
+            active: true,
+        };
+        let volume = format_allowed_directory_volume(&grant).expect("volume entry");
 
         assert!(volume.contains("\\\""));
         assert!(volume.contains("\\n"));
-        assert!(
-            !volume.trim_end().contains('\n'),
-            "path control characters must remain escaped inside one YAML entry"
-        );
+        assert!(volume.contains("target: \"/home/node/.openclaw/workspace/mounts/folder-test\""));
+        assert!(volume.contains("read_only: true"));
+    }
+
+    #[test]
+    fn read_write_grant_is_explicit_in_compose() {
+        let grant = crate::workspace_manager::FolderGrant {
+            id: "folder-write".to_string(),
+            path: "/tmp/write".to_string(),
+            name: "write".to_string(),
+            access: crate::workspace_manager::FolderAccessMode::ReadWrite,
+            active: true,
+        };
+        let volume = format_allowed_directory_volume(&grant).expect("volume entry");
+
+        assert!(volume.contains("read_only: false"));
     }
 
     #[test]

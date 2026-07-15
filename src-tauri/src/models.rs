@@ -90,8 +90,8 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
 
                     // Only use the candidate if it passes format validation
                     if let Some(ref s) = candidate {
-                        if model_constants::validate_model_string(s).is_ok() {
-                            return s.clone();
+                        if let Ok(resolved) = model_constants::resolve_model_string(s) {
+                            return resolved;
                         } else {
                             tracing::warn!(
                                 "Dynamic models.json produced invalid model string '{}' for provider '{}'; \

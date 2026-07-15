@@ -73,6 +73,9 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
   };
 
   const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+  useEffect(() => {
+    setSelectedModel((agent.personality as any)?.active_model || "");
+  }, [agent.id, (agent.personality as any)?.active_model]);
   const [voiceConfig, setVoiceConfig] = useState<any>(null);
   const [isVoiceLoading, setIsVoiceLoading] = useState(true);
 

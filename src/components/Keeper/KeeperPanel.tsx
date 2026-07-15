@@ -33,6 +33,9 @@ type KeeperAction = {
 type KeeperMsg = { role: "user" | "assistant"; content: string; ts: number; action?: KeeperAction };
 
 type ProviderHealth = { provider: string; status: string; detail?: string; model: string };
+type HelperMode = "hosted" | "provider" | "local";
+type HelperConfig = { mode: HelperMode; provider?: string; model?: string; credentialPresent: boolean };
+type HelperContinuity = { topic?: "provider_setup" | "integration_setup" | "diagnostics" | "onboarding"; target_agent?: string; provider?: "openai" | "anthropic" | "gemini" | "xai"; expires_at: number };
 
 // ── Guided actions: Eddy takes the user there ────────────────────────────────
 // The server (and the offline fallback) can attach an <ACTION>{json}</ACTION>
@@ -122,6 +125,7 @@ function runKeeperAction(action: KeeperAction) {
 
 const CHAT_KEY = "canopy_keeper_chat";
 const ONBOARDING_AUTOOPEN_KEY = "canopy_keeper_onboarding_opened";
+const CONTINUITY_KEY = "canopy_helper_continuity";
 
 const loadChat = (): KeeperMsg[] => {
   try {
@@ -130,6 +134,31 @@ const loadChat = (): KeeperMsg[] => {
     return Array.isArray(parsed) ? parsed.slice(-40) : [];
   } catch { return []; }
 };
+
+const loadContinuity = (): HelperContinuity => {
+  try {
+    const value = JSON.parse(localStorage.getItem(CONTINUITY_KEY) || "null");
+    if (value?.expires_at > Date.now()) return value;
+  } catch { /* ignore */ }
+  return { expires_at: 0 };
+};
+
+function updateContinuity(previous: HelperContinuity, message: string, agents: any[]): HelperContinuity {
+  const lower = message.toLowerCase();
+  const next: HelperContinuity = previous.expires_at > Date.now() ? { ...previous } : { expires_at: 0 };
+  const named = agents.find(a => a.name && lower.includes(String(a.name).toLowerCase()));
+  if (named) next.target_agent = String(named.name).slice(0, 200);
+  if (/\b(openai|gpt)\b/.test(lower)) next.provider = "openai";
+  else if (/\b(anthropic|claude)\b/.test(lower)) next.provider = "anthropic";
+  else if (/\b(gemini|google ai)\b/.test(lower)) next.provider = "gemini";
+  else if (/\b(xai|grok)\b/.test(lower)) next.provider = "xai";
+  if (/\b(key|provider|model)\b/.test(lower)) next.topic = "provider_setup";
+  else if (/\b(slack|github|telegram|discord|calendar|gmail|connect)\b/.test(lower)) next.topic = "integration_setup";
+  else if (/\b(broken|error|diagnos|repair|not responding)\b/.test(lower)) next.topic = "diagnostics";
+  else if (/\b(onboard|setup wizard|new agent)\b/.test(lower)) next.topic = "onboarding";
+  next.expires_at = Date.now() + 30 * 60_000;
+  return next;
+}
 
 // ── Context payload (same data the wrench icon sees) ─────────────────────────
 function useKeeperContext() {
@@ -157,16 +186,6 @@ function useKeeperContext() {
       if (draft) onboardingStep = JSON.parse(draft)?.step ?? null;
     } catch { /* ignore */ }
 
-    // Gateway log tail — the same diagnostics the terminal/wrench shows.
-    // Sanitize: strip anything that looks like a key, cap size hard.
-    let gatewayLogTail = "";
-    try {
-      const raw = await invoke<string>("get_gateway_log_tail", { lines: 60 });
-      gatewayLogTail = String(raw || "")
-        .replace(/(sk-[A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{10,}|xox[a-z]-[A-Za-z0-9-]{8,})/g, "[redacted-key]")
-        .slice(-5000);
-    } catch { /* runtime down or command unavailable — context will show runtime_ready=false */ }
-
     // Per-agent Slack pairing flags (keychain-backed, cheap reads).
     const slackPaired: Record<string, boolean> = {};
     await Promise.all(agents.map(async a => {
@@ -182,22 +201,15 @@ function useKeeperContext() {
       onboarding: { in_onboarding: activeView === "onboarding", draft_step: onboardingStep },
       agents: agents.map(a => ({
         name: a.name,
-        role: a.role,
         status: a.status,
         paused: a.paused || false,
         isolated: (a as any).isolated || false,
-        // currentAction carries deployment-failure strings; useful diagnostically
-        last_action: a.status === "error" ? a.currentAction : a.currentAction || undefined,
         model: (a as any).personality?.active_model || (a as any).active_model || undefined,
         integrations: (a as any).integrations || [],
         slack_paired: slackPaired[a.id] ?? false,
-        enabled_permissions: (a.permissions || []).filter((p: any) => p.enabled).map((p: any) => p.id),
       })),
       usage: { agent_count: agents.length, errored_agents: agents.filter(a => a.status === "error").length },
-      provider_health: providerHealth,
-      // Last lines of the local runtime's log — provider errors, agent
-      // registration failures, and channel (Slack/iMessage) issues land here.
-      runtime_log_tail: gatewayLogTail,
+      provider_health: providerHealth.map(({ provider, status, model }) => ({ provider, status, model })),
     };
   };
 }
@@ -291,11 +303,28 @@ export function KeeperPanel() {
   const [messages, setMessages] = useState<KeeperMsg[]>(loadChat);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [helperConfig, setHelperConfig] = useState<HelperConfig>({ mode: "hosted", credentialPresent: false });
+  const [settingsMode, setSettingsMode] = useState<HelperMode>("hosted");
+  const [settingsProvider, setSettingsProvider] = useState("openai");
+  const [settingsModel, setSettingsModel] = useState("");
+  const [settingsCredential, setSettingsCredential] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+  const continuityRef = useRef<HelperContinuity>(loadContinuity());
   const getContext = useKeeperContext();
   const scrollRef = useRef<HTMLDivElement>(null);
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const agents = useWorldStore(s => s.agents);
   const hasTrouble = !gatewayReady || agents.some(a => a.status === "error");
+
+  useEffect(() => {
+    invoke<HelperConfig>("get_canopy_helper_config").then(config => {
+      setHelperConfig(config);
+      setSettingsMode(config.mode);
+      setSettingsProvider(config.provider || "openai");
+      setSettingsModel(config.model || "");
+    }).catch(() => { /* hosted remains default */ });
+  }, []);
 
   // Eddy in the world (or anything else) can open the panel via this event.
   useEffect(() => {
@@ -330,24 +359,26 @@ export function KeeperPanel() {
     if (!content || busy) return;
     setInput("");
     const userMsg: KeeperMsg = { role: "user", content, ts: Date.now() };
-    const nextMsgs = [...messages, userMsg];
-    setMessages(nextMsgs);
+    setMessages(prev => [...prev, userMsg]);
     setBusy(true);
 
     const ctx = await getContext();
+    const continuity = updateContinuity(continuityRef.current, content, agents);
+    continuityRef.current = continuity;
+    try { localStorage.setItem(CONTINUITY_KEY, JSON.stringify(continuity)); } catch { /* ignore */ }
     try {
-      const base = (import.meta as any).env?.VITE_API_URL || "http://localhost:3001";
-      const r = await fetch(`${base}/api/keeper/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: nextMsgs.map(m => ({ role: m.role, content: m.content })),
-          context: ctx,
-        }),
-      });
-      if (!r.ok) throw new Error(`keeper http ${r.status}`);
-      const data = await r.json();
-      const reply = String(data.reply || "").trim();
+      let reply = "";
+      if (helperConfig.mode === "hosted") {
+        const base = (import.meta as any).env?.VITE_API_URL || "http://localhost:3001";
+        const r = await fetch(`${base}/api/keeper/chat`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: content, context: ctx, continuity }),
+        });
+        if (!r.ok) throw new Error(`keeper http ${r.status}`);
+        reply = String((await r.json()).reply || "").trim();
+      } else {
+        reply = String((await invoke<any>("send_canopy_helper_message", { message: content, context: ctx, continuity }))?.reply || "").trim();
+      }
       if (!reply) throw new Error("empty reply");
       const parsed = parseKeeperReply(reply);
       setMessages(prev => [...prev, { role: "assistant", content: parsed.text, action: parsed.action, ts: Date.now() }]);
@@ -360,6 +391,21 @@ export function KeeperPanel() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const saveHelperSettings = async () => {
+    setSettingsError("");
+    try {
+      const config = await invoke<HelperConfig>("configure_canopy_helper", {
+        mode: settingsMode,
+        provider: settingsMode === "provider" ? settingsProvider : null,
+        credential: settingsMode === "provider" && settingsCredential ? settingsCredential : null,
+        model: settingsMode === "hosted" ? null : (settingsModel || null),
+      });
+      setHelperConfig(config);
+      setSettingsCredential("");
+      setShowSettings(false);
+    } catch (error) { setSettingsError(String(error)); }
   };
 
   const statusDot = useMemo(() => (
@@ -423,14 +469,36 @@ export function KeeperPanel() {
               <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-main, #303330)" }}>Eddy</div>
               <div style={{ fontSize: 11, color: "var(--text-sub, #636E72)", display: "flex", alignItems: "center", gap: 5 }}>
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusDot, display: "inline-block" }} />
-                {hasTrouble ? "Something needs attention" : "All systems healthy"}
+                {hasTrouble ? "Something needs attention" : `All systems healthy · ${helperConfig.mode === "local" ? "On-device" : helperConfig.mode === "provider" ? "Your provider" : "Canopy-hosted"}`}
               </div>
             </div>
+            <button onClick={() => setShowSettings(v => !v)} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 15, color: "var(--text-sub, #636E72)", padding: 4 }} title="Eddy privacy and model settings">⚙</button>
             <button onClick={() => setOpen(false)} style={{
               border: "none", background: "transparent", cursor: "pointer",
               fontSize: 18, color: "var(--text-sub, #636E72)", padding: 4, lineHeight: 1,
             }} title="Close">×</button>
           </div>
+
+          {showSettings && (
+            <div style={{ padding: 12, borderBottom: "1px solid rgba(0,0,0,0.08)", background: "var(--surface-base, #faf9f6)", fontSize: 11.5 }}>
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>Eddy privacy mode</div>
+              <select value={settingsMode} onChange={e => setSettingsMode(e.target.value as HelperMode)} style={{ width: "100%", padding: 7, borderRadius: 8, marginBottom: 7 }}>
+                <option value="hosted">Canopy-hosted bootstrap</option>
+                <option value="provider">My provider — direct from this Mac</option>
+                <option value="local">On-device — Ollama</option>
+              </select>
+              {settingsMode === "provider" && <>
+                <select value={settingsProvider} onChange={e => setSettingsProvider(e.target.value)} style={{ width: "100%", padding: 7, borderRadius: 8, marginBottom: 7 }}>
+                  <option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option><option value="xai">xAI Grok</option>
+                </select>
+                <input type="password" value={settingsCredential} onChange={e => setSettingsCredential(e.target.value)} placeholder={helperConfig.credentialPresent ? "Dedicated key saved — blank keeps it" : "Dedicated Eddy API key"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />
+              </>}
+              {settingsMode !== "hosted" && <input value={settingsModel} onChange={e => setSettingsModel(e.target.value)} placeholder={settingsMode === "local" ? "Ollama model, e.g. llama3.2:3b" : "Model (optional)"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />}
+              <div style={{ color: "var(--text-sub, #636E72)", lineHeight: 1.4, marginBottom: 8 }}>{settingsMode === "hosted" ? "Only the latest message and minimized structured context go through Canopy." : settingsMode === "provider" ? "Requests go directly to your provider from this Mac." : "Requests stay on this Mac through Ollama."}</div>
+              {settingsError && <div style={{ color: "#b42318", marginBottom: 7 }}>{settingsError}</div>}
+              <button onClick={saveHelperSettings} style={{ width: "100%", padding: 7, border: "none", borderRadius: 8, background: "#3c6663", color: "#fff", fontWeight: 800, cursor: "pointer" }}>Save privacy mode</button>
+            </div>
+          )}
 
           {/* Messages */}
           <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>

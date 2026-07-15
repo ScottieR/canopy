@@ -134,6 +134,8 @@ fn validate_secret_key_for_ipc(key: &str) -> Result<()> {
     );
 
     let allowed_prefix = key.starts_with("agent_")
+        || key.starts_with("canopy_helper_")
+        || key.starts_with("provider_management_")
         || key.starts_with("github-access-token-")
         || key.starts_with("github-username-")
         || key.starts_with("google_refresh_")

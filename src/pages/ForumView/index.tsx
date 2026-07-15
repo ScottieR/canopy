@@ -2092,6 +2092,17 @@ function resolveHtmlImages(
   return resolved;
 }
 
+/** Parse a GenUI JSON payload without letting a malformed one crash the panel. */
+function safeParseGenUI(content: string): Record<string, unknown> | null {
+  try {
+    const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const parsed = JSON.parse(cleaned);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 interface BoardCard {
   id: string;
   title: string;
@@ -2101,8 +2112,10 @@ interface BoardCard {
 
 function parseBoardCards(content: string, agents: any[]): BoardCard[] {
   if (!content) return [];
-  // Split on --- line
-  const parts = content.split(/\n\s*---\s*\n/);
+  // Split ONLY on the orchestrator's section separators: a --- line immediately
+  // followed by a ## heading (appendSection format). Plain horizontal rules
+  // inside an agent's markdown must NOT create junk "Section" cards.
+  const parts = content.split(/\n\s*---\s*\n(?=\s*##\s)/);
   const cards: BoardCard[] = [];
 
   parts.forEach((part, idx) => {
@@ -2712,22 +2725,38 @@ function ForumBlackboard({
                     />
                   </div>
                 )}
-                {isGenUIMode && displayContent && (
-                  <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
-                    <GenUIRenderer
-                      app={JSON.parse(displayContent)}
-                      attachments={attachments}
-                      onEvent={(evt) => {
-                        console.log("Canvas GenUI Event:", evt);
-                        useForumStore.getState().addForumMessage(forum.id, {
-                          kind: "chat",
-                          sender: "user",
-                          text: `[GenUI Event] User interacted with canvas app: ${JSON.stringify(evt)}`
-                        });
-                      }}
-                    />
-                  </div>
-                )}
+                {isGenUIMode && displayContent && (() => {
+                  const genUIApp = safeParseGenUI(displayContent);
+                  if (!genUIApp) {
+                    return (
+                      <div style={{
+                        height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+                        color: "var(--text-sub, #636E72)", opacity: 0.6, fontSize: 12, padding: 24, textAlign: "center",
+                      }}>
+                        <div style={{ fontWeight: 600 }}>This deliverable couldn't be rendered</div>
+                        <div style={{ opacity: 0.8, maxWidth: 320, lineHeight: 1.5 }}>
+                          The generated app payload is malformed. Ask the team for a revision in the chat, or view the raw payload via the Source toggle.
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
+                      <GenUIRenderer
+                        app={genUIApp as any}
+                        attachments={attachments}
+                        onEvent={(evt) => {
+                          console.log("Canvas GenUI Event:", evt);
+                          useForumStore.getState().addForumMessage(forum.id, {
+                            kind: "chat",
+                            sender: "user",
+                            text: `[GenUI Event] User interacted with canvas app: ${JSON.stringify(evt)}`
+                          });
+                        }}
+                      />
+                    </div>
+                  );
+                })()}
                 {!isHtmlMode && !isGenUIMode && deliverableCard && (
                   <div
                     ref={scrollRef}

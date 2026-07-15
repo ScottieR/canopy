@@ -43,6 +43,35 @@ struct PermissionRequest {
     justification: String,
 }
 
+fn bearer_token(headers: &str) -> Option<String> {
+    headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if !name.eq_ignore_ascii_case("authorization") {
+            return None;
+        }
+        value
+            .trim()
+            .strip_prefix("Bearer ")
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn files_broker_response(result: Result<serde_json::Value, String>) -> (u16, String) {
+    match result {
+        Ok(value) => (
+            200,
+            serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string()),
+        ),
+        Err(error) => (
+            403,
+            serde_json::to_string(&json!({ "error": error }))
+                .unwrap_or_else(|_| r#"{"error":"Files Bridge request denied"}"#.to_string()),
+        ),
+    }
+}
+
 pub async fn start_jit_server(app_handle: tauri::AppHandle) {
     let listener = TcpListener::bind("0.0.0.0:18802")
         .await
@@ -65,6 +94,11 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                         Ok(0) => break,
                         Ok(n) => {
                             req_data.extend_from_slice(&buf[..n]);
+                            if req_data.len() > 64 * 1024 {
+                                let response = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                                let _ = socket.write_all(response.as_bytes()).await;
+                                return;
+                            }
 
                             if !headers_parsed {
                                 if let Some(pos) =
@@ -112,6 +146,8 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
 
                 if let Some(pos) = req_data.windows(4).position(|w| w == b"\r\n\r\n") {
                     let body = &req_data[pos + 4..];
+                    let headers = String::from_utf8_lossy(&req_data[..pos]);
+                    let capability = bearer_token(&headers);
 
                     if is_post {
                         let path = if let Some(p) =
@@ -187,6 +223,70 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                     r#"{"error":"Invalid permission request body"}"#.to_string(),
                                 ),
                             }
+                        } else if path == "/files/list" {
+                            match (
+                                capability.as_deref(),
+                                serde_json::from_slice::<crate::bridge::FilesListRequest>(body),
+                            ) {
+                                (Some(token), Ok(request)) => {
+                                    use tauri::Manager;
+                                    let db = app.state::<crate::db::Database>();
+                                    files_broker_response(crate::bridge::broker_list(
+                                        &db, token, request,
+                                    ))
+                                }
+                                (None, _) => (
+                                    401,
+                                    r#"{"error":"Missing Files Bridge capability"}"#.to_string(),
+                                ),
+                                (_, Err(_)) => (
+                                    400,
+                                    r#"{"error":"Invalid Files Bridge list request"}"#.to_string(),
+                                ),
+                            }
+                        } else if path == "/files/read" {
+                            match (
+                                capability.as_deref(),
+                                serde_json::from_slice::<crate::bridge::FilesReadRequest>(body),
+                            ) {
+                                (Some(token), Ok(request)) => {
+                                    use tauri::Manager;
+                                    let db = app.state::<crate::db::Database>();
+                                    files_broker_response(crate::bridge::broker_read(
+                                        &db, token, request,
+                                    ))
+                                }
+                                (None, _) => (
+                                    401,
+                                    r#"{"error":"Missing Files Bridge capability"}"#.to_string(),
+                                ),
+                                (_, Err(_)) => (
+                                    400,
+                                    r#"{"error":"Invalid Files Bridge read request"}"#.to_string(),
+                                ),
+                            }
+                        } else if path == "/files/search" {
+                            match (
+                                capability.as_deref(),
+                                serde_json::from_slice::<crate::bridge::FilesSearchRequest>(body),
+                            ) {
+                                (Some(token), Ok(request)) => {
+                                    use tauri::Manager;
+                                    let db = app.state::<crate::db::Database>();
+                                    files_broker_response(crate::bridge::broker_search(
+                                        &db, token, request,
+                                    ))
+                                }
+                                (None, _) => (
+                                    401,
+                                    r#"{"error":"Missing Files Bridge capability"}"#.to_string(),
+                                ),
+                                (_, Err(_)) => (
+                                    400,
+                                    r#"{"error":"Invalid Files Bridge search request"}"#
+                                        .to_string(),
+                                ),
+                            }
                         } else {
                             // Default = legacy JIT credential request (backwards-compat for agent
                             // code that POSTs to / without a specific path).
@@ -204,9 +304,14 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                         };
 
                         let (status_code, resp_str) = route_to_response;
+                        let cors_header = if path.starts_with("/files/") {
+                            ""
+                        } else {
+                            "Access-Control-Allow-Origin: *\r\n"
+                        };
                         let http_resp = format!(
-                            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            status_code, resp_str.len(), resp_str
+                            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            status_code, cors_header, resp_str.len(), resp_str
                         );
                         let _ = socket.write_all(http_resp.as_bytes()).await;
                     } else {
@@ -580,4 +685,21 @@ pub async fn request_user_attention(
 ) -> Result<(), String> {
     handle_attention_request(app_handle, AttentionRequest { agent_id, reason }).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn files_bridge_capability_is_read_from_authorization_header() {
+        let headers = "POST /files/read HTTP/1.1\r\nAuthorization: Bearer agent-a:token\r\nContent-Type: application/json";
+        assert_eq!(bearer_token(headers).as_deref(), Some("agent-a:token"));
+    }
+
+    #[test]
+    fn unrelated_headers_do_not_authenticate_files_bridge() {
+        let headers = "POST /files/read HTTP/1.1\r\nX-Agent-Id: agent-a";
+        assert!(bearer_token(headers).is_none());
+    }
 }

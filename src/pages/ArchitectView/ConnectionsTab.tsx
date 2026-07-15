@@ -354,7 +354,37 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     "OpenAI": "", "Anthropic": "", "Gemini": "", "Grok": ""
   });
   const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+  useEffect(() => {
+    setSelectedModel((agent.personality as any)?.active_model || "");
+  }, [agent.id, (agent.personality as any)?.active_model]);
   const [llmSaveStatus, setLlmSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [provisioningProvider, setProvisioningProvider] = useState<string | null>(null);
+  const [provisioningMessage, setProvisioningMessage] = useState("");
+
+  const provisionDedicatedKey = async (providerLabel: "OpenAI" | "Grok") => {
+    const provider = providerLabel === "Grok" ? "xai" : "openai";
+    setProvisioningProvider(providerLabel);
+    setProvisioningMessage("");
+    try {
+      const status: any = await invoke("get_provider_management_status", { provider });
+      if (!status?.connected) {
+        const credential = window.prompt(provider === "xai" ? "Paste your xAI Management API key" : "Paste your OpenAI organization Admin key");
+        if (!credential) return;
+        const scopeId = window.prompt(provider === "xai" ? "Paste your xAI team ID" : "Paste your OpenAI project ID");
+        if (!scopeId) return;
+        await invoke("connect_provider_management", { provider, credential, scopeId });
+      }
+      await invoke("provision_agent_provider_key", { agentId: agent.id, provider });
+      const slot = provider === "xai" ? `agent_${agent.id}_grok_key` : `agent_${agent.id}_openai_key`;
+      const created = String(await invoke("get_secret_cmd", { key: slot }));
+      setKeys(prev => ({ ...prev, [providerLabel]: created }));
+      setProvisioningMessage(`Dedicated ${providerLabel} key created for ${agent.name}.`);
+    } catch (error) {
+      setProvisioningMessage(String(error));
+    } finally {
+      setProvisioningProvider(null);
+    }
+  };
 
   const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
   const getDynamicRecommendedModel = () => {
@@ -950,9 +980,15 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                 onChange={(e) => setKeys(prev => ({ ...prev, [prov]: e.target.value }))}
                 style={{ padding: "10px 14px", width: "100%", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--glass-light)" }}
               />
+              {(prov === "OpenAI" || prov === "Grok") && (
+                <button type="button" onClick={() => provisionDedicatedKey(prov as "OpenAI" | "Grok")} disabled={provisioningProvider !== null} style={{ marginTop: 7, padding: "7px 10px", width: "100%", borderRadius: 7, border: "1px solid rgba(33,131,128,0.3)", background: "rgba(33,131,128,0.07)", color: "#218380", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                  {provisioningProvider === prov ? "Creating dedicated key…" : `Create dedicated ${prov} key`}
+                </button>
+              )}
             </div>
           ))}
         </div>
+        {provisioningMessage && <div style={{ marginTop: -10, marginBottom: 14, fontSize: 11, color: provisioningMessage.startsWith("Dedicated") ? "#218380" : "#b42318" }}>{provisioningMessage}</div>}
 
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button onClick={saveOverrides} disabled={llmSaveStatus === "loading"} style={{
@@ -1631,7 +1667,16 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                          if (!currentAgent) return;
                          const capabilitiesObj: any = {};
                          currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                         try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                         try {
+                           await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+                           if (allowedDirs.length > 0) {
+                             await invoke("update_agent_allowed_directories", {
+                               agentId: agent.id,
+                               directories: allowedDirs,
+                               access: agent.isolated ? "read_write" : "read_only",
+                             });
+                           }
+                         } catch (e) { console.error(e); }
                        }, 100);
                      };
                      executeOrConfirmHighRisk(true, "File System Write", action);
@@ -1643,7 +1688,16 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                        if (!currentAgent) return;
                        const capabilitiesObj: any = {};
                        currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                       try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                       try {
+                         await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+                         if (allowedDirs.length > 0) {
+                           await invoke("update_agent_allowed_directories", {
+                             agentId: agent.id,
+                             directories: allowedDirs,
+                             access: "read_only",
+                           });
+                         }
+                       } catch (e) { console.error(e); }
                      }, 100);
                    }
                 }} style={{ accentColor: "#3c6663" }} />
@@ -1658,6 +1712,11 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               </label>
             );
           })}
+          {!agent.isolated && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 }}>
+              In Shared Mode, this access level applies to the agent&apos;s own workspace. Any custom host folders remain brokered and read-only.
+            </div>
+          )}
         </div>
 
         {/* Allowed Folders section */}
@@ -1677,9 +1736,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
                 <button
                   type="button"
-                  disabled={!agent.isolated || folderAccessBusy}
+                  disabled={folderAccessBusy}
                   onClick={async () => {
-                    if (!agent.isolated) return;
                     setFolderAccessBusy(true);
                     setFolderAccessError("");
                     try {
@@ -1691,7 +1749,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                       if (selected) {
                         const newDirs = Array.isArray(selected) ? selected : [selected];
                         const uniqueDirs = Array.from(new Set([...allowedDirs, ...newDirs]));
-                        await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: uniqueDirs });
+                        await invoke("update_agent_allowed_directories", {
+                          agentId: agent.id,
+                          directories: uniqueDirs,
+                          access: agent.isolated && agent.permissions.find(p => p.id === "file_write")?.enabled
+                            ? "read_write"
+                            : "read_only",
+                        });
                         setAllowedDirs(uniqueDirs);
                       }
                     } catch (e) {
@@ -1703,14 +1767,14 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   }}
                   style={{
                     display: "flex", alignItems: "center", gap: 4,
-                    background: agent.isolated ? "transparent" : "var(--bg-subtle)",
+                    background: "transparent",
                     border: "1px solid var(--border-subtle)",
                     padding: "4px 8px", borderRadius: 6, fontSize: 11,
-                    cursor: folderAccessBusy ? "wait" : agent.isolated ? "pointer" : "not-allowed",
-                    color: agent.isolated ? "var(--text-main)" : "var(--text-muted)",
-                    opacity: agent.isolated && !folderAccessBusy ? 1 : 0.6
+                    cursor: folderAccessBusy ? "wait" : "pointer",
+                    color: "var(--text-main)",
+                    opacity: folderAccessBusy ? 0.6 : 1
                   }}
-                  title={!agent.isolated ? "Agent must be isolated to add custom folders" : ""}
+                  title={!agent.isolated ? "Shared agents receive brokered read-only access" : ""}
                 >
                   <Plus size={12} />
                   {folderAccessBusy ? "Adding..." : "Add Folder"}
@@ -1730,23 +1794,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-main)", display: "flex", alignItems: "flex-start", gap: 6 }}>
                     <ShieldCheck size={14} style={{ flexShrink: 0, marginTop: 1, color: "var(--brand-main)" }} />
                     <span style={{ fontSize: 11, lineHeight: "1.4", flex: 1 }}>
-                      <strong>Strict Isolation Required:</strong> Custom folder access must be explicitly scoped per-agent. Switch this agent to <strong>Isolated Mode</strong>, then select the folders it can access. Alternatively, agents in the Shared Gateway can use Google Drive, where OAuth scopes access per agent.
+                      <strong>Read-only Files Bridge:</strong> Shared agents can list, read, and search selected folders through a per-agent broker. The folder is not mounted into the shared gateway and cannot be modified. Switch to <strong>Isolated Mode</strong> only if direct write access is needed.
                     </span>
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 4, flexShrink: 0 }}>
-                      <button
-                        type="button"
-                        disabled={isolationBusy}
-                        onClick={() => { void setAgentIsolation(true); }}
-                        style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid #6B6BAE", background: "transparent", color: "#6B6BAE", fontSize: 11, fontWeight: 600, fontFamily: "inherit", cursor: isolationBusy ? "wait" : "pointer", opacity: isolationBusy ? 0.65 : 1, whiteSpace: "nowrap" }}
-                      >
-                        {isolationBusy ? "Switching..." : "Switch to Isolated Mode"}
-                      </button>
-                      {isolationError && (
-                        <span role="alert" style={{ color: "#b91c1c", fontSize: 11, maxWidth: 260 }}>
-                          {isolationError}
-                        </span>
-                      )}
-                    </div>
                   </div>
                 )}
               </div>
@@ -1765,7 +1814,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                         setFolderAccessError("");
                         const newDirs = allowedDirs.filter(d => d !== dir);
                         try {
-                          await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: newDirs });
+                          await invoke("update_agent_allowed_directories", {
+                            agentId: agent.id,
+                            directories: newDirs,
+                            access: agent.isolated && agent.permissions.find(p => p.id === "file_write")?.enabled
+                              ? "read_write"
+                              : "read_only",
+                          });
                           setAllowedDirs(newDirs);
                         } catch (e) {
                           console.error("Failed to remove directory:", e);
@@ -1783,7 +1838,11 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   <div style={{ marginTop: 8, padding: "8px 12px", background: "#fefce8", border: "1px solid #fef08a", borderRadius: 6, color: "#854d0e", display: "flex", alignItems: "flex-start", gap: 6 }}>
                     <Shield size={14} style={{ flexShrink: 0, marginTop: 1, color: "#ca8a04" }} />
                     <span style={{ fontSize: 11, lineHeight: "1.4" }}>
-                      <strong>Inactive in Shared Mode:</strong> These folders were saved during a previous isolated session, but they are not mounted into the Shared Gateway. Switch to <strong>Isolated Mode</strong> to use them, or remove access you no longer need.
+                      {agent.permissions.find(p => p.id === "file_read")?.enabled ? (
+                        <><strong>Brokered read-only access:</strong> These folders are active for this agent through the Files Bridge. They are not mounted into the Shared Gateway, and write or delete operations are unavailable.</>
+                      ) : (
+                        <><strong>Saved but inactive:</strong> Enable File System Read to activate brokered access to these folders.</>
+                      )}
                     </span>
                   </div>
                 )}
