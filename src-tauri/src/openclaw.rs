@@ -1,18 +1,19 @@
 use crate::app_state::AppState;
 use crate::errors::{CanopyError, Result as CanopyResult};
 use crate::model_constants::{
-    agent_auth_profile_path, agent_soul_path, DEFAULT_ANTHROPIC_MODEL, GATEWAY_INTERNAL_TOKEN,
-    GATEWAY_URL,
+    agent_auth_profile_path, agent_soul_path, DEFAULT_ANTHROPIC_MODEL, GATEWAY_URL,
 };
 use crate::models::{
     Agent, AgentCapabilities, AgentPersonality, AgentStats, AgentStatus, DiscoveredAgent,
 };
+use futures_util::StreamExt;
 use lazy_static::lazy_static;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, State};
+use tokio::io::AsyncWriteExt;
 
 pub mod workspace_files;
 pub use workspace_files::{
@@ -205,13 +206,13 @@ pub async fn create_agent(
         let port = get_agent_isolated_port(&agent_id);
         let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port);
         let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
-        let _ = std::fs::write(&compose_path, compose_content);
+        let _ = crate::docker::write_private_file(&compose_path, compose_content);
 
         let state_dir = data_dir.join("isolated").join(&agent_id).join("state");
         crate::docker::preflight_sanitize_and_merge_config(
             &state_dir,
             Some(agent_id.as_str()),
-            crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+            crate::model_constants::gateway_internal_token(),
         );
 
         let _ = crate::docker::get_docker_compose_command()
@@ -1306,7 +1307,11 @@ pub fn log_terminal_command_internal(
     let file_path = workspace.join(".terminal_history.json");
     let mut history = vec![];
 
-    if file_path.exists() {
+    if file_path
+        .metadata()
+        .map(|metadata| metadata.len() <= 2 * 1024 * 1024)
+        .unwrap_or(false)
+    {
         if let Ok(content) = std::fs::read_to_string(&file_path) {
             if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
                 history = parsed;
@@ -1316,17 +1321,65 @@ pub fn log_terminal_command_internal(
 
     let timestamp = chrono::Utc::now().to_rfc3339();
     let entry = serde_json::json!({
-        "command": command,
-        "output": output,
+        "command": sanitize_terminal_history_text(command, 4_096),
+        "output": sanitize_terminal_history_text(output, 16_384),
         "timestamp": timestamp
     });
 
     history.push(entry);
+    if history.len() > 200 {
+        history.drain(..history.len() - 200);
+    }
 
     if let Ok(json) = serde_json::to_string_pretty(&history) {
         let _ = std::fs::create_dir_all(&workspace);
-        let _ = std::fs::write(&file_path, json);
+        let _ = crate::docker::write_private_file(&file_path, json);
     }
+}
+
+fn sanitize_terminal_history_text(value: &str, max_chars: usize) -> String {
+    let mut sanitized = value
+        .lines()
+        .map(|line| {
+            let normalized = line.to_ascii_lowercase();
+            if [
+                "api_key",
+                "api-key",
+                "token=",
+                "password=",
+                "secret=",
+                "authorization:",
+                "bearer ",
+                "aiza",
+            ]
+            .iter()
+            .any(|marker| normalized.contains(marker))
+                || normalized.starts_with("sk-")
+                || normalized.contains("=sk-")
+                || normalized.contains(" sk-")
+            {
+                "[REDACTED SENSITIVE LINE]"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if sanitized.chars().count() > max_chars {
+        sanitized = sanitized.chars().take(max_chars).collect();
+        sanitized.push_str("\n[TRUNCATED]");
+    }
+    sanitized
+}
+
+fn validate_agent_command(agent: &Agent, command: &str) -> Result<(), String> {
+    if !agent.capabilities.coding {
+        return Err("This agent does not have the Coding capability".into());
+    }
+    if command.trim().is_empty() || command.len() > 16 * 1024 || command.contains('\0') {
+        return Err("Command must be between 1 byte and 16 KiB and contain no null bytes".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1335,34 +1388,51 @@ pub async fn run_agent_command(
     agent_id: String,
     command: String,
 ) -> Result<String, String> {
+    crate::validators::agent::validate_id(&agent_id).map_err(|error| error.to_string())?;
+    let agent = db
+        .get_agent(&agent_id)
+        .map_err(|error| format!("DB error: {error}"))?
+        .ok_or_else(|| format!("Agent not found: {agent_id}"))?;
+    validate_agent_command(&agent, &command)?;
     let container_name = get_agent_container_name(&db, &agent_id);
     let workspace_path = format!("/home/node/.openclaw/workspace/{}", agent_id);
-    let output = get_docker_command()
-        .args([
-            "exec",
-            "-u",
-            "node",
-            "-w",
-            &workspace_path,
-            &container_name,
-            "bash",
-            "-c",
-            &command,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                "-w",
+                &workspace_path,
+                &container_name,
+                "bash",
+                "-c",
+                &command,
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| "Agent command timed out after 120 seconds".to_string())?
+    .map_err(|e| format!("Failed to execute command: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     let combined = format!("{}{}", stdout, stderr);
     log_terminal_command_internal(&db, &agent_id, &command, &combined);
+    let user_output = if combined.chars().count() > 1024 * 1024 {
+        let mut truncated: String = combined.chars().take(1024 * 1024).collect();
+        truncated.push_str("\n[OUTPUT TRUNCATED]");
+        truncated
+    } else {
+        combined
+    };
 
     if output.status.success() {
-        Ok(combined)
+        Ok(user_output)
     } else {
-        Err(format!("Error: {}", combined))
+        Err(format!("Error: {}", user_output))
     }
 }
 
@@ -1376,95 +1446,55 @@ pub async fn get_agent(
         .ok_or_else(|| format!("Agent not found: {}", agent_id))
 }
 
+fn write_agent_personality_files(
+    workspace: &std::path::Path,
+    personality: &AgentPersonality,
+) -> Result<(), String> {
+    std::fs::create_dir_all(workspace)
+        .map_err(|error| format!("Failed to create agent workspace: {error}"))?;
+    std::fs::write(
+        workspace.join("PREFERENCES.md"),
+        personality.custom_instructions.trim(),
+    )
+    .map_err(|error| format!("Failed to update PREFERENCES.md: {error}"))?;
+    std::fs::write(workspace.join("SOUL.md"), generate_soul_md(personality))
+        .map_err(|error| format!("Failed to update SOUL.md: {error}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_agent_personality(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     mut personality: AgentPersonality,
 ) -> Result<(), String> {
+    crate::validators::agent::validate_id(&agent_id).map_err(|error| error.to_string())?;
     if let Some(model) = personality.active_model.clone() {
         personality.active_model = Some(crate::model_constants::resolve_model_string(&model)?);
     }
 
-    let soul_path = agent_soul_path(&agent_id);
-    let custom_instructions = personality.custom_instructions.trim();
-    let escaped_prefs = custom_instructions.replace('\'', "'\\''");
-    let escaped_path = soul_path.replace('\'', "'\\''");
+    let mut agent = db
+        .get_agent(&agent_id)
+        .map_err(|error| format!("DB error: {error}"))?
+        .ok_or_else(|| format!("Agent not found: {agent_id}"))?;
+    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
+    write_agent_personality_files(&workspace, &personality)?;
 
-    let container_name = get_agent_container_name(&db, &agent_id);
-
-    // SECURITY: Properly quote all variables to prevent command injection
-    let prefs_cmd = format!(
-        "mkdir -p \"$(dirname '{}')\" && printf '%s' '{}' > \"$(dirname '{}')/PREFERENCES.md\"",
-        escaped_path, escaped_prefs, escaped_path
-    );
-    let output = get_docker_command()
-        .args([
-            "exec",
-            "-u",
-            "node",
-            &container_name,
-            "sh",
-            "-c",
-            &prefs_cmd,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to update PREFERENCES.md: {}", e))?;
-
-    log_terminal_command_internal(
-        &db,
+    // Both shared and isolated workspaces are bind-mounted into OpenClaw, so a
+    // host-side write is immediately visible without interpolating user text into
+    // a container shell command.
+    agent.personality = personality;
+    db.update_agent(&agent)
+        .map_err(|error| format!("DB error: {error}"))?;
+    ensure_visible_workspace_files(&agent, &db, true);
+    write_app_managed_instruction_files(&agent, &db);
+    let _ = db.log_audit(
         &agent_id,
-        "printf '%s' '...' > ~/.openclaw/agents/[id]/agent/PREFERENCES.md",
-        "PREFERENCES.md successfully updated with latest personality.",
+        "update_personality",
+        Some("openclaw"),
+        "Agent personality updated",
+        None,
     );
-
-    if !output.status.success() {
-        return Err("Failed to update personality in container".to_string());
-    }
-
-    // Regenerate SOUL.md from the new personality so the running agent's identity, vibe,
-    // soul template, and identity template all reflect the user's latest edits. Previously
-    // this function only wrote PREFERENCES.md, which left SOUL.md frozen at whatever was
-    // generated on agent creation — every personality edit silently no-op'd in the agent's
-    // actual behavior. Mirrors the SOUL.md write block in `update_agent_details`.
-    let soul_md = generate_soul_md(&personality);
-    let soul_cmd = format!(
-        "mkdir -p \"$(dirname '{}')\" && cat > '{}' << 'SOULEOF'\n{}\nSOULEOF",
-        escaped_path, escaped_path, soul_md
-    );
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", &container_name, "sh", "-c", &soul_cmd])
-        .output()
-        .await;
-    log_terminal_command_internal(
-        &db,
-        &agent_id,
-        "regenerated SOUL.md from updated personality",
-        "",
-    );
-
-    // Update agent in DB with new personality
-    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
-        agent.personality = personality;
-        let _ = db.update_agent(&agent);
-        if let Ok(workspace) = get_agent_workspace_dir(&db, &agent_id) {
-            let _ = std::fs::create_dir_all(&workspace);
-            let _ = std::fs::write(
-                workspace.join("SOUL.md"),
-                generate_soul_md(&agent.personality),
-            );
-        }
-        ensure_visible_workspace_files(&agent, &db, true);
-        write_app_managed_instruction_files(&agent, &db);
-        let _ = db.log_audit(
-            &agent_id,
-            "update_personality",
-            Some("openclaw"),
-            "Agent personality updated",
-            None,
-        );
-    }
 
     Ok(())
 }
@@ -1622,7 +1652,8 @@ if(i>=0){{
                 crate::browser_manager::enable_jit_proxy(app_handle_clone, agent_id_clone.clone())
                     .await
             {
-                let ws_endpoint = format!("ws://host.docker.internal:{}", port);
+                let ws_endpoint =
+                    crate::browser_manager::browser_bridge_url("ws", port, &agent_id_clone);
                 let env_arg = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(8),
@@ -1759,8 +1790,10 @@ pub async fn update_agent_details(
     name: String,
     role: String,
 ) -> Result<(), String> {
+    crate::validators::agent::validate_id(&agent_id).map_err(|error| error.to_string())?;
+    crate::validators::agent::validate_name(&name).map_err(|error| error.to_string())?;
+    crate::validators::agent::validate_name(&role).map_err(|error| error.to_string())?;
     if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
-        let container_name = get_agent_container_name(&db, &agent_id);
         agent.name = name.clone();
         agent.role = role;
 
@@ -1768,24 +1801,8 @@ pub async fn update_agent_details(
         agent.personality.name = name;
 
         // Refresh SOUL.md so the agent knows its new name
-        let soul_md = generate_soul_md(&agent.personality);
-        let soul_path = agent_soul_path(&agent_id);
-        let escaped_path = soul_path.replace('\'', "'\\''");
-
-        // SECURITY: Properly quote the path variable to prevent command injection
-        let soul_cmd = format!(
-            "mkdir -p \"$(dirname '{}')\" && cat > '{}' << 'SOULEOF'\n{}\nSOULEOF",
-            escaped_path, escaped_path, soul_md
-        );
-        let _ = get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "sh", "-c", &soul_cmd])
-            .output()
-            .await;
-
-        if let Ok(workspace) = get_agent_workspace_dir(&db, &agent_id) {
-            let _ = std::fs::create_dir_all(&workspace);
-            let _ = std::fs::write(workspace.join("SOUL.md"), &soul_md);
-        }
+        let workspace = get_agent_workspace_dir(&db, &agent_id)?;
+        write_agent_personality_files(&workspace, &agent.personality)?;
         ensure_visible_workspace_files(&agent, &db, true);
 
         db.update_agent(&agent)
@@ -1863,7 +1880,7 @@ pub async fn toggle_agent_isolation(
     let port = get_agent_isolated_port(&agent_id);
     let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port); // using stable port offset
     let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
-    std::fs::write(&compose_path, compose_content).map_err(|e| e.to_string())?;
+    crate::docker::write_private_file(&compose_path, compose_content)?;
 
     if isolated {
         // Stop any old container just in case
@@ -2311,6 +2328,9 @@ pub async fn send_message_internal_with_context(
             .get_or_create_conversation(agent_id)
             .map_err(|e| format!("Failed to get conversation: {}", e))?,
     };
+    let run_id = db
+        .start_thread_run(&conv_id, agent_id, "user_message")
+        .map_err(|e| format!("Failed to create thread run: {}", e))?;
 
     // Step 2: Log user message to DB
     let _ = db.insert_message(&conv_id, "user", message);
@@ -2363,7 +2383,7 @@ pub async fn send_message_internal_with_context(
 
     // Step 4: Send via native OpenClaw CLI — up to 3 attempts with 5s backoff on timeout.
     let proxy_port = crate::browser_manager::jit_proxy_port_for(agent_id);
-    let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
+    let ws_endpoint = crate::browser_manager::browser_bridge_url("ws", proxy_port, agent_id);
     let cdp_env = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
     let runtime_message = runtime_context
         .map(|context| {
@@ -2419,6 +2439,11 @@ pub async fn send_message_internal_with_context(
             }
             Ok(Err(e)) => {
                 // I/O error spawning docker — not a retry-able timeout, bail immediately.
+                let _ = db.finish_thread_run(
+                    &run_id,
+                    "failed",
+                    Some(&json!({ "error": e.to_string() }).to_string()),
+                );
                 return Err(format!("Failed to send message: {}", e));
             }
             Err(_) => {
@@ -2435,7 +2460,14 @@ pub async fn send_message_internal_with_context(
 
     let output = match attempt_output {
         Some(o) => o,
-        None => return Err(last_timeout_err),
+        None => {
+            let _ = db.finish_thread_run(
+                &run_id,
+                "failed",
+                Some(&json!({ "error": last_timeout_err.clone() }).to_string()),
+            );
+            return Err(last_timeout_err);
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -2456,6 +2488,11 @@ pub async fn send_message_internal_with_context(
         if combined.contains("cannot exec in a stopped container")
             || combined.contains("OCI runtime exec failed")
         {
+            let _ = db.finish_thread_run(
+                &run_id,
+                "failed",
+                Some(&json!({ "error": combined.clone() }).to_string()),
+            );
             return Err(
                 "Infrastructure gateway is offline or has crashed (Stopped Container).".to_string(),
             );
@@ -2464,6 +2501,12 @@ pub async fn send_message_internal_with_context(
         if combined.is_empty() {
             // Exit code 137 usually means OOM in Docker
             if output.status.code() == Some(137) {
+                let oom_error = "Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string();
+                let _ = db.finish_thread_run(
+                    &run_id,
+                    "failed",
+                    Some(&json!({ "error": oom_error.clone() }).to_string()),
+                );
                 return Err("Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string());
             }
             combined = format!(
@@ -2482,6 +2525,11 @@ pub async fn send_message_internal_with_context(
         };
         let _ = db.insert_agent_bug_report(&bug);
 
+        let _ = db.finish_thread_run(
+            &run_id,
+            "failed",
+            Some(&json!({ "error": combined.clone() }).to_string()),
+        );
         return Err(combined);
     }
 
@@ -2588,6 +2636,15 @@ pub async fn send_message_internal_with_context(
     // OpenClaw emits "OpenClaw: <error>" lines when the agent is misconfigured.
     // Return these as errors so the UI can offer the repair flow.
     if response_text.starts_with("OpenClaw:") {
+        let final_error = format!(
+            "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
+            response_text.trim()
+        );
+        let _ = db.finish_thread_run(
+            &run_id,
+            "failed",
+            Some(&json!({ "error": final_error.clone() }).to_string()),
+        );
         return Err(format!(
             "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
             response_text.trim()
@@ -2741,12 +2798,16 @@ pub async fn send_message_internal_with_context(
         "Message sent to agent".to_string()
     };
     let _ = db.log_audit(agent_id, "chatted", Some("openclaw"), &detail, None);
+    let _ = db.finish_thread_run(&run_id, "completed", None);
 
     Ok(json!({
         "response": response_text,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
-        "model": model
+        "model": model,
+        "conversation_id": conv_id,
+        "run_id": run_id,
+        "thread_status": "idle"
     }))
 }
 
@@ -3049,6 +3110,16 @@ pub async fn list_agent_conversations(
 ) -> Result<Vec<crate::db::ConversationSummary>, String> {
     db.list_agent_conversation_summaries(&agent_id, limit.unwrap_or(100))
         .map_err(|e| format!("Failed to load conversations: {}", e))
+}
+
+#[tauri::command]
+pub async fn list_thread_runs(
+    db: tauri::State<'_, crate::db::Database>,
+    conversation_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::db::ThreadRun>, String> {
+    db.list_thread_runs(&conversation_id, limit.unwrap_or(25))
+        .map_err(|e| format!("Failed to load thread runs: {}", e))
 }
 
 #[tauri::command]
@@ -4797,7 +4868,6 @@ pub async fn repair_gateway(
         log,
         "Step 5/6: Applying gateway configuration (direct JSON write)..."
     );
-    let token = GATEWAY_INTERNAL_TOKEN;
     // Determine the correct default model based on which API keys are actually stored.
     // This ALWAYS writes the model (not just when unset) so we override the container's
     // built-in default (google/gemini-2.0-flash) with the user's preferred model.
@@ -5711,7 +5781,8 @@ async fn boot_sync_agents_internal(
                     crate::browser_manager::enable_jit_proxy(app_handle_clone, id_clone.clone())
                         .await
                 {
-                    let ws_endpoint = format!("ws://host.docker.internal:{}", port);
+                    let ws_endpoint =
+                        crate::browser_manager::browser_bridge_url("ws", port, &id_clone);
                     let _ = crate::openclaw::get_docker_command()
                         .args([
                             "exec",
@@ -5760,7 +5831,7 @@ async fn boot_sync_agents_internal(
                 let port = get_agent_isolated_port(id);
                 let compose_content = crate::docker::generate_isolated_compose(id, &data_dir, port); // using stable port offset
                 let compose_path = data_dir.join(format!("docker-compose-{}.yml", id));
-                let _ = std::fs::write(&compose_path, compose_content);
+                let _ = crate::docker::write_private_file(&compose_path, compose_content);
 
                 // Write a minimal valid openclaw.json to the state dir BEFORE the container
                 // starts. OpenClaw 2026.5.26 crashes at startup with a bare state dir, causing
@@ -5770,7 +5841,7 @@ async fn boot_sync_agents_internal(
                 crate::docker::preflight_sanitize_and_merge_config(
                     &state_dir,
                     Some(id.as_str()),
-                    crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+                    crate::model_constants::gateway_internal_token(),
                 );
 
                 let container_name = format!("canopy-isolated-{}", id);
@@ -6807,6 +6878,10 @@ mod tests {
     use crate::model_constants;
     use chrono::Utc;
 
+    lazy_static::lazy_static! {
+        static ref CANOPY_DATA_DIR_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+    }
+
     fn create_test_db() -> crate::db::Database {
         crate::db::Database::init_in_memory().unwrap()
     }
@@ -6849,6 +6924,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terminal_commands_require_coding_and_history_redacts_secrets() {
+        let mut agent = test_agent("agent-test", "Test", "assistant");
+        assert!(super::validate_agent_command(&agent, "pwd").is_ok());
+        assert!(super::validate_agent_command(&agent, "").is_err());
+        assert!(super::validate_agent_command(&agent, &"x".repeat(16 * 1024 + 1)).is_err());
+
+        agent.capabilities.coding = false;
+        assert!(super::validate_agent_command(&agent, "pwd").is_err());
+
+        let sanitized = super::sanitize_terminal_history_text(
+            "echo safe\nexport OPENAI_API_KEY=sk-proj-super-secret\ndisk-usage",
+            4_096,
+        );
+        assert!(sanitized.contains("echo safe"));
+        assert!(sanitized.contains("disk-usage"));
+        assert!(sanitized.contains("[REDACTED SENSITIVE LINE]"));
+        assert!(!sanitized.contains("super-secret"));
+    }
+
     // ── Gateway URL / token ────────────────────────────────────────────────
 
     #[test]
@@ -6874,10 +6969,11 @@ mod tests {
             header.starts_with("Bearer "),
             "Bearer header must start with 'Bearer '"
         );
-        assert!(
-            header.contains(model_constants::GATEWAY_INTERNAL_TOKEN),
-            "Bearer header must contain the gateway token"
+        assert_eq!(
+            header,
+            format!("Bearer {}", model_constants::gateway_internal_token())
         );
+        assert!(!header.contains("canopy_internal_token_2026"));
     }
 
     // ── Auth-profile path ─────────────────────────────────────────────────
@@ -7097,6 +7193,8 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_agent_registration_observes_repair_completion() {
+        let _env_guard = CANOPY_DATA_DIR_ENV_LOCK.lock().await;
+        let previous_canopy_data_dir = std::env::var_os("CANOPY_DATA_DIR");
         let db = create_test_db();
         let agent = test_agent("agent-sloane", "Sloane", "Executive Assistant");
         db.insert_agent(&agent).unwrap();
@@ -7123,11 +7221,17 @@ mod tests {
                 .await
         );
 
-        std::env::remove_var("CANOPY_DATA_DIR");
+        if let Some(previous) = previous_canopy_data_dir {
+            std::env::set_var("CANOPY_DATA_DIR", previous);
+        } else {
+            std::env::remove_var("CANOPY_DATA_DIR");
+        }
     }
 
     #[test]
     fn thread_context_files_are_generated_for_session() {
+        let _env_guard = CANOPY_DATA_DIR_ENV_LOCK.blocking_lock();
+        let previous_canopy_data_dir = std::env::var_os("CANOPY_DATA_DIR");
         let db = create_test_db();
         let agent = test_agent("agent-sloane", "Sloane", "Executive Assistant");
         db.insert_agent(&agent).unwrap();
@@ -7170,7 +7274,11 @@ mod tests {
         assert!(active.contains("THREAD_TIMELINE.md"));
         assert!(active.contains(&conv_id));
 
-        std::env::remove_var("CANOPY_DATA_DIR");
+        if let Some(previous) = previous_canopy_data_dir {
+            std::env::set_var("CANOPY_DATA_DIR", previous);
+        } else {
+            std::env::remove_var("CANOPY_DATA_DIR");
+        }
     }
 
     #[test]
@@ -7398,33 +7506,41 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_jit_credential_flow() {
-        // We can't easily mock the docker exec command without refactoring, but we can verify the
-        // string formatting is correct for the injection command.
-        let credential_id = "test-api-key";
-        let env_var_name = format!(
-            "JIT_TOKEN_{}",
-            credential_id.replace("-", "_").to_uppercase()
-        );
-
+    #[test]
+    fn test_jit_credential_flow_rejects_command_injection() {
+        let env_var_name = super::jit_env_var_name("test-api-key").unwrap();
         assert_eq!(env_var_name, "JIT_TOKEN_TEST_API_KEY");
 
-        // This is a minimal unit test to ensure the variable naming logic is sound
-        let write_cmd_inject = format!(
-            "echo 'export {}={}' >> /home/node/.bashrc",
-            env_var_name, "secret"
-        );
+        let assignment = super::jit_shell_assignment(&env_var_name, "a'b;$HOME").unwrap();
         assert_eq!(
-            write_cmd_inject,
-            "echo 'export JIT_TOKEN_TEST_API_KEY=secret' >> /home/node/.bashrc"
+            assignment,
+            "export JIT_TOKEN_TEST_API_KEY='a'\\''b;$HOME'\n"
         );
+        assert!(super::jit_env_var_name("test; touch /tmp/pwned").is_err());
+        assert!(super::jit_env_var_name("../other").is_err());
+        assert!(super::jit_shell_assignment(&env_var_name, "line1\nline2").is_err());
+    }
 
-        let write_cmd_revoke = format!("sed -i '/{}/d' /home/node/.bashrc", env_var_name);
-        assert_eq!(
-            write_cmd_revoke,
-            "sed -i '/JIT_TOKEN_TEST_API_KEY/d' /home/node/.bashrc"
+    #[test]
+    fn personality_files_write_shell_payloads_as_literal_text() {
+        let workspace = tempfile::tempdir().unwrap();
+        let payload_target = workspace.path().join("executed");
+        let mut personality = crate::models::AgentPersonality::default();
+        personality.custom_instructions = format!(
+            "SOULEOF\n$(touch {})\n'; rm -rf / #",
+            payload_target.display()
         );
+        personality.soul_template = Some("`id` && ${HOME}".into());
+
+        super::write_agent_personality_files(workspace.path(), &personality).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("PREFERENCES.md")).unwrap(),
+            personality.custom_instructions
+        );
+        let soul = std::fs::read_to_string(workspace.path().join("SOUL.md")).unwrap();
+        assert!(soul.contains("`id` && ${HOME}"));
+        assert!(!payload_target.exists());
     }
 
     #[test]
@@ -7465,16 +7581,67 @@ mod tests {
 /// Path: `~/Library/Application Support/Canopy/openclaw-state/workspace/{agent_id}/PERMISSIONS.md`
 /// Inside the container the workspace mount surfaces it at
 /// `/home/node/.openclaw/workspace/{agent_id}/PERMISSIONS.md`.
-pub fn write_permissions_md(agent: &crate::models::Agent) {
-    let Some(workspace_root) = dirs::data_dir().map(|d| {
-        d.join("Canopy")
+fn permissions_workspace_root(
+    canopy_root: &std::path::Path,
+    agent: &crate::models::Agent,
+) -> std::path::PathBuf {
+    if agent.isolated {
+        canopy_root
+            .join("isolated")
+            .join(&agent.id)
+            .join("workspace")
+            .join(&agent.id)
+    } else {
+        canopy_root
             .join("openclaw-state")
             .join("workspace")
             .join(&agent.id)
-    }) else {
+    }
+}
+
+fn install_agent_private_file(
+    workspace_root: &std::path::Path,
+    filename: &str,
+    value: &str,
+) -> Result<(), String> {
+    let canopy_dir = workspace_root.join(".canopy");
+    std::fs::create_dir_all(&canopy_dir)
+        .map_err(|e| format!("Failed to create agent capability directory: {}", e))?;
+    let private_path = canopy_dir.join(filename);
+    std::fs::write(&private_path, value)
+        .map_err(|e| format!("Failed to install private agent file: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&canopy_dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Failed to protect agent capability directory: {}", e))?;
+        std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to protect private agent file: {}", e))?;
+    }
+    Ok(())
+}
+
+fn install_jit_capability_file(
+    workspace_root: &std::path::Path,
+    agent_id: &str,
+) -> Result<(), String> {
+    let capability = crate::jit_server::agent_jit_token(agent_id)?;
+    install_agent_private_file(workspace_root, "jit-bridge-token", &capability)
+}
+
+pub fn write_permissions_md(agent: &crate::models::Agent) {
+    let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
+    let workspace_root = permissions_workspace_root(&canopy_root, agent);
     let _ = std::fs::create_dir_all(&workspace_root);
+    if let Err(error) = install_jit_capability_file(&workspace_root, &agent.id) {
+        tracing::error!(
+            "write_permissions_md: could not install JIT bridge capability for {}: {}",
+            agent.id,
+            error
+        );
+    }
     let path = workspace_root.join("PERMISSIONS.md");
 
     // Capability skills the agent currently has.
@@ -7634,12 +7801,20 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         if let Ok(token) =
             crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id))
         {
-            custom_instructions.push_str(&format!(
+            if let Err(error) =
+                install_agent_private_file(&workspace_root, "google-photos-token", token.trim())
+            {
+                tracing::error!(
+                    "write_permissions_md: could not install Google Photos capability for {}: {}",
+                    agent.id,
+                    error
+                );
+            }
+            custom_instructions.push_str(
                 "**Google Photos**: You have read-only API access to the user's Google Photos. \n\
                 DO NOT try to use the browser to log in to Google Photos. \n\
-                Instead, use the Google Photos REST API (https://photoslibrary.googleapis.com/v1/) directly from your coding tools (e.g., using curl, Python, or Node) by passing this OAuth 2.0 Bearer token in the Authorization header: `{}`\n\n", 
-                token.trim()
-            ));
+                Instead, use the Google Photos REST API (https://photoslibrary.googleapis.com/v1/) directly from your coding tools (e.g., using curl, Python, or Node). Read the OAuth token at execution time from `.canopy/google-photos-token`; never print it or include it in a message. For curl, use `Authorization: Bearer $(cat .canopy/google-photos-token)`.\n\n",
+            );
         }
     }
     if integrations.contains(&"apple_photos") {
@@ -7710,7 +7885,8 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          If you need a permission you don't have, ask the user **once** by POSTing to:\n\n\
          ```\n\
          POST http://host.docker.internal:18802/request_permission\n\
-         Content-Type: application/json\n\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"permission_id\": \"<id>\",\n  \"justification\": \"<why you need it>\"\n}}\n\
          ```\n\n\
          The user will see a modal with four buttons: **Allow once** (single use), \
@@ -7727,7 +7903,8 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          (CAPTCHA, 2FA prompt, ambiguous result), POST to:\n\n\
          ```\n\
          POST http://host.docker.internal:18802/request_attention\n\
-         Content-Type: application/json\n\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"reason\": \"<short reason>\"\n}}\n\
          ```\n\n\
          This is fire-and-forget. You'll get an immediate ack and the user gets a toast \
@@ -7748,7 +7925,8 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          window by POSTing to the JIT bridge:\n\n\
          ```\n\
          POST http://host.docker.internal:18802/spawn_genui\n\
-         Content-Type: application/json\n\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"component\": \"<component_name>\",\n  \"props\": {{ ... }}\n}}\n\
          ```\n\
          This spawns a translucent, frameless window on the host OS. Interactions with it \
@@ -7815,6 +7993,8 @@ pub async fn inject_jit_credential(
     agent_id: &str,
     credential_id: &str,
 ) -> Result<(), String> {
+    crate::validators::agent::validate_id(agent_id).map_err(|error| error.to_string())?;
+    let env_var_name = jit_env_var_name(credential_id)?;
     tracing::info!(
         "JIT INJECTION: Provisioning {} into container for agent {}",
         credential_id,
@@ -7822,47 +8002,49 @@ pub async fn inject_jit_credential(
     );
 
     // Fetch the real credential from the secure macOS Keychain
-    let secret = crate::keychain::get_secret(credential_id).unwrap_or_else(|_| {
-        tracing::warn!(
-            "Failed to fetch {} from keychain, falling back to dummy",
-            credential_id
-        );
-        "unconfigured_secret".to_string()
-    });
-
-    let env_var_name = format!(
-        "JIT_TOKEN_{}",
-        credential_id.replace("-", "_").to_uppercase()
-    );
-
-    // We append the secret to the node user's .bashrc.
-    // In a real system we'd inject into auth-profiles.json or a `.env` file that Node loads,
-    // but .bashrc is an effective placeholder for the container environment.
-    // SECURITY: Properly quote the secret value to prevent command injection via special characters
-    let escaped_secret = secret.replace('\\', "\\\\").replace('"', "\\\"");
-    let write_cmd = format!(
-        "echo 'export {}=\"{}\"' >> /home/node/.bashrc",
-        env_var_name, escaped_secret
-    );
+    let secret = crate::keychain::get_secret(credential_id)
+        .map_err(|_| "Requested JIT credential is not configured".to_string())?;
+    let assignment = jit_shell_assignment(&env_var_name, &secret)?;
 
     let container_name = get_agent_container_name(db, agent_id);
 
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        get_docker_command()
-            .args([
-                "exec",
-                "-u",
-                "node",
-                &container_name,
-                "sh",
-                "-c",
-                &write_cmd,
-            ])
-            .output(),
-    )
-    .await
-    .map_err(|e| format!("Timeout injecting JIT credential: {}", e))?;
+    // Feed the assignment to `tee` over stdin. The secret is never part of a
+    // command argument, shell program, process listing, or captured stdout.
+    let mut command = get_docker_command();
+    command
+        .args([
+            "exec",
+            "-i",
+            "-u",
+            "node",
+            &container_name,
+            "tee",
+            "-a",
+            "/home/node/.bashrc",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to start JIT credential injection: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "JIT credential injection stdin was unavailable".to_string())?
+        .write_all(assignment.as_bytes())
+        .await
+        .map_err(|error| format!("Failed to write JIT credential: {error}"))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
+        .await
+        .map_err(|_| "Timeout injecting JIT credential".to_string())?
+        .map_err(|error| format!("JIT credential injection failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "JIT credential injection failed with status {}",
+            output.status
+        ));
+    }
 
     Ok(())
 }
@@ -7872,23 +8054,19 @@ pub async fn revoke_jit_credential(
     agent_id: &str,
     credential_id: &str,
 ) -> Result<(), String> {
+    crate::validators::agent::validate_id(agent_id).map_err(|error| error.to_string())?;
+    let env_var_name = jit_env_var_name(credential_id)?;
     tracing::info!(
         "JIT REVOCATION: Removing {} from container for agent {}",
         credential_id,
         agent_id
     );
 
-    let env_var_name = format!(
-        "JIT_TOKEN_{}",
-        credential_id.replace("-", "_").to_uppercase()
-    );
-    // SECURITY: Escape special characters in the pattern to prevent sed injection
-    let escaped_pattern = env_var_name.replace('\\', "\\\\").replace('/', "\\/");
-    let write_cmd = format!("sed -i '/{}/d' /home/node/.bashrc", escaped_pattern);
+    let sed_expression = format!("/^export {env_var_name}=/d");
 
     let container_name = get_agent_container_name(db, agent_id);
 
-    let _ = tokio::time::timeout(
+    let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         get_docker_command()
             .args([
@@ -7896,16 +8074,48 @@ pub async fn revoke_jit_credential(
                 "-u",
                 "node",
                 &container_name,
-                "sh",
-                "-c",
-                &write_cmd,
+                "sed",
+                "-i",
+                &sed_expression,
+                "/home/node/.bashrc",
             ])
             .output(),
     )
     .await
-    .map_err(|e| format!("Timeout revoking JIT credential: {}", e))?;
+    .map_err(|_| "Timeout revoking JIT credential".to_string())?
+    .map_err(|error| format!("JIT credential revocation failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "JIT credential revocation failed with status {}",
+            output.status
+        ));
+    }
 
     Ok(())
+}
+
+fn jit_env_var_name(credential_id: &str) -> Result<String, String> {
+    if credential_id.is_empty()
+        || credential_id.len() > 128
+        || !credential_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("JIT credential ID contains unsupported characters".into());
+    }
+    Ok(format!(
+        "JIT_TOKEN_{}",
+        credential_id.replace('-', "_").to_ascii_uppercase()
+    ))
+}
+
+fn jit_shell_assignment(env_var_name: &str, secret: &str) -> Result<String, String> {
+    if secret.is_empty() || secret.len() > 16 * 1024 || secret.contains(['\0', '\r', '\n']) {
+        return Err("JIT credential value is empty or contains unsupported characters".into());
+    }
+    // POSIX single-quote escaping: close quote, emit a literal quote, reopen.
+    let quoted = secret.replace('\'', "'\\''");
+    Ok(format!("export {env_var_name}='{quoted}'\n"))
 }
 
 #[tauri::command]
@@ -7955,6 +8165,48 @@ pub async fn fetch_apple_health_data(
 // Used for internal system coordination (e.g. forum brief assessment) where we
 // want the cheapest available model with zero conversation footprint.
 
+const MAX_SYSTEM_ASSESS_PROMPT_BYTES: usize = 64 * 1024;
+const MAX_SYSTEM_ASSESS_RESPONSE_BYTES: usize = 1024 * 1024;
+
+fn validate_direct_model_name(model: &str) -> Result<(), String> {
+    if model.is_empty()
+        || model.len() > 128
+        || !model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("Model name contains unsupported characters".into());
+    }
+    Ok(())
+}
+
+fn validate_system_assess_prompt(prompt: &str) -> Result<(), String> {
+    if prompt.trim().is_empty() || prompt.len() > MAX_SYSTEM_ASSESS_PROMPT_BYTES {
+        return Err("Assessment prompt must be between 1 byte and 64 KiB".into());
+    }
+    Ok(())
+}
+
+async fn read_direct_provider_json(resp: reqwest::Response) -> Result<Value, String> {
+    if resp
+        .content_length()
+        .is_some_and(|length| length > MAX_SYSTEM_ASSESS_RESPONSE_BYTES as u64)
+    {
+        return Err("Provider response exceeded the safe size limit".into());
+    }
+
+    let mut bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| "Could not read provider response".to_string())?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_SYSTEM_ASSESS_RESPONSE_BYTES {
+            return Err("Provider response exceeded the safe size limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Provider returned an invalid response".into())
+}
+
 async fn call_anthropic_direct(
     client: &Client,
     api_key: &str,
@@ -7979,18 +8231,14 @@ async fn call_anthropic_direct(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API {} — {}", status, text));
+        return Err(format!("Anthropic API returned {}", status));
     }
 
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse error: {}", e))?;
+    let json = read_direct_provider_json(resp).await?;
     json["content"][0]["text"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("unexpected shape: {}", json))
+        .ok_or_else(|| "Anthropic returned an unexpected response".into())
 }
 
 async fn call_openai_direct(
@@ -8007,7 +8255,7 @@ async fn call_openai_direct(
 
     let resp = client
         .post("https://api.openai.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
+        .bearer_auth(api_key)
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -8016,18 +8264,14 @@ async fn call_openai_direct(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("OpenAI API {} — {}", status, text));
+        return Err(format!("OpenAI API returned {}", status));
     }
 
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse error: {}", e))?;
+    let json = read_direct_provider_json(resp).await?;
     json["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("unexpected shape: {}", json))
+        .ok_or_else(|| "OpenAI returned an unexpected response".into())
 }
 
 async fn call_gemini_direct(
@@ -8038,9 +8282,10 @@ async fn call_gemini_direct(
 ) -> Result<String, String> {
     // Strip provider prefix — Gemini REST API uses bare model names
     let model_name = model.strip_prefix("google/").unwrap_or(model);
+    validate_direct_model_name(model_name)?;
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model_name, api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model_name
     );
 
     let body = json!({
@@ -8050,6 +8295,7 @@ async fn call_gemini_direct(
 
     let resp = client
         .post(&url)
+        .header("x-goog-api-key", api_key)
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -8058,18 +8304,14 @@ async fn call_gemini_direct(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Gemini API {} — {}", status, text));
+        return Err(format!("Gemini API returned {}", status));
     }
 
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse error: {}", e))?;
+    let json = read_direct_provider_json(resp).await?;
     json["candidates"][0]["content"]["parts"][0]["text"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("unexpected shape: {}", json))
+        .ok_or_else(|| "Gemini returned an unexpected response".into())
 }
 
 /// Make a single-shot LLM call using the user's lightest available model.
@@ -8083,12 +8325,14 @@ async fn call_gemini_direct(
 /// no keys are configured.
 #[tauri::command]
 pub async fn system_assess(prompt: String) -> Result<String, String> {
+    validate_system_assess_prompt(&prompt)?;
     // Longer timeout for LLM API calls — models can take 30-60s under load.
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .connect_timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
-        .unwrap_or_default();
+        .map_err(|_| "Could not initialize provider connection".to_string())?;
 
     // 1. Gemini Flash Lite (cheapest available)
     if let Ok(key) = crate::keychain::get_secret("GEMINI_API_KEY") {
@@ -8133,4 +8377,26 @@ pub async fn system_assess(prompt: String) -> Result<String, String> {
         "system_assess: no provider API keys configured (checked Gemini, Anthropic, OpenAI)"
             .to_string(),
     )
+}
+
+#[cfg(test)]
+mod system_assess_tests {
+    use super::*;
+
+    #[test]
+    fn direct_provider_model_names_reject_url_injection() {
+        assert!(validate_direct_model_name("gemini-2.5-flash-lite").is_ok());
+        assert!(validate_direct_model_name("../other:generateContent?key=secret").is_err());
+        assert!(validate_direct_model_name("model\r\nInjected: yes").is_err());
+    }
+
+    #[test]
+    fn assessment_prompt_is_bounded_before_any_provider_request() {
+        assert!(validate_system_assess_prompt("a useful assessment").is_ok());
+        assert!(validate_system_assess_prompt("  ").is_err());
+        assert!(
+            validate_system_assess_prompt(&"x".repeat(MAX_SYSTEM_ASSESS_PROMPT_BYTES + 1)).is_err()
+        );
+        assert_eq!(MAX_SYSTEM_ASSESS_RESPONSE_BYTES, 1024 * 1024);
+    }
 }

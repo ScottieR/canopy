@@ -1,4 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -194,6 +195,14 @@ pub struct VoiceMessageResponse {
     pub timestamp: DateTime<Utc>,
 }
 
+fn validate_voice_message_input(agent_id: &str, transcription: &str) -> Result<(), String> {
+    crate::validators::agent::validate_id(agent_id).map_err(|error| error.to_string())?;
+    if transcription.trim().is_empty() || transcription.len() > 64 * 1024 {
+        return Err("Voice transcription must be between 1 byte and 64 KiB".into());
+    }
+    Ok(())
+}
+
 // ─── Tauri Commands ─────────────────────────────────────────────────────────
 
 /// Get voice configuration for an agent
@@ -260,6 +269,7 @@ pub async fn send_voice_message(
     transcription: String,
     db_state: tauri::State<'_, Database>,
 ) -> Result<VoiceMessageResponse, String> {
+    validate_voice_message_input(&agent_id, &transcription)?;
     tracing::info!("Processing voice message for agent: {}", agent_id);
 
     // ── RATE LIMITING ──
@@ -273,10 +283,19 @@ pub async fn send_voice_message(
     }
 
     // Send transcription as regular message to OpenClaw via HTTP
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Failed to initialize local runtime connection".to_string())?;
     let gateway_url = crate::model_constants::GATEWAY_URL;
     let resp = client
         .post(format!("{}/api/sessions/main/messages", gateway_url))
+        .header(
+            "Authorization",
+            crate::model_constants::gateway_bearer_header(),
+        )
         .json(&serde_json::json!({
             "agentId": agent_id,
             "message": transcription,
@@ -284,8 +303,26 @@ pub async fn send_voice_message(
         .send()
         .await
         .map_err(|e| format!("Failed to send message to agent: {}", e))?;
-
-    let agent_response: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("Local runtime returned HTTP {}", resp.status()));
+    }
+    if resp
+        .content_length()
+        .is_some_and(|length| length > 1024 * 1024)
+    {
+        return Err("Local runtime response exceeded the safe size limit".into());
+    }
+    let mut response_bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| "Could not read local runtime response".to_string())?;
+        if response_bytes.len().saturating_add(chunk.len()) > 1024 * 1024 {
+            return Err("Local runtime response exceeded the safe size limit".into());
+        }
+        response_bytes.extend_from_slice(&chunk);
+    }
+    let agent_response: serde_json::Value = serde_json::from_slice(&response_bytes)
+        .map_err(|_| "Local runtime returned an invalid response".to_string())?;
 
     // Extract text response from OpenClaw
     let response_text = agent_response
@@ -297,10 +334,10 @@ pub async fn send_voice_message(
     // Log as voice-originated message to conversation history
     // TODO: log to database if desired.
     tracing::info!(
-        "Voice message for {}: '{}' → '{}'",
+        "Voice message completed for {} (input_bytes={}, output_bytes={})",
         agent_id,
-        transcription,
-        response_text
+        transcription.len(),
+        response_text.len()
     );
 
     Ok(VoiceMessageResponse {
@@ -507,5 +544,13 @@ mod tests {
         assert_eq!(config.stt_provider, STTProvider::WebSpeech);
         assert_eq!(config.tts_provider, TTSProvider::WebSpeech);
         assert!(!config.enabled);
+    }
+
+    #[test]
+    fn voice_messages_reject_invalid_agent_ids_and_unbounded_transcripts() {
+        assert!(validate_voice_message_input("agent-test", "hello").is_ok());
+        assert!(validate_voice_message_input("agent; touch /tmp/pwned", "hello").is_err());
+        assert!(validate_voice_message_input("agent-test", "  ").is_err());
+        assert!(validate_voice_message_input("agent-test", &"x".repeat(64 * 1024 + 1)).is_err());
     }
 }

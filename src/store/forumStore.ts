@@ -657,7 +657,7 @@ export const useForumStore = create<ForumState>()(
               blackboardBlock: null,
               artifacts: [],
               trustBudget: { ...f.trustBudget, tokensUsed: 0, usdUsed: 0, circuitBreakerFired: false },
-              agents: f.agents.map(a => ({ ...a, currentAction: "Joining forum…" })),
+              agents: f.agents.map(a => ({ ...a, currentAction: "Joining forum…", actionChangedAt: now })),
               lastActiveAt: now,
               orchestratorVersion: (f.orchestratorVersion ?? 0) + 1,
             };
@@ -687,7 +687,7 @@ export const useForumStore = create<ForumState>()(
               ...f,
               status: "active",
               messages: [...cleanedMessages, divider],
-              agents: f.agents.map(a => ({ ...a, currentAction: "Resuming…" })),
+              agents: f.agents.map(a => ({ ...a, currentAction: "Resuming…", actionChangedAt: now })),
               lastActiveAt: now,
               orchestratorVersion: (f.orchestratorVersion ?? 0) + 1,
             };

@@ -9,6 +9,7 @@ import { ForumBriefModal } from "./ForumBriefModal";
 import { ExportForumModal } from "./ExportForumModal";
 import { HistoryPanel } from "./HistoryPanel";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
+import { isolateGeneratedHtml } from "../../security/generatedHtml";
 
 // ─── Annotation Hook & Overlay ────────────────────────────────────────────────
 
@@ -2161,7 +2162,10 @@ function ForumBlackboard({
   const isRendered = viewMode === "rendered";
 
   const attachments = React.useMemo(() => forum.messages.flatMap(m => m.attachments || []), [forum.messages]);
-  const resolvedHtmlContent = React.useMemo(() => resolveHtmlImages(htmlContent, attachments), [htmlContent, attachments]);
+  const resolvedHtmlContent = React.useMemo(
+    () => isolateGeneratedHtml(resolveHtmlImages(htmlContent, attachments)),
+    [htmlContent, attachments],
+  );
   const cards = React.useMemo(() => parseBoardCards(forum.blackboardContent, forum.agents || []), [forum.blackboardContent, forum.agents]);
 
   const referenceCards = React.useMemo(() => {
@@ -2446,7 +2450,7 @@ function ForumBlackboard({
             <iframe
               key={htmlContent.slice(0, 80)}
               srcDoc={resolvedHtmlContent}
-              sandbox="allow-scripts allow-same-origin"
+              sandbox="allow-scripts"
               style={{ width: "100%", height: "100%", border: "none", pointerEvents: drawMode ? "none" : "auto" }}
               title={selectedArtifact.title}
             />

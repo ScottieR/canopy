@@ -214,7 +214,7 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
       });
       setPairingData(data);
       // Companion/mobile pairing usage — device metadata only, no names or content.
-      reportTelemetryEvent('companion_paired', { profileType, experience, deviceName: deviceName.trim() || 'iPad' });
+      reportTelemetryEvent('companion_paired', { profileType, experience });
       await refreshAssignments();
     } catch (err) {
       setError(String(err));

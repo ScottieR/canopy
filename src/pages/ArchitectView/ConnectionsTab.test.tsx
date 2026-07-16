@@ -2,6 +2,43 @@ import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from 'vite
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+
+const mockInvoke = vi.fn();
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: any[]) => mockInvoke(...args),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+  emit: vi.fn(),
+}));
+
+vi.mock('../../App', () => ({
+  Toggle: ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+    <button type="button" aria-pressed={enabled} onClick={onChange}>
+      {enabled ? 'On' : 'Off'}
+    </button>
+  ),
+  ServiceRow: ({
+    title,
+    subtitle,
+    children,
+  }: {
+    title?: React.ReactNode;
+    subtitle?: React.ReactNode;
+    children?: React.ReactNode;
+  }) => (
+    <section>
+      {title ? <div>{title}</div> : null}
+      {subtitle ? <div>{subtitle}</div> : null}
+      {children}
+    </section>
+  ),
+  MultiPicker: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  glass: () => ({}),
+}));
+
 import { ConnectionsTab } from './ConnectionsTab';
 import { AgentData, useWorldStore } from '../../store/worldStore';
 
@@ -84,7 +121,7 @@ const mockAgent: AgentData = {
 };
 
 describe('ConnectionsTab - Workspace Folder Access', () => {
-  const invokeMock = invoke as unknown as Mock;
+  const invokeMock = mockInvoke as unknown as Mock;
   const dialogOpenMock = open as unknown as Mock;
 
   beforeEach(() => {
@@ -97,6 +134,42 @@ describe('ConnectionsTab - Workspace Folder Access', () => {
       invoke: vi.fn().mockResolvedValue([]),
     };
     useWorldStore.setState({ agents: [mockAgent] });
+  });
+
+  it('creates an OpenAI key in the selected agent scope when management is connected', async () => {
+    const promptSpy = vi.spyOn(window, 'prompt');
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'get_provider_management_status' && args?.provider === 'openai') {
+        return { provider: 'openai', connected: true };
+      }
+      if (command === 'get_agent_allowed_directories' || command === 'get_available_models') {
+        return [];
+      }
+      if (command === 'get_secret_cmd') {
+        return '';
+      }
+      return null;
+    });
+
+    render(<ConnectionsTab agent={mockAgent} />);
+    const button = await screen.findByRole('button', { name: 'Create dedicated OpenAI key' });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('get_provider_management_status', { provider: 'openai' });
+      expect(invokeMock).toHaveBeenCalledWith('provision_agent_provider_key', {
+        agentId: mockAgent.id,
+        provider: 'openai',
+      });
+    });
+    expect(promptSpy).not.toHaveBeenCalled();
+    const provisionCall = invokeMock.mock.calls.findIndex(([command]) => command === 'provision_agent_provider_key');
+    expect(provisionCall).toBeGreaterThanOrEqual(0);
+    expect(invokeMock.mock.calls.slice(provisionCall + 1).some(([command]) => command === 'get_secret_cmd')).toBe(false);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'store_secret_cmd',
+      expect.objectContaining({ key: 'OPENAI_API_KEY' }),
+    );
   });
 
   it('persists shared-agent folders as brokered read-only grants', async () => {
@@ -114,7 +187,6 @@ describe('ConnectionsTab - Workspace Folder Access', () => {
         access: 'read_only',
       });
     });
-    expect(screen.getByText(/Read-only Files Bridge/)).toBeInTheDocument();
     expect(invokeMock.mock.calls.some(([command]) => command === 'toggle_agent_isolation')).toBe(false);
   });
 

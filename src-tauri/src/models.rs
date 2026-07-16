@@ -529,6 +529,27 @@ impl Default for UserProfile {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedbackReport {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub title: String,
+    pub description: String,
+    pub agent_id: Option<String>,
+    pub reporter_name: String,
+    pub reporter_email: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub context: serde_json::Value,
+    pub remote_status: String,
+    pub remote_error: Option<String>,
+    pub slack_notified: bool,
+    pub dispatched_agent_id: Option<String>,
+    pub dispatched_at: Option<String>,
+}
+
 // ─── Telemetry & Warnings ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,6 +7,23 @@ import { useForumStore } from "../../store/forumStore";
 import { ForumBriefModal } from "../ForumView/ForumBriefModal";
 import { MessageSquare, Archive, Search, X, ChevronRight, ChevronLeft, ChevronDown, Trash2, Edit2, Users } from "lucide-react";
 
+function threadStatusMeta(status?: Conversation["threadStatus"]): { label: string; color: string } | null {
+  switch (status) {
+    case "running":
+      return { label: "Running", color: "#3c6663" };
+    case "queued":
+      return { label: "Queued", color: "#8A6614" };
+    case "waiting_for_human":
+      return { label: "Needs input", color: "#B25426" };
+    case "paused":
+      return { label: "Paused", color: "#6B7280" };
+    case "failed":
+      return { label: "Failed", color: "#C0392B" };
+    default:
+      return null;
+  }
+}
+
 function formatRelative(unixMs: number): string {
   if (!unixMs) return "";
   const delta = Math.floor((Date.now() - unixMs) / 1000);
@@ -106,6 +123,7 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
     const isActive = conv.id === agent.activeConversationId;
     const isRenaming = renaming === conv.id;
     const isForum = conv.type === "forum";
+    const statusMeta = threadStatusMeta(conv.threadStatus);
 
     return (
       <div
@@ -150,8 +168,32 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
                 color: isActive ? "var(--text-main)" : "var(--text-sub)",
                 whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
               }}>{conv.title}</div>
-              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>
-                {formatRelative(conv.lastActiveAt)}
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 1 }}>
+                <div style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                  {formatRelative(conv.lastActiveAt)}
+                </div>
+                {statusMeta && (
+                  <span
+                    style={{
+                      fontSize: 9,
+                      fontWeight: 700,
+                      letterSpacing: "0.02em",
+                      textTransform: "uppercase",
+                      color: statusMeta.color,
+                      background: `${statusMeta.color}14`,
+                      border: `1px solid ${statusMeta.color}26`,
+                      borderRadius: 999,
+                      padding: "1px 6px",
+                    }}
+                  >
+                    {statusMeta.label}
+                  </span>
+                )}
+                {(conv.activeRunCount || 0) > 0 && (
+                  <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                    {conv.activeRunCount} run{conv.activeRunCount === 1 ? "" : "s"}
+                  </span>
+                )}
               </div>
               {matchedMessage && (
                 <div style={{

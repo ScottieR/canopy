@@ -1,5 +1,11 @@
+use base64::Engine;
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use futures_util::{SinkExt, StreamExt};
+use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::process::Command;
@@ -554,8 +560,141 @@ pub async fn start_websocket_server(state: Arc<DispatchState>, app_handle: tauri
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthMessage {
-    auth: String,
+    challenge: String,
+    proof: String,
     device_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SecureEnvelope {
+    #[serde(rename = "type")]
+    envelope_type: String,
+    counter: u64,
+    ciphertext: String,
+}
+
+const DISPATCH_AAD: &[u8] = b"canopy-mobile-dispatch-v1";
+
+fn auth_proof(token: &str, challenge: &str, device_id: Option<&str>) -> String {
+    let message = format!(
+        "canopy-mobile-auth-v1\n{}\n{}",
+        challenge,
+        device_id.unwrap_or("")
+    );
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(token.as_bytes())
+        .expect("HMAC accepts arbitrary key lengths");
+    mac.update(message.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn derive_dispatch_key(token: &str, challenge: &str) -> Result<[u8; 32], String> {
+    let hkdf = Hkdf::<Sha256>::new(Some(challenge.as_bytes()), token.as_bytes());
+    let mut key = [0u8; 32];
+    hkdf.expand(DISPATCH_AAD, &mut key)
+        .map_err(|_| "Could not derive companion session key".to_string())?;
+    Ok(key)
+}
+
+fn dispatch_nonce(direction: &[u8; 4], counter: u64) -> [u8; 12] {
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(direction);
+    nonce[4..].copy_from_slice(&counter.to_be_bytes());
+    nonce
+}
+
+struct DispatchEncryptor {
+    cipher: ChaCha20Poly1305,
+    counter: u64,
+}
+
+impl DispatchEncryptor {
+    fn new(key: &[u8; 32]) -> Self {
+        Self {
+            cipher: ChaCha20Poly1305::new(key.into()),
+            counter: 0,
+        }
+    }
+
+    fn encrypt(&mut self, plaintext: &str) -> Result<String, String> {
+        self.counter = self
+            .counter
+            .checked_add(1)
+            .ok_or_else(|| "Companion send counter exhausted".to_string())?;
+        let nonce = dispatch_nonce(b"S2C\0", self.counter);
+        let ciphertext = self
+            .cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: plaintext.as_bytes(),
+                    aad: DISPATCH_AAD,
+                },
+            )
+            .map_err(|_| "Could not encrypt companion response".to_string())?;
+        serde_json::to_string(&SecureEnvelope {
+            envelope_type: "secure".into(),
+            counter: self.counter,
+            ciphertext: base64::engine::general_purpose::STANDARD_NO_PAD.encode(ciphertext),
+        })
+        .map_err(|e| e.to_string())
+    }
+}
+
+struct DispatchDecryptor {
+    cipher: ChaCha20Poly1305,
+    counter: u64,
+}
+
+impl DispatchDecryptor {
+    fn new(key: &[u8; 32]) -> Self {
+        Self {
+            cipher: ChaCha20Poly1305::new(key.into()),
+            counter: 0,
+        }
+    }
+
+    fn decrypt(&mut self, envelope_json: &str) -> Result<String, String> {
+        let envelope: SecureEnvelope =
+            serde_json::from_str(envelope_json).map_err(|_| "Invalid secure envelope")?;
+        let expected_counter = self
+            .counter
+            .checked_add(1)
+            .ok_or_else(|| "Companion receive counter exhausted".to_string())?;
+        if envelope.envelope_type != "secure" || envelope.counter != expected_counter {
+            return Err("Out-of-order or replayed companion message".into());
+        }
+        let ciphertext = base64::engine::general_purpose::STANDARD_NO_PAD
+            .decode(envelope.ciphertext)
+            .map_err(|_| "Invalid encrypted companion payload")?;
+        let nonce = dispatch_nonce(b"C2S\0", envelope.counter);
+        let plaintext = self
+            .cipher
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: DISPATCH_AAD,
+                },
+            )
+            .map_err(|_| "Companion message authentication failed")?;
+        self.counter = envelope.counter;
+        String::from_utf8(plaintext).map_err(|_| "Companion message was not UTF-8".into())
+    }
+}
+
+async fn send_encrypted<S>(
+    write: &mut S,
+    encryptor: &mut DispatchEncryptor,
+    plaintext: String,
+) -> Result<(), String>
+where
+    S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let envelope = encryptor.encrypt(&plaintext)?;
+    write
+        .send(Message::Text(envelope))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Clone)]
@@ -682,68 +821,118 @@ async fn handle_connection(
     use tauri::Manager;
     let db_state = app_handle.state::<crate::db::Database>();
 
-    // Auth phase
-    let mut authorized_client: Option<AuthorizedClient> = None;
-    if let Some(Ok(Message::Text(text))) = read.next().await {
-        if let Ok(auth_msg) = serde_json::from_str::<AuthMessage>(&text) {
-            if let Some(device_id) = auth_msg.device_id.as_deref() {
-                if let Ok(Some(grant)) = db_state.get_companion_grant(device_id) {
-                    let token_key = format!("companion_device_{}_token", device_id);
-                    if !grant.revoked {
-                        if let Ok(valid_token) = crate::keychain::get_secret(&token_key) {
-                            if constant_time_token_eq(&auth_msg.auth, &valid_token) {
-                                let _ = db_state.touch_companion_grant(device_id);
-                                authorized_client = Some(AuthorizedClient {
-                                    device_id: Some(device_id.to_string()),
-                                    profile_id: Some(grant.profile_id.clone()),
-                                    experience: grant.experience.clone(),
-                                    allowed_agent_ids: Some(
-                                        grant.allowed_agent_ids.iter().cloned().collect(),
-                                    ),
-                                });
-                                let profile = db_state
-                                    .get_companion_profile(&grant.profile_id)
-                                    .ok()
-                                    .flatten();
-                                let response = serde_json::json!({
-                                    "status": "authenticated",
-                                    "assignment": {
-                                        "deviceId": grant.device_id,
-                                        "profile": profile,
-                                        "experience": grant.experience,
-                                        "allowedAgentIds": grant.allowed_agent_ids
+    // Challenge-response auth keeps the long-lived pairing token off the wire.
+    // All messages after authentication are protected with ChaCha20-Poly1305.
+    let challenge = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    let challenge_message = serde_json::json!({
+        "type": "auth_challenge",
+        "version": 1,
+        "challenge": challenge,
+    });
+    if write
+        .send(Message::Text(challenge_message.to_string()))
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let mut auth_result: Option<(AuthorizedClient, [u8; 32], serde_json::Value)> = None;
+    let auth_frame = tokio::time::timeout(std::time::Duration::from_secs(10), read.next()).await;
+    if let Ok(Some(Ok(Message::Text(text)))) = auth_frame {
+        if text.len() <= 4096 {
+            if let Ok(auth_msg) = serde_json::from_str::<AuthMessage>(&text) {
+                if constant_time_token_eq(&auth_msg.challenge, &challenge) {
+                    if let Some(device_id) = auth_msg.device_id.as_deref() {
+                        if let Ok(Some(grant)) = db_state.get_companion_grant(device_id) {
+                            let token_key = format!("companion_device_{}_token", device_id);
+                            if !grant.revoked {
+                                if let Ok(valid_token) = crate::keychain::get_secret(&token_key) {
+                                    let expected =
+                                        auth_proof(&valid_token, &challenge, Some(device_id));
+                                    if constant_time_token_eq(&auth_msg.proof, &expected) {
+                                        if let Ok(key) =
+                                            derive_dispatch_key(&valid_token, &challenge)
+                                        {
+                                            let _ = db_state.touch_companion_grant(device_id);
+                                            let profile = db_state
+                                                .get_companion_profile(&grant.profile_id)
+                                                .ok()
+                                                .flatten();
+                                            let response = serde_json::json!({
+                                                "status": "authenticated",
+                                                "assignment": {
+                                                    "deviceId": grant.device_id,
+                                                    "profile": profile,
+                                                    "experience": grant.experience,
+                                                    "allowedAgentIds": grant.allowed_agent_ids
+                                                }
+                                            });
+                                            auth_result = Some((
+                                                AuthorizedClient {
+                                                    device_id: Some(device_id.to_string()),
+                                                    profile_id: Some(grant.profile_id.clone()),
+                                                    experience: grant.experience.clone(),
+                                                    allowed_agent_ids: Some(
+                                                        grant
+                                                            .allowed_agent_ids
+                                                            .iter()
+                                                            .cloned()
+                                                            .collect(),
+                                                    ),
+                                                },
+                                                key,
+                                                response,
+                                            ));
+                                        }
                                     }
-                                });
-                                let _ = write.send(Message::Text(response.to_string())).await;
+                                }
                             }
                         }
-                    }
-                }
-            } else {
-                // Backwards-compatible full-access pairing for existing mobile installs.
-                let reader = state.current_token.read().await;
-                if let Some(valid_token) = &*reader {
-                    if constant_time_token_eq(&auth_msg.auth, valid_token) {
-                        authorized_client = Some(AuthorizedClient::legacy_full_access());
-                        let _ = write
-                            .send(Message::Text(
-                                "{\"status\":\"authenticated\",\"assignment\":{\"experience\":\"full\"}}"
-                                    .to_string(),
-                            ))
-                            .await;
+                    } else {
+                        // Legacy full-access pairings use the same secure handshake.
+                        let reader = state.current_token.read().await;
+                        if let Some(valid_token) = &*reader {
+                            let expected = auth_proof(valid_token, &challenge, None);
+                            if constant_time_token_eq(&auth_msg.proof, &expected) {
+                                if let Ok(key) = derive_dispatch_key(valid_token, &challenge) {
+                                    auth_result = Some((
+                                        AuthorizedClient::legacy_full_access(),
+                                        key,
+                                        serde_json::json!({
+                                            "status": "authenticated",
+                                            "assignment": { "experience": "full" }
+                                        }),
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    let Some(mut authorized_client) = authorized_client else {
+    let Some((mut authorized_client, session_key, authenticated_response)) = auth_result else {
         warn!("Authentication failed for {}", peer_addr);
         let _ = write
             .send(Message::Text("{\"error\":\"unauthorized\"}".to_string()))
             .await;
         return;
     };
+
+    let mut encryptor = DispatchEncryptor::new(&session_key);
+    let mut decryptor = DispatchDecryptor::new(&session_key);
+    if send_encrypted(
+        &mut write,
+        &mut encryptor,
+        authenticated_response.to_string(),
+    )
+    .await
+    .is_err()
+    {
+        return;
+    }
 
     info!("Client {} successfully authenticated", peer_addr);
     let mut updates = state.updates.subscribe();
@@ -772,11 +961,12 @@ async fn handle_connection(
                             == Some("assignment_revoked")
                             && revoked_device == authorized_client.device_id.as_deref()
                         {
-                            let _ = write
-                                .send(Message::Text(
-                                    "{\"error\":\"assignment_revoked\"}".to_string(),
-                                ))
-                                .await;
+                            let _ = send_encrypted(
+                                &mut write,
+                                &mut encryptor,
+                                "{\"error\":\"assignment_revoked\"}".to_string(),
+                            )
+                            .await;
                             return;
                         }
                         if let Some(device_id) = authorized_client.device_id.clone() {
@@ -788,7 +978,7 @@ async fn handle_connection(
                                 );
                             }
                         }
-                        let _ = write.send(Message::Text(update.to_string())).await;
+                        let _ = send_encrypted(&mut write, &mut encryptor, update.to_string()).await;
                     }
                 }
                 continue;
@@ -796,9 +986,25 @@ async fn handle_connection(
         };
         match msg {
             Ok(Message::Text(text)) => {
-                info!("Received RPC command from {}: {}", peer_addr, text);
+                let text = match decryptor.decrypt(&text) {
+                    Ok(plaintext) => plaintext,
+                    Err(error) => {
+                        warn!(
+                            "Rejected encrypted RPC message from {}: {}",
+                            peer_addr, error
+                        );
+                        let _ = send_encrypted(
+                            &mut write,
+                            &mut encryptor,
+                            "{\"error\":\"invalid_secure_message\"}".to_string(),
+                        )
+                        .await;
+                        return;
+                    }
+                };
 
                 if let Ok(req) = serde_json::from_str::<RpcRequest>(&text) {
+                    info!("Received RPC command from {}: {}", peer_addr, req.command);
                     match req.command.as_str() {
                         "list_agents" => {
                             // Prefer the richer agent list from mobile_state (includes conversation_id
@@ -833,7 +1039,7 @@ async fn handle_connection(
                                 payload: agents_payload,
                             };
                             if let Ok(json_str) = serde_json::to_string(&res) {
-                                let _ = write.send(Message::Text(json_str)).await;
+                                let _ = send_encrypted(&mut write, &mut encryptor, json_str).await;
                             }
                         }
                         "get_chat_history" => {
@@ -842,11 +1048,12 @@ async fn handle_connection(
                                     payload.get("agent_id").and_then(|v| v.as_str())
                                 {
                                     if !authorized_client.can_access_agent(agent_id) {
-                                        let _ = write
-                                            .send(Message::Text(
-                                                "{\"error\":\"agent_not_assigned\"}".to_string(),
-                                            ))
-                                            .await;
+                                        let _ = send_encrypted(
+                                            &mut write,
+                                            &mut encryptor,
+                                            "{\"error\":\"agent_not_assigned\"}".to_string(),
+                                        )
+                                        .await;
                                         continue;
                                     }
                                     // Prefer an explicit session_id (the agent's activeConversationId)
@@ -892,7 +1099,12 @@ async fn handle_connection(
                                             payload: serde_json::json!(filtered),
                                         };
                                         if let Ok(json_str) = serde_json::to_string(&res) {
-                                            let _ = write.send(Message::Text(json_str)).await;
+                                            let _ = send_encrypted(
+                                                &mut write,
+                                                &mut encryptor,
+                                                json_str,
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -904,7 +1116,7 @@ async fn handle_connection(
                                 payload: serde_json::json!({}),
                             };
                             if let Ok(json_str) = serde_json::to_string(&res) {
-                                let _ = write.send(Message::Text(json_str)).await;
+                                let _ = send_encrypted(&mut write, &mut encryptor, json_str).await;
                             }
                         }
                         "list_companion_resources" => {
@@ -921,7 +1133,8 @@ async fn handle_connection(
                                     payload: serde_json::json!(resources),
                                 };
                                 if let Ok(json_str) = serde_json::to_string(&res) {
-                                    let _ = write.send(Message::Text(json_str)).await;
+                                    let _ =
+                                        send_encrypted(&mut write, &mut encryptor, json_str).await;
                                 }
                             }
                         }
@@ -984,7 +1197,12 @@ async fn handle_connection(
                                                 }),
                                             };
                                             if let Ok(json_str) = serde_json::to_string(&res) {
-                                                let _ = write.send(Message::Text(json_str)).await;
+                                                let _ = send_encrypted(
+                                                    &mut write,
+                                                    &mut encryptor,
+                                                    json_str,
+                                                )
+                                                .await;
                                             }
                                         }
                                     }
@@ -1002,7 +1220,8 @@ async fn handle_connection(
                                     payload: serde_json::json!([]),
                                 };
                                 if let Ok(json_str) = serde_json::to_string(&res) {
-                                    let _ = write.send(Message::Text(json_str)).await;
+                                    let _ =
+                                        send_encrypted(&mut write, &mut encryptor, json_str).await;
                                 }
                                 continue;
                             }
@@ -1017,7 +1236,7 @@ async fn handle_connection(
                                 payload: forums,
                             };
                             if let Ok(json_str) = serde_json::to_string(&res) {
-                                let _ = write.send(Message::Text(json_str)).await;
+                                let _ = send_encrypted(&mut write, &mut encryptor, json_str).await;
                             }
                         }
                         // list_projects: legacy alias — responds with forums_list for backwards compat
@@ -1028,7 +1247,8 @@ async fn handle_connection(
                                     payload: serde_json::json!([]),
                                 };
                                 if let Ok(json_str) = serde_json::to_string(&res) {
-                                    let _ = write.send(Message::Text(json_str)).await;
+                                    let _ =
+                                        send_encrypted(&mut write, &mut encryptor, json_str).await;
                                 }
                                 continue;
                             }
@@ -1043,7 +1263,7 @@ async fn handle_connection(
                                 payload: forums,
                             };
                             if let Ok(json_str) = serde_json::to_string(&res) {
-                                let _ = write.send(Message::Text(json_str)).await;
+                                let _ = send_encrypted(&mut write, &mut encryptor, json_str).await;
                             }
                         }
                         "list_inbox" => {
@@ -1053,7 +1273,8 @@ async fn handle_connection(
                                     payload: serde_json::json!([]),
                                 };
                                 if let Ok(json_str) = serde_json::to_string(&res) {
-                                    let _ = write.send(Message::Text(json_str)).await;
+                                    let _ =
+                                        send_encrypted(&mut write, &mut encryptor, json_str).await;
                                 }
                                 continue;
                             }
@@ -1064,7 +1285,8 @@ async fn handle_connection(
                                     payload: inbox.clone(),
                                 };
                                 if let Ok(json_str) = serde_json::to_string(&res) {
-                                    let _ = write.send(Message::Text(json_str)).await;
+                                    let _ =
+                                        send_encrypted(&mut write, &mut encryptor, json_str).await;
                                 }
                             }
                         }
@@ -1090,41 +1312,44 @@ async fn handle_connection(
                                                 "Rejected mobile system command from {}",
                                                 peer_addr
                                             );
-                                            let _ = write
-                                                .send(Message::Text(
-                                                    "{\"error\":\"unauthorized_system_command\"}"
-                                                        .to_string(),
-                                                ))
-                                                .await;
+                                            let _ = send_encrypted(
+                                                &mut write,
+                                                &mut encryptor,
+                                                "{\"error\":\"unauthorized_system_command\"}"
+                                                    .to_string(),
+                                            )
+                                            .await;
                                         }
                                     } else {
                                         if !authorized_client.can_access_agent(agent_id) {
-                                            let _ = write
-                                                .send(Message::Text(
-                                                    "{\"error\":\"agent_not_assigned\"}"
-                                                        .to_string(),
-                                                ))
-                                                .await;
+                                            let _ = send_encrypted(
+                                                &mut write,
+                                                &mut encryptor,
+                                                "{\"error\":\"agent_not_assigned\"}".to_string(),
+                                            )
+                                            .await;
                                             continue;
                                         }
                                         if let Err(e) =
                                             crate::validators::agent::validate_id(agent_id)
                                         {
                                             warn!("Rejected mobile send_message with invalid agent id from {}: {}", peer_addr, e);
-                                            let _ = write
-                                                .send(Message::Text(
-                                                    "{\"error\":\"invalid_agent_id\"}".to_string(),
-                                                ))
-                                                .await;
+                                            let _ = send_encrypted(
+                                                &mut write,
+                                                &mut encryptor,
+                                                "{\"error\":\"invalid_agent_id\"}".to_string(),
+                                            )
+                                            .await;
                                             continue;
                                         }
                                         if !is_valid_mobile_message_text(text_msg) {
                                             warn!("Rejected mobile send_message with invalid message size from {}", peer_addr);
-                                            let _ = write
-                                                .send(Message::Text(
-                                                    "{\"error\":\"invalid_message\"}".to_string(),
-                                                ))
-                                                .await;
+                                            let _ = send_encrypted(
+                                                &mut write,
+                                                &mut encryptor,
+                                                "{\"error\":\"invalid_message\"}".to_string(),
+                                            )
+                                            .await;
                                             continue;
                                         }
                                         if let Err(e) =
@@ -1132,11 +1357,12 @@ async fn handle_connection(
                                                 .check(agent_id)
                                         {
                                             warn!("Rate limited mobile send_message for agent {} from {}: {}", agent_id, peer_addr, e);
-                                            let _ = write
-                                                .send(Message::Text(
-                                                    "{\"error\":\"rate_limited\"}".to_string(),
-                                                ))
-                                                .await;
+                                            let _ = send_encrypted(
+                                                &mut write,
+                                                &mut encryptor,
+                                                "{\"error\":\"rate_limited\"}".to_string(),
+                                            )
+                                            .await;
                                             continue;
                                         }
                                         // Pass the agent's individual chat session ID so forum sessions
@@ -1207,8 +1433,12 @@ async fn handle_connection(
                                                     }),
                                                 };
                                                 if let Ok(json_str) = serde_json::to_string(&res) {
-                                                    let _ =
-                                                        write.send(Message::Text(json_str)).await;
+                                                    let _ = send_encrypted(
+                                                        &mut write,
+                                                        &mut encryptor,
+                                                        json_str,
+                                                    )
+                                                    .await;
                                                 }
                                             }
                                             Err(error) => {
@@ -1220,8 +1450,12 @@ async fn handle_connection(
                                                     }),
                                                 };
                                                 if let Ok(json_str) = serde_json::to_string(&res) {
-                                                    let _ =
-                                                        write.send(Message::Text(json_str)).await;
+                                                    let _ = send_encrypted(
+                                                        &mut write,
+                                                        &mut encryptor,
+                                                        json_str,
+                                                    )
+                                                    .await;
                                                 }
                                             }
                                         }
@@ -1239,11 +1473,12 @@ async fn handle_connection(
                         }
                         "set_sensor_token" => {
                             if !authorized_client.is_full_access() {
-                                let _ = write
-                                    .send(Message::Text(
-                                        "{\"error\":\"capability_not_granted\"}".to_string(),
-                                    ))
-                                    .await;
+                                let _ = send_encrypted(
+                                    &mut write,
+                                    &mut encryptor,
+                                    "{\"error\":\"capability_not_granted\"}".to_string(),
+                                )
+                                .await;
                                 continue;
                             }
                             if let Some(payload) = req.payload {
@@ -1252,6 +1487,29 @@ async fn handle_connection(
                                     payload.get("sensor_id").and_then(|v| v.as_str()),
                                     payload.get("token").and_then(|v| v.as_str()),
                                 ) {
+                                    if crate::validators::agent::validate_id(agent_id).is_err()
+                                        || db_state.get_agent(agent_id).ok().flatten().is_none()
+                                        || !matches!(
+                                            sensor_id,
+                                            "apple_health"
+                                                | "live_location"
+                                                | "shortcuts"
+                                                | "vision"
+                                                | "notifications"
+                                                | "homekit"
+                                        )
+                                        || token.len() < 35
+                                        || token.len() > 256
+                                        || token.chars().any(char::is_control)
+                                    {
+                                        let _ = send_encrypted(
+                                            &mut write,
+                                            &mut encryptor,
+                                            "{\"error\":\"invalid_sensor_credential\"}".to_string(),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
                                     let key = format!("agent_{}_{}_token", agent_id, sensor_id);
                                     let _ = crate::keychain::store_secret(&key, token);
 
@@ -1269,18 +1527,20 @@ async fn handle_connection(
                                         payload: serde_json::json!({"success": true}),
                                     };
                                     if let Ok(json_str) = serde_json::to_string(&res) {
-                                        let _ = write.send(Message::Text(json_str)).await;
+                                        let _ =
+                                            send_encrypted(&mut write, &mut encryptor, json_str)
+                                                .await;
                                     }
                                 }
                             }
                         }
                         _ => {
-                            let _ = write
-                                .send(Message::Text(format!(
-                                    "{{\"error\": \"Unknown command: {}\"}}",
-                                    req.command
-                                )))
-                                .await;
+                            let _ = send_encrypted(
+                                &mut write,
+                                &mut encryptor,
+                                serde_json::json!({ "error": "unknown_command" }).to_string(),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -1368,5 +1628,52 @@ mod tests {
         assert!(constant_time_token_eq("same-token", "same-token"));
         assert!(!constant_time_token_eq("same-token", "other-token"));
         assert!(!constant_time_token_eq("short", "a-longer-token"));
+    }
+
+    #[test]
+    fn mobile_secure_handshake_matches_the_cross_platform_test_vector() {
+        let challenge = "ab".repeat(32);
+        assert_eq!(
+            auth_proof("pairing-token", &challenge, Some("device-abc")),
+            "2cfed165fdff8007b747a547f1910d609b57f4fe4916b0d968e1c2996e3b7af4" // gitleaks:allow -- deterministic HMAC test vector
+        );
+        assert_eq!(
+            hex::encode(derive_dispatch_key("pairing-token", &challenge).unwrap()),
+            "8ecf694c033dc7b6d7ab5ff0b75edc6d6557574ddb4f2479ff2117bf888e056f" // gitleaks:allow -- deterministic HKDF test vector
+        );
+    }
+
+    #[test]
+    fn encrypted_mobile_messages_reject_replays_and_tampering() {
+        let key = derive_dispatch_key("pairing-token", "challenge-123").unwrap();
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        let nonce = dispatch_nonce(b"C2S\0", 1);
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: br#"{"command":"ping"}"#,
+                    aad: DISPATCH_AAD,
+                },
+            )
+            .unwrap();
+        let envelope = serde_json::to_string(&SecureEnvelope {
+            envelope_type: "secure".into(),
+            counter: 1,
+            ciphertext: base64::engine::general_purpose::STANDARD_NO_PAD.encode(ciphertext),
+        })
+        .unwrap();
+        let mut decryptor = DispatchDecryptor::new(&key);
+        assert_eq!(
+            decryptor.decrypt(&envelope).unwrap(),
+            r#"{"command":"ping"}"#
+        );
+        assert!(decryptor.decrypt(&envelope).is_err(), "replay must fail");
+
+        let mut tampered: SecureEnvelope = serde_json::from_str(&envelope).unwrap();
+        tampered.counter = 2;
+        assert!(decryptor
+            .decrypt(&serde_json::to_string(&tampered).unwrap())
+            .is_err());
     }
 }

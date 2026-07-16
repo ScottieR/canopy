@@ -30,7 +30,7 @@ export interface Agent {
   isolated: boolean;
   paused: boolean;
   container_id: string | null;
-  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; decor?: string[]; decorTransforms?: Record<string, any>; habitatId?: number; color?: string; habitatOffset?: any; };
+  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; decor?: string[]; decorTransforms?: Record<string, any>; habitatId?: number; color?: string; habitatOffset?: any; cloak_enabled?: boolean; };
   personality: {
     name: string;
     communication_style: string;
@@ -122,6 +122,13 @@ export interface Conversation {
   lastActiveAt: number;    // unix ms — for sort order
   type?: "dm" | "forum";
   status?: "active" | "archived";
+  threadStatus?: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed";
+  backgroundAllowed?: boolean;
+  activeRunCount?: number;
+  lastRunId?: string | null;
+  lastRunStatus?: string | null;
+  checkpointCount?: number;
+  lastCheckpointAt?: number | null;
 }
 
 export interface AgentData extends Agent {
@@ -149,9 +156,9 @@ export interface AgentData extends Agent {
   // thread, the current chatLog is saved into `conversations[]` (titled from
   // its first user message) and chatLog resets. Switching threads swaps
   // chatLog with a saved conversation's messages.
-  // NOTE: The agent's underlying SQLite memory is still a single pool —
-  // threads are visual partitioning, not contextual isolation. Real isolation
-  // requires a per-conversation backend, which is a focused next session.
+  // NOTE: Thread-level persistence and run state now exist in the backend, but
+  // durable agent memory still spans threads. Full contextual isolation still
+  // requires deeper per-thread runtime separation.
   conversations?: Conversation[];
   activeConversationId?: string | null;
   chatClearedAt?: number;
@@ -169,6 +176,7 @@ export interface AgentData extends Agent {
     habitatId?: number;
     color?: string;
     habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; };
+    cloak_enabled?: boolean;
   };
 }
 

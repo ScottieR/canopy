@@ -24,6 +24,7 @@ import { getAssetUrl } from "../utils/assets";
 import { buildCompanionUrl } from "../utils/connectorCatalog";
 import { getOnboardingIntegrationIds } from "../utils/onboardingIntegrations";
 import { getInitialOnboardingStep } from "../utils/onboardingFlow";
+import { getAgentProviderSecretSlot, getManagedProviderId, syncAgentProviderCredentials } from "../security/providerCredentials";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
@@ -192,7 +193,7 @@ export function OnboardingWizard() {
 
   const optimisticId = deriveAgentId(agentName);
 
-  const managedProviderId = llmProvider === "OpenAI" ? "openai" : llmProvider === "xAI Grok" ? "xai" : null;
+  const managedProviderId = getManagedProviderId(llmProvider);
   useEffect(() => {
     if (!managedProviderId) {
       setManagementConnected(false);
@@ -295,7 +296,7 @@ export function OnboardingWizard() {
     setManagementConnected(false);
     setManagementCredential("");
     setManagementScopeId("");
-    setManagementStatus("idle");
+    setManagementBusy(false);
     setManagementError("");
     setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
     setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
@@ -843,31 +844,16 @@ export function OnboardingWizard() {
             provider: autoProvisionProvider,
           });
         } else if (apiKey.trim()) {
-          const providerKeyName: Record<string, string> = {
-            "Google Gemini": `agent_${newAgentData.id}_gemini_key`,
-            "Anthropic":     `agent_${newAgentData.id}_anthropic_key`,
-            "OpenAI":        `agent_${newAgentData.id}_openai_key`,
-            "xAI Grok":      `agent_${newAgentData.id}_grok_key`,
-          };
-          const keyName = providerKeyName[llmProvider] || `agent_${newAgentData.id}_gemini_key`;
+          if (!llmProvider) {
+            throw new Error("Select a model provider before saving an API key");
+          }
+          const keyName = getAgentProviderSecretSlot(newAgentData.id, llmProvider);
           await invoke("store_secret_cmd", { key: keyName, value: apiKey.trim() });
         }
 
-        {
-          // SECURITY: New agents receive only credentials explicitly entered for
-          // them. Never inherit a global provider key.
-          const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_anthropic_key` }).catch(() => "") || "");
-          const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_openai_key` }).catch(() => "") || "");
-          const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_gemini_key` }).catch(() => "") || "");
-          const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_grok_key` }).catch(() => "") || "");
-
-          await invoke("sync_credentials", { agentId: newAgentData.id, keys: {
-            "ANTHROPIC_API_KEY": agAnthropic,
-            "OPENAI_API_KEY":    agOpenAI,
-            "GEMINI_API_KEY":    agGemini,
-            "XAI_API_KEY":       agGrok,
-          }}).catch(console.warn);
-        }
+        // SECURITY: Rust reads this agent's Keychain slots and writes its runtime
+        // auth profile. Provider keys never need to round-trip through React/IPC.
+        await syncAgentProviderCredentials(invoke, newAgentData.id);
 
         if (plugins.imessage && selectedIMessageThreads.length > 0) {
           await invoke("update_allowed_imessage_threads", {

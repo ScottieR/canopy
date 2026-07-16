@@ -1658,12 +1658,20 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
 
     // Find the last user message to respond to
     const lastUserMsg = [...forum.messages].reverse().find(m => m.sender === "user" && !m.text.startsWith("[GenUI Event]"));
-    if (!lastUserMsg) return;
+    const agents = forum.agents;
+
+    if (!lastUserMsg || agents.length === 0) {
+      // Nothing to respond to (e.g. a completed forum was resumed without a new
+      // message). Don't leave the forum "active" with every agent stuck on
+      // "Resuming…" and climbing timers — settle it back to completed.
+      for (const agent of agents) {
+        updateAgentAction(forumId, agent.agentId, "Complete ✓");
+      }
+      setForumStatus(forumId, "completed");
+      return;
+    }
 
     // Status is already set to "active" by the useEffect trigger
-
-    const agents = forum.agents;
-    if (agents.length === 0) return;
 
     // Check if the user specifically @mentioned an agent
     const mentionedAgent = agents.find(a => 
@@ -1674,6 +1682,13 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
     // Default to the mentioned agent, or fallback to the primary writer/strategist
     const responder = mentionedAgent ?? findByRole(agents, "edit", "write", "prose", "comm", "strat", "design") ?? agents[0];
 
+    // Only the responder is working — settle everyone else so stale states
+    // like "Resuming…" don't linger with running timers.
+    for (const agent of agents) {
+      if (agent.agentId !== responder.agentId) {
+        updateAgentAction(forumId, agent.agentId, "Complete ✓");
+      }
+    }
     updateAgentAction(forumId, responder.agentId, "Thinking…");
 
     // Upload any attachments from the user's message to the responder's workspace
@@ -1702,12 +1717,18 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
       const userText = lastUserMsg.text.slice(0, 4000);
       const followUpPrompt = `The user has a follow-up request regarding the final deliverable. Here is their message:\n\n"${userText}"${attachmentNote}\n\nIf you need to update the final deliverable on the blackboard, provide the complete, updated content (full document, not a diff) using EXACTLY this delimiter structure (nothing before ---FORMAT---, no code fences):\n\n---FORMAT---\n[markdown or html]\n---CONTENT---\n[your updated content here]\n\nWhen updating an HTML deliverable, these rules still apply:\n\n${GENUI_BEST_PRACTICES}\n\nIf you are only answering a quick question and do not need to rewrite the deliverable, just reply normally without delimiters.`;
 
+      // Track usage the same way the main orchestrator's callAgent does —
+      // follow-up work must show up in the header cost/token counters too.
+      const estimatedTokens = Math.max(150, Math.ceil(followUpPrompt.length / 4));
+      const estimatedCost = Math.max(0.002, estimatedTokens * 0.00001);
+      useForumStore.getState().incrementTokensAndCost?.(forumId, estimatedTokens, estimatedCost);
+
       const response = await invoke<unknown>("send_message", {
         agentId: responder.agentId,
         message: followUpPrompt,
         sessionId: `forum_${forumId}_${responder.agentId}`,
       });
-      
+
       const rawText = extractText(response);
       if (stopped) return;
 

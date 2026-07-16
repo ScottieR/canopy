@@ -216,13 +216,13 @@ root.render(
     <ErrorBoundary showDetails={true} allowNavigation={true}>
       <WindowWrapper>
         {standaloneViewKind === "miniapp" ? (
-          <MiniAppStandalone payload={miniappPayload} />
+          <MiniAppStandalone payload={miniappPayload!} />
         ) : standaloneViewKind === "genui" ? (
           <div style={{ width: "100%", height: "100%", padding: 20, boxSizing: "border-box", background: "var(--surface-base)" }}>
             <GenUIRenderer 
-              app={JSON.parse(decodeURIComponent(genuiPayload))} 
+              app={JSON.parse(decodeURIComponent(genuiPayload!))} 
               onEvent={async (evt) => {
-                const app = JSON.parse(decodeURIComponent(genuiPayload));
+                const app = JSON.parse(decodeURIComponent(genuiPayload!));
                 console.log("Floating GenUI Window Event:", evt);
                 const { invoke } = await import('@tauri-apps/api/core');
                 try {
@@ -238,7 +238,7 @@ root.render(
             />
           </div>
         ) : standaloneViewKind === "browser" ? (
-          <BrowserPopout agentId={browserAgentId} />
+          <BrowserPopout agentId={browserAgentId!} />
         ) : standaloneViewKind === "chatCompanion" ? (
           <ChatCompanion />
         ) : standaloneViewKind === "slack" ? (
@@ -256,7 +256,7 @@ root.render(
         ) : standaloneViewKind === "bluetooth" ? (
           <BluetoothCompanion />
         ) : standaloneViewKind === "companionGuide" ? (
-          <CompanionGuide type={companionType} />
+          <CompanionGuide type={companionType!} />
         ) : (
           <>
             <GlobalBrowserListener />

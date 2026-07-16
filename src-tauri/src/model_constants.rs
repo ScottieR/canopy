@@ -38,6 +38,8 @@
 ///
 /// Last verified: July 14, 2026
 use serde::{Deserialize, Serialize};
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::sync::RwLock;
 
 // ─── Anthropic / Claude ───────────────────────────────────────────────────────
@@ -335,12 +337,40 @@ pub const GATEWAY_URL: &str = "http://localhost:18799";
 /// ⚠️  Do NOT write this to a top-level `gateway.token` field — that key is rejected by
 /// OpenClaw 2026.4.14's schema and crash-loops the container. See
 /// `OPENCLAW_INTEGRATION.md` §2 and §7 for the full rationale.
-pub const GATEWAY_INTERNAL_TOKEN: &str = "canopy_internal_token_2026";
+#[cfg(test)]
+pub fn gateway_internal_token() -> &'static str {
+    // Unit tests must never read or mutate the developer's real macOS Keychain.
+    "canopy_gateway_test_000000000000000000000000000000000000000000000000"
+}
+
+#[cfg(not(test))]
+pub fn gateway_internal_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            crate::keychain::get_or_create_internal_secret(
+                "internal_gateway_token",
+                "canopy_gateway_",
+            )
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    "Could not persist the internal gateway credential; using a process-local credential: {}",
+                    error
+                );
+                format!(
+                    "canopy_gateway_{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                )
+            })
+        })
+        .as_str()
+}
 
 /// Returns the fully-formed `Authorization: Bearer <token>` header value.
 /// Use as: `.header("Authorization", &model_constants::gateway_bearer_header())`
 pub fn gateway_bearer_header() -> String {
-    format!("Bearer {}", GATEWAY_INTERNAL_TOKEN)
+    format!("Bearer {}", gateway_internal_token())
 }
 
 // ─── Auth-profile path helpers ────────────────────────────────────────────────
@@ -392,9 +422,7 @@ pub fn successor_model_for(model: &str) -> Option<&'static str> {
 /// Canonicalize a model string before validation or persistence.
 pub fn canonicalize_model_string(model: &str) -> String {
     let trimmed = model.trim();
-    successor_model_for(trimmed)
-        .unwrap_or(trimmed)
-        .to_string()
+    successor_model_for(trimmed).unwrap_or(trimmed).to_string()
 }
 
 /// Validates that a model string follows the `"provider/model-name"` format OpenClaw requires.

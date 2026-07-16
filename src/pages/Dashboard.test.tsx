@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Dashboard } from './Dashboard';
 import { AgentData, useWorldStore } from '../store/worldStore';
 
@@ -169,7 +169,9 @@ describe('Dashboard (My Usage)', () => {
       render(<Dashboard />);
       await waitFor(() => expect(screen.getByText('My Usage')).toBeDefined());
       mockInvoke.mockClear();
-      screen.getByText('Last 30d').click();
+      await act(async () => {
+        fireEvent.click(screen.getByText('Last 30d'));
+      });
       await waitFor(() => {
         expect(mockInvoke).toHaveBeenCalledWith('get_token_usage_history', { agentId: null, conversationId: null, days: 30 });
       });

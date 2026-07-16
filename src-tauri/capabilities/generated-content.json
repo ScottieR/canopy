@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "generated-content",
+  "description": "Minimal host permissions for trusted wrappers around sandboxed agent-generated content",
+  "windows": [
+    "miniapp_*",
+    "genui_*"
+  ],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging"
+  ]
+}

@@ -14,6 +14,7 @@ import { Toggle, ServiceRow, glass } from "../../App";
 import MDEditor from "@uiw/react-md-editor";
 import { invoke } from "@tauri-apps/api/core";
 import { PasswordInput } from "../../components/shared/PasswordInput";
+import { isolateGeneratedHtml } from "../../security/generatedHtml";
 
 // ─── Format-aware message parsing ────────────────────────────────────────────
 // Agents can return ---FORMAT--- html/markdown/genui ---CONTENT--- blocks in both
@@ -76,8 +77,8 @@ function HtmlAppBubble({
       {/* Iframe — only mounted when expanded to avoid loading all inline */}
       {expanded && (
         <iframe
-          srcDoc={content}
-          sandbox="allow-scripts allow-same-origin"
+          srcDoc={isolateGeneratedHtml(content)}
+          sandbox="allow-scripts"
           style={{ width: "100%", height: 400, border: "none", display: "block" }}
           title="Agent-generated app"
         />
@@ -121,6 +122,13 @@ type BackendConversationSummary = {
   updated_at: string;
   message_count: number;
   first_user_message?: string | null;
+  thread_status: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed";
+  background_allowed: boolean;
+  active_run_count: number;
+  last_run_id?: string | null;
+  last_run_status?: string | null;
+  checkpoint_count: number;
+  last_checkpoint_at?: string | null;
 };
 
 function toUnixMs(value?: string | number | null): number {
@@ -229,7 +237,7 @@ function EmbedPreview({ agentId, refName, title, height, messageId }: { agentId:
         <iframe
           src={`canopy-workspace://${agentId}/${encodeURIComponent(HTML_EXTS.test(refName) ? refName : `${refName}.html`)}`}
           style={{ width: "100%", height: height ? `${height}px` : "400px", border: "none", background: "#fff" }}
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts"
           title={title}
         />
       )}
@@ -553,7 +561,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       }
     };
   }, [agent.id]);
-  const [loading, setLoading] = useState(false);
+  const [loadingSessionIds, setLoadingSessionIds] = useState<string[]>([]);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [likedMsgIds, setLikedMsgIds] = useState<Set<string>>(new Set());
   const [dislikedMsgIds, setDislikedMsgIds] = useState<Set<string>>(new Set());
@@ -575,10 +583,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const [attachments, setAttachments] = useState<{name: string, dataUrl: string}[]>([]);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(true);
-  const abortRef = useRef(false);
+  const stoppedSessionIdsRef = useRef<Set<string>>(new Set());
 
   // Message Queueing State
-  const [queuedMessages, setQueuedMessages] = useState<{text: string, attachments: any[], threadMode: "same" | "new"}[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<{
+    text: string;
+    attachments: any[];
+    threadMode: "same" | "new";
+    sessionId: string | null;
+  }[]>([]);
 
   const handleQueueMessage = (threadMode: "same" | "new" = "same") => {
     const baseText = message.trim();
@@ -587,18 +600,58 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     setQueuedMessages(prev => [...prev, {
       text: baseText,
       attachments: [...attachments],
-      threadMode
+      threadMode,
+      sessionId: threadMode === "same" ? agentRef.current.activeConversationId || null : null,
     }]);
     
     setMessage("");
     setAttachments([]);
   };
 
+  const isSessionLoading = useCallback(
+    (sessionId?: string | null) => !!sessionId && loadingSessionIds.includes(sessionId),
+    [loadingSessionIds]
+  );
+
+  const markSessionLoading = useCallback((sessionId: string) => {
+    setLoadingSessionIds(prev => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
+  }, []);
+
+  const clearSessionLoading = useCallback((sessionId?: string | null) => {
+    if (!sessionId) return;
+    setLoadingSessionIds(prev => prev.filter(id => id !== sessionId));
+  }, []);
+
+  const markSessionStopped = useCallback((sessionId?: string | null) => {
+    if (!sessionId) return;
+    stoppedSessionIdsRef.current.add(sessionId);
+    clearSessionLoading(sessionId);
+  }, [clearSessionLoading]);
+
+  const clearStoppedMarker = useCallback((sessionId?: string | null) => {
+    if (!sessionId) return;
+    stoppedSessionIdsRef.current.delete(sessionId);
+  }, []);
+
+  const wasSessionStopped = useCallback(
+    (sessionId?: string | null) => !!sessionId && stoppedSessionIdsRef.current.has(sessionId),
+    []
+  );
+
+  const activeThreadLoading = isSessionLoading(agent.activeConversationId);
+
   // Process queued messages when loading finishes
   useEffect(() => {
-    if (!loading && queuedMessages.length > 0 && !abortRef.current) {
+    if (queuedMessages.length > 0) {
       const timer = setTimeout(() => {
         const nextMsg = queuedMessages[0];
+        if (
+          nextMsg.threadMode === "same" &&
+          nextMsg.sessionId &&
+          isSessionLoading(nextMsg.sessionId)
+        ) {
+          return;
+        }
         setQueuedMessages(prev => prev.slice(1));
         
         if (nextMsg.threadMode === "new") {
@@ -613,12 +666,16 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
              handleSendMessage(nextMsg.text, nextMsg.attachments, newSessionId);
            }, 100);
         } else {
-           handleSendMessage(nextMsg.text, nextMsg.attachments);
+           handleSendMessage(
+             nextMsg.text,
+             nextMsg.attachments,
+             nextMsg.sessionId || undefined
+           );
         }
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [loading, queuedMessages, agent.id]);
+  }, [queuedMessages, agent.id, isSessionLoading]);
 
   const handleScroll = useCallback(() => {
     if (chatContainerRef.current) {
@@ -745,6 +802,13 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                   title: deriveConversationTitle(existingConv.title, summary.first_user_message) || nextTitle,
                   createdAt: existingConv.createdAt || createdAt,
                   lastActiveAt: Math.max(existingConv.lastActiveAt || 0, lastActiveAt),
+                  threadStatus: summary.thread_status,
+                  backgroundAllowed: summary.background_allowed,
+                  activeRunCount: summary.active_run_count,
+                  lastRunId: summary.last_run_id || null,
+                  lastRunStatus: summary.last_run_status || null,
+                  checkpointCount: summary.checkpoint_count,
+                  lastCheckpointAt: summary.last_checkpoint_at ? toUnixMs(summary.last_checkpoint_at) : null,
                 };
                 const index = merged.findIndex(conv => conv.id === summary.id);
                 if (index >= 0) merged[index] = nextExisting;
@@ -760,6 +824,13 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 lastActiveAt,
                 type: "dm" as const,
                 status: "active" as const,
+                threadStatus: summary.thread_status,
+                backgroundAllowed: summary.background_allowed,
+                activeRunCount: summary.active_run_count,
+                lastRunId: summary.last_run_id || null,
+                lastRunStatus: summary.last_run_status || null,
+                checkpointCount: summary.checkpoint_count,
+                lastCheckpointAt: summary.last_checkpoint_at ? toUnixMs(summary.last_checkpoint_at) : null,
               };
               existing.set(summary.id, hydrated);
               merged.push(hydrated);
@@ -783,8 +854,10 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     };
 
     hydrateConversations();
+    const interval = setInterval(hydrateConversations, 3000);
     return () => {
       cancelled = true;
+      clearInterval(interval);
     };
   }, [agent.id]);
 
@@ -972,18 +1045,16 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   };
 
   const handleStop = () => {
-    abortRef.current = true;
-    setLoading(false);
+    markSessionStopped(agentRef.current.activeConversationId);
     setQueuedMessages([]); // Clear queue on stop
   };
 
   const handleSendMessage = async (overrideText?: string, overrideAttachments?: any[], overrideSessionId?: string, isStarterTask?: boolean) => {
-    if (loading) return;
     const baseText = (overrideText ?? message).trim();
     const activeAttachments = overrideAttachments ?? attachments;
     if (!baseText && activeAttachments.length === 0) return;
-
-    abortRef.current = false;
+    let activeSessionId = overrideSessionId || agentRef.current.activeConversationId;
+    if (isSessionLoading(activeSessionId)) return;
 
     let finalMessage = baseText;
     if (activeAttachments.length > 0) {
@@ -1005,7 +1076,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       setMessage("");
       setAttachments([]);
     }
-    setLoading(true);
 
     try {
       if (userMsg.attachments) {
@@ -1018,7 +1088,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         }
       }
 
-      let activeSessionId = overrideSessionId || agentRef.current.activeConversationId;
       const convExists = agentRef.current.conversations?.some(c => c.id === activeSessionId);
       
       if (!activeSessionId || !convExists) {
@@ -1035,11 +1104,41 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 messages: [userMsg],
                 createdAt: Date.now(),
                 lastActiveAt: Date.now(),
+                threadStatus: "idle",
+                backgroundAllowed: false,
+                activeRunCount: 0,
+                checkpointCount: 0,
               }]
             };
           })
         }));
       }
+
+      if (isSessionLoading(activeSessionId)) {
+        return;
+      }
+      clearStoppedMarker(activeSessionId);
+      markSessionLoading(activeSessionId);
+
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => {
+          if (a.id !== agent.id) return a;
+          return {
+            ...a,
+            conversations: (a.conversations || []).map(c =>
+              c.id === activeSessionId
+                ? {
+                    ...c,
+                    threadStatus: "running",
+                    activeRunCount: (c.activeRunCount || 0) + 1,
+                    lastRunStatus: "running",
+                    lastActiveAt: Date.now(),
+                  }
+                : c
+            ),
+          };
+        }),
+      }));
 
       const response: any = await invoke("send_message", {
         agentId: agent.id,
@@ -1047,7 +1146,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         sessionId: activeSessionId,
       });
 
-      if (abortRef.current) {
+      if (wasSessionStopped(activeSessionId)) {
         if (!overrideText) setMessage(baseText);
         setChatLog(prev => prev.filter(m => m.id !== userMsg.id));
         return;
@@ -1077,6 +1176,27 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         time: formatMessageTime(new Date()),
         ts: Date.now(),
       };
+
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => {
+          if (a.id !== agentRef.current.id) return a;
+          return {
+            ...a,
+            conversations: (a.conversations || []).map(c =>
+              c.id === activeSessionId
+                ? {
+                    ...c,
+                    threadStatus: response?.thread_status || "idle",
+                    activeRunCount: Math.max(0, (c.activeRunCount || 1) - 1),
+                    lastRunId: response?.run_id || c.lastRunId || null,
+                    lastRunStatus: "completed",
+                    lastActiveAt: Date.now(),
+                  }
+                : c
+            ),
+          };
+        }),
+      }));
 
       if (agentRef.current.activeConversationId === activeSessionId) {
         setChatLog(prev => capLog([...prev, agentMsg]));
@@ -1113,10 +1233,10 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           const retryResponse: any = await invoke("send_message", {
             agentId: agent.id,
             message: finalMessage,
-            sessionId: agent.activeConversationId || null,
+            sessionId: activeSessionId,
           });
           
-          if (abortRef.current) {
+          if (wasSessionStopped(activeSessionId)) {
             if (!overrideText) setMessage(baseText);
             setChatLog(prev => prev.filter(m => m.id !== userMsg.id));
             return;
@@ -1132,6 +1252,27 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             time: formatMessageTime(new Date()),
             ts: Date.now(),
           };
+
+          useWorldStore.setState(state => ({
+            agents: state.agents.map(a => {
+              if (a.id !== agentRef.current.id) return a;
+              return {
+                ...a,
+                conversations: (a.conversations || []).map(c =>
+                  c.id === activeSessionId
+                    ? {
+                        ...c,
+                        threadStatus: retryResponse?.thread_status || "idle",
+                        activeRunCount: Math.max(0, (c.activeRunCount || 1) - 1),
+                        lastRunId: retryResponse?.run_id || c.lastRunId || null,
+                        lastRunStatus: "completed",
+                        lastActiveAt: Date.now(),
+                      }
+                    : c
+                ),
+              };
+            }),
+          }));
 
           if (agentRef.current.activeConversationId === activeSessionId) {
             setChatLog(prev => capLog([...prev, retryAgentMsg]));
@@ -1210,14 +1351,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         time: formatMessageTime(new Date()),
         ts: Date.now(),
       };
+
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => {
+          if (a.id !== agent.id) return a;
+          return {
+            ...a,
+            chatLog: [...a.chatLog, errorMsg],
+            conversations: (a.conversations || []).map(c =>
+              c.id === activeSessionId
+                ? {
+                    ...c,
+                    threadStatus: "failed",
+                    activeRunCount: 0,
+                    lastRunStatus: "failed",
+                    lastActiveAt: Date.now(),
+                  }
+                : c
+            ),
+          };
+        }),
+      }));
       
       setChatLog(prev => capLog([...prev, errorMsg]));
-      
-      useWorldStore.setState(state => ({
-        agents: state.agents.map(a => a.id === agent.id ? { ...a, chatLog: [...a.chatLog, errorMsg] } : a)
-      }));
     } finally {
-      setLoading(false);
+      clearSessionLoading(activeSessionId);
+      clearStoppedMarker(activeSessionId);
     }
   };
 
@@ -1749,17 +1908,17 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                     }}>
                       <button
                         onClick={() => {
-                          if (loading) return;
+                          if (activeThreadLoading) return;
                           handleSendMessage(msg.text);
                         }}
-                        disabled={loading}
+                        disabled={activeThreadLoading}
                         title="Retry — send this message again"
                         style={{
                           padding: 3, border: "none", background: "transparent",
-                          cursor: loading ? "not-allowed" : "pointer",
+                          cursor: activeThreadLoading ? "not-allowed" : "pointer",
                           borderRadius: 4, display: "flex", alignItems: "center",
                           color: "var(--text-muted)",
-                          opacity: loading ? 0.4 : 1,
+                          opacity: activeThreadLoading ? 0.4 : 1,
                         }}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1815,7 +1974,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           })
         )}
 
-        {loading && (
+        {activeThreadLoading && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 12, height: 12, borderRadius: "50%", background: "#3c6663",
@@ -2071,15 +2230,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       <div style={{ display: "flex", gap: 8, marginTop: attachments.length > 0 ? 8 : 16, alignItems: "flex-end", padding: "0 10px 10px 10px" }}>
         <button
           onClick={() => fileInputRef.current?.click()}
-          disabled={loading || !gatewayReady || agent.paused}
+          disabled={activeThreadLoading || !gatewayReady || agent.paused}
           title="Attach File or Screenshot"
           style={{
             padding: "14px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.08)",
             background: "var(--glass-light)",
             color: "var(--text-main)",
-            cursor: (loading || !gatewayReady || agent.paused) ? "default" : "pointer",
+            cursor: (activeThreadLoading || !gatewayReady || agent.paused) ? "default" : "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
-            opacity: (loading || !gatewayReady || agent.paused) ? 0.6 : 1,
+            opacity: (activeThreadLoading || !gatewayReady || agent.paused) ? 0.6 : 1,
             height: "46px"
           }}
         >
@@ -2109,7 +2268,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               if ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) {
-                 if (loading) handleQueueMessage("same");
+                 if (activeThreadLoading) handleQueueMessage("same");
                  else handleSendMessage();
               }
             }
@@ -2130,7 +2289,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               }
             }
           }}
-          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : loading ? "Type here to queue another task..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
+          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : activeThreadLoading ? "Type here to queue another task..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
           disabled={!gatewayReady || agent.paused}
           rows={1}
           style={{
@@ -2143,7 +2302,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           }}
         />
         <div style={{ display: "flex", gap: 8, flexDirection: "row" }}>
-          {loading && (
+          {activeThreadLoading && (
             <button
               onClick={handleStop}
               style={{
@@ -2158,7 +2317,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             >Stop</button>
           )}
 
-          {!loading ? (
+          {!activeThreadLoading ? (
             <button
               onClick={() => handleSendMessage()}
               disabled={(!message.trim() && attachments.length === 0) || !gatewayReady || agent.paused}

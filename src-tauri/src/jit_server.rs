@@ -58,6 +58,83 @@ fn bearer_token(headers: &str) -> Option<String> {
     })
 }
 
+fn constant_time_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.as_bytes()
+        .iter()
+        .zip(right.as_bytes())
+        .fold(0u8, |diff, (a, b)| diff | (a ^ b))
+        == 0
+}
+
+fn presented_capability_matches(presented: Option<&str>, expected: &str) -> bool {
+    presented
+        .map(|value| constant_time_eq(value, expected))
+        .unwrap_or(false)
+}
+
+pub(crate) fn agent_jit_token(agent_id: &str) -> Result<String, String> {
+    crate::validators::agent::validate_id(agent_id).map_err(|e| e.to_string())?;
+    crate::keychain::get_or_create_internal_secret(
+        &format!("internal_jit_bridge_{}", agent_id),
+        "canopy_jit_",
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn request_agent_id(body: &[u8]) -> Result<String, (u16, String)> {
+    let value: Value = serde_json::from_slice(body).map_err(|_| {
+        (
+            400,
+            r#"{"error":"Invalid JSON request body"}"#.to_string(),
+        )
+    })?;
+    let agent_id = value
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            (
+                400,
+                r#"{"error":"agent_id is required"}"#.to_string(),
+            )
+        })?;
+    crate::validators::agent::validate_id(agent_id).map_err(|_| {
+        (
+            400,
+            r#"{"error":"Invalid agent_id"}"#.to_string(),
+        )
+    })?;
+    Ok(agent_id.to_string())
+}
+
+fn authenticate_agent_request(
+    capability: Option<&str>,
+    body: &[u8],
+) -> Result<String, (u16, String)> {
+    let agent_id = request_agent_id(body)?;
+    let presented = capability.ok_or_else(|| {
+        (
+            401,
+            r#"{"error":"Missing agent bridge capability"}"#.to_string(),
+        )
+    })?;
+    let expected = agent_jit_token(&agent_id).map_err(|_| {
+        (
+            503,
+            r#"{"error":"Agent bridge capability unavailable"}"#.to_string(),
+        )
+    })?;
+    if !presented_capability_matches(Some(presented), &expected) {
+        return Err((
+            403,
+            r#"{"error":"Invalid agent bridge capability"}"#.to_string(),
+        ));
+    }
+    Ok(agent_id)
+}
+
 fn files_broker_response(result: Result<serde_json::Value, String>) -> (u16, String) {
     match result {
         Ok(value) => (
@@ -160,7 +237,15 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
 
                         // Helper inline-format: produces an HTTP response string given status + body.
                         // Kept as a macro-like format so we don't have to plumb closures through async.
-                        let route_to_response: (u16, String) = if path == "/export_file" {
+                        let auth_error = if path.starts_with("/files/") {
+                            None
+                        } else {
+                            authenticate_agent_request(capability.as_deref(), body).err()
+                        };
+
+                        let route_to_response: (u16, String) = if let Some(error) = auth_error {
+                            error
+                        } else if path == "/export_file" {
                             match serde_json::from_slice::<ExportRequest>(body) {
                                 Ok(req) => {
                                     let (response, status_code) =
@@ -287,7 +372,7 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                         .to_string(),
                                 ),
                             }
-                        } else {
+                        } else if path == "/" || path == "/request_credential" {
                             // Default = legacy JIT credential request (backwards-compat for agent
                             // code that POSTs to / without a specific path).
                             match serde_json::from_slice::<JitRequest>(body) {
@@ -301,22 +386,19 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                 }
                                 Err(_) => (400, r#"{"error":"Invalid request body"}"#.to_string()),
                             }
+                        } else {
+                            (404, r#"{"error":"Unknown JIT bridge route"}"#.to_string())
                         };
 
                         let (status_code, resp_str) = route_to_response;
-                        let cors_header = if path.starts_with("/files/") {
-                            ""
-                        } else {
-                            "Access-Control-Allow-Origin: *\r\n"
-                        };
                         let http_resp = format!(
-                            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\n{}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            status_code, cors_header, resp_str.len(), resp_str
+                            "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            status_code, resp_str.len(), resp_str
                         );
                         let _ = socket.write_all(http_resp.as_bytes()).await;
                     } else {
-                        // Return simple options OK for CORS
-                        let http_resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                        // This bridge is for container-to-host calls, never browser CORS.
+                        let http_resp = "HTTP/1.1 405 Method Not Allowed\r\nAllow: POST\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
                         let _ = socket.write_all(http_resp.as_bytes()).await;
                     }
                 }
@@ -701,5 +783,32 @@ mod tests {
     fn unrelated_headers_do_not_authenticate_files_bridge() {
         let headers = "POST /files/read HTTP/1.1\r\nX-Agent-Id: agent-a";
         assert!(bearer_token(headers).is_none());
+    }
+
+    #[test]
+    fn agent_bridge_requires_an_exact_capability() {
+        assert!(presented_capability_matches(
+            Some("canopy_jit_expected"),
+            "canopy_jit_expected"
+        ));
+        assert!(!presented_capability_matches(
+            Some("canopy_jit_wrong"),
+            "canopy_jit_expected"
+        ));
+        assert!(!presented_capability_matches(
+            None,
+            "canopy_jit_expected"
+        ));
+    }
+
+    #[test]
+    fn agent_bridge_body_must_name_a_valid_agent() {
+        assert_eq!(
+            request_agent_id(br#"{"agent_id":"agent-alpha"}"#).as_deref(),
+            Ok("agent-alpha")
+        );
+        assert!(request_agent_id(br#"{"agent_id":"../../other"}"#).is_err());
+        assert!(request_agent_id(br#"{"reason":"missing"}"#).is_err());
+        assert!(request_agent_id(b"not-json").is_err());
     }
 }

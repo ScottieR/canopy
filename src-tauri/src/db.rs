@@ -39,6 +39,28 @@ pub struct ConversationSummary {
     pub updated_at: String,
     pub message_count: u32,
     pub first_user_message: Option<String>,
+    pub thread_status: String,
+    pub background_allowed: bool,
+    pub active_run_count: u32,
+    pub last_run_id: Option<String>,
+    pub last_run_status: Option<String>,
+    pub checkpoint_count: u32,
+    pub last_checkpoint_at: Option<String>,
+}
+
+/// A single execution attempt within a conversation thread.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ThreadRun {
+    pub id: String,
+    pub conversation_id: String,
+    pub agent_id: String,
+    pub status: String,
+    pub trigger_type: String,
+    pub started_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    pub checkpoint_payload_json: Option<String>,
+    pub error_payload_json: Option<String>,
 }
 
 /// Represents an audit log entry
@@ -284,6 +306,34 @@ impl Database {
             )",
             [],
         )?;
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN thread_status TEXT NOT NULL DEFAULT 'idle'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN background_allowed BOOLEAN NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN active_run_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN last_run_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN last_run_status TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN checkpoint_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN last_checkpoint_at TEXT",
+            [],
+        );
 
         // Create messages table
         conn.execute(
@@ -294,6 +344,23 @@ impl Database {
                 content TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS thread_runs (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                trigger_type TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                checkpoint_payload_json TEXT,
+                error_payload_json TEXT,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
             )",
             [],
         )?;
@@ -413,6 +480,30 @@ impl Database {
                 error_message TEXT NOT NULL,
                 resolved BOOLEAN NOT NULL DEFAULT 0,
                 FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feedback_reports (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                agent_id TEXT,
+                reporter_name TEXT NOT NULL,
+                reporter_email TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                remote_status TEXT NOT NULL DEFAULT 'pending',
+                remote_error TEXT,
+                slack_notified INTEGER NOT NULL DEFAULT 0,
+                dispatched_agent_id TEXT,
+                dispatched_at TEXT,
+                FOREIGN KEY(agent_id) REFERENCES agents(id),
+                FOREIGN KEY(dispatched_agent_id) REFERENCES agents(id)
             )",
             [],
         )?;
@@ -596,6 +687,14 @@ impl Database {
             [],
         )?;
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_thread_runs_conversation ON thread_runs(conversation_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_thread_runs_agent_status ON thread_runs(agent_id, status)",
+            [],
+        )?;
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_bridges_agent ON bridges(agent_id)",
             [],
         )?;
@@ -609,6 +708,10 @@ impl Database {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_purchase_history_agent ON purchase_history(agent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_reports_created_at ON feedback_reports(created_at DESC)",
             [],
         )?;
 
@@ -642,6 +745,146 @@ impl Database {
             "INSERT INTO global_config (key, value_json) VALUES ('user_profile', ?1)
              ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
             params![value_json],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_feedback_reports(&self) -> SqlResult<Vec<FeedbackReport>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, status, title, description, agent_id, reporter_name, reporter_email,
+                    created_at, updated_at, context_json, remote_status, remote_error, slack_notified,
+                    dispatched_agent_id, dispatched_at
+             FROM feedback_reports
+             ORDER BY created_at DESC",
+        )?;
+
+        let reports = stmt
+            .query_map([], |row| {
+                let context_json: String = row.get(10)?;
+                Ok(FeedbackReport {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    status: row.get(2)?,
+                    title: row.get(3)?,
+                    description: row.get(4)?,
+                    agent_id: row.get(5)?,
+                    reporter_name: row.get(6)?,
+                    reporter_email: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    context: serde_json::from_str(&context_json).unwrap_or_else(|_| json!({})),
+                    remote_status: row.get(11)?,
+                    remote_error: row.get(12)?,
+                    slack_notified: row.get(13)?,
+                    dispatched_agent_id: row.get(14)?,
+                    dispatched_at: row.get(15)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(reports)
+    }
+
+    pub fn get_feedback_report(&self, report_id: &str) -> SqlResult<Option<FeedbackReport>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, status, title, description, agent_id, reporter_name, reporter_email,
+                    created_at, updated_at, context_json, remote_status, remote_error, slack_notified,
+                    dispatched_agent_id, dispatched_at
+             FROM feedback_reports
+             WHERE id = ?1",
+        )?;
+
+        stmt.query_row(params![report_id], |row| {
+            let context_json: String = row.get(10)?;
+            Ok(FeedbackReport {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                status: row.get(2)?,
+                title: row.get(3)?,
+                description: row.get(4)?,
+                agent_id: row.get(5)?,
+                reporter_name: row.get(6)?,
+                reporter_email: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                context: serde_json::from_str(&context_json).unwrap_or_else(|_| json!({})),
+                remote_status: row.get(11)?,
+                remote_error: row.get(12)?,
+                slack_notified: row.get(13)?,
+                dispatched_agent_id: row.get(14)?,
+                dispatched_at: row.get(15)?,
+            })
+        })
+        .optional()
+    }
+
+    pub fn insert_feedback_report(&self, report: &FeedbackReport) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO feedback_reports (
+                id, kind, status, title, description, agent_id, reporter_name, reporter_email,
+                created_at, updated_at, context_json, remote_status, remote_error, slack_notified,
+                dispatched_agent_id, dispatched_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                &report.id,
+                &report.kind,
+                &report.status,
+                &report.title,
+                &report.description,
+                &report.agent_id,
+                &report.reporter_name,
+                &report.reporter_email,
+                &report.created_at,
+                &report.updated_at,
+                &serde_json::to_string(&report.context).unwrap_or_else(|_| "{}".to_string()),
+                &report.remote_status,
+                &report.remote_error,
+                report.slack_notified,
+                &report.dispatched_agent_id,
+                &report.dispatched_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_feedback_report_delivery(
+        &self,
+        report_id: &str,
+        remote_status: &str,
+        remote_error: Option<&str>,
+        slack_notified: bool,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE feedback_reports
+             SET remote_status = ?1, remote_error = ?2, slack_notified = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![
+                remote_status,
+                remote_error,
+                slack_notified,
+                Utc::now().to_rfc3339(),
+                report_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_feedback_report_dispatched(
+        &self,
+        report_id: &str,
+        dispatched_agent_id: &str,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE feedback_reports
+             SET status = 'sent_to_engineer', dispatched_agent_id = ?1, dispatched_at = ?2, updated_at = ?2
+             WHERE id = ?3",
+            params![dispatched_agent_id, now, report_id],
         )?;
         Ok(())
     }
@@ -1015,8 +1258,10 @@ impl Database {
         // Create
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO conversations (id, agent_id, title, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO conversations (
+                id, agent_id, title, created_at, updated_at, thread_status,
+                background_allowed, active_run_count, checkpoint_count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'idle', 0, 0, 0)",
             params![conv_id, agent_id, "New Conversation", &now, &now],
         )?;
 
@@ -1044,8 +1289,10 @@ impl Database {
         let now = Utc::now().to_rfc3339();
 
         conn.execute(
-            "INSERT INTO conversations (id, agent_id, title, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO conversations (
+                id, agent_id, title, created_at, updated_at, thread_status,
+                background_allowed, active_run_count, checkpoint_count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'idle', 0, 0, 0)",
             params![
                 &conv_id,
                 agent_id,
@@ -1132,6 +1379,127 @@ impl Database {
         rows.collect::<SqlResult<Vec<_>>>()
     }
 
+    /// Mark the start of a new thread run and push the parent conversation into
+    /// the running state. This creates the durable execution primitive needed
+    /// for true concurrent per-thread work.
+    pub fn start_thread_run(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+        trigger_type: &str,
+    ) -> SqlResult<String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let run_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        tx.execute(
+            "INSERT INTO thread_runs (
+                id, conversation_id, agent_id, status, trigger_type, started_at, updated_at
+             ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?5)",
+            params![&run_id, conversation_id, agent_id, trigger_type, &now],
+        )?;
+        tx.execute(
+            "UPDATE conversations
+             SET thread_status = 'running',
+                 active_run_count = active_run_count + 1,
+                 last_run_id = ?1,
+                 last_run_status = 'running',
+                 updated_at = ?2
+             WHERE id = ?3",
+            params![&run_id, &now, conversation_id],
+        )?;
+
+        tx.commit()?;
+        Ok(run_id)
+    }
+
+    /// Complete a thread run and reconcile the parent conversation state.
+    pub fn finish_thread_run(
+        &self,
+        run_id: &str,
+        final_status: &str,
+        error_payload_json: Option<&str>,
+    ) -> SqlResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+
+        let conversation_id: String = tx.query_row(
+            "SELECT conversation_id FROM thread_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+
+        tx.execute(
+            "UPDATE thread_runs
+             SET status = ?1,
+                 updated_at = ?2,
+                 completed_at = ?2,
+                 error_payload_json = COALESCE(?3, error_payload_json)
+             WHERE id = ?4",
+            params![final_status, &now, error_payload_json, run_id],
+        )?;
+        tx.execute(
+            "UPDATE conversations
+             SET active_run_count = CASE
+                     WHEN active_run_count > 0 THEN active_run_count - 1
+                     ELSE 0
+                 END,
+                 last_run_id = ?1,
+                 last_run_status = ?2,
+                 thread_status = CASE
+                     WHEN active_run_count > 1 THEN 'running'
+                     WHEN ?2 = 'completed' THEN 'idle'
+                     ELSE ?2
+                 END,
+                 updated_at = ?3
+             WHERE id = ?4",
+            params![run_id, final_status, &now, &conversation_id],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_thread_runs(&self, conversation_id: &str, limit: u32) -> SqlResult<Vec<ThreadRun>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT
+                id,
+                conversation_id,
+                agent_id,
+                status,
+                trigger_type,
+                started_at,
+                updated_at,
+                completed_at,
+                checkpoint_payload_json,
+                error_payload_json
+             FROM thread_runs
+             WHERE conversation_id = ?1
+             ORDER BY started_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![conversation_id, limit as i32], |row| {
+            Ok(ThreadRun {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                agent_id: row.get(2)?,
+                status: row.get(3)?,
+                trigger_type: row.get(4)?,
+                started_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                completed_at: row.get(7)?,
+                checkpoint_payload_json: row.get(8)?,
+                error_payload_json: row.get(9)?,
+            })
+        })?;
+
+        rows.collect::<SqlResult<Vec<_>>>()
+    }
+
     /// List durable conversation summaries for an agent, newest activity first.
     pub fn list_agent_conversation_summaries(
         &self,
@@ -1155,11 +1523,30 @@ impl Database {
                       AND fm.role = 'user'
                     ORDER BY fm.timestamp ASC
                     LIMIT 1
-                ) AS first_user_message
+                ) AS first_user_message,
+                c.thread_status,
+                c.background_allowed,
+                c.active_run_count,
+                c.last_run_id,
+                c.last_run_status,
+                c.checkpoint_count,
+                c.last_checkpoint_at
              FROM conversations c
              LEFT JOIN messages m ON m.conversation_id = c.id
              WHERE c.agent_id = ?1
-             GROUP BY c.id, c.agent_id, c.title, c.created_at, c.updated_at
+             GROUP BY
+                c.id,
+                c.agent_id,
+                c.title,
+                c.created_at,
+                c.updated_at,
+                c.thread_status,
+                c.background_allowed,
+                c.active_run_count,
+                c.last_run_id,
+                c.last_run_status,
+                c.checkpoint_count,
+                c.last_checkpoint_at
              ORDER BY c.updated_at DESC
              LIMIT ?2",
         )?;
@@ -1173,6 +1560,13 @@ impl Database {
                 updated_at: row.get(4)?,
                 message_count: row.get::<_, i64>(5)?.max(0) as u32,
                 first_user_message: row.get(6)?,
+                thread_status: row.get(7)?,
+                background_allowed: row.get::<_, bool>(8)?,
+                active_run_count: row.get::<_, i64>(9)?.max(0) as u32,
+                last_run_id: row.get(10)?,
+                last_run_status: row.get(11)?,
+                checkpoint_count: row.get::<_, i64>(12)?.max(0) as u32,
+                last_checkpoint_at: row.get(13)?,
             })
         })?;
 
@@ -2020,6 +2414,7 @@ impl Database {
         &self,
         agent_id: Option<&str>,
         conversation_id: Option<&str>,
+        conversation_id_prefix: Option<&str>,
         days: u32,
     ) -> SqlResult<Vec<crate::models::TokenUsageRecord>> {
         let conn = self.conn.lock().unwrap();
@@ -2045,6 +2440,25 @@ impl Database {
         if let Some(ref c_id) = conversation_id {
             query.push_str(&format!(" AND conversation_id = ?{}", next_param_idx));
             sql_params.push(c_id);
+            next_param_idx += 1;
+        }
+
+        // Prefix match — forum sends use session ids like
+        // forum_{forumId}_{agentId}_{phase}, so per-forum aggregation needs
+        // LIKE 'forum_{forumId}_%'. ESCAPE '\' guards the underscores/percents
+        // inside the prefix itself from acting as wildcards.
+        let like_pattern;
+        if let Some(prefix) = conversation_id_prefix {
+            let escaped = prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            like_pattern = format!("{}%", escaped);
+            query.push_str(&format!(
+                " AND conversation_id LIKE ?{} ESCAPE '\\'",
+                next_param_idx
+            ));
+            sql_params.push(&like_pattern);
             next_param_idx += 1;
         }
 
@@ -2593,6 +3007,142 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].role, "assistant");
+    }
+
+    #[test]
+    fn test_thread_run_lifecycle_updates_conversation_summary() {
+        let db = create_test_db();
+
+        let agent = Agent {
+            id: "agent-threads".to_string(),
+            name: "Thread Agent".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#00AA88".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Thread Agent".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: vec![],
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
+
+        let conv_id = db.get_or_create_conversation("agent-threads").unwrap();
+        let run_id = db
+            .start_thread_run(&conv_id, "agent-threads", "user_message")
+            .unwrap();
+
+        let running_summary = db
+            .list_agent_conversation_summaries("agent-threads", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(running_summary.thread_status, "running");
+        assert_eq!(running_summary.active_run_count, 1);
+        assert_eq!(running_summary.last_run_status.as_deref(), Some("running"));
+        assert_eq!(running_summary.last_run_id.as_deref(), Some(run_id.as_str()));
+
+        db.finish_thread_run(&run_id, "completed", None).unwrap();
+
+        let completed_summary = db
+            .list_agent_conversation_summaries("agent-threads", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(completed_summary.thread_status, "idle");
+        assert_eq!(completed_summary.active_run_count, 0);
+        assert_eq!(
+            completed_summary.last_run_status.as_deref(),
+            Some("completed")
+        );
+
+        let runs = db.list_thread_runs(&conv_id, 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "completed");
+        assert_eq!(runs[0].trigger_type, "user_message");
+    }
+
+    #[test]
+    fn test_thread_summary_stays_running_when_multiple_runs_overlap() {
+        let db = create_test_db();
+
+        let agent = Agent {
+            id: "agent-overlap".to_string(),
+            name: "Overlap Agent".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#3366FF".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Overlap Agent".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: vec![],
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
+
+        let conv_id = db.get_or_create_conversation("agent-overlap").unwrap();
+        let run_a = db
+            .start_thread_run(&conv_id, "agent-overlap", "user_message")
+            .unwrap();
+        let run_b = db
+            .start_thread_run(&conv_id, "agent-overlap", "resume")
+            .unwrap();
+
+        db.finish_thread_run(&run_a, "completed", None).unwrap();
+
+        let mid_summary = db
+            .list_agent_conversation_summaries("agent-overlap", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(mid_summary.thread_status, "running");
+        assert_eq!(mid_summary.active_run_count, 1);
+
+        db.finish_thread_run(&run_b, "failed", Some("{\"error\":\"boom\"}"))
+            .unwrap();
+
+        let final_summary = db
+            .list_agent_conversation_summaries("agent-overlap", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(final_summary.thread_status, "failed");
+        assert_eq!(final_summary.active_run_count, 0);
+        assert_eq!(final_summary.last_run_status.as_deref(), Some("failed"));
     }
 
     #[test]

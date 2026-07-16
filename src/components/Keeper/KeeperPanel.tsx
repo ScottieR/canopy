@@ -1,6 +1,6 @@
 // ─── The Keeper (Eddy) — persistent helper pill + chat panel ─────────────────
 // Spec: spec-helper-agent-and-orchestrator.md Part 1 / F-K1.
-// Cloud-hosted brain (admin server /api/keeper/chat, Canopy's key) with a
+// Cloud-hosted brain (admin server /api/canopy-helper/chat, Canopy's key) with a
 // local rule-based fallback so Eddy can still diagnose the most common
 // failures (runtime down, key rate-limited, agent in error state) even when
 // the admin server is unreachable. The Tauri layer's live state is assembled
@@ -123,14 +123,17 @@ function runKeeperAction(action: KeeperAction) {
   }
 }
 
-const CHAT_KEY = "canopy_keeper_chat";
-const ONBOARDING_AUTOOPEN_KEY = "canopy_keeper_onboarding_opened";
+const CHAT_KEY = "canopy_helper_chat";
+const LEGACY_CHAT_KEY = "canopy_keeper_chat";
+const ONBOARDING_AUTOOPEN_KEY = "canopy_helper_onboarding_opened";
+const LEGACY_ONBOARDING_AUTOOPEN_KEY = "canopy_keeper_onboarding_opened";
 const CONTINUITY_KEY = "canopy_helper_continuity";
 
 const loadChat = (): KeeperMsg[] => {
   try {
-    const raw = localStorage.getItem(CHAT_KEY);
+    const raw = localStorage.getItem(CHAT_KEY) || localStorage.getItem(LEGACY_CHAT_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
+    if (raw && !localStorage.getItem(CHAT_KEY)) localStorage.setItem(CHAT_KEY, raw);
     return Array.isArray(parsed) ? parsed.slice(-40) : [];
   } catch { return []; }
 };
@@ -335,7 +338,11 @@ export function KeeperPanel() {
 
   // During onboarding the panel opens by default — once.
   useEffect(() => {
-    if (activeView === "onboarding" && !localStorage.getItem(ONBOARDING_AUTOOPEN_KEY)) {
+    if (
+      activeView === "onboarding" &&
+      !localStorage.getItem(ONBOARDING_AUTOOPEN_KEY) &&
+      !localStorage.getItem(LEGACY_ONBOARDING_AUTOOPEN_KEY)
+    ) {
       localStorage.setItem(ONBOARDING_AUTOOPEN_KEY, "1");
       setOpen(true);
       if (messages.length === 0) {
@@ -370,11 +377,11 @@ export function KeeperPanel() {
       let reply = "";
       if (helperConfig.mode === "hosted") {
         const base = (import.meta as any).env?.VITE_API_URL || "http://localhost:3001";
-        const r = await fetch(`${base}/api/keeper/chat`, {
+        const r = await fetch(`${base}/api/canopy-helper/chat`, {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: content, context: ctx, continuity }),
         });
-        if (!r.ok) throw new Error(`keeper http ${r.status}`);
+        if (!r.ok) throw new Error(`canopy helper http ${r.status}`);
         reply = String((await r.json()).reply || "").trim();
       } else {
         reply = String((await invoke<any>("send_canopy_helper_message", { message: content, context: ctx, continuity }))?.reply || "").trim();

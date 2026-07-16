@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -52,7 +52,6 @@ async function flushAsyncWork() {
 
 describe("GithubCompanion", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
     vi.clearAllMocks();
     mockOpen.mockResolvedValue(undefined);
     mockEmit.mockResolvedValue(undefined);
@@ -72,7 +71,6 @@ describe("GithubCompanion", () => {
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     window.history.replaceState({}, "", "/");
   });
 
@@ -80,18 +78,14 @@ describe("GithubCompanion", () => {
     window.history.replaceState({}, "", "/index.html?companion=github&agentId=agent-test&isNew=true");
 
     render(<GithubCompanion />);
-    await act(async () => {
-      await vi.runOnlyPendingTimersAsync();
+    await waitFor(() => {
+      expect(mockOpen).toHaveBeenCalledWith("https://github.com/settings/tokens/new");
     });
-
-    expect(mockOpen).toHaveBeenCalledWith("https://github.com/settings/tokens/new");
 
     fireEvent.change(screen.getByPlaceholderText("ghp_..."), {
       target: { value: "ghp_test_token" },
     });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Verify Token" }));
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Verify Token" }));
     await flushAsyncWork();
 
     expect(mockInvoke).toHaveBeenCalledWith("store_secret_cmd", {
@@ -102,27 +96,29 @@ describe("GithubCompanion", () => {
       "configure_github",
       expect.anything()
     );
-    expect(screen.getByText("Step 3: Verify Access")).toBeInTheDocument();
-    expect(screen.getByText("acme/repo-one")).toBeInTheDocument();
-  });
+    await waitFor(() => {
+      expect(screen.getByText("Step 3: Verify Access")).toBeInTheDocument();
+      expect(screen.getByText("acme/repo-one")).toBeInTheDocument();
+    });
+  }, 10000);
 
   it("emits the onboarding completion payload with the selected repositories", async () => {
     window.history.replaceState({}, "", "/index.html?companion=github&agentId=agent-test&isNew=true");
 
     render(<GithubCompanion />);
-    await act(async () => {
-      await vi.runOnlyPendingTimersAsync();
+    await waitFor(() => {
+      expect(mockOpen).toHaveBeenCalledWith("https://github.com/settings/tokens/new");
     });
 
     fireEvent.change(screen.getByPlaceholderText("ghp_..."), {
       target: { value: "ghp_test_token" },
     });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Verify Token" }));
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Verify Token" }));
     await flushAsyncWork();
 
-    expect(screen.getByText("acme/repo-one")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("acme/repo-one")).toBeInTheDocument();
+    });
     fireEvent.click(screen.getAllByRole("checkbox")[1]);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Complete Setup" }));
@@ -135,12 +131,9 @@ describe("GithubCompanion", () => {
       selectedRepos: ["acme/repo-one"],
     });
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
-    });
-    await flushAsyncWork();
-
-    expect(mockSetFocus).toHaveBeenCalled();
-    expect(mockClose).toHaveBeenCalled();
-  });
+    await waitFor(() => {
+      expect(mockSetFocus).toHaveBeenCalled();
+      expect(mockClose).toHaveBeenCalled();
+    }, { timeout: 4000 });
+  }, 10000);
 });

@@ -1,14 +1,30 @@
 // ThreadSwitcher — dropdown in the Home header that lets the user move between
 // saved conversation threads with this agent, and start fresh ones.
 //
-// Frontend-only V1 caveat: threads are visual snapshots, not true context
-// isolation. The agent's backend memory is still pooled. Switching threads
-// changes what you see, but the agent's working memory still includes prior
-// conversations. Real isolation requires per-conversation backend support —
-// see the comment in worldStore.ts for the migration path.
+// Threads now have durable backend ids and run-state metadata, but durable
+// agent memory still spans threads. Switching threads changes the active
+// conversation and can surface background work status, while deeper memory
+// isolation remains a follow-up layer.
 
 import React, { useEffect, useRef, useState } from "react";
 import { useWorldStore, AgentData, Conversation } from "../../store/worldStore";
+
+function threadStatusMeta(status?: Conversation["threadStatus"]): { label: string; color: string } | null {
+  switch (status) {
+    case "running":
+      return { label: "Running", color: "#3c6663" };
+    case "queued":
+      return { label: "Queued", color: "#8A6614" };
+    case "waiting_for_human":
+      return { label: "Needs input", color: "#B25426" };
+    case "paused":
+      return { label: "Paused", color: "#6B7280" };
+    case "failed":
+      return { label: "Failed", color: "#C0392B" };
+    default:
+      return null;
+  }
+}
 
 // Pretty relative time for the dropdown rows (e.g. "2h ago", "yesterday").
 function formatRelative(unixMs: number): string {
@@ -247,6 +263,7 @@ export function ThreadSwitcher({ agent }: { agent: AgentData }) {
               {filteredConversations.map(({ conv, matchedMessage }) => {
                 const isActive = conv.id === agent.activeConversationId;
                 const isRenaming = renaming === conv.id;
+                const statusMeta = threadStatusMeta(conv.threadStatus);
                 return (
                   <div
                     key={conv.id}
@@ -282,13 +299,32 @@ export function ThreadSwitcher({ agent }: { agent: AgentData }) {
                         />
                       ) : (
                         <>
-                          <div style={{
-                            fontSize: 12, fontWeight: isActive ? 700 : 600,
-                            color: "var(--text-main)", whiteSpace: "nowrap",
-                            overflow: "hidden", textOverflow: "ellipsis",
-                          }}>{conv.title}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                            <div style={{
+                              fontSize: 12, fontWeight: isActive ? 700 : 600,
+                              color: "var(--text-main)", whiteSpace: "nowrap",
+                              overflow: "hidden", textOverflow: "ellipsis",
+                              minWidth: 0,
+                              flex: 1,
+                            }}>{conv.title}</div>
+                            {statusMeta && (
+                              <span style={{
+                                fontSize: 9,
+                                fontWeight: 700,
+                                color: statusMeta.color,
+                                background: `${statusMeta.color}14`,
+                                border: `1px solid ${statusMeta.color}33`,
+                                borderRadius: 999,
+                                padding: "1px 6px",
+                                whiteSpace: "nowrap",
+                              }}>
+                                {statusMeta.label}
+                              </span>
+                            )}
+                          </div>
                           <div style={{ fontSize: 10, color: "var(--text-sub)", marginTop: 2 }}>
                             {conv.messages.length} message{conv.messages.length === 1 ? "" : "s"} · {formatRelative(conv.lastActiveAt)}
+                            {(conv.activeRunCount || 0) > 0 && <span style={{ color: "#3c6663", fontWeight: 600, marginLeft: 6 }}>· {conv.activeRunCount} run{conv.activeRunCount === 1 ? "" : "s"}</span>}
                             {isActive && <span style={{ color: "#3c6663", fontWeight: 600, marginLeft: 6 }}>· active</span>}
                           </div>
                           {/* Match snippet — shown only when the row matched
@@ -343,7 +379,7 @@ export function ThreadSwitcher({ agent }: { agent: AgentData }) {
             padding: "8px 14px", fontSize: 10, color: "var(--text-muted)",
             borderTop: "1px solid var(--border-subtle)", lineHeight: 1.5,
           }}>
-            Threads are saved in your browser. {agent.name}'s memory of past chats stays the same across threads.
+            Thread history is durable and run state is now tracked per conversation. {agent.name}'s long-term memory still spans threads unless a future fully isolated thread mode is enabled.
           </div>
         </div>
       )}

@@ -26,7 +26,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::model_constants::{GATEWAY_HOST_PORT, GATEWAY_INTERNAL_TOKEN};
+use crate::model_constants::{gateway_internal_token, GATEWAY_HOST_PORT};
 
 // ─── State ────────────────────────────────────────────────────────────────
 
@@ -148,7 +148,7 @@ pub async fn start_live_voice_session(
     let headers = request.headers_mut();
     headers.insert(
         "Authorization",
-        format!("Bearer {}", GATEWAY_INTERNAL_TOKEN)
+        format!("Bearer {}", gateway_internal_token())
             .parse()
             .map_err(|e| format!("Bad auth header: {}", e))?,
     );

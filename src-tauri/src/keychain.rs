@@ -62,6 +62,33 @@ pub fn get_secret(key: &str) -> Result<String> {
         .ok_or_else(|| CanopyError::NotFound(format!("Secret '{}' not found", key)))
 }
 
+/// Returns an installation-local secret, creating it in the encrypted vault when absent.
+///
+/// Internal service credentials deliberately use keys that are not exposed through the
+/// Tauri IPC allowlist. Callers should cache the returned value when it is used on a hot
+/// path so a temporary Keychain failure cannot create multiple credentials in one process.
+pub fn get_or_create_internal_secret(key: &str, prefix: &str) -> Result<String> {
+    if !key.starts_with("internal_") {
+        return Err(CanopyError::Validation(
+            "Internal secret keys must use the internal_ prefix".into(),
+        ));
+    }
+    if let Ok(existing) = get_secret(key) {
+        if existing.starts_with(prefix) && existing.len() >= prefix.len() + 48 {
+            return Ok(existing);
+        }
+    }
+
+    let secret = format!(
+        "{}{}{}",
+        prefix,
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    store_secret(key, &secret)?;
+    Ok(secret)
+}
+
 /// Internal helper: delete a secret (callable from other Rust modules)
 pub fn delete_secret_internal(key: &str) -> Result<()> {
     if key.is_empty() {
@@ -468,5 +495,6 @@ mod tests {
             validate_secret_key_for_ipc("agent_agent-alpha_slack_bot_token\nOPENAI_API_KEY")
                 .is_err()
         );
+        assert!(validate_secret_key_for_ipc("internal_gateway_token").is_err());
     }
 }

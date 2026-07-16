@@ -1,0 +1,11 @@
+[advisories]
+# Tauri 2.11.2 currently pins plist 1.9.0, which pins quick-xml 0.39.x.
+# In this dependency graph, plist uses quick_xml::Reader (not NsReader) and does
+# not iterate element attributes. Tauri only reads the app bundle's own
+# Contents/Info.plist during a macOS restart. That makes both untrusted-input
+# paths in these advisories unreachable. Remove these exceptions as soon as
+# plist permits quick-xml >= 0.41.0.
+ignore = [
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

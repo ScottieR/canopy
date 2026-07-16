@@ -11,6 +11,7 @@ import { Toggle, ServiceRow, glass } from "../../App";
 import { GenerativeResult } from "../GenerativeStudio";
 import { GlobalAlertsFeed } from "../GlobalAlertsFeed";
 import { DecisionQueuePanel } from "../DecisionQueue/DecisionQueuePanel";
+import { FeedbackModal } from "./FeedbackModal";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // TOP NAVIGATION BAR
@@ -23,6 +24,7 @@ function TopNav() {
   const hasUnreadAlerts = securityAlerts.length > 0 || systemWarnings.length > 0;
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showDecisionQueue, setShowDecisionQueue] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
   const actionableDecisions = pendingDecisions.filter(d => d.type === "pre_auth" || d.type === "needs_input" || d.type === "error");
@@ -176,6 +178,30 @@ function TopNav() {
             }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
             </button>
+            <button
+              onClick={() => setShowFeedbackModal(true)}
+              title="Send feedback"
+              style={{
+                height: 32,
+                borderRadius: 8,
+                border: "none",
+                cursor: "pointer",
+                background: "var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                justifyContent: "center",
+                color: "var(--text-sub)",
+                padding: "0 12px",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Feedback
+            </button>
             {/* Diagnostics wrench — front-and-center, with red badge when any agent is erroring */}
             <div
               onClick={() => setActiveView("diagnostics")}
@@ -290,6 +316,7 @@ function TopNav() {
       </div>
       {showAlertsFeed && <GlobalAlertsFeed onClose={() => setShowAlertsFeed(false)} />}
       {showDecisionQueue && <DecisionQueuePanel onClose={() => setShowDecisionQueue(false)} />}
+      {showFeedbackModal && <FeedbackModal open={showFeedbackModal} onClose={() => setShowFeedbackModal(false)} />}
     </div>
   );
 }

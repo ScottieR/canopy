@@ -65,6 +65,12 @@ export const UPGRADE_MAP: Record<string, string> = {
   "anthropic/claude-3-opus-20240229": "anthropic/claude-opus-4-7",
 };
 
+function normalizeSecretValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return String(value);
+}
+
 export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: AgentData, onOpenTerminal?: (cmd: string) => void }) {
   const fallbackIntegrations = useMemo(() => [], []);
   const fallbackPermissions = useMemo(() => [], []);
@@ -253,9 +259,9 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   useEffect(() => {
     if (typeof (window as any).__TAURI_INTERNALS__?.invoke === 'function') {
       const invoke = (window as any).__TAURI_INTERNALS__.invoke;
-      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_app_token` }).then((t: any) => setSlackAppToken(t as string)).catch(() => {});
-      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_bot_token` }).then((t: any) => setSlackBotToken(t as string)).catch(() => {});
-      invoke("get_secret_cmd", { key: `github-access-token-${agent.id}` }).then((t: any) => setGithubToken(t as string)).catch(() => {});
+      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_app_token` }).then((t: unknown) => setSlackAppToken(normalizeSecretValue(t))).catch(() => {});
+      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_bot_token` }).then((t: unknown) => setSlackBotToken(normalizeSecretValue(t))).catch(() => {});
+      invoke("get_secret_cmd", { key: `github-access-token-${agent.id}` }).then((t: unknown) => setGithubToken(normalizeSecretValue(t))).catch(() => {});
     }
   }, [agent.id]);
 
@@ -360,6 +366,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   const [llmSaveStatus, setLlmSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [provisioningProvider, setProvisioningProvider] = useState<string | null>(null);
   const [provisioningMessage, setProvisioningMessage] = useState("");
+  const [provisionedProviders, setProvisionedProviders] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setProvisionedProviders(new Set());
+  }, [agent.id]);
 
   const provisionDedicatedKey = async (providerLabel: "OpenAI" | "Grok") => {
     const provider = providerLabel === "Grok" ? "xai" : "openai";
@@ -375,9 +385,9 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         await invoke("connect_provider_management", { provider, credential, scopeId });
       }
       await invoke("provision_agent_provider_key", { agentId: agent.id, provider });
-      const slot = provider === "xai" ? `agent_${agent.id}_grok_key` : `agent_${agent.id}_openai_key`;
-      const created = String(await invoke("get_secret_cmd", { key: slot }));
-      setKeys(prev => ({ ...prev, [providerLabel]: created }));
+      // The generated key remains in Rust/Keychain. Track its presence without
+      // reading the secret back into the webview.
+      setProvisionedProviders(previous => new Set(previous).add(providerLabel));
       setProvisioningMessage(`Dedicated ${providerLabel} key created for ${agent.name}.`);
     } catch (error) {
       setProvisioningMessage(String(error));
@@ -420,7 +430,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
       providers.forEach(prov => {
         invoke("get_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` })
-          .then(k => setKeys(prev => ({ ...prev, [prov]: k as string })))
+          .then(k => setKeys(prev => ({ ...prev, [prov]: normalizeSecretValue(k) })))
           .catch(() => { });
       });
     }
@@ -436,6 +446,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           try {
             if (val && val.trim()) {
               await invoke("store_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key`, value: val.trim() });
+            } else if (provisionedProviders.has(prov)) {
+              // Automatic provisioning already stored this credential in the
+              // target agent's slot; blank means the webview never received it.
+              continue;
             } else {
               await invoke("delete_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` });
             }

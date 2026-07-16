@@ -22,7 +22,7 @@ tauri-plugin-updater = { version = "2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 keyring = "2"
 bollard = "0.16"          # Docker API client (for OrbStack)
 uuid = { version = "1", features = ["v4"] }
@@ -30,7 +30,7 @@ chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-anyhow = "1"
+anyhow = "1.0.103"
 thiserror = "1"
 rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
 notify = "6"                  # FSEvents file watcher (iMessage bridge)
@@ -46,6 +46,10 @@ async-trait = "0.1.89"
 btleplug = "0.11"
 hex = "0.4"
 mime_guess = "2.0.5"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

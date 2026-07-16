@@ -786,17 +786,23 @@ pub async fn disconnect_github(
 
     let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
 
-    // Best-effort container-side cleanup. The wrapper + env file may not exist if the
-    // user never connected GitHub; `rm -f` is silent in that case.
-    let cleanup = format!(
-        "rm -f /home/node/.openclaw/workspace/{aid}/bin/gh \
-                /home/node/.openclaw/workspace/{aid}/.github_env",
-        aid = agent_id,
-    );
+    // Best-effort container-side cleanup. Direct argv execution keeps the agent
+    // ID out of a shell program even though it has already passed validation.
+    let wrapper_path = format!("/home/node/.openclaw/workspace/{agent_id}/bin/gh");
+    let env_path = format!("/home/node/.openclaw/workspace/{agent_id}/.github_env");
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "sh", "-c", &cleanup])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "rm",
+                "-f",
+                &wrapper_path,
+                &env_path,
+            ])
             .output(),
     )
     .await;

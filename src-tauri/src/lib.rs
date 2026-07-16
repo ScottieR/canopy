@@ -24,6 +24,7 @@ mod canopy_helper;
 pub mod db;
 mod dispatch;
 mod docker;
+mod feedback;
 mod google;
 mod health_monitor;
 mod imessage;
@@ -537,6 +538,72 @@ async fn capture_viewport(window: tauri::WebviewWindow) -> Result<String, String
     Ok("data:image/png;base64,mock".to_string())
 }
 
+fn workspace_asset_extension_allowed(path: &std::path::Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "html"
+                | "htm"
+                | "css"
+                | "js"
+                | "mjs"
+                | "json"
+                | "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "webp"
+                | "svg"
+                | "ico"
+                | "avif"
+                | "woff"
+                | "woff2"
+                | "ttf"
+                | "otf"
+                | "txt"
+                | "md"
+                | "csv"
+        )
+    )
+}
+
+async fn resolve_workspace_asset(
+    workspace_dir: &std::path::Path,
+    requested_path: &str,
+) -> Result<std::path::PathBuf, u16> {
+    use std::path::Component;
+
+    if requested_path.is_empty() || requested_path.as_bytes().contains(&0) {
+        return Err(400);
+    }
+    let relative = std::path::Path::new(requested_path);
+    if relative.is_absolute()
+        || relative.components().any(|component| match component {
+            Component::Normal(value) => value.to_string_lossy().starts_with('.'),
+            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                true
+            }
+        })
+        || !workspace_asset_extension_allowed(relative)
+    {
+        return Err(403);
+    }
+
+    let canonical_workspace = tokio::fs::canonicalize(workspace_dir)
+        .await
+        .map_err(|_| 404u16)?;
+    let canonical_asset = tokio::fs::canonicalize(workspace_dir.join(relative))
+        .await
+        .map_err(|_| 404u16)?;
+    if !canonical_asset.starts_with(&canonical_workspace) || !canonical_asset.is_file() {
+        return Err(403);
+    }
+    Ok(canonical_asset)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -564,7 +631,12 @@ pub fn run() {
                 }
 
                 let agent_id = parts[0];
-                let file_path = parts[1];
+                let file_path = parts[1].split_once('?').map_or(parts[1], |(path, _)| path);
+
+                if crate::validators::agent::validate_id(agent_id).is_err() {
+                    responder.respond(tauri::http::Response::builder().status(400).body(Vec::new()).unwrap());
+                    return;
+                }
 
                 // Decode URI component (e.g. %20 -> space)
                 let file_path = urlencoding::decode(file_path).unwrap_or(std::borrow::Cow::Borrowed(file_path)).to_string();
@@ -573,25 +645,30 @@ pub fn run() {
                 
                 match crate::openclaw::get_agent_workspace_dir(&db, agent_id) {
                     Ok(workspace_dir) => {
-                        let full_path = workspace_dir.join(&file_path);
-                        
-                        // Security check: ensure path is within workspace
-                        if !full_path.starts_with(&workspace_dir) {
-                            responder.respond(tauri::http::Response::builder().status(403).body(Vec::new()).unwrap());
-                            return;
-                        }
+                        let full_path = match resolve_workspace_asset(&workspace_dir, &file_path).await {
+                            Ok(path) => path,
+                            Err(status) => {
+                                responder.respond(tauri::http::Response::builder().status(status).body(Vec::new()).unwrap());
+                                return;
+                            }
+                        };
 
                         match tokio::fs::read(&full_path).await {
                             Ok(bytes) => {
                                 let mime_type = mime_guess::from_path(&full_path).first_or_octet_stream().to_string();
-                                
+                                let response = tauri::http::Response::builder()
+                                    .status(200)
+                                    .header("Content-Type", mime_type)
+                                    .header("X-Content-Type-Options", "nosniff")
+                                    .header("Referrer-Policy", "no-referrer")
+                                    .header(
+                                        "Content-Security-Policy",
+                                        "default-src 'none'; script-src 'unsafe-inline' canopy-workspace:; style-src 'unsafe-inline' canopy-workspace:; img-src data: blob: canopy-workspace:; font-src data: canopy-workspace:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'",
+                                    )
+                                    .body(bytes)
+                                    .unwrap();
                                 responder.respond(
-                                    tauri::http::Response::builder()
-                                        .status(200)
-                                        .header("Content-Type", mime_type)
-                                        .header("Access-Control-Allow-Origin", "*")
-                                        .body(bytes)
-                                        .unwrap()
+                                    response
                                 );
                             }
                             Err(_) => {
@@ -779,6 +856,7 @@ pub fn run() {
             openclaw::send_message,
             openclaw::get_conversation_history,
             openclaw::list_agent_conversations,
+            openclaw::list_thread_runs,
             openclaw::get_agent_health,
             openclaw::check_agent_status,
             openclaw::get_gateway_log_tail,
@@ -793,6 +871,11 @@ pub fn run() {
             openclaw::approve_slack_pairing,
             openclaw::get_user_profile,
             openclaw::save_user_profile,
+            feedback::get_feedback_notification_settings,
+            feedback::configure_feedback_slack_notifications,
+            feedback::list_feedback_reports,
+            feedback::mark_feedback_report_dispatched,
+            feedback::submit_feedback_report,
             openclaw::backfill_agent_workspace_files,
             openclaw::get_global_audit_log,
             openclaw::get_agent_activity_heatmap,
@@ -1237,5 +1320,47 @@ mod access_tier_tests {
             file_path.starts_with(connected_folder),
             "Valid path within namespace should pass the prefix check"
         );
+    }
+
+    #[tokio::test]
+    async fn workspace_protocol_allows_only_existing_web_assets() {
+        let tmp = temp_dir();
+        let nested = tmp.path().join("app");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("index.html"), "<h1>safe</h1>").unwrap();
+        fs::write(tmp.path().join("secret"), "do not serve").unwrap();
+
+        let resolved = resolve_workspace_asset(tmp.path(), "app/index.html")
+            .await
+            .expect("valid workspace asset");
+        assert!(resolved.ends_with("app/index.html"));
+        assert!(resolve_workspace_asset(tmp.path(), "../outside.html")
+            .await
+            .is_err());
+        assert!(resolve_workspace_asset(tmp.path(), ".canopy/jit-bridge-token")
+            .await
+            .is_err());
+        assert!(resolve_workspace_asset(tmp.path(), "secret")
+            .await
+            .is_err());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn workspace_protocol_rejects_symlinks_that_escape_the_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = temp_dir();
+        let outside = temp_dir();
+        fs::write(outside.path().join("outside.html"), "secret").unwrap();
+        symlink(
+            outside.path().join("outside.html"),
+            workspace.path().join("linked.html"),
+        )
+        .unwrap();
+
+        assert!(resolve_workspace_asset(workspace.path(), "linked.html")
+            .await
+            .is_err());
     }
 }

@@ -47,6 +47,7 @@ import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
 import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
 import { useForumStore } from './store/forumStore';
+import { syncAgentProviderCredentials } from './security/providerCredentials';
 let gatewayBootPromise: Promise<any> | null = null;
 const withStartupTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
   Promise.race([
@@ -868,6 +869,45 @@ export const MultiPicker = ({
 // function LoadingScreen({ status }: { status?: string }) { Extracted
 
 export function CompanionGuide({ type }: { type: string }) {
+  type CompanionInput = {
+    key: string;
+    placeholder: string;
+  };
+
+  type GoogleOauthAction = {
+    kind: "google_oauth";
+    scopes: string[];
+    readOnly: boolean;
+    granularDrive?: boolean;
+    label: string;
+  };
+
+  type SystemSettingsAction = {
+    kind: "system_settings";
+    command: string;
+    label: string;
+  };
+
+  type TwilioConnectAction = {
+    kind: "twilio_connect";
+    label: string;
+  };
+
+  type CompanionAction = GoogleOauthAction | SystemSettingsAction | TwilioConnectAction;
+
+  type CompanionStep = {
+    text: React.ReactNode;
+    input?: CompanionInput;
+    action?: CompanionAction;
+  };
+
+  type CompanionConfig = {
+    title: string;
+    avatar: string;
+    intro: React.ReactNode;
+    steps: CompanionStep[];
+  };
+
   const searchParams = new URLSearchParams(window.location.search);
   const agentId = searchParams.get("agentId");
   const agentName = searchParams.get("agentName") || "Agent";
@@ -910,7 +950,7 @@ export function CompanionGuide({ type }: { type: string }) {
     } catch (domErr) { }
   };
 
-  const config = {
+  const configMap: Record<string, CompanionConfig> = {
     openai: {
       title: "OpenAI Setup",
       avatar: "/app-icon.png",
@@ -1242,7 +1282,8 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Paste that secure token below to link the connection.", input: { key: "HOMEKIT_TOKEN", placeholder: "hk_..." } }
       ]
     }
-  }[type] || null;
+  };
+  const config = configMap[type] || null;
 
   if (!config) return <div style={{ padding: 20 }}>Unknown configuration. You can close this window.</div>;
 
@@ -1448,13 +1489,16 @@ export function CompanionGuide({ type }: { type: string }) {
           </div>
         </div>
 
-        {config.steps.slice(0, step + 1).map((s, i) => (
+        {config.steps.slice(0, step + 1).map((s, i) => {
+          const stepInput = s.input;
+
+          return (
           <React.Fragment key={i}>
             <div style={{ display: "flex", gap: 12, alignItems: "flex-end", animation: "slideIn 0.3s ease" }}>
               <div style={{ width: 28, flexShrink: 0 }} />
               <div style={{ width: "100%", background: "var(--surface-card)", color: "var(--text-main)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
                 {s.text}
-                {s.input && i === step && (
+                {stepInput && i === step && (
                   <div style={{ marginTop: 12 }}>
                     <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, lineHeight: 1.4, color: "#f8f9fa", background: "var(--border-strong)", padding: "8px 12px", borderRadius: 8 }}>
                       <span style={{ marginRight: 6 }}>🔒</span>
@@ -1462,9 +1506,9 @@ export function CompanionGuide({ type }: { type: string }) {
                     </div>
                     <PasswordInput
                       autoFocus
-                      placeholder={s.input.placeholder}
-                      value={tokens[s.input.key] || ""}
-                      onChange={e => setTokens({ ...tokens, [s.input.key]: e.target.value })}
+                      placeholder={stepInput.placeholder}
+                      value={tokens[stepInput.key] || ""}
+                      onChange={e => setTokens({ ...tokens, [stepInput.key]: e.target.value })}
                       style={{
                         width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8,
                         border: "1px solid rgba(255,255,255,0.3)", background: "rgba(0,0,0,0.2)", color: "var(--surface-card)", outline: "none", fontSize: 13, fontFamily: "monospace"
@@ -1478,15 +1522,16 @@ export function CompanionGuide({ type }: { type: string }) {
             {/* User advancement bubble */}
             {i === step && status === "idle" && (
               <div style={{ display: "flex", justifyContent: "flex-end", animation: "slideIn 0.3s ease 0.5s backwards" }}>
-                <button onClick={handleAction} disabled={s.input && !tokens[s.input.key]} style={{
-                  padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "var(--text-main)", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
+                <button onClick={handleAction} disabled={stepInput && !tokens[stepInput.key]} style={{
+                  padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "var(--text-main)", fontSize: 13, fontWeight: 700, cursor: (stepInput && !tokens[stepInput.key]) ? "default" : "pointer", opacity: (stepInput && !tokens[stepInput.key]) ? 0.5 : 1
                 }}>
-                  {s.action?.label || (s.input ? "Save & Continue" : "I've done this ->")}
+                  {s.action?.label || (stepInput ? "Save & Continue" : "I've done this ->")}
                 </button>
               </div>
             )}
           </React.Fragment>
-        ))}
+          );
+        })}
 
         {status === "saving" && (
           <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-sub)", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
@@ -1606,6 +1651,7 @@ export default function App() {
   const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");
   const [pendingJitAuth, setPendingJitAuth] = useState<any>(null);
   const [jitDuration, setJitDuration] = useState("session");
+  const startupStartedRef = useRef(false);
 
   // Startup services are recoverable in the background. Never let an optional
   // Docker/admin/keychain operation hold the entire desktop UI indefinitely.
@@ -1697,7 +1743,14 @@ export default function App() {
   }, [activeView]);
 
   useEffect(() => {
+    // React StrictMode intentionally replays effects in development. Starting
+    // two gateway reconciliation jobs at once causes duplicate config writes,
+    // noisy restarts, and a much longer apparent startup.
+    if (startupStartedRef.current) return;
+    startupStartedRef.current = true;
+
     const loadAgents = async () => {
+      let localAgentsHydrated = false;
       try {
         // Sync preferences template from admin API to Rust before boot
         try {
@@ -1761,6 +1814,89 @@ export default function App() {
           // failures from sending an established installation through the local
           // engine setup gate again.
           localStorage.setItem("canopy_initial_setup_complete", "true");
+
+          // Hydrate the UI from SQLite before touching Docker/OpenClaw. Gateway
+          // reconciliation can take minutes on installations with many agents,
+          // but it is recoverable background work and must never hold the entire
+          // desktop behind the loading screen.
+          setLoadStatus("Loading agent workspace...");
+          const weeklyRecords = await withStartupTimeout(
+            invoke<any[]>("get_token_usage_history", {
+              agentId: null,
+              conversationId: null,
+              days: 7,
+            }),
+            5_000,
+            "Token usage history",
+          ).catch(err => {
+            console.error("Failed to load weekly token usage history:", err);
+            return [] as any[];
+          });
+
+          const enrichedAgents = loadedAgents.map(agent => {
+            const roleInfo = AGENT_TYPE_INFO[agent.role] || AGENT_TYPE_INFO["Assistant"];
+            const vi = agent.visual_identity || {};
+            const dbPaused = (agent as any).paused === true || (agent as any).paused === 1;
+
+            const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
+            const tokensUsed = totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
+            const agentWeeklyCost = weeklyRecords
+              .filter(r => r.agent_id === agent.id)
+              .reduce((sum, r) => sum + (r.cost_usd || 0), 0);
+
+            return {
+              ...agent,
+              paused: dbPaused,
+              visual_identity: vi,
+              title: `The ${agent.role}`,
+              description: roleInfo.description,
+              robeColor: (vi as any).robeColor || (vi as any).color || roleInfo.robeColor,
+              accentColor: (vi as any).accentColor || (vi as any).color || roleInfo.accentColor,
+              color: (vi as any).color || roleInfo.color,
+              position: [Math.random() * 4 - 2, 0, Math.random() * 4 - 2] as [number, number, number],
+              targetPosition: [Math.random() * 4 - 2, 0, Math.random() * 4 - 2] as [number, number, number],
+              currentAction: "idle",
+              socialMotive: 0.5 + Math.random() * 0.3,
+              energy: 0.6 + Math.random() * 0.3,
+              uptime: `${Math.floor(agent.stats.uptime_seconds / 3600)} hrs`,
+              tokensUsed,
+              weeklyCompute: agentWeeklyCost.toFixed(3),
+              monthlySpend: Math.floor(agent.stats.total_cost_usd),
+              spendLimit: 200,
+              permissions: DEFAULT_PERMISSIONS.map(p => ({
+                ...p,
+                enabled: agent.capabilities ? (agent.capabilities as any)[p.id] : p.enabled,
+              })),
+              recentSpend: [],
+              chatLog: [],
+              memories: [],
+              personalityPrompt: agent.personality?.custom_instructions || `${agent.name} is a ${agent.role.toLowerCase()} lobster — reliable, sharp, and always working.`,
+              avatarPrompt: `A Monument Valley-style lobster with a ${roleInfo.robeColor} shell, round eyes, and swaying antennae.`,
+            };
+          });
+          const currentAgents = useWorldStore.getState().agents;
+          const mergedAgents = (enrichedAgents as unknown as AgentData[]).map(ea => {
+            const currentAgent = currentAgents.find(existing => existing.id === ea.id);
+            if (!currentAgent) return ea;
+            return {
+              ...ea,
+              conversations: currentAgent.conversations || [],
+              activeConversationId: currentAgent.activeConversationId || null,
+              miniApps: currentAgent.miniApps || [],
+            };
+          });
+          setAgents(mergedAgents);
+          localAgentsHydrated = true;
+
+          const hash = window.location.hash.replace('#/', '').replace('#', '');
+          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
+          if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
+            setActiveView(hash as any);
+          } else {
+            setActiveView("canopy");
+          }
+          setInitialized(true);
+
           // Pre-flight: clean stale agents from openclaw.json and fix corrupted
           // auth-profiles.json files on the host bind-mount BEFORE the container starts.
           // OpenClaw reads these files the instant it boots — corrupted JSON or stale
@@ -1786,98 +1922,17 @@ export default function App() {
           unlisten();
 
           setLoadStatus("Checking DB for Agents...");
-          // Sync keys to all legacy agents to prevent silent Failovers into OOM crashes (Exit 137).
-          // Load global fallback keys once
-          const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
-          const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
-          const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
-          const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
-                                      || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
-
-          setLoadStatus("Keys loaded, pushing sync...");
-
+          // Keep secrets inside Rust/Keychain. The frontend requests an
+          // agent-scoped refresh but never reads or transports raw key values.
+          setLoadStatus("Refreshing agent credentials...");
           for (const ag of loadedAgents) {
-            setLoadStatus("Syncing Keys: " + ag.id);
-            // Per-agent key takes priority over global fallback.
-            // This lets each agent use a separate API key for usage tracking,
-            // while the global key acts as the default for agents without their own.
-            const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
-            const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
-            const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
-            const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
-
-            await withStartupTimeout(invoke("sync_credentials", { agentId: ag.id, keys: {
-              "ANTHROPIC_API_KEY": agAnthropic,
-              "OPENAI_API_KEY":    agOpenAI,
-              "GEMINI_API_KEY":    agGemini,
-              "XAI_API_KEY":       agGrok,
-            }}), 1_000, `Credential sync for ${ag.id}`).catch(console.warn);
+            setLoadStatus("Syncing credentials: " + ag.id);
+            await withStartupTimeout(
+              syncAgentProviderCredentials(invoke, ag.id),
+              5_000,
+              `Credential sync for ${ag.id}`,
+            ).catch(console.warn);
           }
-
-          setLoadStatus("Setting up UI Agent Models...");
-          // Fetch weekly token usage records to calculate compute
-          const weeklyRecords = await invoke<any[]>("get_token_usage_history", {
-            agentId: null,
-            conversationId: null,
-            days: 7
-          }).catch(err => {
-            console.error("Failed to load weekly token usage history:", err);
-            return [];
-          });
-
-          // Enrich agents with UI data
-          const enrichedAgents = loadedAgents.map(agent => {
-            const roleInfo = AGENT_TYPE_INFO[agent.role] || AGENT_TYPE_INFO["Assistant"];
-            const vi = agent.visual_identity || {};
-            const dbPaused = (agent as any).paused === true || (agent as any).paused === 1;
-            
-            const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
-            const tokensUsed = totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
-
-            const agentWeeklyCost = weeklyRecords
-              .filter(r => r.agent_id === agent.id)
-              .reduce((sum, r) => sum + (r.cost_usd || 0), 0);
-            const weeklyCompute = agentWeeklyCost.toFixed(3);
-
-            return {
-              ...agent,
-              paused: dbPaused,
-              visual_identity: vi,
-              title: `The ${agent.role}`,
-              description: roleInfo.description,
-              robeColor: (vi as any).robeColor || (vi as any).color || roleInfo.robeColor,
-              accentColor: (vi as any).accentColor || (vi as any).color || roleInfo.accentColor,
-              color: (vi as any).color || roleInfo.color,
-              position: [Math.random() * 4 - 2, 0, Math.random() * 4 - 2] as [number, number, number],
-              targetPosition: [Math.random() * 4 - 2, 0, Math.random() * 4 - 2] as [number, number, number],
-              currentAction: "idle",
-              socialMotive: 0.5 + Math.random() * 0.3,
-              energy: 0.6 + Math.random() * 0.3,
-              uptime: `${Math.floor(agent.stats.uptime_seconds / 3600)} hrs`,
-              tokensUsed,
-              weeklyCompute,
-              monthlySpend: Math.floor(agent.stats.total_cost_usd),
-              spendLimit: 200,
-              permissions: DEFAULT_PERMISSIONS.map(p => ({
-                ...p,
-                enabled: agent.capabilities ? (agent.capabilities as any)[p.id] : p.enabled
-              })),
-              recentSpend: [],
-              chatLog: [],
-              memories: [],
-              personalityPrompt: agent.personality?.custom_instructions || `${agent.name} is a ${agent.role.toLowerCase()} lobster — reliable, sharp, and always working.`,
-              avatarPrompt: `A Monument Valley-style lobster with a ${roleInfo.robeColor} shell, round eyes, and swaying antennae.`,
-            };
-          });
-          const currentAgents = useWorldStore.getState().agents;
-          const mergedAgents = (enrichedAgents as unknown as AgentData[]).map(ea => {
-             const ca = currentAgents.find(x => x.id === ea.id);
-             if (ca) {
-                 return { ...ea, conversations: ca.conversations || [], activeConversationId: ca.activeConversationId || null, miniApps: ca.miniApps || [] };
-             }
-             return ea;
-          });
-          setAgents(mergedAgents);
 
           // ── Wait for gateway readiness ──────────────────────────────────────
           // boot_sync_agents registers agents in OpenClaw's DB, but the gateway
@@ -1921,17 +1976,14 @@ export default function App() {
             }
           }
 
-          const hash = window.location.hash.replace('#/', '').replace('#', '');
-          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
-          if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
-            setActiveView(hash as any);
-          } else {
-            setActiveView("canopy");
-          }
         }
       } catch (error) {
         console.error("Failed to load agents:", error);
-        setActiveView("onboarding");
+        if (!localAgentsHydrated) {
+          setActiveView("onboarding");
+        } else {
+          console.warn("Background gateway startup failed; keeping the local workspace open.");
+        }
       } finally {
         setInitialized(true);
       }
@@ -2224,7 +2276,6 @@ export default function App() {
           70%  { transform: scale(1.04) rotate(2deg); }
           100% { transform: scale(1); }
         }
-        /* temp pulse override just to be safe */ /* @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
