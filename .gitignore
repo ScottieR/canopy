@@ -3,6 +3,11 @@ dist/
 dist-preview/
 .DS_Store
 *.local
+.env
+.env.*
+!.env.example
+!.env.development
+!.env.production
 src-tauri/target/
 public/models/lobsters/FlatIvyBase.glb
 public/models/lobsters/IvyBase.glb
