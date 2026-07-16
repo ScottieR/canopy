@@ -3,7 +3,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { FeedbackModal } from "./FeedbackModal";
 import { useWorldStore } from "../../store/worldStore";
 
-const mockInvoke = vi.fn(async (command: string) => {
+const mockInvoke = vi.fn(async (...args: any[]) => {
+  const [command] = args;
   if (command === "submit_feedback_report") return { id: "report-1" };
   return null;
 });

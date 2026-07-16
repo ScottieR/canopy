@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import RAW_AGENT_TYPE_INFO from "../../shared/agents.json";
+import { getQuotaSafeLocalStorage } from "./safeStorage";
 
 export interface UserProfile {
   name: string;
@@ -498,6 +499,67 @@ export function injectPrincipalContext(basePrompt: string, profile: UserProfile 
   return basePrompt + principal;
 }
 
+const PERSISTED_CHAT_MESSAGE_LIMIT = 10;
+const PERSISTED_MESSAGE_TEXT_LIMIT = 10_000;
+const PERSISTED_CONVERSATION_LIMIT = 100;
+const PERSISTED_MINI_APP_CONTENT_BUDGET = 100_000;
+
+function boundedText(value: string | undefined, limit: number): string | undefined {
+  if (typeof value !== "string") return value;
+  return value.length > limit ? value.slice(0, limit) : value;
+}
+
+function persistedMessage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    text: boundedText(message.text, PERSISTED_MESSAGE_TEXT_LIMIT) || "",
+    attachments: message.attachments?.map(attachment => ({
+      ...attachment,
+      dataUrl: attachment.dataUrl?.startsWith("data:") ? "" : (attachment.dataUrl || ""),
+    })),
+  };
+}
+
+function persistedMiniApps(miniApps: MiniApp[] | undefined): MiniApp[] | undefined {
+  if (!miniApps) return miniApps;
+  let remainingContent = PERSISTED_MINI_APP_CONTENT_BUDGET;
+
+  return miniApps.slice(0, 10).map(app => ({
+    ...app,
+    versions: app.versions.slice(0, 3).map(version => {
+      const content = version.htmlContent || "";
+      const retained = content.slice(0, Math.max(0, remainingContent));
+      remainingContent -= retained.length;
+      return { ...version, htmlContent: retained };
+    }),
+  }));
+}
+
+/** Produce a bounded local cache. Durable conversation history lives in SQLite/OpenClaw. */
+export function createWorldPersistenceSnapshot(state: WorldState) {
+  return {
+    agents: state.agents.map(agent => {
+      const { chatLog, conversations, miniApps, ...agentMetadata } = agent;
+      return {
+        ...agentMetadata,
+        chatLog: (chatLog || []).slice(-PERSISTED_CHAT_MESSAGE_LIMIT).map(persistedMessage),
+        conversations: (conversations || []).slice(-PERSISTED_CONVERSATION_LIMIT).map(conversation => ({
+          ...conversation,
+          // Thread contents are rehydrated from the backend when selected.
+          messages: [],
+        })),
+        miniApps: persistedMiniApps(miniApps),
+      };
+    }),
+    inbox: state.inbox,
+    isAutoCloakEnabled: state.isAutoCloakEnabled,
+    autoCloakTimeout: state.autoCloakTimeout,
+    telemetryAnonId: state.telemetryAnonId,
+    usageTelemetryEnabled: state.usageTelemetryEnabled,
+    firedTelemetryEvents: state.firedTelemetryEvents,
+  };
+}
+
 export const useWorldStore = create<WorldState>()(
   persist(
     (set) => ({
@@ -876,34 +938,10 @@ export const useWorldStore = create<WorldState>()(
 }),
 {
   name: "canopy-world-store",
-  partialize: (state) => ({ 
-    agents: state.agents.map((a) => ({
-      ...a,
-      chatLog: a.chatLog?.map((m) => ({
-        ...m,
-        attachments: m.attachments?.map((att) => ({
-          ...att,
-          dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
-        }))
-      })),
-      conversations: a.conversations?.map((c) => ({
-        ...c,
-        messages: c.messages?.map((m) => ({
-          ...m,
-          attachments: m.attachments?.map((att) => ({
-            ...att,
-            dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
-          }))
-        }))
-      }))
-    })),
-    inbox: state.inbox,
-    isAutoCloakEnabled: state.isAutoCloakEnabled,
-    autoCloakTimeout: state.autoCloakTimeout,
-    telemetryAnonId: state.telemetryAnonId,
-    usageTelemetryEnabled: state.usageTelemetryEnabled,
-    firedTelemetryEvents: state.firedTelemetryEvents
-  }),
+  storage: createJSONStorage(getQuotaSafeLocalStorage),
+  version: 1,
+  migrate: persistedState => persistedState as WorldState,
+  partialize: createWorldPersistenceSnapshot,
 }
 ));
 

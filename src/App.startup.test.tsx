@@ -122,8 +122,8 @@ describe("established installation startup", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
-    delete (window as typeof window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    delete (window as typeof window & { __TAURI_EVENT_PLUGIN_INTERNALS__?: unknown }).__TAURI_EVENT_PLUGIN_INTERNALS__;
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    Reflect.deleteProperty(window, "__TAURI_EVENT_PLUGIN_INTERNALS__");
   });
 
   it("opens the local workspace without waiting for gateway reconciliation", async () => {
