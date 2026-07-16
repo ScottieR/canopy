@@ -1,7 +1,48 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach, type Mock } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { invoke } from '@tauri-apps/api/core';
+import { open } from '@tauri-apps/plugin-dialog';
+
+const mockInvoke = vi.fn();
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: any[]) => mockInvoke(...args),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+  emit: vi.fn(),
+}));
+
+vi.mock('../../App', () => ({
+  Toggle: ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+    <button type="button" aria-pressed={enabled} onClick={onChange}>
+      {enabled ? 'On' : 'Off'}
+    </button>
+  ),
+  ServiceRow: ({
+    title,
+    subtitle,
+    children,
+  }: {
+    title?: React.ReactNode;
+    subtitle?: React.ReactNode;
+    children?: React.ReactNode;
+  }) => (
+    <section>
+      {title ? <div>{title}</div> : null}
+      {subtitle ? <div>{subtitle}</div> : null}
+      {children}
+    </section>
+  ),
+  MultiPicker: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  glass: () => ({}),
+}));
+
 import { ConnectionsTab } from './ConnectionsTab';
-import { AgentData } from '../../store/worldStore';
+import { AgentData, useWorldStore } from '../../store/worldStore';
+
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 
 // ────────────────────────────────────────────────────────────────────────────
 // TEST SETUP AND FIXTURES
@@ -43,6 +84,8 @@ const mockAgent: AgentData = {
     { id: 'browser', label: 'Web Browser', description: 'Navigate websites', enabled: false, category: 'skills' },
     { id: 'ext_network', label: 'External Network', description: 'Make external requests', enabled: false, category: 'network' },
     { id: 'coding', label: 'Coding', description: 'Write and execute code', enabled: false, category: 'skills' },
+    { id: 'file_read', label: 'File Read', description: 'Read scoped files', enabled: true, category: 'data' },
+    { id: 'file_write', label: 'File Write', description: 'Write scoped files', enabled: false, category: 'data' },
   ],
   recentSpend: [],
   chatLog: [],
@@ -63,7 +106,7 @@ const mockAgent: AgentData = {
     autonomous: false,
     scheduled: false,
     memory_write: false,
-    file_read: false,
+    file_read: true,
     file_write: false,
     payments: false,
     spend_auto: false,
@@ -76,6 +119,104 @@ const mockAgent: AgentData = {
     summarize: false,
   },
 };
+
+describe('ConnectionsTab - Workspace Folder Access', () => {
+  const invokeMock = mockInvoke as unknown as Mock;
+  const dialogOpenMock = open as unknown as Mock;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    invokeMock.mockImplementation(async (command: string) => (
+      command === 'get_agent_allowed_directories' ? [] : null
+    ));
+    dialogOpenMock.mockResolvedValue(null);
+    (window as any).__TAURI_INTERNALS__ = {
+      invoke: vi.fn().mockResolvedValue([]),
+    };
+    useWorldStore.setState({ agents: [mockAgent] });
+  });
+
+  it('creates an OpenAI key in the selected agent scope when management is connected', async () => {
+    const promptSpy = vi.spyOn(window, 'prompt');
+    invokeMock.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'get_provider_management_status' && args?.provider === 'openai') {
+        return { provider: 'openai', connected: true };
+      }
+      if (command === 'get_agent_allowed_directories' || command === 'get_available_models') {
+        return [];
+      }
+      if (command === 'get_secret_cmd') {
+        return '';
+      }
+      return null;
+    });
+
+    render(<ConnectionsTab agent={mockAgent} />);
+    const button = await screen.findByRole('button', { name: 'Create dedicated OpenAI key' });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('get_provider_management_status', { provider: 'openai' });
+      expect(invokeMock).toHaveBeenCalledWith('provision_agent_provider_key', {
+        agentId: mockAgent.id,
+        provider: 'openai',
+      });
+    });
+    expect(promptSpy).not.toHaveBeenCalled();
+    const provisionCall = invokeMock.mock.calls.findIndex(([command]) => command === 'provision_agent_provider_key');
+    expect(provisionCall).toBeGreaterThanOrEqual(0);
+    expect(invokeMock.mock.calls.slice(provisionCall + 1).some(([command]) => command === 'get_secret_cmd')).toBe(false);
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      'store_secret_cmd',
+      expect.objectContaining({ key: 'OPENAI_API_KEY' }),
+    );
+  });
+
+  it('persists shared-agent folders as brokered read-only grants', async () => {
+    const selectedFolder = '/tmp/canopy-shared-read-test';
+    dialogOpenMock.mockResolvedValue([selectedFolder]);
+    render(<ConnectionsTab agent={mockAgent} />);
+
+    fireEvent.click(await screen.findByText('Allowed Folders (0)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Folder' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('update_agent_allowed_directories', {
+        agentId: mockAgent.id,
+        directories: [selectedFolder],
+        access: 'read_only',
+      });
+    });
+    expect(invokeMock.mock.calls.some(([command]) => command === 'toggle_agent_isolation')).toBe(false);
+  });
+
+  it('opens the folder picker and persists selections for isolated agents', async () => {
+    const isolatedAgent: AgentData = { ...mockAgent, isolated: true };
+    const selectedFolder = '/tmp/canopy-folder-access-test';
+    dialogOpenMock.mockResolvedValue([selectedFolder]);
+    useWorldStore.setState({ agents: [isolatedAgent] });
+
+    render(<ConnectionsTab agent={isolatedAgent} />);
+
+    fireEvent.click(await screen.findByText('Allowed Folders (0)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Add Folder' }));
+
+    await waitFor(() => {
+      expect(dialogOpenMock).toHaveBeenCalledWith({
+        directory: true,
+        multiple: true,
+        title: 'Select Allowed Folders',
+      });
+      expect(invokeMock).toHaveBeenCalledWith('update_agent_allowed_directories', {
+        agentId: isolatedAgent.id,
+        directories: [selectedFolder],
+        access: 'read_only',
+      });
+    });
+
+    expect(invokeMock.mock.calls.some(([command]) => command === 'start_gateway')).toBe(false);
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────────
 // GITHUB CONNECTION TESTS
@@ -521,6 +662,29 @@ describe('ConnectionsTab - Regression Prevention', () => {
 
     expect(browserTimeout).toBeGreaterThan(0);
     expect(browserTimeout).toBeLessThan(10 * 1000); // Less than 10 seconds
+  });
+
+  it('shows a warning when computer control permissions are enabled', async () => {
+    const agentWithComputerControl: AgentData = {
+      ...mockAgent,
+      permissions: [
+        ...mockAgent.permissions,
+        { id: 'computer_control', label: 'Computer Control Sandbox', description: 'Control an isolated desktop', enabled: true, category: 'skills' },
+        { id: 'screen_record', label: 'Screen Recording', description: 'Receive screenshots', enabled: true, category: 'data' },
+      ],
+      capabilities: {
+        ...mockAgent.capabilities,
+        computer_control: true,
+        screen_record: true,
+      },
+    };
+
+    const invokeMock = vi.fn().mockResolvedValue([]);
+    (window as any).__TAURI_INTERNALS__ = { invoke: invokeMock };
+
+    render(<ConnectionsTab agent={agentWithComputerControl} />);
+
+    expect(await screen.findByText(/computer control is separately gated/i)).toBeInTheDocument();
   });
 });
 

@@ -157,6 +157,13 @@ function diagnoseError(err: unknown, agentName?: string): Diagnosis {
       fix: "Open the agent's settings in the Agents tab and check the model name is correct.",
     };
   }
+  if (lower.includes("missing from the openclaw registry") || lower.includes("unknown agent id")) {
+    return {
+      summary: `Agent runtime is still warming up${who}`,
+      detail: raw.slice(0, 200),
+      fix: "The gateway is still re-registering agents after startup or a restart. Wait a moment, then retry the forum.",
+    };
+  }
 
   return {
     summary: `Agent call failed${who}`,
@@ -418,31 +425,136 @@ interface DraftResponse {
   content: string;
 }
 
+/** Strip markdown code fences that models love to wrap output in. */
+function stripCodeFences(text: string): string {
+  let t = text.trim();
+  // Leading fence (```html, ```json, ``` etc.)
+  t = t.replace(/^```[a-z]*\s*\n?/i, "");
+  // Trailing fence
+  t = t.replace(/\n?```\s*$/, "");
+  return t.trim();
+}
+
 function parseDraftResponse(raw: string): DraftResponse {
+  // Delimiter structure — allow prose preamble before ---FORMAT--- (models add it
+  // despite instructions) by matching the delimiter anywhere in the response.
   const match = raw.match(/---FORMAT---\s*(markdown|html|genui)\s*---CONTENT---\s*([\s\S]*)/i);
   if (match) {
     return {
       format: match[1].toLowerCase().trim() as "markdown" | "html" | "genui",
-      content: match[2].trim(),
+      content: stripCodeFences(match[2]),
     };
   }
-  const trimmed = raw.trim();
-  if (
-    trimmed.startsWith("<!DOCTYPE") ||
-    trimmed.startsWith("<!doctype") ||
-    trimmed.startsWith("<html")
-  ) {
-    return { format: "html", content: trimmed };
+  const trimmed = stripCodeFences(raw);
+  // Bare HTML — also catch documents that start mid-preamble
+  const htmlStart = trimmed.search(/<!DOCTYPE\s+html|<html[\s>]/i);
+  if (htmlStart >= 0 && htmlStart < 200) {
+    return { format: "html", content: trimmed.slice(htmlStart) };
   }
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+  if (trimmed.startsWith("{")) {
     try {
       JSON.parse(trimmed);
       return { format: "genui", content: trimmed };
     } catch {
+      // fall through to markdown
     }
   }
   return { format: "markdown", content: trimmed };
 }
+
+/**
+ * Best-effort repair of common generation defects so the deliverable never
+ * renders visibly broken:
+ * - HTML truncated mid-document (token limit) → close the document
+ * - stray trailing fence fragments
+ */
+function repairDraft(draft: DraftResponse): DraftResponse {
+  if (draft.format !== "html") return draft;
+  let content = draft.content;
+  if (!/<\/html>\s*$/i.test(content)) {
+    // Drop a trailing partially-emitted tag (e.g. "<div cla") before closing
+    content = content.replace(/<[^>]*$/, "");
+    if (!/<\/body>/i.test(content)) content += "\n</body>";
+    content += "\n</html>";
+  }
+  return { ...draft, content };
+}
+
+/**
+ * Validates a parsed draft and returns a list of human-readable issues.
+ * An empty list means the draft is publishable. Issues are fed back to the
+ * writer agent verbatim for one corrective regeneration pass.
+ */
+function validateDraft(draft: DraftResponse): string[] {
+  const issues: string[] = [];
+  const c = draft.content;
+
+  if (draft.format === "html") {
+    if (!/<html[\s>]|<!DOCTYPE\s+html/i.test(c)) {
+      issues.push("The HTML is not a complete document — it must start with <!DOCTYPE html> and contain <html>, <head>, and <body>.");
+    }
+    if (c.length < 800) {
+      issues.push("The HTML is far too short to be a real deliverable — it looks like a stub or placeholder. Produce the full, content-rich page.");
+    }
+    if (!/<\/html>\s*$/i.test(c.trim())) {
+      issues.push("The document is truncated — it does not end with </html>. Reduce scope (fewer sections, tighter copy) so the COMPLETE document fits in one response.");
+    }
+    if (/<script[^>]+src\s*=\s*["']https?:/i.test(c) || /<link[^>]+href\s*=\s*["']https?:/i.test(c) || /@import\s+url\(\s*["']?https?:/i.test(c)) {
+      issues.push("External scripts/stylesheets/fonts are referenced. The render sandbox has NO network access — inline all CSS and JS, use system font stacks.");
+    }
+    if (/<img[^>]+src\s*=\s*["']https?:/i.test(c)) {
+      issues.push("External images are referenced — they will render as broken images in the sandbox. Use inline SVG, CSS gradients, or emoji instead (or exact uploaded-attachment filenames).");
+    }
+    if (/lorem ipsum|\bTBD\b|PLACEHOLDER|Sample (item|text|content)/i.test(c)) {
+      issues.push("Placeholder text detected. Every piece of content must be real, drawn from the research/strategy on the board and the brief.");
+    }
+  } else if (draft.format === "genui") {
+    try {
+      JSON.parse(c);
+    } catch {
+      issues.push("The GenUI payload is not valid JSON. Return a single parseable JSON object with no surrounding text or fences — or switch to a self-contained HTML deliverable instead.");
+    }
+  } else {
+    if (c.trim().length < 80) {
+      issues.push("The markdown deliverable is nearly empty. Produce the full deliverable content.");
+    }
+  }
+  return issues;
+}
+
+// ─── Generative UI best practices ────────────────────────────────────────────
+// This is the encoded "house style" for every deliverable the writer produces.
+// It is injected into the draft prompt, the corrective-fix prompt, the review
+// revision prompt, and the follow-up rewrite prompt so quality survives every
+// path that can touch the deliverable.
+
+const GENUI_BEST_PRACTICES = `**GENERATIVE UI BEST PRACTICES — the deliverable renders inside a sandboxed iframe in the Canopy app. Every rule below is load-bearing; violations show up as visibly broken UI.**
+
+ENVIRONMENT (hard constraints):
+- ONE complete, self-contained HTML document: \`<!DOCTYPE html>\` … \`</html>\`. All CSS in a single <style> block, all JS in a single <script> block at the end of <body>. Never wrap the document in markdown code fences.
+- The sandbox has NO network access. Never reference external URLs: no CDN scripts or stylesheets, no Google Fonts, no web images, no fetch/XHR. Anything external renders as a broken asset.
+- Visuals therefore come from: inline SVG (preferred — draw real charts, maps, icons), CSS gradients/shapes, and unicode/emoji. Fonts: system stack only, e.g. font-family: -apple-system, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif.
+- No localStorage/sessionStorage/cookies (they throw in the sandbox) — keep state in JS variables. No alert/confirm/prompt.
+- FINISH the document. If you are running long, cut scope — fewer sections, tighter copy — but ALWAYS emit the closing </html>. A truncated page is the worst possible outcome.
+
+CONTENT GROUNDING (what makes it feel bespoke, not generic):
+- Every number, name, place, price, and recommendation must come from the research/strategy on the board, the brief, or the user's clarifications. No lorem ipsum, no "Sample item", no invented statistics, no empty "TBD" sections.
+- If the board lists specific items (routes, stops, dishes, exercises, line items), render THOSE items — the user should recognize their project instantly.
+- Prefer showing fewer, fully-realized sections over many skeletal ones.
+
+DESIGN SYSTEM (Canopy house style):
+- Palette: primary #3c6663, accent #4A9E96, warm highlight #F59E3F, page background #faf9f6, card background #ffffff, text #303330, subtle borders rgba(0,0,0,0.07).
+- html,body { margin:0 } with the page background color on body; the panel is ~700–900px wide and scrolls vertically — design a fluid single-column-to-two-column layout (CSS grid with auto-fit/minmax), never fixed pixel page widths.
+- Cards: white, border-radius 14–16px, soft shadow (0 2px 12px rgba(0,0,0,0.06)), 20–24px padding, generous whitespace between sections.
+- Hierarchy: open with a hero header — project title, one-line purpose, and 2–4 key stats or highlights — then clearly-titled sections. Use a sticky top nav or tab bar when there are more than 3 sections.
+- Typography: 15–16px body, 1.6 line-height, headings with letter-spacing -0.01em; uppercase 11px letterspaced labels for section eyebrows.
+
+INTERACTIVITY & DELIGHT (this is what makes it magical):
+- Include 2–4 interactive elements that genuinely serve the content: tabs, filters, toggles, accordions, checklists with a live progress bar, sliders that recompute real numbers, hover-reveal detail cards. Every control must visibly change something — no dead buttons.
+- Micro-polish: 150–250ms ease transitions on hover/expand, subtle hover lift on cards (translateY(-2px) + shadow), a gentle staggered fade-in on load (CSS animation, max ~400ms).
+- Emulate the interaction paradigms of the best-in-class product for this domain identified in research (e.g. Wanderlog for trips, YNAB for budgets, Notion for structured plans) — layout patterns, not branding.
+- Accessibility basics: real <button> elements, sufficient color contrast, focus-visible outlines.
+- Finish with a subtle "Made with Canopy" watermark: fixed bottom-right, 10px, opacity 0.3.`;
 
 function buildDraftPrompt(forum: Forum, agent: ForumAgent, boardSoFar: string, clarifications: string): string {
   const steering = getSteeringDirectives(forum);
@@ -462,22 +574,16 @@ ${safeBoard}
 
 **DEFAULT TO HTML.** The deliverable panel is a living canvas — rich interactive HTML is almost always more valuable than a static document. Choose HTML unless the output is genuinely prose-only (e.g. a cover letter, a recipe, a poem).
 
-**HTML (strongly preferred)** — infographics, dashboards, interactive tools, comparison tables, timelines, maps, calculators, data visualizations, gallery displays, pricing tables, or any output where visual design conveys meaning. When using HTML:
-- Create a single, fully self-contained HTML file (all CSS and JS inline)
-- Color palette: primary #3c6663, accent #4A9E96, background #faf9f6, text #303330, card bg #ffffff
-- Make it polished, beautiful, responsive — not a placeholder. Think product-quality, not prototype.
-- EMULATE the best-in-class apps in this domain (e.g. Wanderlog for travel; AirDNA for STR pricing; YNAB for budgets; Artfully Walls for gallery layouts; Notion for structured plans). Include interactive elements (sliders, filters, toggles, tabs) where they add value.
-- If referencing uploaded image assets, use their EXACT filenames in src="..." or CSS url(...) (e.g. src="filename.png"). They will be resolved dynamically.
-- Add a subtle "Made with Canopy" watermark (bottom-right, 10px, opacity 0.3).
+${GENUI_BEST_PRACTICES}
+
+- If referencing uploaded image assets, use their EXACT filenames in src="..." or CSS url(...) (e.g. src="filename.png"). They will be resolved dynamically — these are the ONLY permitted image sources besides inline SVG/data URIs.
 
 **MARKDOWN** — use only for outputs that are inherently prose: memos, letters, recipes, step-by-step guides, or any brief where visual layout adds nothing.
-
-**GENUI** — for complex native React-like Mini-Apps requiring structured JSON component definitions.
 
 If you need to confirm ONE thing before drafting, ask as a structured question (nothing else):
 {"__type": "question", "text": "Your question?", "options": ["Option A", "Option B", "Option C"]}
 
-Otherwise, respond with EXACTLY this delimiter structure — nothing before ---FORMAT---, nothing after the content:
+Otherwise, respond with EXACTLY this delimiter structure — nothing before ---FORMAT---, nothing after the content, no code fences:
 
 ---FORMAT---
 html
@@ -491,14 +597,44 @@ markdown
 ---CONTENT---
 [your full markdown content here]
 
-OR:
+Be specific to the actual brief content — no filler, no placeholder text. The user's agents worked hard to get here; make the deliverable worth opening.`;
+}
+
+/** Corrective prompt when the first draft fails validation — same session, so the
+ *  agent still has its own draft in context. */
+function buildDraftFixPrompt(issues: string[]): string {
+  return `Your deliverable has problems that will make it render broken in the app. Fix ALL of the following and resend the COMPLETE corrected deliverable:
+
+${issues.map(i => `- ${i}`).join("\n")}
+
+Reminder of the rules:
+
+${GENUI_BEST_PRACTICES}
+
+Respond with EXACTLY the delimiter structure again (nothing before ---FORMAT---, no code fences):
 
 ---FORMAT---
-genui
+html
 ---CONTENT---
-[your stringified JSON GenUI payload here]
+[complete corrected document]`;
+}
 
-Be specific to the actual brief content — no filler, no placeholder text. The user's agents worked hard to get here; make the deliverable worth opening.`;
+/** Revision prompt used when the reviewer requests changes. Same draft session. */
+function buildRevisionPrompt(revisionNotes: string): string {
+  return `The reviewer assessed your deliverable and requested one revision pass. Their notes:
+
+${revisionNotes}
+
+Apply these revisions and resend the COMPLETE updated deliverable (full document, not a diff). Keep everything that already works; do not regress polish or interactivity.
+
+${GENUI_BEST_PRACTICES}
+
+Respond with EXACTLY the delimiter structure (nothing before ---FORMAT---, no code fences):
+
+---FORMAT---
+html
+---CONTENT---
+[complete revised document]`;
 }
 
 function buildReviewPrompt(forum: Forum, agent: ForumAgent, draftBoard: string): string {
@@ -515,12 +651,42 @@ ${attachments ? `\n**User uploaded files/attachments:**\n${attachments}\n` : ""}
 **Deliverable:**
 ${safeBoard}
 
-REVIEW PHASE — in 2–4 sentences:
-1. Does this address the brief?
+REVIEW PHASE — assess the deliverable:
+1. Does it address the brief and the user's steering?
 2. Any specific gap or improvement to flag?
-3. Your vote: approve or request revision?
 
-Be direct and specific.`;
+Return ONLY valid JSON (no markdown, no fences):
+{
+  "verdict": "approve" | "revise",
+  "comment": "2–4 sentence assessment written for the user",
+  "revision_notes": "If verdict is revise: specific, actionable fixes for the writer (missing content, broken sections, brief mismatches). Empty string if approving."
+}
+
+Only choose "revise" for concrete, fixable gaps — not stylistic taste.`;
+}
+
+interface ReviewVerdict {
+  verdict: "approve" | "revise";
+  comment: string;
+  revisionNotes: string;
+}
+
+/** Lenient parse of the reviewer's structured verdict. Falls back to treating
+ *  the whole response as an advisory approve-with-comment. */
+function parseReviewVerdict(raw: string): ReviewVerdict {
+  try {
+    const parsed = JSON.parse(stripCodeFences(raw));
+    if (parsed && typeof parsed.comment === "string") {
+      return {
+        verdict: parsed.verdict === "revise" ? "revise" : "approve",
+        comment: parsed.comment,
+        revisionNotes: typeof parsed.revision_notes === "string" ? parsed.revision_notes : "",
+      };
+    }
+  } catch {
+    // prose fallback below
+  }
+  return { verdict: "approve", comment: raw, revisionNotes: "" };
 }
 
 // ─── Blackboard builder ───────────────────────────────────────────────────────
@@ -684,10 +850,39 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       });
     };
 
+    /**
+     * Milestones are usually replaced at kickoff with coordinator-generated labels,
+     * so the hardcoded phase labels ("Research & data pull" etc.) rarely match.
+     * Fall back to a positional mapping so the steps rail always progresses:
+     * research → first, strategy → second, draft/final → last.
+     */
+    const milestoneIndexFor = (label: string, milestones: { label: string }[]): number => {
+      const exact = milestones.findIndex(m => m.label === label);
+      if (exact >= 0) return exact;
+      if (milestones.length === 0) return -1;
+      switch (label) {
+        case "Research & data pull":    return 0;
+        case "Strategic framing":       return Math.min(1, milestones.length - 1);
+        case "Prose & voice pass":      return Math.max(0, milestones.length - (milestones.length > 2 ? 2 : 1));
+        case "Final deliverable ready": return milestones.length - 1;
+        default: return -1;
+      }
+    };
+
     const activateMilestone = (label: string, status: "active" | "done") => {
       const freshForum = useForumStore.getState().forums.find(f => f.id === forumId);
-      const ms = freshForum?.milestones.find(m => m.label === label);
-      if (ms) updateMilestone(forumId, ms.id, status);
+      if (!freshForum) return;
+      const idx = milestoneIndexFor(label, freshForum.milestones);
+      const ms = idx >= 0 ? freshForum.milestones[idx] : undefined;
+      if (ms) {
+        updateMilestone(forumId, ms.id, status);
+        // Completing a milestone must never leave earlier ones dangling "active"
+        if (status === "done") {
+          freshForum.milestones.slice(0, idx).forEach(prev => {
+            if (prev.status !== "done") updateMilestone(forumId, prev.id, "done");
+          });
+        }
+      }
     };
 
     /** Call an agent and extract text. Throws a descriptive Error on failure.
@@ -915,11 +1110,16 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
       // When the orchestrator starts on a forum that has partial progress (e.g. the user
       // navigated away, an agent failed mid-run, or the app restarted), we skip phases
       // that already completed and recover answered questions rather than re-asking them.
+      // Milestone labels are coordinator-generated, so label matching is unreliable.
+      // The blackboard headings are written by this orchestrator and are stable —
+      // use them as the source of truth for which phases already completed.
       const milestoneIsDone = (label: string) =>
         forum.milestones.some(m => m.label === label && m.status === "done");
       const kickoffDone = forum.messages.some(m => m.sender === "agent" && m.kind === "chat");
-      const researchDone = milestoneIsDone("Research & data pull");
-      const strategyDone = milestoneIsDone("Strategic framing");
+      const researchDone = milestoneIsDone("Research & data pull") ||
+        forum.blackboardContent.includes("## Research & Discovery");
+      const strategyDone = milestoneIsDone("Strategic framing") ||
+        forum.blackboardContent.includes("## Recommended Approach");
 
       // Questions already asked in a previous run
       const existingAnsweredQ = forum.messages.filter(
@@ -1240,22 +1440,51 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         );
       } catch (err) {
         if (isAbortError(err)) throw err;
+        // A missing deliverable must never be presented as a finished forum.
+        // Pause with a clear retry path — research & strategy are preserved on
+        // the blackboard, so resume skips straight back to the draft phase.
         reportAgentError(err, writer);
-        rawDraftText = "---FORMAT---\nmarkdown\n---CONTENT---\n*(Writer agent failed to produce a draft)*";
+        addForumMessage(forumId, {
+          kind: "system", sender: "system",
+          text: "The draft phase failed, so no deliverable was produced. Research and strategy are saved — press Retry to resume from the draft phase.",
+        });
+        setForumStatus(forumId, "paused");
+        return;
       }
       if (stopped) return;
 
-      const draft = parseDraftResponse(rawDraftText);
+      // Parse → validate → one corrective pass if needed → repair as last resort.
+      let draft = parseDraftResponse(rawDraftText);
+      let issues = validateDraft(draft);
+      if (issues.length > 0) {
+        updateAgentAction(forumId, writer.agentId, "Polishing draft…");
+        try {
+          // Same "draft" session — the writer sees its own flawed draft in context.
+          const fixedRaw = await callAgent(writer, buildDraftFixPrompt(issues), "draft");
+          if (stopped) return;
+          const fixed = parseDraftResponse(fixedRaw);
+          if (validateDraft(fixed).length < issues.length) {
+            draft = fixed;
+          }
+        } catch (err) {
+          if (isAbortError(err)) throw err;
+          // Corrective pass is best-effort — fall through with the repaired original.
+        }
+      }
+      draft = repairDraft(draft);
 
       // Push format-aware block to the blackboard panel
-      const block: ForumBlock = {
-        type: draft.format,
-        content: draft.content,
-        agentId: writer.agentId,
-        agentName: writer.name,
-        generatedAt: Date.now(),
+      const publishDeliverable = (d: DraftResponse) => {
+        const block: ForumBlock = {
+          type: d.format,
+          content: d.content,
+          agentId: writer.agentId,
+          agentName: writer.name,
+          generatedAt: Date.now(),
+        };
+        setBlackboardBlock(forumId, block);
       };
-      setBlackboardBlock(forumId, block);
+      publishDeliverable(draft);
 
       // For markdown: also update the text blackboard (Time Machine, history).
       // For HTML: keep board2 as the text context for the reviewer.
@@ -1303,8 +1532,10 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
 
       if (reviewer.agentId !== writer.agentId) {
         try {
+          // Give the reviewer the ACTUAL deliverable — reviewing a one-line
+          // placeholder produces useless (or misleading) verdicts.
           const reviewContext = draft.format === "html"
-            ? `[The team produced an interactive HTML deliverable for: ${forum.brief}]\n\nResearch & strategy:\n${fitBlock(board2, forum.brief.length + 200)}`
+            ? `The team produced an interactive HTML deliverable. Its full source:\n\n${fitBlock(draft.content, forum.brief.length + 3000)}`
             : board3;
           const reviewText = await callAgent(
             reviewer,
@@ -1312,7 +1543,45 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
             "review"
           );
           if (stopped) return;
-          post(reviewer.agentId, reviewText);
+          const review = parseReviewVerdict(reviewText);
+          post(reviewer.agentId, review.comment);
+
+          // ── One auto-revision pass when the reviewer flags concrete gaps ──
+          if (review.verdict === "revise" && review.revisionNotes.trim()) {
+            postHandoff(
+              reviewer.agentId, writer.agentId,
+              "Revision requested",
+              "Reviewer flagged concrete gaps — running one revision pass."
+            );
+            updateAgentAction(forumId, writer.agentId, "Revising…");
+            try {
+              // Same "draft" session — the writer has its own draft in context.
+              const revisedRaw = await callAgent(writer, buildRevisionPrompt(review.revisionNotes), "draft");
+              if (stopped) return;
+              const revised = repairDraft(parseDraftResponse(revisedRaw));
+              // Only ship the revision if it's at least as sound as the original
+              if (validateDraft(revised).length <= validateDraft(draft).length) {
+                draft = revised;
+                publishDeliverable(draft);
+                addForumArtifact(forumId, {
+                  type: draft.format,
+                  title: `${deliverableTitle} (revised)`,
+                  filename: `deliverable-revised.${draft.format === "html" ? "html" : "md"}`,
+                  folder: deliverableFolder,
+                  content: draft.content,
+                  agentId: writer.agentId,
+                  agentName: writer.name,
+                  isDeliverable: true,
+                });
+                post(writer.agentId, "Revised the deliverable based on the review — updated in the panel.");
+              }
+              updateAgentAction(forumId, writer.agentId, "Revision posted ✓");
+            } catch (err) {
+              if (isAbortError(err)) throw err;
+              // Revision is best-effort — the validated original still stands.
+              reportAgentError(err, writer);
+            }
+          }
         } catch (err) {
           if (isAbortError(err)) throw err;
           reportAgentError(err, reviewer);
@@ -1389,12 +1658,20 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
 
     // Find the last user message to respond to
     const lastUserMsg = [...forum.messages].reverse().find(m => m.sender === "user" && !m.text.startsWith("[GenUI Event]"));
-    if (!lastUserMsg) return;
+    const agents = forum.agents;
+
+    if (!lastUserMsg || agents.length === 0) {
+      // Nothing to respond to (e.g. a completed forum was resumed without a new
+      // message). Don't leave the forum "active" with every agent stuck on
+      // "Resuming…" and climbing timers — settle it back to completed.
+      for (const agent of agents) {
+        updateAgentAction(forumId, agent.agentId, "Complete ✓");
+      }
+      setForumStatus(forumId, "completed");
+      return;
+    }
 
     // Status is already set to "active" by the useEffect trigger
-
-    const agents = forum.agents;
-    if (agents.length === 0) return;
 
     // Check if the user specifically @mentioned an agent
     const mentionedAgent = agents.find(a => 
@@ -1405,6 +1682,13 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
     // Default to the mentioned agent, or fallback to the primary writer/strategist
     const responder = mentionedAgent ?? findByRole(agents, "edit", "write", "prose", "comm", "strat", "design") ?? agents[0];
 
+    // Only the responder is working — settle everyone else so stale states
+    // like "Resuming…" don't linger with running timers.
+    for (const agent of agents) {
+      if (agent.agentId !== responder.agentId) {
+        updateAgentAction(forumId, agent.agentId, "Complete ✓");
+      }
+    }
     updateAgentAction(forumId, responder.agentId, "Thinking…");
 
     // Upload any attachments from the user's message to the responder's workspace
@@ -1431,21 +1715,27 @@ export function createFollowUpOrchestrator(forumId: string): ForumOrchestratorCo
 
       // Cap user text at 4000 chars (edge-case: pasted huge blobs of text)
       const userText = lastUserMsg.text.slice(0, 4000);
-      const followUpPrompt = `The user has a follow-up request regarding the final deliverable. Here is their message:\n\n"${userText}"${attachmentNote}\n\nIf you need to update the final deliverable on the blackboard, provide the complete, updated content using EXACTLY this delimiter structure:\n\n---FORMAT---\n[markdown, html, or genui]\n---CONTENT---\n[your updated content here]\n\nIf you are only answering a quick question and do not need to rewrite the deliverable, just reply normally without delimiters.`;
+      const followUpPrompt = `The user has a follow-up request regarding the final deliverable. Here is their message:\n\n"${userText}"${attachmentNote}\n\nIf you need to update the final deliverable on the blackboard, provide the complete, updated content (full document, not a diff) using EXACTLY this delimiter structure (nothing before ---FORMAT---, no code fences):\n\n---FORMAT---\n[markdown or html]\n---CONTENT---\n[your updated content here]\n\nWhen updating an HTML deliverable, these rules still apply:\n\n${GENUI_BEST_PRACTICES}\n\nIf you are only answering a quick question and do not need to rewrite the deliverable, just reply normally without delimiters.`;
+
+      // Track usage the same way the main orchestrator's callAgent does —
+      // follow-up work must show up in the header cost/token counters too.
+      const estimatedTokens = Math.max(150, Math.ceil(followUpPrompt.length / 4));
+      const estimatedCost = Math.max(0.002, estimatedTokens * 0.00001);
+      useForumStore.getState().incrementTokensAndCost?.(forumId, estimatedTokens, estimatedCost);
 
       const response = await invoke<unknown>("send_message", {
         agentId: responder.agentId,
         message: followUpPrompt,
         sessionId: `forum_${forumId}_${responder.agentId}`,
       });
-      
+
       const rawText = extractText(response);
       if (stopped) return;
 
       const hasDelimiters = /---FORMAT---/i.test(rawText);
 
       if (hasDelimiters) {
-        const draft = parseDraftResponse(rawText);
+        const draft = repairDraft(parseDraftResponse(rawText));
         setBlackboardBlock(forumId, {
           type: draft.format,
           content: draft.content,

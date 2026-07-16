@@ -11,6 +11,7 @@ import { HistoryPanel } from "./HistoryPanel";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { LiveVoiceOverlay } from "../ArchitectView/LiveVoiceOverlay";
 import { buildForumMiniAppPinTarget } from "./forumMiniAppUtils";
+import { isolateGeneratedHtml } from "../../security/generatedHtml";
 
 // ─── Annotation Hook & Overlay ────────────────────────────────────────────────
 
@@ -1386,6 +1387,66 @@ function ProgressAndFiles({
   );
 }
 
+// ─── Real forum spend ─────────────────────────────────────────────────────────
+// Actual cost/tokens from the gateway's token_usage_history ledger (true token
+// counts × per-model pricing), aggregated per forum. Forum sends use session ids
+// of the form `forum_{forumId}_{agentId}_{phase}`, so we prefix-match on
+// `forum_{forumId}_`. This is the number the header shows — the estimate-based
+// trustBudget counters remain only as the orchestrator's internal circuit-breaker
+// guard between ledger updates.
+
+interface ForumRealSpend {
+  costUsd: number;
+  tokens: number;
+  loaded: boolean;
+}
+
+function useForumRealSpend(forumId: string, messageCount: number, isActive: boolean): ForumRealSpend {
+  const [spend, setSpend] = useState<ForumRealSpend>({ costUsd: 0, tokens: 0, loaded: false });
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchSpend = async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        const records = await invoke<Array<{ cost_usd?: number; tokens_in?: number; tokens_out?: number }>>(
+          "get_token_usage_history",
+          { agentId: null, conversationId: null, conversationIdPrefix: `forum_${forumId}_`, days: 365 }
+        );
+        if (!mounted) return;
+        let costUsd = 0, tokens = 0;
+        for (const r of records) {
+          costUsd += r.cost_usd || 0;
+          tokens += (r.tokens_in || 0) + (r.tokens_out || 0);
+        }
+        setSpend({ costUsd, tokens, loaded: true });
+
+        // Re-anchor the trust budget to reality so the circuit breaker fires on
+        // actual dollars, not estimate drift. Between ledger updates the
+        // orchestrator still adds optimistic estimates on top of this baseline.
+        const f = useForumStore.getState().forums.find(fm => fm.id === forumId);
+        if (f?.trustBudget && Math.abs((f.trustBudget.usdUsed || 0) - costUsd) > 0.001) {
+          useForumStore.getState().updateTrustBudget(forumId, {
+            usdUsed: costUsd,
+            tokensUsed: tokens,
+          });
+        }
+      } catch (e) {
+        console.error("Failed to fetch real forum spend", e);
+      }
+    };
+
+    fetchSpend();
+    // While agents are working, usage records land after every send — poll so
+    // the header ticks up in near-real-time; when idle, message-count changes
+    // (follow-ups) still trigger a refetch via the dependency array.
+    const interval = isActive ? setInterval(fetchSpend, 10_000) : undefined;
+    return () => { mounted = false; if (interval) clearInterval(interval); };
+  }, [forumId, messageCount, isActive]);
+
+  return spend;
+}
+
 // ─── Agent Status Bar ─────────────────────────────────────────────────────────
 // Rich agent cards with avatar, live action, elapsed time, and stuck detection.
 
@@ -1409,6 +1470,12 @@ function AgentCard({ agent, forumStatus, onRemove }: {
 }) {
   const [isHovered, setIsHovered] = useState(false);
   const color = agent.robeColor || "#4A9E96";
+  // Forum agents persisted before the image field existed have no portrait —
+  // fall back to the live world agent's image so avatars stay consistent.
+  const worldAgentImage = useWorldStore(
+    s => s.agents.find(a => a.id === agent.agentId)?.image
+  );
+  const avatarImage = agent.image || worldAgentImage || null;
   const elapsed = useElapsed(agent.actionChangedAt);
   const isActive = forumStatus === "active";
   const isThinking = isActive && !!agent.currentAction && !agent.currentAction.includes("✓") && !agent.currentAction.includes("Complete");
@@ -1429,7 +1496,7 @@ function AgentCard({ agent, forumStatus, onRemove }: {
   return (
     <div style={{
       display: "flex", flexDirection: "column",
-      flex: 1, minWidth: 0,
+      flex: "1 1 150px", minWidth: 150, maxWidth: 240,
       padding: "10px 10px 8px",
       borderRadius: 12,
       background: isThinking ? `${color}0e` : isDone ? "rgba(74,158,150,0.05)" : "rgba(0,0,0,0.02)",
@@ -1477,8 +1544,8 @@ function AgentCard({ agent, forumStatus, onRemove }: {
             boxShadow: isThinking ? `0 0 0 3px ${color}18, 0 0 14px ${color}22` : "none",
             animation: isThinking ? "typing-avatar-pulse 2s ease-in-out infinite" : "none",
           }}>
-            {agent.image
-              ? <img src={agent.image} alt={agent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+            {avatarImage
+              ? <img src={avatarImage} alt={agent.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               : agent.name.charAt(0).toUpperCase()
             }
           </div>
@@ -1492,13 +1559,26 @@ function AgentCard({ agent, forumStatus, onRemove }: {
           }} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-main, #303330)", lineHeight: 1.2 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-main, #303330)", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {agent.name}
           </div>
           <div style={{ fontSize: 9, color: color, opacity: 0.7, textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap" }}>
             {agent.forumRole}
           </div>
         </div>
+        {/* Elapsed time — in-flow so it can never overlap the name */}
+        {elapsed && isActive && (
+          <div style={{
+            flexShrink: 0, alignSelf: "flex-start",
+            fontSize: 9, fontWeight: 600,
+            color: elapsedColor,
+            transition: "color 0.5s ease",
+            letterSpacing: "0.02em",
+            fontVariantNumeric: "tabular-nums",
+          }}>
+            {elapsed}
+          </div>
+        )}
       </div>
 
       {/* Live action text */}
@@ -1513,52 +1593,11 @@ function AgentCard({ agent, forumStatus, onRemove }: {
       }}>
         {statusText}
       </div>
-
-      {/* Elapsed time */}
-      {elapsed && isActive && (
-        <div style={{
-          position: "absolute", top: 8, right: 8,
-          fontSize: 9, fontWeight: 600,
-          color: elapsedColor,
-          transition: "color 0.5s ease",
-          letterSpacing: "0.02em",
-        }}>
-          {elapsed}
-        </div>
-      )}
     </div>
   );
 }
 
 function AgentStatusBar({ forum }: { forum: Forum }) {
-  const [realForumCost, setRealForumCost] = React.useState<string>("0.000");
-
-  React.useEffect(() => {
-    let isMounted = true;
-    const fetchCost = async () => {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        // Pass conversationId = forum.id to filter token history
-        const records = await invoke<any[]>("get_token_usage_history", { 
-          agentId: null, 
-          conversationId: forum.id, 
-          days: 365 
-        });
-        
-        let cost = 0;
-        for (const r of records) {
-          cost += r.cost_usd || 0;
-        }
-        if (isMounted) setRealForumCost(cost.toFixed(3));
-      } catch (e) {
-        console.error("Failed to fetch real forum token cost", e);
-      }
-    };
-    
-    // Fetch initially and then whenever new messages are added
-    fetchCost();
-  }, [forum.id, forum.messages.length]);
-
   const removeAgentFromForum = useForumStore(s => s.removeAgentFromForum);
   return (
     <div style={{
@@ -1566,7 +1605,7 @@ function AgentStatusBar({ forum }: { forum: Forum }) {
       borderBottom: "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
       flexShrink: 0,
     }}>
-      <div style={{ display: "flex", gap: 8, maxWidth: 900 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         {(forum.agents || []).map((agent: import("../../store/forumStore").ForumAgent) => (
           <AgentCard
             key={agent.agentId}
@@ -2092,6 +2131,17 @@ function resolveHtmlImages(
   return resolved;
 }
 
+/** Parse a GenUI JSON payload without letting a malformed one crash the panel. */
+function safeParseGenUI(content: string): Record<string, unknown> | null {
+  try {
+    const cleaned = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const parsed = JSON.parse(cleaned);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 interface BoardCard {
   id: string;
   title: string;
@@ -2101,8 +2151,10 @@ interface BoardCard {
 
 function parseBoardCards(content: string, agents: any[]): BoardCard[] {
   if (!content) return [];
-  // Split on --- line
-  const parts = content.split(/\n\s*---\s*\n/);
+  // Split ONLY on the orchestrator's section separators: a --- line immediately
+  // followed by a ## heading (appendSection format). Plain horizontal rules
+  // inside an agent's markdown must NOT create junk "Section" cards.
+  const parts = content.split(/\n\s*---\s*\n(?=\s*##\s)/);
   const cards: BoardCard[] = [];
 
   parts.forEach((part, idx) => {
@@ -2238,8 +2290,12 @@ function GlassCard({ card, mdComponents }: { card: BoardCard; mdComponents: any 
         WebkitBackdropFilter: "blur(12px)",
         border: "1px solid rgba(255, 255, 255, 0.5)",
         boxShadow: "0 8px 32px 0 rgba(31, 38, 135, 0.04)",
-        transition: "all 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
-        overflow: expanded ? "visible" : "hidden",
+        // NOTE: overflow must stay "hidden" in BOTH states. Toggling to "visible"
+        // while backdrop-filter is active corrupts the paint layer in WKWebView
+        // when the card re-clips on collapse, and expanded content bleeds over
+        // grid neighbors. The card grows naturally when maxHeight is lifted.
+        transition: "background 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s cubic-bezier(0.16, 1, 0.3, 1)",
+        overflow: "hidden",
         maxHeight: expanded ? "none" : "200px",
         position: "relative",
         cursor: expanded ? "default" : "pointer",
@@ -2377,7 +2433,10 @@ function ForumBlackboard({
   const isRendered = viewMode === "rendered";
 
   const attachments = React.useMemo(() => forum.messages.flatMap(m => m.attachments || []), [forum.messages]);
-  const resolvedHtmlContent = React.useMemo(() => resolveHtmlImages(htmlContent, attachments), [htmlContent, attachments]);
+  const resolvedHtmlContent = React.useMemo(
+    () => isolateGeneratedHtml(resolveHtmlImages(htmlContent, attachments)),
+    [htmlContent, attachments],
+  );
   const cards = React.useMemo(() => parseBoardCards(forum.blackboardContent, forum.agents || []), [forum.blackboardContent, forum.agents]);
 
   const referenceCards = React.useMemo(() => {
@@ -2712,22 +2771,38 @@ function ForumBlackboard({
                     />
                   </div>
                 )}
-                {isGenUIMode && displayContent && (
-                  <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
-                    <GenUIRenderer
-                      app={JSON.parse(displayContent)}
-                      attachments={attachments}
-                      onEvent={(evt) => {
-                        console.log("Canvas GenUI Event:", evt);
-                        useForumStore.getState().addForumMessage(forum.id, {
-                          kind: "chat",
-                          sender: "user",
-                          text: `[GenUI Event] User interacted with canvas app: ${JSON.stringify(evt)}`
-                        });
-                      }}
-                    />
-                  </div>
-                )}
+                {isGenUIMode && displayContent && (() => {
+                  const genUIApp = safeParseGenUI(displayContent);
+                  if (!genUIApp) {
+                    return (
+                      <div style={{
+                        height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8,
+                        color: "var(--text-sub, #636E72)", opacity: 0.6, fontSize: 12, padding: 24, textAlign: "center",
+                      }}>
+                        <div style={{ fontWeight: 600 }}>This deliverable couldn't be rendered</div>
+                        <div style={{ opacity: 0.8, maxWidth: 320, lineHeight: 1.5 }}>
+                          The generated app payload is malformed. Ask the team for a revision in the chat, or view the raw payload via the Source toggle.
+                        </div>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ width: "100%", height: "100%", padding: "20px", overflowY: "auto" }}>
+                      <GenUIRenderer
+                        app={genUIApp as any}
+                        attachments={attachments}
+                        onEvent={(evt) => {
+                          console.log("Canvas GenUI Event:", evt);
+                          useForumStore.getState().addForumMessage(forum.id, {
+                            kind: "chat",
+                            sender: "user",
+                            text: `[GenUI Event] User interacted with canvas app: ${JSON.stringify(evt)}`
+                          });
+                        }}
+                      />
+                    </div>
+                  );
+                })()}
                 {!isHtmlMode && !isGenUIMode && deliverableCard && (
                   <div
                     ref={scrollRef}
@@ -2839,7 +2914,13 @@ function StatusBadge({ status }: { status: Forum["status"] }) {
 
 // ─── Forums list ──────────────────────────────────────────────────────────────
 
-function ForumsList({ onNewForum }: { onNewForum: () => void }) {
+function ForumsList({
+  onNewForum,
+  onEditBudget,
+}: {
+  onNewForum: () => void;
+  onEditBudget: (forum: Forum) => void;
+}) {
   const forums = useForumStore(s => s.forums);
   const archiveForum = useForumStore(s => s.archiveForum);
   const deleteForum = useForumStore(s => s.deleteForum);
@@ -2942,7 +3023,7 @@ function ForumsList({ onNewForum }: { onNewForum: () => void }) {
             onClick={() => setActiveForumId(f.id)}
             onArchive={() => archiveForum(f.id)}
             onDelete={() => deleteForum(f.id)}
-            onEditBudget={(f) => setEditingForum(f)}
+            onEditBudget={() => onEditBudget(f)}
             formatDate={formatDate}
           />
         ))}
@@ -3194,6 +3275,13 @@ export function ForumView() {
   // activeForumId === null → show list; !== null → show that forum (or list if not found)
   const forum = activeForumId ? (forums.find(f => f.id === activeForumId) ?? null) : null;
 
+  // Actual spend from the gateway ledger — this is what the header shows.
+  const realSpend = useForumRealSpend(
+    forum?.id ?? "",
+    forum?.messages.length ?? 0,
+    forum?.status === "active"
+  );
+
   const handleSendMessage = useCallback((text: string, attachments?: Array<{ name: string; dataUrl: string; mimeType: string }>) => {
     if (!forum) return;
 
@@ -3363,7 +3451,7 @@ export function ForumView() {
     return (
       <>
         {briefModalOpen && <ForumBriefModal onClose={() => setBriefModalOpen(false)} />}
-        <ForumsList onNewForum={() => setBriefModalOpen(true)} />
+        <ForumsList onNewForum={() => setBriefModalOpen(true)} onEditBudget={setEditingForum} />
       </>
     );
   }
@@ -3429,9 +3517,11 @@ export function ForumView() {
                 e.currentTarget.style.borderColor = "transparent";
                 e.currentTarget.style.background = forum.trustBudget?.circuitBreakerFired ? "rgba(239,68,68,0.1)" : "rgba(74,158,150,0.1)";
               }}
-              title={`Spent: $${(forum.trustBudget?.usdUsed ?? 0).toFixed(2)} / $${(forum.trustBudget?.usdLimit ?? 5.00).toFixed(2)} USD. Click to edit budget.`}
+              title={realSpend.loaded
+                ? `Actual spend: $${realSpend.costUsd.toFixed(3)} · ${realSpend.tokens.toLocaleString()} tokens (from the usage ledger) / Limit $${(forum.trustBudget?.usdLimit ?? 5.00).toFixed(2)}. Click to edit budget.`
+                : `Loading actual spend… Limit $${(forum.trustBudget?.usdLimit ?? 5.00).toFixed(2)}. Click to edit budget.`}
             >
-              Cost: ${((forum as any).totalCost ?? 0).toFixed(3)} (Limit: {forum.trustBudget?.usdLimit ? `$${forum.trustBudget.usdLimit.toFixed(2)}` : "None"})
+              Cost: ${(realSpend.loaded ? realSpend.costUsd : ((forum as any).totalCost ?? 0)).toFixed(3)} (Limit: {forum.trustBudget?.usdLimit ? `$${forum.trustBudget.usdLimit.toFixed(2)}` : "None"})
             </div>
           </div>
           <div 

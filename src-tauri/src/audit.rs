@@ -483,10 +483,16 @@ pub async fn get_token_usage_history(
     db: State<'_, Database>,
     agent_id: Option<String>,
     conversation_id: Option<String>,
+    conversation_id_prefix: Option<String>,
     days: u32,
 ) -> Result<Vec<crate::models::TokenUsageRecord>, String> {
-    db.get_token_usage_history(agent_id.as_deref(), conversation_id.as_deref(), days)
-        .map_err(|e| format!("Failed to get token usage: {}", e))
+    db.get_token_usage_history(
+        agent_id.as_deref(),
+        conversation_id.as_deref(),
+        conversation_id_prefix.as_deref(),
+        days,
+    )
+    .map_err(|e| format!("Failed to get token usage: {}", e))
 }
 
 #[tauri::command]

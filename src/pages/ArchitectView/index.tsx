@@ -523,7 +523,11 @@ export // ═══════════════════════�
         </div>
       )}
 
-      <MobilePairingModal isOpen={showPairingModal} onClose={() => setShowPairingModal(false)} />
+      <MobilePairingModal
+        isOpen={showPairingModal}
+        onClose={() => setShowPairingModal(false)}
+        defaultAgentId={agent.id}
+      />
     </div>
   );
 }

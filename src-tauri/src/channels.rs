@@ -618,6 +618,33 @@ fn is_safe_github_token_value(token: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
 }
 
+const GITHUB_ROOT_SETUP_SCRIPT: &str = r#"
+        if ! command -v gh >/dev/null 2>&1; then
+            apt-get update && apt-get install -y curl gnupg && \
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
+            chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+            apt-get update && apt-get install gh -y
+        fi
+
+        # Create global dynamic wrapper to isolate tokens per workspace
+        cat << 'EOF' > /usr/local/bin/gh
+#!/bin/bash
+AGENT_ID=$(pwd | sed -n 's|.*/workspace/\([^/]*\).*|\1|p')
+if [ -n "$AGENT_ID" ] && [ -f "/home/node/.openclaw/workspace/$AGENT_ID/.github_env" ]; then
+    source "/home/node/.openclaw/workspace/$AGENT_ID/.github_env"
+    export GH_TOKEN="$GITHUB_TOKEN"
+fi
+exec /usr/bin/gh "$@"
+EOF
+        chmod +x /usr/local/bin/gh
+    "#;
+
+const GITHUB_NODE_SETUP_SCRIPT: &str =
+    "git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
+     git config --global url.\"https://github.com/\".insteadOf \"git@github.com:\"; \
+     git config --global url.\"https://github.com/\".insteadOf \"ssh://git@github.com/\"";
+
 #[tauri::command]
 pub async fn configure_github(
     db: tauri::State<'_, crate::db::Database>,
@@ -649,28 +676,6 @@ pub async fn configure_github(
     let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
 
     // Install gh CLI and global dynamic wrapper (runs as root)
-    let root_setup_script = r#"
-        if ! command -v gh >/dev/null 2>&1; then
-            apt-get update && apt-get install -y curl gnupg && \
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && \
-            chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
-            apt-get update && apt-get install gh -y
-        fi
-        
-        # Create global dynamic wrapper to isolate tokens per workspace
-        cat << 'EOF' > /usr/local/bin/gh
-#!/bin/bash
-AGENT_ID=$(pwd | sed -n 's|.*/workspace/\([^/]*\).*|\1|p')
-if [ -n "$AGENT_ID" ] && [ -f "/home/node/.openclaw/workspace/$AGENT_ID/.github_env" ]; then
-    source "/home/node/.openclaw/workspace/$AGENT_ID/.github_env"
-    export GH_TOKEN="$GITHUB_TOKEN"
-fi
-exec /usr/bin/gh "$@"
-EOF
-        chmod +x /usr/local/bin/gh
-    "#;
-
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(60),
         get_docker_command()
@@ -683,7 +688,7 @@ EOF
                 &container_name,
                 "sh",
                 "-c",
-                root_setup_script,
+                GITHUB_ROOT_SETUP_SCRIPT,
             ])
             .output(),
     )
@@ -699,11 +704,6 @@ EOF
     )
     .map_err(|e| format!("Failed to write GitHub token file: {}", e))?;
 
-    let node_setup_script =
-        "git config --global credential.https://github.com.helper '!/usr/local/bin/gh auth git-credential'; \
-         git config --global url.\"https://github.com/\".insteadOf \"git@github.com:\"; \
-         git config --global url.\"https://github.com/\".insteadOf \"ssh://git@github.com/\"";
-
     let _ = get_docker_command()
         .args([
             "exec",
@@ -712,7 +712,7 @@ EOF
             &container_name,
             "sh",
             "-c",
-            &node_setup_script,
+            GITHUB_NODE_SETUP_SCRIPT,
         ])
         .output()
         .await;
@@ -720,6 +720,46 @@ EOF
     restart_gateway_soft().await;
 
     Ok("GitHub connected. Your agent can now read issues, PRs, and notifications.".to_string())
+}
+
+/// Restore root-filesystem GitHub tooling after an isolated container is recreated.
+/// The per-agent token file lives in the persistent workspace mount, so this helper
+/// never reads or injects another agent's credential.
+pub(crate) async fn restore_agent_github_runtime(agent_id: &str, container_name: &str) {
+    if crate::keychain::get_secret(&format!("github-access-token-{}", agent_id)).is_err() {
+        return;
+    }
+
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "root",
+                "-e",
+                "DEBIAN_FRONTEND=noninteractive",
+                container_name,
+                "sh",
+                "-c",
+                GITHUB_ROOT_SETUP_SCRIPT,
+            ])
+            .output(),
+    )
+    .await;
+
+    let _ = get_docker_command()
+        .args([
+            "exec",
+            "-u",
+            "node",
+            container_name,
+            "sh",
+            "-c",
+            GITHUB_NODE_SETUP_SCRIPT,
+        ])
+        .output()
+        .await;
 }
 
 /// Per-agent GitHub disconnect: removes the saved PAT (and username) from the keychain
@@ -746,17 +786,23 @@ pub async fn disconnect_github(
 
     let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
 
-    // Best-effort container-side cleanup. The wrapper + env file may not exist if the
-    // user never connected GitHub; `rm -f` is silent in that case.
-    let cleanup = format!(
-        "rm -f /home/node/.openclaw/workspace/{aid}/bin/gh \
-                /home/node/.openclaw/workspace/{aid}/.github_env",
-        aid = agent_id,
-    );
+    // Best-effort container-side cleanup. Direct argv execution keeps the agent
+    // ID out of a shell program even though it has already passed validation.
+    let wrapper_path = format!("/home/node/.openclaw/workspace/{agent_id}/bin/gh");
+    let env_path = format!("/home/node/.openclaw/workspace/{agent_id}/.github_env");
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "sh", "-c", &cleanup])
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "rm",
+                "-f",
+                &wrapper_path,
+                &env_path,
+            ])
             .output(),
     )
     .await;
@@ -838,6 +884,140 @@ pub struct ConnectionDiagnostic {
     pub service: String,
     pub is_ok: bool,
     pub message: String,
+}
+
+async fn preflight_agent_connection_internal(
+    agent_id: &str,
+    integration: &str,
+) -> Result<ConnectionDiagnostic, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    match integration {
+        "github" => {
+            if let Ok(token) =
+                crate::keychain::get_secret(&format!("github-access-token-{}", agent_id))
+            {
+                let res = client
+                    .get("https://api.github.com/user")
+                    .header("User-Agent", "Canopy-Agent")
+                    .bearer_auth(token)
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "GitHub".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Authenticated successfully.".to_string()
+                    } else {
+                        "GitHub token invalid. Reconfigure in Connections tab.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "GitHub".to_string(),
+                    is_ok: false,
+                    message: "Missing GitHub token.".to_string(),
+                })
+            }
+        }
+        "telegram" => {
+            if let Ok(token) =
+                crate::keychain::get_secret(&format!("agent_{}_telegram_bot_token", agent_id))
+            {
+                let res = client
+                    .get(&format!("https://api.telegram.org/bot{}/getMe", token))
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "Telegram".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Bot is active.".to_string()
+                    } else {
+                        "Invalid Telegram token.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "Telegram".to_string(),
+                    is_ok: false,
+                    message: "Missing Telegram token.".to_string(),
+                })
+            }
+        }
+        "discord" => {
+            if let Ok(token) =
+                crate::keychain::get_secret(&format!("agent_{}_discord_bot_token", agent_id))
+            {
+                let res = client
+                    .get("https://discord.com/api/v10/users/@me")
+                    .header("Authorization", format!("Bot {}", token))
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "Discord".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Bot authenticated.".to_string()
+                    } else {
+                        "Invalid Discord token.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "Discord".to_string(),
+                    is_ok: false,
+                    message: "Missing Discord token.".to_string(),
+                })
+            }
+        }
+        "twilio" => {
+            if let (Ok(sid), Ok(token)) = (
+                crate::keychain::get_secret(&format!("agent_{}_twilio_account_sid", agent_id)),
+                crate::keychain::get_secret(&format!("agent_{}_twilio_auth_token", agent_id)),
+            ) {
+                let res = client
+                    .get(&format!(
+                        "https://api.twilio.com/2010-04-01/Accounts/{}.json",
+                        sid
+                    ))
+                    .basic_auth(&sid, Some(&token))
+                    .send()
+                    .await;
+                Ok(ConnectionDiagnostic {
+                    service: "Twilio".to_string(),
+                    is_ok: matches!(res, Ok(ref r) if r.status().is_success()),
+                    message: if matches!(res, Ok(ref r) if r.status().is_success()) {
+                        "Account verified.".to_string()
+                    } else {
+                        "Invalid Twilio credentials.".to_string()
+                    },
+                })
+            } else {
+                Ok(ConnectionDiagnostic {
+                    service: "Twilio".to_string(),
+                    is_ok: false,
+                    message: "Missing Twilio credentials.".to_string(),
+                })
+            }
+        }
+        _ => Err(format!(
+            "Unsupported integration preflight: {}",
+            integration
+        )),
+    }
+}
+
+#[tauri::command]
+pub async fn preflight_agent_connection(
+    agent_id: String,
+    integration: String,
+) -> Result<ConnectionDiagnostic, String> {
+    preflight_agent_connection_internal(&agent_id, &integration).await
 }
 
 /// Returns `(gateway_state_is_healthy, human_readable_reason)`.
@@ -1058,104 +1238,13 @@ pub async fn ping_agent_connections_internal(
                 }
             }
             "github" => {
-                if let Ok(token) =
-                    crate::keychain::get_secret(&format!("github-access-token-{}", agent_id))
-                {
-                    let res = client
-                        .get("https://api.github.com/user")
-                        .header("User-Agent", "Canopy-Agent")
-                        .bearer_auth(token)
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "GitHub".to_string(),
-                                is_ok: true,
-                                message: "Authenticated successfully.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "GitHub".to_string(),
-                                is_ok: false,
-                                message: "GitHub token invalid. Reconfigure in Connections tab."
-                                    .to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "GitHub".to_string(),
-                        is_ok: false,
-                        message: "Missing GitHub token.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "github").await?);
             }
             "telegram" => {
-                if let Ok(token) =
-                    crate::keychain::get_secret(&format!("agent_{}_telegram_bot_token", agent_id))
-                {
-                    let res = client
-                        .get(&format!("https://api.telegram.org/bot{}/getMe", token))
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Telegram".to_string(),
-                                is_ok: true,
-                                message: "Bot is active.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Telegram".to_string(),
-                                is_ok: false,
-                                message: "Invalid Telegram token.".to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "Telegram".to_string(),
-                        is_ok: false,
-                        message: "Missing Telegram token.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "telegram").await?);
             }
             "discord" => {
-                if let Ok(token) =
-                    crate::keychain::get_secret(&format!("agent_{}_discord_bot_token", agent_id))
-                {
-                    let res = client
-                        .get("https://discord.com/api/v10/users/@me")
-                        .header("Authorization", format!("Bot {}", token))
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Discord".to_string(),
-                                is_ok: true,
-                                message: "Bot authenticated.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Discord".to_string(),
-                                is_ok: false,
-                                message: "Invalid Discord token.".to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "Discord".to_string(),
-                        is_ok: false,
-                        message: "Missing Discord token.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "discord").await?);
             }
             "whatsapp" => {
                 if crate::keychain::get_secret(&format!("agent_{}_whatsapp_api_token", agent_id))
@@ -1175,41 +1264,7 @@ pub async fn ping_agent_connections_internal(
                 }
             }
             "twilio" => {
-                if let (Ok(sid), Ok(token)) = (
-                    crate::keychain::get_secret(&format!("agent_{}_twilio_account_sid", agent_id)),
-                    crate::keychain::get_secret(&format!("agent_{}_twilio_auth_token", agent_id)),
-                ) {
-                    let res = client
-                        .get(&format!(
-                            "https://api.twilio.com/2010-04-01/Accounts/{}.json",
-                            sid
-                        ))
-                        .basic_auth(&sid, Some(&token))
-                        .send()
-                        .await;
-                    match res {
-                        Ok(r) if r.status().is_success() => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Twilio".to_string(),
-                                is_ok: true,
-                                message: "Account verified.".to_string(),
-                            });
-                        }
-                        _ => {
-                            diagnostics.push(ConnectionDiagnostic {
-                                service: "Twilio".to_string(),
-                                is_ok: false,
-                                message: "Invalid Twilio credentials.".to_string(),
-                            });
-                        }
-                    }
-                } else {
-                    diagnostics.push(ConnectionDiagnostic {
-                        service: "Twilio".to_string(),
-                        is_ok: false,
-                        message: "Missing Twilio credentials.".to_string(),
-                    });
-                }
+                diagnostics.push(preflight_agent_connection_internal(agent_id, "twilio").await?);
             }
             other => {
                 if !other.starts_with("web_") {

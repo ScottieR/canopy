@@ -93,6 +93,10 @@ pub async fn start_google_oauth(
                 }
             }
         }
+        if scope == "photos" {
+            // Only requesting read-only access to photos as specified by the user
+            requested_scopes.push("https://www.googleapis.com/auth/photoslibrary.readonly".to_string());
+        }
     }
 
     let scope_string = requested_scopes.join(" ");
@@ -191,6 +195,8 @@ pub async fn start_google_oauth(
         "google_email"
     } else if scopes.iter().any(|s| s == "drive") {
         "google_drive"
+    } else if scopes.iter().any(|s| s == "photos") {
+        "google_photos"
     } else {
         "google_calendar"
     };

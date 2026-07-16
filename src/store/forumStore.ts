@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { applyForumBudgetIncrement } from "./forumBudget";
+import { getQuotaSafeLocalStorage } from "./safeStorage";
 
 // ─── Message Types ────────────────────────────────────────────────────────────
 
@@ -259,6 +260,56 @@ export interface ForumState {
 
 function generateId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const PERSISTED_FORUM_MESSAGE_LIMIT = 200;
+const PERSISTED_FORUM_ARTIFACT_LIMIT = 100;
+const PERSISTED_BLACKBOARD_HISTORY_LIMIT = 3;
+const PERSISTED_SCRATCHPAD_LIMIT = 65_536;
+const PERSISTED_FORUM_MESSAGE_TEXT_LIMIT = 50_000;
+
+function boundedForumMessages(messages: ForumMessage[]): ForumMessage[] {
+  const bounded = messages.length <= PERSISTED_FORUM_MESSAGE_LIMIT
+    ? messages
+    : [messages[0], ...messages.slice(-(PERSISTED_FORUM_MESSAGE_LIMIT - 1))];
+
+  return bounded.map(message => {
+    const miniAppSize = message.miniApp ? JSON.stringify(message.miniApp).length : 0;
+    return {
+      ...message,
+      text: message.text.slice(0, PERSISTED_FORUM_MESSAGE_TEXT_LIMIT),
+      // Large generated UI payloads should live as artifacts, not inline in
+      // every persisted message. Keep reasonably-sized cards intact.
+      miniApp: miniAppSize <= 100_000 ? message.miniApp : undefined,
+      attachments: message.attachments?.map(attachment => ({
+        ...attachment,
+        dataUrl: attachment.dataUrl?.startsWith("data:") ? "" : (attachment.dataUrl || ""),
+      })),
+    };
+  });
+}
+
+function boundedForumArtifacts(artifacts: ForumArtifact[]): ForumArtifact[] {
+  if (artifacts.length <= PERSISTED_FORUM_ARTIFACT_LIMIT) return artifacts;
+
+  const deliverables = artifacts.filter(artifact => artifact.isDeliverable).slice(-25);
+  const deliverableIds = new Set(deliverables.map(artifact => artifact.id));
+  const recent = artifacts
+    .filter(artifact => !deliverableIds.has(artifact.id))
+    .slice(-(PERSISTED_FORUM_ARTIFACT_LIMIT - deliverables.length));
+  return [...deliverables, ...recent].sort((left, right) => left.createdAt - right.createdAt);
+}
+
+export function createForumPersistenceSnapshot(state: ForumState) {
+  return {
+    forums: (state.forums || []).map(forum => ({
+      ...forum,
+      messages: boundedForumMessages(forum.messages || []),
+      artifacts: boundedForumArtifacts(forum.artifacts || []),
+      blackboardHistory: (forum.blackboardHistory || []).slice(-PERSISTED_BLACKBOARD_HISTORY_LIMIT),
+      scratchpadContent: (forum.scratchpadContent || "").slice(-PERSISTED_SCRATCHPAD_LIMIT),
+    })),
+  };
 }
 
 function deriveTitle(brief: string): string {
@@ -657,7 +708,7 @@ export const useForumStore = create<ForumState>()(
               blackboardBlock: null,
               artifacts: [],
               trustBudget: { ...f.trustBudget, tokensUsed: 0, usdUsed: 0, circuitBreakerFired: false },
-              agents: f.agents.map(a => ({ ...a, currentAction: "Joining forum…" })),
+              agents: f.agents.map(a => ({ ...a, currentAction: "Joining forum…", actionChangedAt: now })),
               lastActiveAt: now,
               orchestratorVersion: (f.orchestratorVersion ?? 0) + 1,
             };
@@ -687,7 +738,7 @@ export const useForumStore = create<ForumState>()(
               ...f,
               status: "active",
               messages: [...cleanedMessages, divider],
-              agents: f.agents.map(a => ({ ...a, currentAction: "Resuming…" })),
+              agents: f.agents.map(a => ({ ...a, currentAction: "Resuming…", actionChangedAt: now })),
               lastActiveAt: now,
               orchestratorVersion: (f.orchestratorVersion ?? 0) + 1,
             };
@@ -716,24 +767,10 @@ export const useForumStore = create<ForumState>()(
     }),
     {
       name: "canopy-forum-store",
-      // Trim large transient data before writing to localStorage to prevent
-      // silent QuotaExceededError failures. blackboardHistory is the main
-      // culprit — 50 snapshots × multi-KB markdown = can easily exceed the
-      // 5-10MB localStorage limit, causing the most recent answers and messages
-      // to never be persisted.
-      partialize: (state) => ({
-        forums: (state.forums || []).map(f => ({
-          ...f,
-          blackboardHistory: (f.blackboardHistory || []).slice(-5),
-          messages: (f.messages || []).map(m => ({
-            ...m,
-            attachments: m.attachments?.map(att => ({
-              ...att,
-              dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
-            }))
-          }))
-        })),
-      }),
+      storage: createJSONStorage(getQuotaSafeLocalStorage),
+      version: 1,
+      migrate: persistedState => persistedState as ForumState,
+      partialize: createForumPersistenceSnapshot,
     }
   )
 );

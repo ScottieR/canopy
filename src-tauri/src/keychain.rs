@@ -62,6 +62,33 @@ pub fn get_secret(key: &str) -> Result<String> {
         .ok_or_else(|| CanopyError::NotFound(format!("Secret '{}' not found", key)))
 }
 
+/// Returns an installation-local secret, creating it in the encrypted vault when absent.
+///
+/// Internal service credentials deliberately use keys that are not exposed through the
+/// Tauri IPC allowlist. Callers should cache the returned value when it is used on a hot
+/// path so a temporary Keychain failure cannot create multiple credentials in one process.
+pub fn get_or_create_internal_secret(key: &str, prefix: &str) -> Result<String> {
+    if !key.starts_with("internal_") {
+        return Err(CanopyError::Validation(
+            "Internal secret keys must use the internal_ prefix".into(),
+        ));
+    }
+    if let Ok(existing) = get_secret(key) {
+        if existing.starts_with(prefix) && existing.len() >= prefix.len() + 48 {
+            return Ok(existing);
+        }
+    }
+
+    let secret = format!(
+        "{}{}{}",
+        prefix,
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    store_secret(key, &secret)?;
+    Ok(secret)
+}
+
 /// Internal helper: delete a secret (callable from other Rust modules)
 pub fn delete_secret_internal(key: &str) -> Result<()> {
     if key.is_empty() {
@@ -76,24 +103,26 @@ pub fn delete_secret_internal(key: &str) -> Result<()> {
     Ok(())
 }
 
-/// Helper: Get an agent's API key with fallback to the global provider key
+/// Helper: Get an agent's explicitly scoped API key.
+///
+/// SECURITY: Provider credentials must never fall back to a global key. An
+/// agent without its own credential remains disconnected.
 pub fn get_agent_api_key(agent_id: &str, provider_id: &str) -> Result<String> {
-    // 1. Check agent-specific override
-    let agent_key = format!("agent_{}_api_key", agent_id);
-    if let Ok(key) = get_secret(&agent_key) {
-        return Ok(key);
+    let suffix = match provider_id.to_ascii_lowercase().as_str() {
+        "anthropic" => "anthropic_key",
+        "openai" => "openai_key",
+        "google" | "gemini" => "gemini_key",
+        "xai" | "grok" => "grok_key",
+        _ => return Err(CanopyError::Validation("Unsupported provider".into())),
+    };
+    let key = get_secret(&format!("agent_{}_{}", agent_id, suffix))?;
+    if key.trim().is_empty() {
+        return Err(CanopyError::NotFound(format!(
+            "No API key found for agent {} and provider {}",
+            agent_id, provider_id
+        )));
     }
-
-    // 2. Fall back to global provider key
-    let global_key = format!("{}_API_KEY", provider_id.to_uppercase());
-    if let Ok(key) = get_secret(&global_key) {
-        return Ok(key);
-    }
-
-    Err(CanopyError::NotFound(format!(
-        "No API key found for agent {} or provider {}",
-        agent_id, provider_id
-    )))
+    Ok(key)
 }
 
 // ─── Tauri Commands (take owned Strings for IPC deserialization) ────────────
@@ -132,6 +161,8 @@ fn validate_secret_key_for_ipc(key: &str) -> Result<()> {
     );
 
     let allowed_prefix = key.starts_with("agent_")
+        || key.starts_with("canopy_helper_")
+        || key.starts_with("provider_management_")
         || key.starts_with("github-access-token-")
         || key.starts_with("github-username-")
         || key.starts_with("google_refresh_")
@@ -464,5 +495,6 @@ mod tests {
             validate_secret_key_for_ipc("agent_agent-alpha_slack_bot_token\nOPENAI_API_KEY")
                 .is_err()
         );
+        assert!(validate_secret_key_for_ipc("internal_gateway_token").is_err());
     }
 }

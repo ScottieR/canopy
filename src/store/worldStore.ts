@@ -1,6 +1,7 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import RAW_AGENT_TYPE_INFO from "../../shared/agents.json";
+import { getQuotaSafeLocalStorage } from "./safeStorage";
 
 export interface UserProfile {
   name: string;
@@ -30,7 +31,7 @@ export interface Agent {
   isolated: boolean;
   paused: boolean;
   container_id: string | null;
-  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; decor?: string[]; decorTransforms?: Record<string, any>; habitatId?: number; color?: string; habitatOffset?: any; };
+  visual_identity?: { baseModelUrl?: string | null; accessories: string[]; decor?: string[]; decorTransforms?: Record<string, any>; habitatId?: number; color?: string; habitatOffset?: any; cloak_enabled?: boolean; };
   personality: {
     name: string;
     communication_style: string;
@@ -51,6 +52,9 @@ export interface Agent {
     browser: boolean;
     proxy: boolean;
     vision: boolean;
+    computer_control?: boolean;
+    host_control?: boolean;
+    screen_record?: boolean;
     canvas: boolean;
     coding: boolean;
     gog: boolean;
@@ -92,7 +96,8 @@ export interface ChatMessage {
 export interface MiniAppVersion {
   id: string;
   timestamp: number;
-  entrypoint: string;
+  entrypoint?: string;
+  htmlContent?: string;
 }
 
 /** A saved mini-app — an HTML tool produced by an agent and pinned for reuse. */
@@ -104,6 +109,8 @@ export interface MiniApp {
   sourceMessageId?: string;  // which chat message it came from, for dedup
   versions: MiniAppVersion[];
   activeVersionId: string;
+  /** Legacy storage used before HTML moved into version records. */
+  htmlContent?: string;
 }
 
 // A saved conversation thread for an agent. Titles are auto-derived from the
@@ -116,6 +123,13 @@ export interface Conversation {
   lastActiveAt: number;    // unix ms — for sort order
   type?: "dm" | "forum";
   status?: "active" | "archived";
+  threadStatus?: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed";
+  backgroundAllowed?: boolean;
+  activeRunCount?: number;
+  lastRunId?: string | null;
+  lastRunStatus?: string | null;
+  checkpointCount?: number;
+  lastCheckpointAt?: number | null;
 }
 
 export interface AgentData extends Agent {
@@ -143,9 +157,9 @@ export interface AgentData extends Agent {
   // thread, the current chatLog is saved into `conversations[]` (titled from
   // its first user message) and chatLog resets. Switching threads swaps
   // chatLog with a saved conversation's messages.
-  // NOTE: The agent's underlying SQLite memory is still a single pool —
-  // threads are visual partitioning, not contextual isolation. Real isolation
-  // requires a per-conversation backend, which is a focused next session.
+  // NOTE: Thread-level persistence and run state now exist in the backend, but
+  // durable agent memory still spans threads. Full contextual isolation still
+  // requires deeper per-thread runtime separation.
   conversations?: Conversation[];
   activeConversationId?: string | null;
   chatClearedAt?: number;
@@ -163,6 +177,7 @@ export interface AgentData extends Agent {
     habitatId?: number;
     color?: string;
     habitatOffset?: { offsetX: number; offsetY: number; offsetZ: number; };
+    cloak_enabled?: boolean;
   };
 }
 
@@ -238,7 +253,7 @@ export interface WorldState {
   inbox: InboxItem[];
   selectedAgent: string | null;
   hoveredAgent: string | null;
-  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum";
+  activeView: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum" | "dashboard";
   activeForumId: string | null;
   architectTab: string;
   gatewayReady: boolean;
@@ -246,7 +261,7 @@ export interface WorldState {
   toggleTheme: () => void;
   setSelectedAgent: (id: string | null) => void;
   setHoveredAgent: (id: string | null) => void;
-  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum") => void;
+  setActiveView: (view: "loading" | "onboarding" | "canopy" | "architect" | "archive" | "library" | "vault" | "integrations" | "profile" | "diagnostics" | "forum" | "dashboard") => void;
   setActiveForumId: (id: string | null) => void;
   setArchitectTab: (tab: string) => void;
   setGatewayReady: (ready: boolean) => void;
@@ -256,6 +271,19 @@ export interface WorldState {
   setAutoCloakEnabled: (enabled: boolean) => void;
   setAutoCloakTimeout: (timeout: number) => void;
   setIsCloaked: (cloaked: boolean) => void;
+  // ── Anonymized usage telemetry ───────────────────────────────────────────
+  // telemetryAnonId is a random UUID generated once on first launch and
+  // persisted locally — it is never derived from the user's name, email, or
+  // any agent id/name, and nothing that could identify a specific person or
+  // agent is ever sent alongside it. See spec-global-usage-telemetry.md.
+  telemetryAnonId: string;
+  usageTelemetryEnabled: boolean; // opt-in, defaults to false
+  setUsageTelemetryEnabled: (enabled: boolean) => void;
+  // firedTelemetryEvents tracks which one-time milestone/funnel events (e.g.
+  // onboarding_a0_deployed, onboarding_step_reached_2) have already fired for
+  // this install, so re-visiting a screen or reloading the app doesn't send
+  // duplicates. Keyed by event_type string. See fireActivationEvent() below.
+  firedTelemetryEvents: Record<string, boolean>;
   togglePermission: (agentId: string, permissionId: string) => void;
   updateAgentPosition: (id: string, pos: [number, number, number]) => void;
   updateAgentTarget: (id: string, target: [number, number, number]) => void;
@@ -280,7 +308,7 @@ export interface WorldState {
   addInboxItem: (item: Omit<InboxItem, "id" | "timestamp">) => void;
   removeInboxItem: (id: string) => void;
   // ── Mini Apps ─────────────────────────────────────────────────────────────
-  addMiniApp: (agentId: string, app: { name: string; description?: string; sourceMessageId?: string; entrypoint: string; }) => void;
+  addMiniApp: (agentId: string, app: { name: string; description?: string; sourceMessageId?: string; entrypoint?: string; htmlContent?: string; }) => void;
   updateMiniAppVersion: (agentId: string, appId: string, versionId: string) => void;
   deleteMiniApp: (agentId: string, appId: string) => void;
   // ── Decision Queue ────────────────────────────────────────────────────
@@ -322,6 +350,9 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "browser", label: "Web Browser", description: "Navigate websites and interact with DOM elements", enabled: true, category: "skills" },
   { id: "proxy", label: "Browser Proxy", description: "Intercept and proxy web requests", enabled: false, category: "skills" },
   { id: "vision", label: "Computer Vision", description: "Analyze images and screen content", enabled: false, category: "skills" },
+  { id: "computer_control", label: "Computer Control Sandbox", description: "Control an isolated container desktop using screenshots and typed input events", enabled: false, category: "skills" },
+  { id: "host_control", label: "Host Computer Control", description: "Request tightly time-boxed control of host macOS apps. Isolated agents only.", enabled: false, category: "execution" },
+  { id: "screen_record", label: "Screen Recording", description: "Receive screenshots or accessibility snapshots for observation, auditing, and teaching flows", enabled: false, category: "data" },
   { id: "canvas", label: "Canvas Editor", description: "Edit and manipulate visual layouts", enabled: false, category: "skills" },
   { id: "coding", label: "Code Execution", description: "Run scripts and evaluate code locally", enabled: true, category: "skills" },
   { id: "gog", label: "Search Engine", description: "Query the web for information", enabled: true, category: "skills" },
@@ -394,6 +425,66 @@ export function getDefaultPersonality(role: string, name: string, agentTypeInfo:
   return basePrompt;
 }
 
+// Normalizes an agent's role into a value safe to send in anonymized usage
+// telemetry. Suggested personas (present as a real key in AGENT_TYPE_INFO,
+// excluding the "Custom" placeholder entry) report their persona key as-is;
+// anything else — including agents built from scratch via the "Custom" flow,
+// or a suggested persona whose role text was later hand-edited — reports as
+// "custom" rather than leaking free-text agent naming into the aggregate.
+// See spec-global-usage-telemetry.md.
+export function normalizePersonaRole(role: string | undefined, agentTypeInfo: Record<string, any> = AGENT_TYPE_INFO): string {
+  if (role && role !== "Custom" && agentTypeInfo[role]) return role;
+  return "custom";
+}
+
+// Fires a one-time funnel/milestone event (activation A0-A3, onboarding step
+// reached, companion pairing, etc). Dedupes against the persisted
+// firedTelemetryEvents map keyed by eventType, so reloads/re-renders never
+// double-report the same milestone. No-ops when usage telemetry is disabled
+// (opt-in, Settings > Security & Privacy). Fire-and-forget: failures are
+// swallowed so telemetry can never block the UI. Payload carries only the
+// random per-install anon_id, the event name, and optional non-identifying
+// properties (e.g. step number/name) — never message content or PII.
+// See spec-global-usage-telemetry.md.
+export function fireActivationEvent(eventType: string, properties?: Record<string, any>) {
+  const state = useWorldStore.getState();
+  if (!state.usageTelemetryEnabled) return;
+  if (state.firedTelemetryEvents[eventType]) return;
+  useWorldStore.setState((s) => ({
+    firedTelemetryEvents: { ...s.firedTelemetryEvents, [eventType]: true }
+  }));
+  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/telemetry/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      anon_id: state.telemetryAnonId,
+      event_type: eventType,
+      properties: properties || null,
+      timestamp: new Date().toISOString()
+    })
+  }).catch(() => {});
+}
+
+// Reports a recurring (non-deduped) usage event — e.g. "companion_paired",
+// which can legitimately happen more than once per install (multiple
+// devices). Same opt-in gating and anonymized payload shape as
+// fireActivationEvent, just without the fire-once bookkeeping.
+// See spec-global-usage-telemetry.md.
+export function reportTelemetryEvent(eventType: string, properties?: Record<string, any>) {
+  const state = useWorldStore.getState();
+  if (!state.usageTelemetryEnabled) return;
+  fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/telemetry/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      anon_id: state.telemetryAnonId,
+      event_type: eventType,
+      properties: properties || null,
+      timestamp: new Date().toISOString()
+    })
+  }).catch(() => {});
+}
+
 export function injectPrincipalContext(basePrompt: string, profile: UserProfile | null) {
   if (!profile || profile.name === "Admin" && !profile.global_directives) return basePrompt;
 
@@ -406,6 +497,67 @@ export function injectPrincipalContext(basePrompt: string, profile: UserProfile 
   if (profile.global_directives) principal += `\nGLOBAL DIRECTIVES: ${profile.global_directives}`;
 
   return basePrompt + principal;
+}
+
+const PERSISTED_CHAT_MESSAGE_LIMIT = 10;
+const PERSISTED_MESSAGE_TEXT_LIMIT = 10_000;
+const PERSISTED_CONVERSATION_LIMIT = 100;
+const PERSISTED_MINI_APP_CONTENT_BUDGET = 100_000;
+
+function boundedText(value: string | undefined, limit: number): string | undefined {
+  if (typeof value !== "string") return value;
+  return value.length > limit ? value.slice(0, limit) : value;
+}
+
+function persistedMessage(message: ChatMessage): ChatMessage {
+  return {
+    ...message,
+    text: boundedText(message.text, PERSISTED_MESSAGE_TEXT_LIMIT) || "",
+    attachments: message.attachments?.map(attachment => ({
+      ...attachment,
+      dataUrl: attachment.dataUrl?.startsWith("data:") ? "" : (attachment.dataUrl || ""),
+    })),
+  };
+}
+
+function persistedMiniApps(miniApps: MiniApp[] | undefined): MiniApp[] | undefined {
+  if (!miniApps) return miniApps;
+  let remainingContent = PERSISTED_MINI_APP_CONTENT_BUDGET;
+
+  return miniApps.slice(0, 10).map(app => ({
+    ...app,
+    versions: app.versions.slice(0, 3).map(version => {
+      const content = version.htmlContent || "";
+      const retained = content.slice(0, Math.max(0, remainingContent));
+      remainingContent -= retained.length;
+      return { ...version, htmlContent: retained };
+    }),
+  }));
+}
+
+/** Produce a bounded local cache. Durable conversation history lives in SQLite/OpenClaw. */
+export function createWorldPersistenceSnapshot(state: WorldState) {
+  return {
+    agents: state.agents.map(agent => {
+      const { chatLog, conversations, miniApps, ...agentMetadata } = agent;
+      return {
+        ...agentMetadata,
+        chatLog: (chatLog || []).slice(-PERSISTED_CHAT_MESSAGE_LIMIT).map(persistedMessage),
+        conversations: (conversations || []).slice(-PERSISTED_CONVERSATION_LIMIT).map(conversation => ({
+          ...conversation,
+          // Thread contents are rehydrated from the backend when selected.
+          messages: [],
+        })),
+        miniApps: persistedMiniApps(miniApps),
+      };
+    }),
+    inbox: state.inbox,
+    isAutoCloakEnabled: state.isAutoCloakEnabled,
+    autoCloakTimeout: state.autoCloakTimeout,
+    telemetryAnonId: state.telemetryAnonId,
+    usageTelemetryEnabled: state.usageTelemetryEnabled,
+    firedTelemetryEvents: state.firedTelemetryEvents,
+  };
 }
 
 export const useWorldStore = create<WorldState>()(
@@ -422,6 +574,9 @@ export const useWorldStore = create<WorldState>()(
   isAutoCloakEnabled: true,
   autoCloakTimeout: 15,
   isCloaked: false,
+  telemetryAnonId: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `anon-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  usageTelemetryEnabled: false,
+  firedTelemetryEvents: {},
   theme: "light",
   toggleTheme: () => set((state) => {
     const nextTheme = state.theme === "light" ? "dark" : "light";
@@ -437,6 +592,7 @@ export const useWorldStore = create<WorldState>()(
   setAutoCloakEnabled: (enabled) => set({ isAutoCloakEnabled: enabled }),
   setAutoCloakTimeout: (timeout) => set({ autoCloakTimeout: timeout }),
   setIsCloaked: (cloaked) => set({ isCloaked: cloaked }),
+  setUsageTelemetryEnabled: (enabled) => set({ usageTelemetryEnabled: enabled }),
   togglePermission: (agentId, permissionId) =>
     set((state) => ({
       agents: state.agents.map((a) =>
@@ -610,6 +766,10 @@ export const useWorldStore = create<WorldState>()(
         } : a),
       };
     });
+    if (savedId) {
+      // A3 activation: first forum space created. Fire-once, see fireActivationEvent.
+      fireActivationEvent("activation_a3_first_forum");
+    }
     return savedId;
   },
 
@@ -721,6 +881,7 @@ export const useWorldStore = create<WorldState>()(
         id: `version_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         timestamp: Date.now(),
         entrypoint: app.entrypoint,
+        htmlContent: app.htmlContent,
       };
 
       // If an app with the same name exists, append a new version
@@ -777,31 +938,10 @@ export const useWorldStore = create<WorldState>()(
 }),
 {
   name: "canopy-world-store",
-  partialize: (state) => ({ 
-    agents: state.agents.map((a) => ({
-      ...a,
-      chatLog: a.chatLog?.map((m) => ({
-        ...m,
-        attachments: m.attachments?.map((att) => ({
-          ...att,
-          dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
-        }))
-      })),
-      conversations: a.conversations?.map((c) => ({
-        ...c,
-        messages: c.messages?.map((m) => ({
-          ...m,
-          attachments: m.attachments?.map((att) => ({
-            ...att,
-            dataUrl: att.dataUrl?.startsWith("data:") ? "" : (att.dataUrl || "")
-          }))
-        }))
-      }))
-    })),
-    inbox: state.inbox,
-    isAutoCloakEnabled: state.isAutoCloakEnabled, 
-    autoCloakTimeout: state.autoCloakTimeout 
-  }),
+  storage: createJSONStorage(getQuotaSafeLocalStorage),
+  version: 1,
+  migrate: persistedState => persistedState as WorldState,
+  partialize: createWorldPersistenceSnapshot,
 }
 ));
 

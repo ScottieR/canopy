@@ -16,11 +16,15 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
 import { WorldScene } from "../components/World/WorldScene";
 import { OnboardingCompanion } from "../components/World/OnboardingCompanion";
 import { LoadingScreen } from "../components/LoadingScreen";
-import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission } from "../store/worldStore";
+import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission, fireActivationEvent } from "../store/worldStore";
 import { GenerativeResult } from "../components/GenerativeStudio";
 import { Toggle } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { getAssetUrl } from "../utils/assets";
+import { buildCompanionUrl } from "../utils/connectorCatalog";
+import { getOnboardingIntegrationIds } from "../utils/onboardingIntegrations";
+import { getInitialOnboardingStep } from "../utils/onboardingFlow";
+import { getAgentProviderSecretSlot, getManagedProviderId, syncAgentProviderCredentials } from "../security/providerCredentials";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
@@ -69,6 +73,17 @@ const stageForStep = (s: number): number => {
   return 5;                       // 6, 7 (celebrate + pair)
 };
 
+const deriveAgentId = (name: string): string => {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 57);
+
+  return `agent-${slug || "draft"}`;
+};
+
 export function OnboardingWizard() {
 
   // --- Draft Persistence ---
@@ -87,8 +102,48 @@ export function OnboardingWizard() {
   const draft = loadDraft();
 
   const { agents } = useWorldStore();
-  const initialStepTarget = agents.length > 0 ? 1 : 0;
-  const [step, setStep] = useState(draft?.step !== undefined ? draft.step : -1);
+  const hasCompletedInitialSetup = agents.length > 0
+    || localStorage.getItem("canopy_initial_setup_complete") === "true";
+  const initialStepTarget = hasCompletedInitialSetup ? 1 : 0;
+  // The engine gate belongs only to first-run onboarding. Returning users and
+  // the Add Agent flow start at agent creation, even if an older draft saved
+  // the legacy engine step (-1).
+  const [step, setStep] = useState(
+    getInitialOnboardingStep(draft?.step, hasCompletedInitialSetup)
+  );
+
+  useEffect(() => {
+    if (agents.length > 0) {
+      localStorage.setItem("canopy_initial_setup_complete", "true");
+      if (step === -1) setStep(1);
+    }
+  }, [agents.length, step]);
+
+  // Maps each wizard step value to a stable name for funnel telemetry, so we
+  // can see step-by-step drop-off, not just whether a user reached the end.
+  // See spec-global-usage-telemetry.md.
+  const ONBOARDING_STEP_NAMES: Record<string, string> = {
+    "-1": "engine_check",
+    "0": "welcome",
+    "0.5": "user_identity",
+    "1": "create_agent_intro",
+    "1.8": "import_existing_agent",
+    "2": "agent_name",
+    "2.5": "agent_appearance",
+    "3": "power_up",
+    "4": "skills_access",
+    "5": "plugin_test",
+    "6": "deploying",
+    "7": "slack_pairing",
+  };
+  useEffect(() => {
+    const name = ONBOARDING_STEP_NAMES[String(step)];
+    if (name) {
+      // Fire-once per step value, see fireActivationEvent.
+      fireActivationEvent(`onboarding_step_reached_${name}`, { step, step_name: name });
+    }
+  }, [step]);
+
   const [engineStatus, setEngineStatus] = useState<"checking" | "missing" | "found" | "starting" | "ready">("checking");
   const [foundEngine, setFoundEngine] = useState<"OrbStack" | "Docker" | null>(null);
   const [engineError, setEngineError] = useState("");
@@ -109,8 +164,14 @@ export function OnboardingWizard() {
   });
   const [recentlyRead, setRecentlyRead] = useState<string[]>([]);
   const [customBookInput, setCustomBookInput] = useState("");
-  const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "xAI Grok" | "">("");
+  const [llmProvider, setLlmProvider] = useState<"OpenAI" | "Google Gemini" | "Anthropic" | "xAI Grok" | "">(draft?.llmProvider || "");
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
+  const [autoProvisionProvider, setAutoProvisionProvider] = useState<"openai" | "xai" | null>(draft?.autoProvisionProvider || null);
+  const [managementConnected, setManagementConnected] = useState(false);
+  const [managementCredential, setManagementCredential] = useState("");
+  const [managementScopeId, setManagementScopeId] = useState("");
+  const [managementBusy, setManagementBusy] = useState(false);
+  const [managementError, setManagementError] = useState("");
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any; habitatId?: number; color?: string; decor?: string[]; decorTransforms?: any }>({ baseModelUrl: null, accessories: [], decor: [] });
 
   const getNonOverlappingPosition = (existingAgents: AgentData[]): [number, number, number] => {
@@ -130,7 +191,43 @@ export function OnboardingWizard() {
     return [existingAgents.length * 3.5, 0, Math.random() * 2 - 1];
   };
 
-  const optimisticId = `agent-${(agentName || "new").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, '')}`;
+  const optimisticId = deriveAgentId(agentName);
+
+  const managedProviderId = getManagedProviderId(llmProvider);
+  useEffect(() => {
+    if (!managedProviderId) {
+      setManagementConnected(false);
+      setAutoProvisionProvider(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<any>("get_provider_management_status", { provider: managedProviderId })
+      .then(status => { if (!cancelled) setManagementConnected(Boolean(status?.connected)); })
+      .catch(() => { if (!cancelled) setManagementConnected(false); });
+    return () => { cancelled = true; };
+  }, [managedProviderId]);
+
+  const connectManagementForOnboarding = async () => {
+    if (!managedProviderId) return;
+    setManagementBusy(true);
+    setManagementError("");
+    try {
+      await invoke("connect_provider_management", {
+        provider: managedProviderId,
+        credential: managementCredential.trim(),
+        scopeId: managementScopeId.trim(),
+      });
+      setManagementConnected(true);
+      setAutoProvisionProvider(managedProviderId);
+      setApiKey("");
+      setApiKeyMode("hidden");
+      setManagementCredential("");
+    } catch (error) {
+      setManagementError(String(error));
+    } finally {
+      setManagementBusy(false);
+    }
+  };
 
   const [plugins, setPlugins] = useState<Record<string, boolean>>(draft?.plugins || { slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
   const [isolated, setIsolated] = useState(draft?.isolated || false);
@@ -143,22 +240,24 @@ export function OnboardingWizard() {
   const [pendingHighRiskToggle, setPendingHighRiskToggle] = useState<{ id: string, enabled: boolean } | null>(null);
   const [showHighRiskModal, setShowHighRiskModal] = useState(false);
 
-  const isHighRisk = (id: string) => ["payments", "spend_auto", "file_write", "autonomous", "ext_network", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize"].includes(id);
+  const isHighRisk = (id: string) => ["payments", "spend_auto", "file_write", "autonomous", "ext_network", "browser", "proxy", "vision", "canvas", "coding", "gog", "summarize", "computer_control", "host_control", "screen_record"].includes(id);
 
   const [folderAccessType, setFolderAccessType] = useState<"specific" | "all">("specific");
   const [selectedFolderPath, setSelectedFolderPath] = useState("");
   const [testPluginIndex, setTestPluginIndex] = useState(-1);
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [testStatusMessage, setTestStatusMessage] = useState("");
 
   // Workspace-level service connection status (shared across all agents)
   const [wsSlackConnected, setWsSlackConnected] = useState(false);
   const [wsGmailConnected, setWsGmailConnected] = useState(false);
   const [wsCalConnected, setWsCalConnected] = useState(false);
 
-  // Only agent-local plugins go through Step 5 integration testing
-  const AGENT_LOCAL_PLUGINS = ["slack", "folders", "imessage", "photos"];
+  // Step 5 covers each connection the wizard can actively set up or verify
+  // before the real agent record is created.
+  const ONBOARDING_SETUP_PLUGINS = ["slack", "github", "telegram", "discord", "twilio", "folders", "imessage", "photos"];
   const enabledPlugins = Object.entries(plugins)
-    .filter(([k, v]) => v && AGENT_LOCAL_PLUGINS.includes(k))
+    .filter(([k, v]) => v && ONBOARDING_SETUP_PLUGINS.includes(k))
     .map(([k]) => k);
 
   const [slackAppToken, setSlackAppToken] = useState("");
@@ -170,6 +269,8 @@ export function OnboardingWizard() {
   const [selectedIMessageThreads, setSelectedIMessageThreads] = useState<string[]>([]);
   const [selectedSlackChannels, setSelectedSlackChannels] = useState<string[]>([]);
   const [imessageAccessLevel, setImessageAccessLevel] = useState<"read-only" | "read-send">("read-only");
+  const [pendingGithubRepos, setPendingGithubRepos] = useState<string[]>([]);
+  const [twilioDraft, setTwilioDraft] = useState({ accountSid: "", authToken: "", phoneNumber: "" });
 
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
@@ -180,6 +281,39 @@ export function OnboardingWizard() {
   const [pairingCode, setPairingCode] = useState("");
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState("");
+
+  const resetWizardState = () => {
+    setStep(initialStepTarget);
+    setAgentName("");
+    setSelectedRole(null);
+    setApiKey("");
+    setPersonalityPrompt("");
+    setRecentlyRead([]);
+    setCustomBookInput("");
+    setLlmProvider("");
+    setApiKeyMode("hidden");
+    setAutoProvisionProvider(null);
+    setManagementConnected(false);
+    setManagementCredential("");
+    setManagementScopeId("");
+    setManagementBusy(false);
+    setManagementError("");
+    setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
+    setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
+    setSelectedFolderPath("");
+    setFolderAccessType("specific");
+    setSelectedIMessageThreads([]);
+    setSelectedSlackChannels([]);
+    setPendingGithubRepos([]);
+    setTwilioDraft({ accountSid: "", authToken: "", phoneNumber: "" });
+    setGoogleTokens(null);
+    setDeployedAgentId(null);
+    setPairingCode("");
+    setPairingError("");
+    setCreateAgentError("");
+    setModelHealth(null);
+    localStorage.removeItem('canopy_onboarding_draft');
+  };
 
   // Preflight the chosen provider key when the user reaches the celebration
   // step — a 1-token ping that catches invalid keys and quota-exhausted (429)
@@ -205,10 +339,10 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (step >= 0) {
       localStorage.setItem('canopy_onboarding_draft', JSON.stringify({
-        step, agentName, selectedRole, plugins, customIdentity, isolated
+        step, agentName, selectedRole, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider
       }));
     }
-  }, [step, agentName, selectedRole, plugins, customIdentity, isolated]);
+  }, [step, agentName, selectedRole, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider]);
 
   const checkConnections = async () => {
       try {
@@ -245,7 +379,11 @@ export function OnboardingWizard() {
         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
         const nameMap: any = { slack: 'Slack', discord: 'Discord', telegram: 'Telegram', github: 'GitHub' };
         new WebviewWindow('companion_' + key + '_' + Date.now(), {
-          url: `/index.html?companion=${key}&agentName=${encodeURIComponent(agentName || 'Agent')}&isNew=true`,
+          url: buildCompanionUrl(key, {
+            agentId: optimisticId,
+            agentName: agentName || "Agent",
+            isNew: true,
+          }),
           title: `Setup ${nameMap[key]}`,
           width: 420,
           height: 760,
@@ -271,8 +409,7 @@ export function OnboardingWizard() {
           await invoke("start_imessage_watcher", { appHandle: null }).catch(() => {});
           const granted = await invoke<boolean>("check_full_disk_access");
           if (!granted) {
-            const { open } = await import('@tauri-apps/plugin-shell');
-            await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+            await invoke("open_full_disk_access_settings");
           }
           checkConnections();
         } catch (e) {}
@@ -286,15 +423,20 @@ export function OnboardingWizard() {
         const { listen: tauriListen } = await import('@tauri-apps/api/event');
         const listen = (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) ? tauriListen : async () => () => {};
         const unlisten1 = await listen('companion-finished', async (e: any) => {
-          const { type, key, channels, appToken, botToken } = e.payload || {};
+          const { type, key, channels, appToken, botToken, selectedRepos } = e.payload || {};
           if (type === "slack") {
             setWsSlackConnected(true);
             setPlugins(prev => ({ ...prev, slack: true }));
             if (channels) setSelectedSlackChannels(channels);
             if (appToken) setSlackAppToken(appToken);
             if (botToken) setSlackBotToken(botToken);
+          } else if (type === "github") {
+            setPlugins(prev => ({ ...prev, github: true }));
+            setPendingGithubRepos(Array.isArray(selectedRepos) ? selectedRepos : []);
+            setTestStatusMessage("GitHub token saved. Run verification here before launch.");
           } else if (key) {
             setApiKey(key);
+            setAutoProvisionProvider(null);
             if (type === "gemini") setLlmProvider("Google Gemini");
             else if (type === "openai") setLlmProvider("OpenAI");
             else if (type === "anthropic") setLlmProvider("Anthropic");
@@ -342,6 +484,23 @@ export function OnboardingWizard() {
   const [isDeployingImport, setIsDeployingImport] = useState(false);
   const [createAgentError, setCreateAgentError] = useState("");
   const [isCreatingAgent, setIsCreatingAgent] = useState(false);
+
+  const runConnectionPreflight = async (integration: "github" | "telegram" | "discord" | "twilio") => {
+    setTestStatus("testing");
+    setTestStatusMessage("");
+    try {
+      const diagnostic = await invoke<{ service: string; is_ok: boolean; message: string }>("preflight_agent_connection", {
+        agentId: optimisticId,
+        integration,
+      });
+      setTestStatus(diagnostic.is_ok ? "success" : "error");
+      setTestStatusMessage(diagnostic.message);
+    } catch (e) {
+      console.error(`Failed to preflight ${integration}:`, e);
+      setTestStatus("error");
+      setTestStatusMessage(`Could not verify ${integration}.`);
+    }
+  };
 
   useEffect(() => {
     if (step === -1) {
@@ -490,6 +649,14 @@ export function OnboardingWizard() {
   };
 
   const { setActiveView, addAgent } = useWorldStore();
+  const handleBackFromRoleStep = () => {
+    if (agents.length > 0) {
+      resetWizardState();
+      setActiveView("canopy");
+      return;
+    }
+    setStep(0);
+  };
 
   const [agentTypeInfo, setAgentTypeInfo] = useState(AGENT_TYPE_INFO);
   const [globalLibrary, setGlobalLibrary] = useState<any[]>([]);
@@ -671,36 +838,22 @@ export function OnboardingWizard() {
           }
         }
 
-        if (apiKey.trim()) {
-          const providerKeyName: Record<string, string> = {
-            "Google Gemini": `agent_${newAgentData.id}_gemini_key`,
-            "Anthropic":     `agent_${newAgentData.id}_anthropic_key`,
-            "OpenAI":        `agent_${newAgentData.id}_openai_key`,
-            "xAI Grok":      `agent_${newAgentData.id}_grok_key`,
-          };
-          const keyName = providerKeyName[llmProvider] || `agent_${newAgentData.id}_gemini_key`;
+        if (autoProvisionProvider) {
+          await invoke("provision_agent_provider_key", {
+            agentId: newAgentData.id,
+            provider: autoProvisionProvider,
+          });
+        } else if (apiKey.trim()) {
+          if (!llmProvider) {
+            throw new Error("Select a model provider before saving an API key");
+          }
+          const keyName = getAgentProviderSecretSlot(newAgentData.id, llmProvider);
           await invoke("store_secret_cmd", { key: keyName, value: apiKey.trim() });
         }
 
-        {
-          const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
-          const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
-          const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
-          const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
-                                      || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
-
-          const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
-          const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
-          const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
-          const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
-
-          await invoke("sync_credentials", { agentId: newAgentData.id, keys: {
-            "ANTHROPIC_API_KEY": agAnthropic,
-            "OPENAI_API_KEY":    agOpenAI,
-            "GEMINI_API_KEY":    agGemini,
-            "XAI_API_KEY":       agGrok,
-          }}).catch(console.warn);
-        }
+        // SECURITY: Rust reads this agent's Keychain slots and writes its runtime
+        // auth profile. Provider keys never need to round-trip through React/IPC.
+        await syncAgentProviderCredentials(invoke, newAgentData.id);
 
         if (plugins.imessage && selectedIMessageThreads.length > 0) {
           await invoke("update_allowed_imessage_threads", {
@@ -722,26 +875,68 @@ export function OnboardingWizard() {
             expires_at: null,
             push_enabled: false
           };
+          const bridgePermissions = {
+            read: true,
+            // Shared agents receive brokered read-only access. Direct writes are
+            // available only when onboarding explicitly selected Isolated Mode.
+            write: isolated,
+            delete: false
+          };
+          await invoke("enable_bridge", {
+            agentId: newAgentData.id,
+            bridgeType: "files",
+            config: bridgeConfig
+          }).catch(async (err) => {
+            const message = String(err || "");
+            if (!message.toLowerCase().includes("unique")) throw err;
+          });
           await invoke("update_bridge_config", {
             bridgeId: `${newAgentData.id}-files`,
-            config: bridgeConfig
+            config: bridgeConfig,
+            permissions: bridgePermissions
           });
         }
 
-        if (googleTokens) {
-          if (googleTokens.refresh_token) {
-            await invoke("store_secret_cmd", { key: `google_refresh_${newAgentData.id}`, value: googleTokens.refresh_token });
-          }
-          if (googleTokens.access_token) {
-            await invoke("store_secret_cmd", { key: `google_access_${newAgentData.id}`, value: googleTokens.access_token });
+        let githubReady = false;
+        let telegramReady = false;
+        let discordReady = false;
+        let twilioReady = false;
+
+        if (plugins.github) {
+          const githubToken = String(
+            await invoke("get_secret_cmd", { key: `github-access-token-${newAgentData.id}` }).catch(() => "") || ""
+          ).trim();
+          if (githubToken) {
+            try {
+              await invoke("configure_github", { agentId: newAgentData.id, personalAccessToken: githubToken });
+              githubReady = true;
+            } catch (e) {
+              console.warn("Failed to finalize GitHub setup", e);
+            }
           }
         }
 
-        let initialIntegrations = [];
-        if (plugins.slack) initialIntegrations.push("slack");
-        if (plugins.email) initialIntegrations.push("email_read");
-        if (plugins.calendar) initialIntegrations.push("calendar_read");
-        if (plugins.imessage) initialIntegrations.push("imessage");
+        telegramReady = !!String(
+          await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_telegram_bot_token` }).catch(() => "") || ""
+        ).trim();
+        discordReady = !!String(
+          await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_discord_bot_token` }).catch(() => "") || ""
+        ).trim();
+        twilioReady =
+          !!String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_twilio_account_sid` }).catch(() => "") || "").trim() &&
+          !!String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_twilio_auth_token` }).catch(() => "") || "").trim() &&
+          !!String(await invoke("get_secret_cmd", { key: `agent_${newAgentData.id}_twilio_phone_number` }).catch(() => "") || "").trim();
+
+        const initialIntegrations = getOnboardingIntegrationIds(
+          {
+            ...plugins,
+            github: githubReady,
+            telegram: telegramReady,
+            discord: discordReady,
+            twilio: twilioReady,
+          },
+          { githubRepos: pendingGithubRepos }
+        );
 
         if (initialIntegrations.length > 0) {
           try {
@@ -760,7 +955,10 @@ export function OnboardingWizard() {
           await invoke("boot_sync_agents").catch(() => {});
           await invoke("sync_agent_slack_config", { agentId: newAgentData.id }).catch(() => {});
         }
-        
+
+        // A0 activation: agent successfully deployed. Fire-once, see fireActivationEvent.
+        fireActivationEvent("activation_a0_deployed");
+
         return newAgentData;
       } else {
         throw new Error("Tauri invoke not found");
@@ -1261,7 +1459,7 @@ export function OnboardingWizard() {
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
-            <button onClick={() => setStep(0)} style={{
+            <button onClick={handleBackFromRoleStep} style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
@@ -1579,7 +1777,7 @@ export function OnboardingWizard() {
             <div style={{ marginBottom: 24, display: "flex", flexWrap: "wrap", gap: 12 }}>
               {["OpenAI", "Google Gemini", "Anthropic", "xAI Grok"].map(prov => (
                 <label key={prov} style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--surface-card)", padding: "12px 16px", borderRadius: 12, border: llmProvider === prov ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", cursor: "pointer", opacity: llmProvider === prov ? 1 : 0.7 }}>
-                  <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => { setLlmProvider(prov as any); setApiKeyMode("hidden"); setApiKey(""); }} />
+                  <input type="radio" name="provider" checked={llmProvider === prov} onChange={() => { setLlmProvider(prov as any); setApiKeyMode("hidden"); setApiKey(""); setAutoProvisionProvider(null); }} />
                   <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{prov}</span>
                 </label>
               ))}
@@ -1593,6 +1791,7 @@ export function OnboardingWizard() {
               <div style={{ display: "flex", gap: 16, flexDirection: "column" }}>
                 <button onClick={async () => {
                   if (!llmProvider) return;
+                  setAutoProvisionProvider(null);
                   setApiKeyMode("scan");
                   try {
                     const providerMap: any = { "OpenAI": "OPENAI", "Google Gemini": "GEMINI", "Anthropic": "ANTHROPIC", "xAI Grok": "XAI" };
@@ -1604,11 +1803,17 @@ export function OnboardingWizard() {
                     alert("No existing key found in keychain.");
                   }
                 }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: !llmProvider ? "1px solid rgba(0,0,0,0.1)" : "1px solid #3c6663", background: "rgba(60,102,99,0.05)", color: !llmProvider ? "var(--text-muted)" : "#3c6663", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
-                  Scan for existing API key
+                  Use an existing key for this agent
                 </button>
                 <div style={{ textAlign: "center", fontSize: 12, color: "var(--text-sub)", margin: "-6px 0" }}>— or —</div>
                 <button onClick={async () => {
                   if (!llmProvider) return;
+                  if (managedProviderId) {
+                    setApiKey("");
+                    setApiKeyMode("hidden");
+                    setAutoProvisionProvider(managementConnected ? managedProviderId : null);
+                    return;
+                  }
                   setApiKeyMode("manual");
 
                   try {
@@ -1657,9 +1862,40 @@ export function OnboardingWizard() {
                     await open(urls[llmProvider]);
                   }
                 }} disabled={!llmProvider} style={{ padding: "12px 20px", borderRadius: 12, border: "none", background: !llmProvider ? "var(--border-subtle)" : "#3c6663", color: !llmProvider ? "var(--text-muted)" : "var(--surface-card)", cursor: !llmProvider ? "default" : "pointer", fontWeight: 600 }}>
-                  Set up new API key ✨
+                  {managedProviderId ? `Create a dedicated ${llmProvider} key automatically ✨` : "Set up new API key ✨"}
                 </button>
               </div>
+
+              {managedProviderId && !managementConnected && (
+                <div style={{ marginTop: 16, padding: 16, borderRadius: 12, border: "1px solid rgba(33,131,128,0.22)", background: "rgba(33,131,128,0.05)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 5 }}>Connect {llmProvider} management once</div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 10 }}>
+                    Canopy creates a separate key for each agent. The management credential stays in your Mac Keychain and is never sent to Eddy or the Canopy server.
+                  </div>
+                  <PasswordInput
+                    placeholder={managedProviderId === "xai" ? "xAI Management API key" : "OpenAI organization Admin key"}
+                    value={managementCredential}
+                    onChange={e => setManagementCredential(e.target.value)}
+                    style={{ width: "100%", padding: "11px 13px", borderRadius: 9, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 8 }}
+                  />
+                  <input
+                    placeholder={managedProviderId === "xai" ? "xAI team ID" : "OpenAI project ID"}
+                    value={managementScopeId}
+                    onChange={e => setManagementScopeId(e.target.value)}
+                    style={{ width: "100%", boxSizing: "border-box", padding: "11px 13px", borderRadius: 9, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 8 }}
+                  />
+                  <button onClick={connectManagementForOnboarding} disabled={managementBusy || !managementCredential.trim() || !managementScopeId.trim()} style={{ width: "100%", padding: "10px 14px", borderRadius: 9, border: "none", background: "#218380", color: "white", fontWeight: 700, cursor: "pointer" }}>
+                    {managementBusy ? "Validating…" : "Connect once & use automatic keys"}
+                  </button>
+                  {managementError && <div style={{ marginTop: 8, fontSize: 12, color: "#b42318" }}>{managementError}</div>}
+                </div>
+              )}
+
+              {managedProviderId && managementConnected && autoProvisionProvider === managedProviderId && (
+                <div style={{ marginTop: 14, padding: "11px 13px", borderRadius: 10, background: "rgba(33,131,128,0.09)", color: "#218380", fontSize: 12, fontWeight: 700 }}>
+                  ✓ A dedicated {llmProvider} key will be created for {agentName || "this agent"} during deployment.
+                </div>
+              )}
 
               {apiKeyMode !== "hidden" && (
                 <div style={{ marginTop: 24 }}>
@@ -1675,6 +1911,9 @@ export function OnboardingWizard() {
               {/* Required-field guidance */}
               {(() => {
                 const hasKey = apiKey.trim().length > 0;
+                if (autoProvisionProvider) {
+                  return <div style={{ marginTop: 14, fontSize: 12, color: "#218380", fontWeight: 600 }}>Dedicated-key provisioning is ready. No inference key needs to be pasted.</div>;
+                }
                 if (hasKey) {
                   return (
                     <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#218380", fontWeight: 600 }}>
@@ -1707,7 +1946,7 @@ export function OnboardingWizard() {
             {/* Key-free creation (spec Part 1B Layer 2): the key is a graduation
                 moment at first message, not a gate on creating the agent. */}
             <button
-              onClick={() => { setApiKey(""); setApiKeyMode("hidden"); setStep(4); }}
+              onClick={() => { setApiKey(""); setApiKeyMode("hidden"); setAutoProvisionProvider(null); setStep(4); }}
               title={`You can finish creating ${agentName || "your agent"} now and connect a key when you send their first message.`}
               style={{
                 marginLeft: "auto", padding: "12px 20px", borderRadius: 12,
@@ -1717,7 +1956,7 @@ export function OnboardingWizard() {
               }}
             >Skip — connect later</button>
             {(() => {
-              const canAdvance = !!llmProvider && apiKey.trim().length > 0;
+              const canAdvance = !!llmProvider && (apiKey.trim().length > 0 || autoProvisionProvider !== null);
               return (
                 <button
                   onClick={() => { if (canAdvance) setStep(4); }}
@@ -2095,7 +2334,11 @@ export function OnboardingWizard() {
                       if (typeof invoke === 'function') {
                         const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                         new WebviewWindow('companion_slack_' + Date.now(), {
-                          url: `/index.html?companion=slack&agentId=${optimisticId}&agentName=${encodeURIComponent(agentName || "Agent")}&isNew=true`,
+                          url: buildCompanionUrl("slack", {
+                            agentId: optimisticId,
+                            agentName: agentName || "Agent",
+                            isNew: true,
+                          }),
                           title: 'Setup Slack',
                           width: 420,
                           height: 760,
@@ -2376,6 +2619,7 @@ export function OnboardingWizard() {
                     if (typeof invoke === 'function') {
                       const readOnly = true; // Always read-only during onboarding; adjust in Connections tab
                       const tokens = await invoke("start_google_oauth", {
+                        agentId: optimisticId,
                         scopes: [enabledPlugins[testPluginIndex]],
                         readOnly,
                       });
@@ -2460,7 +2704,107 @@ export function OnboardingWizard() {
               </div>
             )}
 
-            {testStatus === "idle" && enabledPlugins[testPluginIndex] !== "slack" && enabledPlugins[testPluginIndex] !== "imessage" && enabledPlugins[testPluginIndex] !== "folders" && enabledPlugins[testPluginIndex] !== "email" && enabledPlugins[testPluginIndex] !== "calendar" && enabledPlugins[testPluginIndex] !== "photos" && (
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "github" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 12 }}>
+                  GitHub setup needs a Personal Access Token and repository selection.
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 20 }}>
+                  Launch the side-by-side guide, finish token creation, then verify access here before launch.
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={() => handleSetupIntegration("github")} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Launch GitHub Setup
+                  </button>
+                  <button onClick={() => runConnectionPreflight("github")} style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.25)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Verify GitHub Access
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "telegram" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 12 }}>
+                  Telegram uses a dedicated bot token from BotFather.
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={() => handleSetupIntegration("telegram")} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Launch Telegram Setup
+                  </button>
+                  <button onClick={() => runConnectionPreflight("telegram")} style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.25)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Verify Telegram Access
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "discord" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 12 }}>
+                  Discord needs a dedicated bot token from the Developer Portal.
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={() => handleSetupIntegration("discord")} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Launch Discord Setup
+                  </button>
+                  <button onClick={() => runConnectionPreflight("discord")} style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.25)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Verify Discord Access
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] === "twilio" && (
+              <div style={{ width: "100%", textAlign: "left" }}>
+                <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 16 }}>
+                  Twilio needs your Account SID, Auth Token, and a phone number to bind to this agent.
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+                  <PasswordInput
+                    value={twilioDraft.accountSid}
+                    onChange={e => setTwilioDraft(prev => ({ ...prev, accountSid: e.target.value }))}
+                    placeholder="Account SID (AC...)"
+                    style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)" }}
+                  />
+                  <PasswordInput
+                    value={twilioDraft.authToken}
+                    onChange={e => setTwilioDraft(prev => ({ ...prev, authToken: e.target.value }))}
+                    placeholder="Auth Token"
+                    style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)" }}
+                  />
+                  <input
+                    value={twilioDraft.phoneNumber}
+                    onChange={e => setTwilioDraft(prev => ({ ...prev, phoneNumber: e.target.value }))}
+                    placeholder="+1 555 123 4567"
+                    style={{ width: "100%", padding: "12px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 13, outline: "none", boxSizing: "border-box" }}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+                  <button onClick={async () => {
+                    setTestStatus("testing");
+                    setTestStatusMessage("");
+                    try {
+                      await invoke("configure_twilio", {
+                        agentId: optimisticId,
+                        accountSid: twilioDraft.accountSid,
+                        authToken: twilioDraft.authToken,
+                        phoneNumber: twilioDraft.phoneNumber,
+                      });
+                      await runConnectionPreflight("twilio");
+                    } catch (e) {
+                      console.error("Failed to configure Twilio:", e);
+                      setTestStatus("error");
+                      setTestStatusMessage("Twilio setup failed. Check the SID, token, and phone number.");
+                    }
+                  }} style={{ padding: "12px 18px", borderRadius: 12, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                    Save and Verify Twilio
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {testStatus === "idle" && enabledPlugins[testPluginIndex] !== "slack" && enabledPlugins[testPluginIndex] !== "imessage" && enabledPlugins[testPluginIndex] !== "folders" && enabledPlugins[testPluginIndex] !== "email" && enabledPlugins[testPluginIndex] !== "calendar" && enabledPlugins[testPluginIndex] !== "photos" && enabledPlugins[testPluginIndex] !== "github" && enabledPlugins[testPluginIndex] !== "telegram" && enabledPlugins[testPluginIndex] !== "discord" && enabledPlugins[testPluginIndex] !== "twilio" && (
               <>
                 <div style={{ fontSize: 14, color: "var(--text-main)", fontWeight: 600, marginBottom: 16 }}>Test Action: Send a test ping to your {enabledPlugins[testPluginIndex]}.</div>
                 <button onClick={() => {
@@ -2483,7 +2827,7 @@ export function OnboardingWizard() {
               <div style={{ color: "#E53E3E", fontSize: 16, fontWeight: 600, textAlign: "center" }}>
                 <span style={{ fontSize: 32, display: "block", marginBottom: 8 }}>❌</span>
                 Connection Failed.
-                <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>Make sure both tokens are valid and the app is installed.</div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>{testStatusMessage || "Make sure the required credentials are valid and setup is complete."}</div>
                 <button onClick={() => setTestStatus("idle")} style={{ marginTop: 16, padding: "8px 16px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", cursor: "pointer", fontSize: 13 }}>Try Again</button>
               </div>
             )}
@@ -2495,6 +2839,9 @@ export function OnboardingWizard() {
                 {enabledPlugins[testPluginIndex] === "slack" && slackWorkspaceMsg && (
                   <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>{slackWorkspaceMsg}</div>
                 )}
+                {!slackWorkspaceMsg && testStatusMessage && (
+                  <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 8, fontWeight: 400 }}>{testStatusMessage}</div>
+                )}
               </div>
             )}
           </div>
@@ -2504,9 +2851,11 @@ export function OnboardingWizard() {
               if (testPluginIndex > 0) {
                 setTestPluginIndex(testPluginIndex - 1);
                 setTestStatus("idle");
+                setTestStatusMessage("");
               } else {
                 setStep(4);
                 setTestStatus("idle");
+                setTestStatusMessage("");
               }
             }} style={{
               padding: "12px 24px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)",
@@ -2520,6 +2869,7 @@ export function OnboardingWizard() {
                 if (testPluginIndex < enabledPlugins.length - 1) {
                   setTestPluginIndex(testPluginIndex + 1);
                   setTestStatus("idle");
+                  setTestStatusMessage("");
                 } else {
                   setStep(6);
                 }
@@ -2770,17 +3120,7 @@ export function OnboardingWizard() {
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <button 
               onClick={() => {
-                setStep(-1);
-                setAgentName("");
-                setSelectedRole(null);
-                setApiKey("");
-                setPersonalityPrompt("");
-                setRecentlyRead([]);
-                setCustomBookInput("");
-                setLlmProvider("");
-                setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
-                setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
-                localStorage.removeItem('canopy_onboarding_draft');
+                resetWizardState();
                 setActiveView("canopy");
               }}
               style={{ padding: "16px 24px", borderRadius: 16, background: "transparent", color: "var(--text-sub)", border: "none", fontSize: 16, fontWeight: 600, cursor: "pointer" }}
@@ -2794,17 +3134,7 @@ export function OnboardingWizard() {
                 setPairingError("");
                 try {
                   await invoke("approve_slack_pairing", { code: pairingCode.trim(), agentId: deployedAgentId });
-                  setStep(-1);
-                  setAgentName("");
-                  setSelectedRole(null);
-                  setApiKey("");
-                  setPersonalityPrompt("");
-                  setRecentlyRead([]);
-                  setCustomBookInput("");
-                  setLlmProvider("");
-                  setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
-                  setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
-                  localStorage.removeItem('canopy_onboarding_draft');
+                  resetWizardState();
                   setActiveView("canopy");
                 } catch (e) {
                   setPairingError(String(e));

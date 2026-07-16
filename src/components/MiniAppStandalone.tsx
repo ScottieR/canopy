@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useWorldStore, AgentData } from "../store/worldStore";
+import { isolateGeneratedHtml } from "../security/generatedHtml";
 
 export function MiniAppStandalone({ payload }: { payload: string }) {
   const { agentId, appId } = JSON.parse(decodeURIComponent(payload));
@@ -45,9 +46,9 @@ export function MiniAppStandalone({ payload }: { payload: string }) {
       return (
         <div style={{ width: "100%", height: "100vh", background: "#fff", display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <iframe
-            srcDoc={app.htmlContent}
+            srcDoc={isolateGeneratedHtml(app.htmlContent)}
             style={{ flex: 1, border: "none", width: "100%" }}
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+            sandbox="allow-scripts"
             title={app.name}
           />
         </div>
@@ -63,9 +64,11 @@ export function MiniAppStandalone({ payload }: { payload: string }) {
   return (
     <div style={{ width: "100%", height: "100vh", background: "#fff", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       <iframe
-        src={`canopy-workspace://${agentId}/${encodeURIComponent(activeVersion.entrypoint)}`}
+        {...(activeVersion.htmlContent
+          ? { srcDoc: isolateGeneratedHtml(activeVersion.htmlContent) }
+          : { src: `canopy-workspace://${agentId}/${encodeURIComponent(activeVersion.entrypoint || "")}` })}
         style={{ flex: 1, border: "none", width: "100%" }}
-        sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+        sandbox="allow-scripts"
         title={app.name}
       />
     </div>

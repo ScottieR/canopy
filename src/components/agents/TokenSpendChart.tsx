@@ -14,10 +14,15 @@ interface TokenUsageRecord {
   cost_usd: number;
 }
 
-export function TokenSpendChart({ agentId }: { agentId?: string }) {
+export function TokenSpendChart({ agentId, timeframe: controlledTimeframe }: { agentId?: string; timeframe?: 7 | 30 | 90 }) {
   const [data, setData] = useState<TokenUsageRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [timeframe, setTimeframe] = useState<7 | 30 | 90>(7);
+  // When `timeframe` is passed in (e.g. Dashboard.tsx's single dashboard-wide
+  // date filter), it drives the query and the internal 7/30/90 toggle is
+  // hidden so there's only one range control on screen. Uncontrolled callers
+  // (e.g. the per-agent ActivityTab.tsx) keep managing their own timeframe.
+  const [internalTimeframe, setInternalTimeframe] = useState<7 | 30 | 90>(7);
+  const timeframe = controlledTimeframe ?? internalTimeframe;
   const [providerFilter, setProviderFilter] = useState<string>("All");
 
   const fetchData = async () => {
@@ -98,7 +103,17 @@ export function TokenSpendChart({ agentId }: { agentId?: string }) {
   const maxCost = Math.max(...chartData.map(d => d.cost), 0.01); // avoid / 0
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", width: "100%", height: "100%" }}>
+    // Intentionally no `height: "100%"` here. This component is dropped into
+    // wrapper divs across the app that only set `minHeight` (not `height`),
+    // e.g. Dashboard.tsx and ActivityTab.tsx — a percentage height on this
+    // root has no definite value to resolve against there, so it falls
+    // through to whatever the nearest ancestor with a real height happens to
+    // be. On at least one page that's effectively the full viewport, which
+    // made the `flex: 1` chart area below balloon to fill hundreds of extra
+    // pixels of empty space. Sizing purely from content (header + a fixed-
+    // height chart area + footer) makes this component's height predictable
+    // regardless of what ancestor it's mounted under.
+    <div style={{ display: "flex", flexDirection: "column", width: "100%" }}>
       {/* Header & Controls */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 24 }}>
         <div>
@@ -125,32 +140,36 @@ export function TokenSpendChart({ agentId }: { agentId?: string }) {
             </select>
           )}
           
-          <div style={{ display: "flex", background: "var(--surface-base)", borderRadius: 6, border: "1px solid var(--border-subtle)", overflow: "hidden" }}>
-            {[7, 30, 90].map((t) => (
-              <button
-                key={t}
-                onClick={() => setTimeframe(t as any)}
-                style={{
-                  padding: "4px 8px", fontSize: 11, fontWeight: timeframe === t ? 600 : 500,
-                  color: timeframe === t ? "var(--text-main)" : "var(--text-muted)",
-                  background: timeframe === t ? "rgba(255,255,255,0.1)" : "transparent",
-                  border: "none", borderRight: t !== 90 ? "1px solid var(--border-subtle)" : "none",
-                  cursor: "pointer"
-                }}
-              >
-                {t}d
-              </button>
-            ))}
-          </div>
-          
+          {controlledTimeframe === undefined && (
+            <div style={{ display: "flex", background: "var(--surface-base)", borderRadius: 6, border: "1px solid var(--border-subtle)", overflow: "hidden" }}>
+              {[7, 30, 90].map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setInternalTimeframe(t as any)}
+                  style={{
+                    padding: "4px 8px", fontSize: 11, fontWeight: timeframe === t ? 600 : 500,
+                    color: timeframe === t ? "var(--text-main)" : "var(--text-muted)",
+                    background: timeframe === t ? "rgba(255,255,255,0.1)" : "transparent",
+                    border: "none", borderRight: t !== 90 ? "1px solid var(--border-subtle)" : "none",
+                    cursor: "pointer"
+                  }}
+                >
+                  {t}d
+                </button>
+              ))}
+            </div>
+          )}
+
           <button onClick={fetchData} style={{ background: "transparent", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 4 }}>
             <RefreshCw size={14} className={loading ? "spin" : ""} />
           </button>
         </div>
       </div>
 
-      {/* SVG Bar Chart */}
-      <div style={{ flex: 1, position: "relative", minHeight: 120 }}>
+      {/* SVG Bar Chart — fixed height (see note on the root div above) rather
+          than flex: 1, so this component's total height is self-contained
+          and doesn't depend on an ancestor having a definite height. */}
+      <div style={{ height: 160, position: "relative" }}>
         {loading && chartData.length === 0 ? (
           <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 12 }}>
             Loading spend data...

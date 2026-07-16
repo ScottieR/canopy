@@ -36,8 +36,10 @@
 ///
 /// Cross-reference: https://docs.openclaw.ai/concepts/models
 ///
-/// Last verified: April 2026
+/// Last verified: July 14, 2026
 use serde::{Deserialize, Serialize};
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::sync::RwLock;
 
 // ─── Anthropic / Claude ───────────────────────────────────────────────────────
@@ -102,8 +104,8 @@ pub const GOOGLE_GEMINI_PRO_35: &str = "google/gemini-3.5-pro";
 /// Gemini 3 Flash Preview — successor to gemini-2.5-flash.
 pub const GOOGLE_GEMINI_3_FLASH: &str = "google/gemini-3-flash-preview";
 
-/// Gemini 3.1 Flash Lite Preview — successor to gemini-2.5-flash-lite.
-pub const GOOGLE_GEMINI_31_FLASH_LITE: &str = "google/gemini-3.1-flash-lite-preview";
+/// Gemini 3.1 Flash Lite — stable lite successor to older flash-lite lines.
+pub const GOOGLE_GEMINI_31_FLASH_LITE: &str = "google/gemini-3.1-flash-lite";
 
 /// Gemini 3.1 Pro Preview — successor to gemini-2.5-pro.
 pub const GOOGLE_GEMINI_31_PRO: &str = "google/gemini-3.1-pro-preview";
@@ -202,7 +204,7 @@ pub fn all_models() -> Vec<ModelInfo> {
             strategy: "heavy".into(),
             description: "Fast reasoning model".into(),
         },
-        // ── Google Gemini 3.x — Preview (no shutdown date announced) ──────────
+        // ── Google Gemini 3.x — current line ─────────────────────────────────
         // Source: https://ai.google.dev/gemini-api/docs/deprecations
         ModelInfo {
             id: GOOGLE_GEMINI_3_FLASH.into(),
@@ -216,7 +218,7 @@ pub fn all_models() -> Vec<ModelInfo> {
             name: "Gemini 3.1 Flash Lite".into(),
             provider: "Google Gemini".into(),
             strategy: "light".into(),
-            description: "Preview — successor to 2.5 Flash Lite".into(),
+            description: "Stable — current lite model".into(),
         },
         ModelInfo {
             id: GOOGLE_GEMINI_31_PRO.into(),
@@ -289,7 +291,11 @@ pub fn init_model_registry() {
 pub fn update_model_registry(fetched: Vec<ModelInfo>) {
     let valid: Vec<ModelInfo> = fetched
         .into_iter()
-        .filter(|m| validate_model_string(&m.id).is_ok())
+        .filter_map(|mut m| {
+            let resolved = resolve_model_string(&m.id).ok()?;
+            m.id = resolved;
+            Some(m)
+        })
         .collect();
 
     if valid.is_empty() {
@@ -331,12 +337,40 @@ pub const GATEWAY_URL: &str = "http://localhost:18799";
 /// ⚠️  Do NOT write this to a top-level `gateway.token` field — that key is rejected by
 /// OpenClaw 2026.4.14's schema and crash-loops the container. See
 /// `OPENCLAW_INTEGRATION.md` §2 and §7 for the full rationale.
-pub const GATEWAY_INTERNAL_TOKEN: &str = "canopy_internal_token_2026";
+#[cfg(test)]
+pub fn gateway_internal_token() -> &'static str {
+    // Unit tests must never read or mutate the developer's real macOS Keychain.
+    "canopy_gateway_test_000000000000000000000000000000000000000000000000"
+}
+
+#[cfg(not(test))]
+pub fn gateway_internal_token() -> &'static str {
+    static TOKEN: OnceLock<String> = OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            crate::keychain::get_or_create_internal_secret(
+                "internal_gateway_token",
+                "canopy_gateway_",
+            )
+            .unwrap_or_else(|error| {
+                tracing::warn!(
+                    "Could not persist the internal gateway credential; using a process-local credential: {}",
+                    error
+                );
+                format!(
+                    "canopy_gateway_{}{}",
+                    uuid::Uuid::new_v4().simple(),
+                    uuid::Uuid::new_v4().simple()
+                )
+            })
+        })
+        .as_str()
+}
 
 /// Returns the fully-formed `Authorization: Bearer <token>` header value.
 /// Use as: `.header("Authorization", &model_constants::gateway_bearer_header())`
 pub fn gateway_bearer_header() -> String {
-    format!("Bearer {}", GATEWAY_INTERNAL_TOKEN)
+    format!("Bearer {}", gateway_internal_token())
 }
 
 // ─── Auth-profile path helpers ────────────────────────────────────────────────
@@ -369,6 +403,28 @@ pub fn agent_soul_path(agent_id: &str) -> String {
 /// Known OpenClaw provider prefixes.
 const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "google", "xai", "ollama"];
 
+/// Returns the current canonical replacement for deprecated or legacy model IDs.
+pub fn successor_model_for(model: &str) -> Option<&'static str> {
+    match model.trim() {
+        "google/gemini-flash-latest" => Some(GOOGLE_GEMINI_FLASH_35),
+        "google/gemini-2.0-flash" => Some(GOOGLE_GEMINI_FLASH_35),
+        "google/gemini-2.0-flash-001" => Some(GOOGLE_GEMINI_FLASH_35),
+        "google/gemini-3-flash-preview" => Some(GOOGLE_GEMINI_FLASH_35),
+        "google/gemini-2.0-flash-lite" => Some(GOOGLE_GEMINI_31_FLASH_LITE),
+        "google/gemini-2.0-flash-lite-001" => Some(GOOGLE_GEMINI_31_FLASH_LITE),
+        "google/gemini-2.0-flash-lite-preview" => Some(GOOGLE_GEMINI_31_FLASH_LITE),
+        "google/gemini-2.0-flash-lite-preview-02-05" => Some(GOOGLE_GEMINI_31_FLASH_LITE),
+        "google/gemini-3.1-flash-lite-preview" => Some(GOOGLE_GEMINI_31_FLASH_LITE),
+        _ => None,
+    }
+}
+
+/// Canonicalize a model string before validation or persistence.
+pub fn canonicalize_model_string(model: &str) -> String {
+    let trimmed = model.trim();
+    successor_model_for(trimmed).unwrap_or(trimmed).to_string()
+}
+
 /// Validates that a model string follows the `"provider/model-name"` format OpenClaw requires.
 ///
 /// Returns `Ok(model)` if valid so it can be used inline, or an `Err` with a clear message.
@@ -398,6 +454,13 @@ pub fn validate_model_string(model: &str) -> Result<&str, String> {
         ));
     }
     Ok(model)
+}
+
+/// Canonicalize then validate a model string, returning the safe current ID.
+pub fn resolve_model_string(model: &str) -> Result<String, String> {
+    let canonical = canonicalize_model_string(model);
+    validate_model_string(&canonical)?;
+    Ok(canonical)
 }
 
 /// Selects the best default model string given which API keys are present.
@@ -585,7 +648,7 @@ mod tests {
     #[test]
     fn all_models_catalogue_has_gemini_3x_previews() {
         // Source: https://ai.google.dev/gemini-api/docs/deprecations
-        // All three are listed as Preview with no shutdown date announced.
+        // Gemini 3 Flash + 3.1 Pro are preview; 3.1 Flash Lite is now stable.
         let models = all_models();
         assert!(
             models.iter().any(|m| m.id == GOOGLE_GEMINI_3_FLASH),
@@ -601,6 +664,22 @@ mod tests {
             models.iter().any(|m| m.id == GOOGLE_GEMINI_31_PRO),
             "Catalogue must include '{}'",
             GOOGLE_GEMINI_31_PRO
+        );
+    }
+
+    #[test]
+    fn resolve_model_string_upgrades_deprecated_google_aliases() {
+        assert_eq!(
+            resolve_model_string("google/gemini-flash-latest").unwrap(),
+            GOOGLE_GEMINI_FLASH_35
+        );
+        assert_eq!(
+            resolve_model_string("google/gemini-2.0-flash").unwrap(),
+            GOOGLE_GEMINI_FLASH_35
+        );
+        assert_eq!(
+            resolve_model_string("google/gemini-3.1-flash-lite-preview").unwrap(),
+            GOOGLE_GEMINI_31_FLASH_LITE
         );
     }
 

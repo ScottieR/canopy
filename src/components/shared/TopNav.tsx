@@ -11,6 +11,7 @@ import { Toggle, ServiceRow, glass } from "../../App";
 import { GenerativeResult } from "../GenerativeStudio";
 import { GlobalAlertsFeed } from "../GlobalAlertsFeed";
 import { DecisionQueuePanel } from "../DecisionQueue/DecisionQueuePanel";
+import { FeedbackModal } from "./FeedbackModal";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // TOP NAVIGATION BAR
@@ -23,6 +24,7 @@ function TopNav() {
   const hasUnreadAlerts = securityAlerts.length > 0 || systemWarnings.length > 0;
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showDecisionQueue, setShowDecisionQueue] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
 
   const actionableDecisions = pendingDecisions.filter(d => d.type === "pre_auth" || d.type === "needs_input" || d.type === "error");
@@ -176,6 +178,30 @@ function TopNav() {
             }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></svg>
             </button>
+            <button
+              onClick={() => setShowFeedbackModal(true)}
+              title="Send feedback"
+              style={{
+                height: 32,
+                borderRadius: 8,
+                border: "none",
+                cursor: "pointer",
+                background: "var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                justifyContent: "center",
+                color: "var(--text-sub)",
+                padding: "0 12px",
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+              </svg>
+              Feedback
+            </button>
             {/* Diagnostics wrench — front-and-center, with red badge when any agent is erroring */}
             <div
               onClick={() => setActiveView("diagnostics")}
@@ -251,6 +277,7 @@ function TopNav() {
                 }}>
                   {[
                     { id: "profile" as const, label: "Profile", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg> },
+                    { id: "dashboard" as const, label: "My Usage", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="20" x2="12" y2="10" /><line x1="18" y1="20" x2="18" y2="4" /><line x1="6" y1="20" x2="6" y2="16" /></svg> },
                     { id: "archive" as const, label: "Archive", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><polyline points="21 8 21 21 3 21 3 8" /><rect x="1" y="3" width="22" height="5" /><line x1="10" y1="12" x2="14" y2="12" /></svg> },
                     { id: "integrations" as const, label: "Integrations", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><rect x="2" y="3" width="6" height="6" rx="1" /><rect x="16" y="3" width="6" height="6" rx="1" /><rect x="9" y="15" width="6" height="6" rx="1" /><path d="M5 9v3a1 1 0 001 1h12a1 1 0 001-1V9" /><path d="M12 13v2" /></svg> },
                     { id: "diagnostics" as const, label: "Diagnostics", icon: <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" /></svg> },
@@ -289,6 +316,7 @@ function TopNav() {
       </div>
       {showAlertsFeed && <GlobalAlertsFeed onClose={() => setShowAlertsFeed(false)} />}
       {showDecisionQueue && <DecisionQueuePanel onClose={() => setShowDecisionQueue(false)} />}
+      {showFeedbackModal && <FeedbackModal open={showFeedbackModal} onClose={() => setShowFeedbackModal(false)} />}
     </div>
   );
 }

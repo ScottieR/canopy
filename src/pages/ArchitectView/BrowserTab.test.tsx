@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+
+vi.mock("../../App", () => ({
+  Toggle: ({ enabled, onChange }: { enabled: boolean; onChange: () => void }) => (
+    <button type="button" aria-pressed={enabled} onClick={onChange}>
+      {enabled ? "On" : "Off"}
+    </button>
+  ),
+  glass: () => ({}),
+}));
+
 import { BrowserTab } from "./BrowserTab";
 import { AgentData, useWorldStore } from "../../store/worldStore";
 

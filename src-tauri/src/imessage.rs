@@ -131,6 +131,27 @@ fn open_imessage_db() -> Result<Connection, String> {
         })
 }
 
+fn open_system_settings_targets(targets: &[&str]) -> Result<(), String> {
+    let mut last_error = None;
+
+    for target in targets {
+        match std::process::Command::new("open").arg(target).status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => {
+                last_error = Some(format!(
+                    "open {} exited with status {}",
+                    target, status
+                ));
+            }
+            Err(err) => {
+                last_error = Some(format!("open {} failed: {}", target, err));
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "Failed to open system settings.".to_string()))
+}
+
 // ─── Contact Name Resolution ───────────────────────────────────────────────
 
 /// Strip everything except digits from a phone string.
@@ -186,16 +207,30 @@ fn try_resolve_contact_names() -> HashMap<String, String> {
         None => return map,
     };
 
-    // macOS stores contacts in one or more source directories under here.
-    let sources_dir = home.join("Library/Application Support/Contacts/Sources");
-    let db_paths: Vec<PathBuf> = match std::fs::read_dir(&sources_dir) {
-        Ok(entries) => entries
+    // macOS stores contacts in the AddressBook directory.
+    let addressbook_dir = home.join("Library/Application Support/AddressBook");
+    let mut db_paths: Vec<PathBuf> = Vec::new();
+
+    // 1. Add main local database if it exists
+    let main_db = addressbook_dir.join("AddressBook-v22.abcddb");
+    if main_db.exists() {
+        db_paths.push(main_db);
+    }
+
+    // 2. Add source databases (iCloud, Exchange, etc.)
+    let sources_dir = addressbook_dir.join("Sources");
+    if let Ok(entries) = std::fs::read_dir(&sources_dir) {
+        let source_dbs: Vec<PathBuf> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path().join("AddressBook-v22.abcddb"))
             .filter(|p| p.exists())
-            .collect(),
-        Err(_) => return map,
-    };
+            .collect();
+        db_paths.extend(source_dbs);
+    }
+
+    if db_paths.is_empty() {
+        return map;
+    }
 
     for db_path in &db_paths {
         let conn = match Connection::open_with_flags(
@@ -315,6 +350,104 @@ fn resolve_display_name(chat_identifier: &str, contacts: &HashMap<String, String
 
     // 3. Group chats or anything else — leave as-is
     chat_identifier.to_string()
+}
+
+fn normalize_lookup_query(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+fn thread_matches_query(thread: &IMessageThread, query: &str) -> bool {
+    let normalized_query = normalize_lookup_query(query);
+    if normalized_query.is_empty() {
+        return false;
+    }
+
+    let identifier = normalize_lookup_query(&thread.chat_identifier);
+    let display_name = normalize_lookup_query(&thread.display_name);
+
+    if identifier == normalized_query || display_name == normalized_query {
+        return true;
+    }
+
+    let query_digits = normalize_phone(query);
+    let identifier_digits = normalize_phone(&thread.chat_identifier);
+    if !query_digits.is_empty() && query_digits == identifier_digits {
+        return true;
+    }
+
+    display_name.contains(&normalized_query)
+        || identifier.contains(&normalized_query)
+        || (!query_digits.is_empty() && identifier_digits.contains(&query_digits))
+}
+
+fn resolve_thread_identifier_from_threads(
+    threads: &[IMessageThread],
+    query: &str,
+) -> Result<String, String> {
+    let normalized_query = normalize_lookup_query(query);
+    if normalized_query.is_empty() {
+        return Err("Thread lookup cannot use an empty search query.".to_string());
+    }
+
+    if let Some(thread) = threads
+        .iter()
+        .find(|thread| normalize_lookup_query(&thread.chat_identifier) == normalized_query)
+    {
+        return Ok(thread.chat_identifier.clone());
+    }
+
+    let query_digits = normalize_phone(query);
+    if !query_digits.is_empty() {
+        if let Some(thread) = threads
+            .iter()
+            .find(|thread| normalize_phone(&thread.chat_identifier) == query_digits)
+        {
+            return Ok(thread.chat_identifier.clone());
+        }
+    }
+
+    if let Some(thread) = threads
+        .iter()
+        .find(|thread| normalize_lookup_query(&thread.display_name) == normalized_query)
+    {
+        return Ok(thread.chat_identifier.clone());
+    }
+
+    let matches: Vec<&IMessageThread> = threads
+        .iter()
+        .filter(|thread| thread_matches_query(thread, query))
+        .collect();
+
+    match matches.as_slice() {
+        [single] => Ok(single.chat_identifier.clone()),
+        [] => Err(format!(
+            "No iMessage thread matched '{}'. Search by a contact name, group name, email, or phone number from your existing threads.",
+            query
+        )),
+        many => {
+            let suggestions = many
+                .iter()
+                .take(5)
+                .map(|thread| {
+                    if thread.display_name == thread.chat_identifier {
+                        thread.chat_identifier.clone()
+                    } else {
+                        format!("{} ({})", thread.display_name, thread.chat_identifier)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(format!(
+                "Multiple iMessage threads matched '{}'. Please be more specific. Matches: {}",
+                query, suggestions
+            ))
+        }
+    }
+}
+
+fn resolve_thread_identifier(query: &str) -> Result<String, String> {
+    let threads = query_imessage_threads()?;
+    resolve_thread_identifier_from_threads(&threads, query)
 }
 
 // ─── Core iMessage Operations ──────────────────────────────────────────────
@@ -607,12 +740,13 @@ pub async fn check_full_disk_access() -> Result<bool, String> {
 /// Open System Settings to the Full Disk Access page
 #[tauri::command]
 pub async fn open_full_disk_access_settings() -> Result<(), String> {
-    // macOS 13+ (Ventura and later) uses the new System Settings deep link URL
-    std::process::Command::new("open")
-        .arg("x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")
-        .spawn()
-        .map_err(|e| format!("Failed to open system settings: {}", e))?;
-    Ok(())
+    // The older `com.apple.preference.security?Privacy_AllFiles` deep link has
+    // proven more reliable for landing on the actual Full Disk Access list. We
+    // keep the newer Ventura+ URL as a fallback.
+    open_system_settings_targets(&[
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles",
+    ])
 }
 
 /// Open System Settings to the Photos privacy page.
@@ -620,11 +754,10 @@ pub async fn open_full_disk_access_settings() -> Result<(), String> {
 /// rejects x-apple.systempreferences: URLs, so this must go through Rust.
 #[tauri::command]
 pub async fn open_photos_privacy_settings() -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")
-        .spawn()
-        .map_err(|e| format!("Failed to open system settings: {}", e))?;
-    Ok(())
+    open_system_settings_targets(&[
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos",
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Photos",
+    ])
 }
 
 /// List all available iMessage threads
@@ -646,13 +779,15 @@ pub async fn read_imessage_messages(
     // Validate limit
     let safe_limit = std::cmp::min(limit, 1000);
 
+    let resolved_chat_identifier = resolve_thread_identifier(&chat_identifier)?;
+
     // Check allowlist
     let allowlist = get_allowlist_from_db(&db, &agent_id).unwrap_or_default();
 
-    if !is_thread_allowed(&allowlist, &chat_identifier) {
+    if !is_thread_allowed(&allowlist, &resolved_chat_identifier) {
         return Err(format!(
             "Agent {} is not allowed to access thread {}",
-            agent_id, chat_identifier
+            agent_id, resolved_chat_identifier
         ));
     }
 
@@ -668,13 +803,13 @@ pub async fn read_imessage_messages(
         None
     };
 
-    let messages = query_imessage_messages(&chat_identifier, since_dt, safe_limit)?;
+    let messages = query_imessage_messages(&resolved_chat_identifier, since_dt, safe_limit)?;
 
     info!(
         "Agent {} read {} messages from thread {}",
         agent_id,
         messages.len(),
-        chat_identifier
+        resolved_chat_identifier
     );
 
     Ok(messages)
@@ -859,5 +994,73 @@ mod tests {
     fn test_imessage_db_path() {
         let path = get_imessage_db_path();
         assert!(path.to_string_lossy().contains("Library/Messages/chat.db"));
+    }
+
+    #[test]
+    fn test_resolve_thread_identifier_exact_display_name() {
+        let threads = vec![
+            IMessageThread {
+                chat_identifier: "+15551234567".to_string(),
+                display_name: "Mom".to_string(),
+                last_message_date: Utc::now().to_rfc3339(),
+                message_count: 12,
+            },
+            IMessageThread {
+                chat_identifier: "chat123".to_string(),
+                display_name: "Family Group".to_string(),
+                last_message_date: Utc::now().to_rfc3339(),
+                message_count: 44,
+            },
+        ];
+
+        let resolved = resolve_thread_identifier_from_threads(&threads, "mom").unwrap();
+        assert_eq!(resolved, "+15551234567");
+    }
+
+    #[test]
+    fn test_resolve_thread_identifier_partial_group_name() {
+        let threads = vec![IMessageThread {
+            chat_identifier: "chat123".to_string(),
+            display_name: "Weekend Planning".to_string(),
+            last_message_date: Utc::now().to_rfc3339(),
+            message_count: 9,
+        }];
+
+        let resolved = resolve_thread_identifier_from_threads(&threads, "planning").unwrap();
+        assert_eq!(resolved, "chat123");
+    }
+
+    #[test]
+    fn test_resolve_thread_identifier_matches_normalized_phone() {
+        let threads = vec![IMessageThread {
+            chat_identifier: "+1 (555) 123-4567".to_string(),
+            display_name: "Alex".to_string(),
+            last_message_date: Utc::now().to_rfc3339(),
+            message_count: 3,
+        }];
+
+        let resolved = resolve_thread_identifier_from_threads(&threads, "5551234567").unwrap();
+        assert_eq!(resolved, "+1 (555) 123-4567");
+    }
+
+    #[test]
+    fn test_resolve_thread_identifier_rejects_ambiguous_name() {
+        let threads = vec![
+            IMessageThread {
+                chat_identifier: "+15551234567".to_string(),
+                display_name: "Alex Johnson".to_string(),
+                last_message_date: Utc::now().to_rfc3339(),
+                message_count: 3,
+            },
+            IMessageThread {
+                chat_identifier: "+15557654321".to_string(),
+                display_name: "Alex Chen".to_string(),
+                last_message_date: Utc::now().to_rfc3339(),
+                message_count: 8,
+            },
+        ];
+
+        let err = resolve_thread_identifier_from_threads(&threads, "alex").unwrap_err();
+        assert!(err.contains("Multiple iMessage threads matched"));
     }
 }

@@ -15,6 +15,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
 };
 import { WorldScene, TerrariumBase } from "./components/World/WorldScene";
 import { KeeperPanel } from "./components/Keeper/KeeperPanel";
+import { getConnectorSecretKey } from "./utils/connectorCatalog";
 import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
 import { ProvidersVault } from "./components/ProvidersVault";
@@ -25,7 +26,7 @@ import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
 import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, ChevronDown, ChevronUp, Activity, Terminal, Shield, RefreshCw, Layers, Lock, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, useWorldStore, pickNextAction, UserProfile } from "./store/worldStore";
+import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, pickNextAction, UserProfile } from "./store/worldStore";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { OnboardingWizard } from "./pages/OnboardingWizard";
 import { LockScreen } from "./components/LockScreen";
@@ -35,6 +36,7 @@ import { ArchitectView } from './pages/ArchitectView';
 import { ArchiveView } from './pages/ArchiveView';
 import { UserProfileView } from './pages/UserProfileView';
 import { DiagnosticsView } from './pages/DiagnosticsView';
+import { Dashboard } from './pages/Dashboard';
 import { CanopyView } from './pages/CanopyView';
 import { ForumView } from './pages/ForumView';
 import { TopNav } from './components/shared/TopNav';
@@ -45,10 +47,19 @@ import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
 import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
 import { useForumStore } from './store/forumStore';
+import { syncAgentProviderCredentials } from './security/providerCredentials';
 let gatewayBootPromise: Promise<any> | null = null;
+const withStartupTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<never>((_, reject) => window.setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)}s`)),
+      timeoutMs,
+    )),
+  ]);
 const safeStartGateway = async () => {
   if (!gatewayBootPromise) {
-    gatewayBootPromise = invoke("start_gateway");
+    gatewayBootPromise = withStartupTimeout(invoke("start_gateway"), 10_000, "Gateway startup");
     gatewayBootPromise.catch(() => { gatewayBootPromise = null; });
   }
   return gatewayBootPromise;
@@ -731,38 +742,62 @@ export const ServiceRow = ({
 // ── Multi-select picker
 export const MultiPicker = ({
   items, selected, onToggle, searchValue, onSearch, idKey, labelKey,
-  sublabelKey,
+  sublabelKey, searchKeys, allowCustomAdd = false, labelPrefix = "",
+  selectedHelpText, emptyStateText = "No results", disabled = false,
 }: {
   items: any[]; selected: string[]; onToggle: (id: string) => void;
   searchValue: string; onSearch: (v: string) => void;
   idKey: string; labelKey: string; sublabelKey?: string;
+  searchKeys?: string[]; allowCustomAdd?: boolean; labelPrefix?: string;
+  selectedHelpText?: string; emptyStateText?: string; disabled?: boolean;
 }) => {
-  const filtered = items.filter(i =>
-    i[labelKey]?.toLowerCase().includes(searchValue.toLowerCase())
-  );
+  const normalizedSearch = searchValue.trim().toLowerCase();
+  const effectiveSearchKeys = (searchKeys && searchKeys.length > 0)
+    ? searchKeys
+    : [labelKey];
+  const filtered = items.filter(i => {
+    if (!normalizedSearch) return true;
+    return effectiveSearchKeys.some(key => String(i?.[key] ?? "").toLowerCase().includes(normalizedSearch));
+  });
+  const selectedItems = selected.map(id => {
+    const item = items.find(candidate => String(candidate?.[idKey]) === String(id));
+    if (item) {
+      return {
+        id: String(item[idKey]),
+        label: String(item[labelKey] ?? item[idKey]),
+      };
+    }
+    return {
+      id: String(id),
+      label: String(id),
+    };
+  });
   return (
     <div>
       <input
         value={searchValue}
         onChange={e => onSearch(e.target.value)}
+        disabled={disabled}
         placeholder="Search…"
         style={{
           width: "100%", padding: "6px 10px", border: "1px solid var(--border-subtle)",
           borderRadius: 6, fontSize: 12, fontFamily: "inherit", marginBottom: 8,
           background: "var(--surface-card)", color: "var(--text-main)",
+          opacity: disabled ? 0.65 : 1,
+          cursor: disabled ? "not-allowed" : "text",
         }}
       />
       <div style={{ maxHeight: 180, overflow: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
         {filtered.length === 0 ? (
-          <div style={{ fontSize: 12, color: "var(--text-sub)", padding: "8px 0" }}>No results</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)", padding: "8px 0" }}>{emptyStateText}</div>
         ) : filtered.map(item => {
           const id = item[idKey];
           const checked = selected.includes(id);
           return (
             <label key={id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", cursor: "pointer", borderRadius: 5 }}>
-              <input type="checkbox" checked={checked} onChange={() => onToggle(id)} style={{ accentColor: "#3c6663" }} />
+              <input type="checkbox" checked={checked} disabled={disabled} onChange={() => onToggle(id)} style={{ accentColor: "#3c6663" }} />
               <span style={{ fontSize: 12, color: "var(--text-main)", fontWeight: checked ? 600 : 400 }}>
-                #{item[labelKey]}
+                {labelPrefix}{item[labelKey]}
                 {sublabelKey && item[sublabelKey] && (
                   <span style={{ fontSize: 10, color: "var(--text-sub)", marginLeft: 4, fontWeight: 400 }}>
                     · {item[sublabelKey]}
@@ -772,7 +807,7 @@ export const MultiPicker = ({
             </label>
           );
         })}
-        {searchValue.trim().length > 0 && !items.find(i => i[labelKey]?.toLowerCase() === searchValue.trim().toLowerCase()) && (
+        {allowCustomAdd && searchValue.trim().length > 0 && !items.find(i => String(i?.[labelKey] ?? "").toLowerCase() === searchValue.trim().toLowerCase()) && (
           <button
             onClick={() => {
               if (!selected.includes(searchValue.trim())) {
@@ -790,9 +825,31 @@ export const MultiPicker = ({
         )}
       </div>
       {selected.length > 0 && (
-        <div style={{ fontSize: 11, color: "#3c6663", marginTop: 6 }}>
-          {selected.length} selected — agent only receives messages from these
-        </div>
+        <>
+          <div style={{ fontSize: 11, color: "#3c6663", marginTop: 6 }}>
+            {selected.length} selected{selectedHelpText ? ` — ${selectedHelpText}` : ""}
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+            {selectedItems.map(item => (
+              <span
+                key={item.id}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 8px",
+                  borderRadius: 999,
+                  background: "rgba(60, 102, 99, 0.10)",
+                  color: "#3c6663",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              >
+                {item.label}
+              </span>
+            ))}
+          </div>
+        </>
       )}
       {selected.length === 0 && (
         <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>
@@ -812,15 +869,88 @@ export const MultiPicker = ({
 // function LoadingScreen({ status }: { status?: string }) { Extracted
 
 export function CompanionGuide({ type }: { type: string }) {
-  const agentId = new URLSearchParams(window.location.search).get("agentId");
+  type CompanionInput = {
+    key: string;
+    placeholder: string;
+  };
+
+  type GoogleOauthAction = {
+    kind: "google_oauth";
+    scopes: string[];
+    readOnly: boolean;
+    granularDrive?: boolean;
+    label: string;
+  };
+
+  type SystemSettingsAction = {
+    kind: "system_settings";
+    command: string;
+    label: string;
+  };
+
+  type TwilioConnectAction = {
+    kind: "twilio_connect";
+    label: string;
+  };
+
+  type CompanionAction = GoogleOauthAction | SystemSettingsAction | TwilioConnectAction;
+
+  type CompanionStep = {
+    text: React.ReactNode;
+    input?: CompanionInput;
+    action?: CompanionAction;
+  };
+
+  type CompanionConfig = {
+    title: string;
+    avatar: string;
+    intro: React.ReactNode;
+    steps: CompanionStep[];
+  };
+
+  const searchParams = new URLSearchParams(window.location.search);
+  const agentId = searchParams.get("agentId");
+  const agentName = searchParams.get("agentName") || "Agent";
+  const requestedMode = searchParams.get("mode") || "read";
+  const requestedScope = searchParams.get("scope") || "all";
+  const isDevBuild = import.meta.env.DEV;
   const [step, setStep] = useState(0);
   const [tokens, setTokens] = useState<Record<string, string>>({});
-  const [status, setStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "saving" | "waiting_oauth" | "success" | "error">("idle");
+  const [imessagePermissionGranted, setImessagePermissionGranted] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const imessageAutoOpenedRef = useRef(false);
+  const oauthTriggeredRef = useRef(false);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [step, status]);
 
-  const config = {
+  const closeCompanionWindow = async () => {
+    try {
+      const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
+      const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
+      if (mainWindow) await mainWindow.setFocus();
+      await getCurrentWindow().close();
+    } catch (e) { }
+  };
+
+  const finishWithSuccess = async () => {
+    setStatus("success");
+    setTimeout(() => {
+      void closeCompanionWindow();
+    }, 2000);
+  };
+
+  const emitRefreshIntegrations = async () => {
+    try {
+      const { emit } = await import('@tauri-apps/api/event');
+      await emit("refresh_integrations");
+    } catch (evtErr) { }
+    try {
+      window.dispatchEvent(new Event("refresh_integrations"));
+    } catch (domErr) { }
+  };
+
+  const configMap: Record<string, CompanionConfig> = {
     openai: {
       title: "OpenAI Setup",
       avatar: "/app-icon.png",
@@ -876,6 +1006,133 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Almost done! Now click 'OAuth & Permissions' on the left sidebar." },
         { text: "Click the 'Install to Workspace' button and click Allow." },
         { text: "Copy the 'Bot User OAuth Token' (starts with xoxb-...). Paste it below and hit Connect!", input: { key: "slack-bot-token", placeholder: "xoxb-..." } }
+      ]
+    },
+    imessage: {
+      title: "iMessage Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'll walk you through enabling iMessage access for Canopy. Messages stay local on your Mac, but macOS requires Full Disk Access before Canopy can load your threads and contact names.",
+      steps: [
+        {
+          text: "Keep this companion open. We'll open the exact Full Disk Access screen for you, then come right back here.",
+          action: {
+            kind: "system_settings",
+            command: "open_full_disk_access_settings",
+            label: "Open Full Disk Access"
+          }
+        },
+        {
+          text: isDevBuild ? (
+            <span key="imessage-toggle-dev">
+              When the <strong>Full Disk Access</strong> list opens, make sure the app actually running Canopy has access.
+              In development that is usually your <strong>Terminal</strong> or <strong>IDE</strong>, so you do <strong>not</strong> need to drag the Canopy icon into the list.
+            </span>
+          ) : (
+            <span key="imessage-toggle-prod">
+              When the <strong>Full Disk Access</strong> list opens, drag <strong>Canopy</strong> into that list if it is not already there, then turn it on.
+            </span>
+          )
+        },
+        {
+          text: imessagePermissionGranted
+            ? "Full Disk Access is already enabled for this runtime. Switch back to Canopy and the iMessage thread picker should refresh automatically."
+            : "Return to Canopy after toggling access. The main iMessage panel will detect the permission and load your conversations so you can pick contacts and group threads."
+        }
+      ]
+    },
+    gmail: {
+      title: "Gmail Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Gmail for ${agentName}.`,
+      steps: [
+        {
+          text: `You're granting ${requestedMode === "write" ? "read + send" : "read-only"} Gmail access for this agent. When the Google window opens, choose the account you want this specific agent to use.`,
+          action: {
+            kind: "google_oauth",
+            scopes: ["email"],
+            readOnly: requestedMode !== "write",
+            label: "Continue with Google"
+          }
+        }
+      ]
+    },
+    calendar: {
+      title: "Google Calendar Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Google Calendar for ${agentName}.`,
+      steps: [
+        {
+          text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} calendar access. Pick the Google account you want this agent to work against when the browser opens.`,
+          action: {
+            kind: "google_oauth",
+            scopes: ["calendar"],
+            readOnly: requestedMode !== "write",
+            label: "Continue with Google"
+          }
+        }
+      ]
+    },
+    drive: {
+      title: "Google Drive Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Google Drive for ${agentName}.`,
+      steps: [
+        {
+          text: `You're granting ${requestedMode === "write" ? "read + write" : "read-only"} Drive access. ${requestedScope === "granular" ? "This will request granular file access so the agent is limited to files you explicitly authorize." : "This will request broad Drive scope for this agent."}`,
+          action: {
+            kind: "google_oauth",
+            scopes: ["drive"],
+            readOnly: requestedMode !== "write",
+            granularDrive: requestedScope === "granular",
+            label: "Continue with Google"
+          }
+        }
+      ]
+    },
+    google_photos: {
+      title: "Google Photos Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll connect Google Photos for ${agentName}.`,
+      steps: [
+        {
+          text: `You're granting read-only Google Photos access for this agent. When the Google window opens, choose the account you want this specific agent to use.`,
+          action: {
+            kind: "google_oauth",
+            scopes: ["photos"],
+            readOnly: true,
+            label: "Continue with Google"
+          }
+        }
+      ]
+    },
+    apple_photos: {
+      title: "Apple Photos Setup",
+      avatar: "/app-icon.png",
+      intro: "Hi! I'll walk you through enabling Apple Photos access for Canopy. Your photos stay local on your Mac, but macOS requires Full Disk Access before Canopy can read your Photos database.",
+      steps: [
+        {
+          text: "Keep this companion open. We'll open the exact Full Disk Access screen for you, then come right back here.",
+          action: {
+            kind: "system_settings",
+            command: "open_full_disk_access_settings",
+            label: "Open Full Disk Access"
+          }
+        },
+        {
+          text: isDevBuild ? (
+            <span key="photos-toggle-dev">
+              When the <strong>Full Disk Access</strong> list opens, make sure the app actually running Canopy has access.
+              In development that is usually your <strong>Terminal</strong> or <strong>IDE</strong>, so you do <strong>not</strong> need to drag the Canopy icon into the list.
+            </span>
+          ) : (
+            <span key="photos-toggle-prod">
+              When the <strong>Full Disk Access</strong> list opens, drag <strong>Canopy</strong> into that list if it is not already there, then turn it on.
+            </span>
+          )
+        },
+        {
+          text: "Return to Canopy after toggling access to allow the agent to connect to your local Apple Photos library."
+        }
       ]
     },
     email_dedicated: {
@@ -939,6 +1196,24 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Check the following scopes: 'repo', 'read:org', and 'user'." },
         { text: "Click 'Generate token' at the bottom of the page." },
         { text: "Copy the generated token (starts with ghp_ or github_pat_) and paste it into the input field in the main app window." }
+      ]
+    },
+    twilio: {
+      title: "Twilio Setup",
+      avatar: "/app-icon.png",
+      intro: `Hi! I'll help connect a Twilio number for ${agentName}. This stores the credentials in this agent's scoped keychain entries and then returns you to the Connections page.`,
+      steps: [
+        { text: "First, open the Twilio Console and create or select the subaccount you want dedicated to this agent." },
+        { text: "Copy the Account SID from the Twilio dashboard.", input: { key: "twilio-account-sid", placeholder: "AC..." } },
+        { text: "Copy the Auth Token from the same Twilio account.", input: { key: "twilio-auth-token", placeholder: "Auth Token" } },
+        { text: "Copy the Twilio phone number this agent should use.", input: { key: "twilio-phone-number", placeholder: "+15551234567" } },
+        {
+          text: "When you're ready, save these credentials for this agent.",
+          action: {
+            kind: "twilio_connect",
+            label: "Save Twilio Credentials"
+          }
+        }
       ]
     },
     apple_health: {
@@ -1007,13 +1282,135 @@ export function CompanionGuide({ type }: { type: string }) {
         { text: "Paste that secure token below to link the connection.", input: { key: "HOMEKIT_TOKEN", placeholder: "hk_..." } }
       ]
     }
-  }[type] || null;
+  };
+  const config = configMap[type] || null;
 
   if (!config) return <div style={{ padding: 20 }}>Unknown configuration. You can close this window.</div>;
 
-  const currentStepData = config.steps[step];
+  const currentStepData: any = config.steps[step];
+
+  useEffect(() => {
+    if (currentStepData?.action?.kind === "google_oauth" && status === "idle" && !oauthTriggeredRef.current) {
+      oauthTriggeredRef.current = true;
+      handleAction();
+    }
+  }, [currentStepData, status]);
+
+  useEffect(() => {
+    if (type !== "imessage") return;
+
+    let cancelled = false;
+
+    const syncIMessagePermissionState = async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const granted = await invoke<boolean>("check_full_disk_access");
+        if (cancelled) return;
+
+        setImessagePermissionGranted(granted);
+
+        if (granted) {
+          await emitRefreshIntegrations();
+          setStatus("idle");
+          setStep(config.steps.length - 1);
+          return;
+        }
+
+        if (!imessageAutoOpenedRef.current) {
+          imessageAutoOpenedRef.current = true;
+          await invoke("open_full_disk_access_settings");
+          if (!cancelled) {
+            setStep(1);
+          }
+        }
+      } catch (e) {
+        console.error("Failed to sync iMessage Full Disk Access state:", e);
+      }
+    };
+
+    const handleFocus = () => {
+      void syncIMessagePermissionState();
+    };
+
+    void syncIMessagePermissionState();
+    window.addEventListener("focus", handleFocus);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [type]);
 
   const handleAction = async () => {
+    if (currentStepData.action) {
+      if (currentStepData.action.kind === "google_oauth") {
+        setStatus("waiting_oauth");
+      } else {
+        setStatus("saving");
+      }
+      try {
+        if (currentStepData.action.kind === "google_oauth") {
+          if (!agentId) throw new Error("Missing agentId for Google OAuth setup.");
+          const { invoke } = await import('@tauri-apps/api/core');
+          const result = await invoke<{ access_token?: string }>("start_google_oauth", {
+            agentId,
+            scopes: currentStepData.action.scopes,
+            readOnly: currentStepData.action.readOnly,
+            granularDrive: currentStepData.action.granularDrive,
+          });
+
+          if (!result?.access_token) {
+            throw new Error("Google OAuth did not return an access token.");
+          }
+
+          await invoke("sync_gateway_channels").catch(() => { });
+          await emitRefreshIntegrations();
+          await finishWithSuccess();
+          return;
+        }
+
+        if (currentStepData.action.kind === "system_settings") {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke(currentStepData.action.command);
+          setStatus("idle");
+          if (step < config.steps.length - 1) {
+            setStep(step + 1);
+          }
+          return;
+        }
+
+        if (currentStepData.action.kind === "twilio_connect") {
+          if (!agentId) throw new Error("Missing agentId for Twilio setup.");
+          const sid = tokens["twilio-account-sid"]?.trim();
+          const authToken = tokens["twilio-auth-token"]?.trim();
+          const phoneNumber = tokens["twilio-phone-number"]?.trim();
+          if (!sid || !authToken || !phoneNumber) {
+            throw new Error("Twilio setup requires Account SID, Auth Token, and Phone Number.");
+          }
+
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke("configure_twilio", {
+            agentId,
+            accountSid: sid,
+            authToken,
+            phoneNumber,
+          });
+
+          try {
+            const { emit } = await import('@tauri-apps/api/event');
+            await emit("companion-finished", { type: "twilio" });
+          } catch (evtErr) { }
+          await emitRefreshIntegrations();
+          await finishWithSuccess();
+          return;
+        }
+      } catch (e) {
+        console.error(e);
+        setStatus("error");
+        return;
+      }
+    }
+
     if (currentStepData.input) {
       if (!tokens[currentStepData.input.key]) return;
 
@@ -1021,9 +1418,11 @@ export function CompanionGuide({ type }: { type: string }) {
       setStatus("saving");
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive' || type === 'apple_health' || type === 'live_location' || type === 'shortcuts' || type === 'vision' || type === 'notifications' || type === 'homekit'))
+        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive'))
           ? `agent_${agentId}_${currentStepData.input.key.replace(/-/g, '_')}`
-          : currentStepData.input.key;
+          : agentId && ['apple_health', 'live_location', 'shortcuts', 'vision', 'notifications', 'homekit', 'bluetooth', 'figma'].includes(type)
+            ? getConnectorSecretKey(type, agentId)
+            : currentStepData.input.key;
         await invoke("store_secret_cmd", { key: secureKey, value: tokens[currentStepData.input.key].trim() });
 
         // If there are more steps, just advance
@@ -1054,13 +1453,8 @@ export function CompanionGuide({ type }: { type: string }) {
             }
           } catch (evtErr) { }
 
-          setTimeout(async () => {
-            try {
-              const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
-              const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
-              if (mainWindow) await mainWindow.setFocus();
-              await getCurrentWindow().close();
-            } catch (e) { }
+          setTimeout(() => {
+            void closeCompanionWindow();
           }, 2000);
         }
       } catch (e) {
@@ -1082,7 +1476,7 @@ export function CompanionGuide({ type }: { type: string }) {
         <LobsterIcon size={36} shellColor="#3c6663" accentColor="#D9B08C" />
         <div>
           <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)" }}>Setup Guide</div>
-          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>I'll walk you through creating your Slack app.</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>{config.title}</div>
         </div>
       </div>
 
@@ -1095,13 +1489,16 @@ export function CompanionGuide({ type }: { type: string }) {
           </div>
         </div>
 
-        {config.steps.slice(0, step + 1).map((s, i) => (
+        {config.steps.slice(0, step + 1).map((s, i) => {
+          const stepInput = s.input;
+
+          return (
           <React.Fragment key={i}>
             <div style={{ display: "flex", gap: 12, alignItems: "flex-end", animation: "slideIn 0.3s ease" }}>
               <div style={{ width: 28, flexShrink: 0 }} />
-              <div style={{ width: "100%", background: i === step ? "#3c6663" : "var(--surface-card)", color: i === step ? "var(--surface-card)" : "var(--text-main)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
+              <div style={{ width: "100%", background: "var(--surface-card)", color: "var(--text-main)", padding: "12px 16px", borderRadius: "16px 16px 16px 4px", fontSize: 14, lineHeight: 1.5, boxShadow: "0 2px 8px rgba(0,0,0,0.04)", transition: "all 0.3s" }}>
                 {s.text}
-                {s.input && i === step && (
+                {stepInput && i === step && (
                   <div style={{ marginTop: 12 }}>
                     <div style={{ fontSize: 11, opacity: 0.8, marginBottom: 8, lineHeight: 1.4, color: "#f8f9fa", background: "var(--border-strong)", padding: "8px 12px", borderRadius: 8 }}>
                       <span style={{ marginRight: 6 }}>🔒</span>
@@ -1109,9 +1506,9 @@ export function CompanionGuide({ type }: { type: string }) {
                     </div>
                     <PasswordInput
                       autoFocus
-                      placeholder={s.input.placeholder}
-                      value={tokens[s.input.key] || ""}
-                      onChange={e => setTokens({ ...tokens, [s.input.key]: e.target.value })}
+                      placeholder={stepInput.placeholder}
+                      value={tokens[stepInput.key] || ""}
+                      onChange={e => setTokens({ ...tokens, [stepInput.key]: e.target.value })}
                       style={{
                         width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8,
                         border: "1px solid rgba(255,255,255,0.3)", background: "rgba(0,0,0,0.2)", color: "var(--surface-card)", outline: "none", fontSize: 13, fontFamily: "monospace"
@@ -1125,18 +1522,22 @@ export function CompanionGuide({ type }: { type: string }) {
             {/* User advancement bubble */}
             {i === step && status === "idle" && (
               <div style={{ display: "flex", justifyContent: "flex-end", animation: "slideIn 0.3s ease 0.5s backwards" }}>
-                <button onClick={handleAction} disabled={s.input && !tokens[s.input.key]} style={{
-                  padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "var(--text-main)", fontSize: 13, fontWeight: 700, cursor: (s.input && !tokens[s.input.key]) ? "default" : "pointer", opacity: (s.input && !tokens[s.input.key]) ? 0.5 : 1
+                <button onClick={handleAction} disabled={stepInput && !tokens[stepInput.key]} style={{
+                  padding: "8px 16px", borderRadius: 16, border: "none", background: "#D9B08C", color: "var(--text-main)", fontSize: 13, fontWeight: 700, cursor: (stepInput && !tokens[stepInput.key]) ? "default" : "pointer", opacity: (stepInput && !tokens[stepInput.key]) ? 0.5 : 1
                 }}>
-                  {s.input ? "Save & Continue" : "I've done this ->"}
+                  {s.action?.label || (stepInput ? "Save & Continue" : "I've done this ->")}
                 </button>
               </div>
             )}
           </React.Fragment>
-        ))}
+          );
+        })}
 
         {status === "saving" && (
           <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-sub)", fontStyle: "italic", animation: "pulse 1s infinite" }}>Saving securely to your Mac's Keychain...</div>
+        )}
+        {status === "waiting_oauth" && (
+          <div style={{ textAlign: "center", fontSize: 13, color: "var(--text-sub)", fontStyle: "italic", animation: "pulse 1s infinite" }}>Waiting for Google authorization in your browser...</div>
         )}
         {status === "success" && (
           <div style={{ textAlign: "center", animation: "slideIn 0.3s ease" }}>
@@ -1250,6 +1651,20 @@ export default function App() {
   const [loadStatus, setLoadStatus] = useState("Waking up the lobsters...");
   const [pendingJitAuth, setPendingJitAuth] = useState<any>(null);
   const [jitDuration, setJitDuration] = useState("session");
+  const startupStartedRef = useRef(false);
+
+  // Startup services are recoverable in the background. Never let an optional
+  // Docker/admin/keychain operation hold the entire desktop UI indefinitely.
+  useEffect(() => {
+    if (initialized) return;
+    const watchdog = window.setTimeout(() => {
+      console.warn("Startup watchdog elapsed; opening Canopy while services continue warming up");
+      setLoadStatus("Opening Canopy — services are still warming up…");
+      setActiveView("canopy");
+      setInitialized(true);
+    }, 30_000);
+    return () => window.clearTimeout(watchdog);
+  }, [initialized, setActiveView]);
 
   // Auto-cloak implementation
   useIdleTimer(
@@ -1328,35 +1743,62 @@ export default function App() {
   }, [activeView]);
 
   useEffect(() => {
+    // React StrictMode intentionally replays effects in development. Starting
+    // two gateway reconciliation jobs at once causes duplicate config writes,
+    // noisy restarts, and a much longer apparent startup.
+    if (startupStartedRef.current) return;
+    startupStartedRef.current = true;
+
     const loadAgents = async () => {
+      let localAgentsHydrated = false;
       try {
         // Sync preferences template from admin API to Rust before boot
         try {
-          const settingsRes = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/settings`);
-          const settings = await settingsRes.json();
+          const settingsRes = await withStartupTimeout(
+            fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/settings`),
+            5_000,
+            "Admin settings",
+          );
+          const settings = await withStartupTimeout(settingsRes.json(), 3_000, "Admin settings response");
           if (settings.preferencesTemplate) {
-            await invoke("set_preferences_template", { content: settings.preferencesTemplate });
+            await withStartupTimeout(
+              invoke("set_preferences_template", { content: settings.preferencesTemplate }),
+              5_000,
+              "Preferences template",
+            );
           }
         } catch (e) {
           console.warn("Could not fetch preferences template from admin API:", e);
         }
 
-        const loadedAgents = await invoke("list_agents") as Agent[];
+        const loadedAgents = await withStartupTimeout(
+          invoke("list_agents") as Promise<Agent[]>,
+          8_000,
+          "Agent database load",
+        );
 
-        // Sync real stats to admin dashboard periodically
+        // Anonymized usage telemetry — opt-in (Settings > Security & Privacy).
+        // Payload is a random per-install id plus aggregate event stats only:
+        // no agent id/name, no message content, no user-identifiable fields.
+        // See spec-global-usage-telemetry.md.
         const reportUsage = async () => {
+          if (!useWorldStore.getState().usageTelemetryEnabled) return;
+          const anonId = useWorldStore.getState().telemetryAnonId;
           for (const a of loadedAgents) {
             try {
-              await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/usage`, {
+              const activeModel = (a.personality as any)?.active_model || "";
+              await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/telemetry/event`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  agentId: a.id,
-                  role: a.role,
-                  tokensIn: a.stats?.total_tokens_in || 0,
-                  tokensOut: a.stats?.total_tokens_out || 0,
-                  messagesHandled: a.stats?.messages_handled || 0,
-                  tasksToday: a.stats?.tasks_today || 0
+                  anon_id: anonId,
+                  event_type: "usage_report",
+                  model_version: activeModel || null,
+                  persona_role: normalizePersonaRole(a.role),
+                  tokens_in: a.stats?.total_tokens_in || 0,
+                  tokens_out: a.stats?.total_tokens_out || 0,
+                  cost_usd: a.stats?.total_cost_usd || 0,
+                  timestamp: new Date().toISOString()
                 })
               });
             } catch (e) {}
@@ -1368,82 +1810,39 @@ export default function App() {
         if (loadedAgents.length === 0) {
           setActiveView("onboarding");
         } else {
-          // Pre-flight: clean stale agents from openclaw.json and fix corrupted
-          // auth-profiles.json files on the host bind-mount BEFORE the container starts.
-          // OpenClaw reads these files the instant it boots — corrupted JSON or stale
-          // entries (e.g. "main", "test1", incompletely-deleted agents) cause a
-          // 18 → 300+ PID retry spiral within 30 seconds of startup.
-          setLoadStatus("Running pre-flight checks...");
-          await invoke("preflight_cleanup").catch((e) =>
-            console.warn("preflight_cleanup non-fatal:", e)
-          );
+          // A durable first-run marker keeps transient database/gateway startup
+          // failures from sending an established installation through the local
+          // engine setup gate again.
+          localStorage.setItem("canopy_initial_setup_complete", "true");
 
-          // Listen for progress events emitted by the Rust side (gateway + agents).
-          const { listen } = await import('@tauri-apps/api/event');
-          const unlisten = await listen<string>('boot-sync-progress', (event) => {
-            setLoadStatus(event.payload);
-          });
-
-          setLoadStatus("Starting infrastructure gateway...");
-          await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
-
-          setLoadStatus("Registering agents with gateway...");
-          await invoke("boot_sync_agents").catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
-          unlisten();
-
-          setLoadStatus("Checking DB for Agents...");
-          // Sync keys to all legacy agents to prevent silent Failovers into OOM crashes (Exit 137).
-          // Load global fallback keys once
-          const globalAnthropic = String(await invoke("get_secret_cmd", { key: "ANTHROPIC_API_KEY" }).catch(() => "") || "");
-          const globalOpenAI    = String(await invoke("get_secret_cmd", { key: "OPENAI_API_KEY" }).catch(() => "") || "");
-          const globalGemini    = String(await invoke("get_secret_cmd", { key: "GEMINI_API_KEY" }).catch(() => "") || "");
-          const globalGrok      = String(await invoke("get_secret_cmd", { key: "XAI_API_KEY" }).catch(() => "")
-                                      || await invoke("get_secret_cmd", { key: "GROK_API_KEY" }).catch(() => "") || "");
-
-          setLoadStatus("Keys loaded, pushing sync...");
-
-          for (const ag of loadedAgents) {
-            setLoadStatus("Syncing Keys: " + ag.id);
-            // Per-agent key takes priority over global fallback.
-            // This lets each agent use a separate API key for usage tracking,
-            // while the global key acts as the default for agents without their own.
-            const agAnthropic = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_anthropic_key` }).catch(() => "") || "") || globalAnthropic;
-            const agOpenAI    = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_openai_key` }).catch(() => "") || "")    || globalOpenAI;
-            const agGemini    = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_gemini_key` }).catch(() => "") || "")    || globalGemini;
-            const agGrok      = String(await invoke("get_secret_cmd", { key: `agent_${ag.id}_grok_key` }).catch(() => "") || "")      || globalGrok;
-
-            await invoke("sync_credentials", { agentId: ag.id, keys: {
-              "ANTHROPIC_API_KEY": agAnthropic,
-              "OPENAI_API_KEY":    agOpenAI,
-              "GEMINI_API_KEY":    agGemini,
-              "XAI_API_KEY":       agGrok,
-            }}).catch(console.warn);
-          }
-
-          setLoadStatus("Setting up UI Agent Models...");
-          // Fetch weekly token usage records to calculate compute
-          const weeklyRecords = await invoke<any[]>("get_token_usage_history", {
-            agentId: null,
-            conversationId: null,
-            days: 7
-          }).catch(err => {
+          // Hydrate the UI from SQLite before touching Docker/OpenClaw. Gateway
+          // reconciliation can take minutes on installations with many agents,
+          // but it is recoverable background work and must never hold the entire
+          // desktop behind the loading screen.
+          setLoadStatus("Loading agent workspace...");
+          const weeklyRecords = await withStartupTimeout(
+            invoke<any[]>("get_token_usage_history", {
+              agentId: null,
+              conversationId: null,
+              days: 7,
+            }),
+            5_000,
+            "Token usage history",
+          ).catch(err => {
             console.error("Failed to load weekly token usage history:", err);
-            return [];
+            return [] as any[];
           });
 
-          // Enrich agents with UI data
           const enrichedAgents = loadedAgents.map(agent => {
             const roleInfo = AGENT_TYPE_INFO[agent.role] || AGENT_TYPE_INFO["Assistant"];
             const vi = agent.visual_identity || {};
             const dbPaused = (agent as any).paused === true || (agent as any).paused === 1;
-            
+
             const totalTokens = (agent.stats?.total_tokens_in || 0) + (agent.stats?.total_tokens_out || 0);
             const tokensUsed = totalTokens > 1000 ? `${(totalTokens / 1000).toFixed(1)}k` : `${totalTokens}`;
-
             const agentWeeklyCost = weeklyRecords
               .filter(r => r.agent_id === agent.id)
               .reduce((sum, r) => sum + (r.cost_usd || 0), 0);
-            const weeklyCompute = agentWeeklyCost.toFixed(3);
 
             return {
               ...agent,
@@ -1461,12 +1860,12 @@ export default function App() {
               energy: 0.6 + Math.random() * 0.3,
               uptime: `${Math.floor(agent.stats.uptime_seconds / 3600)} hrs`,
               tokensUsed,
-              weeklyCompute,
+              weeklyCompute: agentWeeklyCost.toFixed(3),
               monthlySpend: Math.floor(agent.stats.total_cost_usd),
               spendLimit: 200,
               permissions: DEFAULT_PERMISSIONS.map(p => ({
                 ...p,
-                enabled: agent.capabilities ? (agent.capabilities as any)[p.id] : p.enabled
+                enabled: agent.capabilities ? (agent.capabilities as any)[p.id] : p.enabled,
               })),
               recentSpend: [],
               chatLog: [],
@@ -1477,13 +1876,63 @@ export default function App() {
           });
           const currentAgents = useWorldStore.getState().agents;
           const mergedAgents = (enrichedAgents as unknown as AgentData[]).map(ea => {
-             const ca = currentAgents.find(x => x.id === ea.id);
-             if (ca) {
-                 return { ...ea, conversations: ca.conversations || [], activeConversationId: ca.activeConversationId || null, miniApps: ca.miniApps || [] };
-             }
-             return ea;
+            const currentAgent = currentAgents.find(existing => existing.id === ea.id);
+            if (!currentAgent) return ea;
+            return {
+              ...ea,
+              conversations: currentAgent.conversations || [],
+              activeConversationId: currentAgent.activeConversationId || null,
+              miniApps: currentAgent.miniApps || [],
+            };
           });
           setAgents(mergedAgents);
+          localAgentsHydrated = true;
+
+          const hash = window.location.hash.replace('#/', '').replace('#', '');
+          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
+          if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
+            setActiveView(hash as any);
+          } else {
+            setActiveView("canopy");
+          }
+          setInitialized(true);
+
+          // Pre-flight: clean stale agents from openclaw.json and fix corrupted
+          // auth-profiles.json files on the host bind-mount BEFORE the container starts.
+          // OpenClaw reads these files the instant it boots — corrupted JSON or stale
+          // entries (e.g. "main", "test1", incompletely-deleted agents) cause a
+          // 18 → 300+ PID retry spiral within 30 seconds of startup.
+          setLoadStatus("Running pre-flight checks...");
+          await withStartupTimeout(invoke("preflight_cleanup"), 8_000, "Pre-flight cleanup").catch((e) =>
+            console.warn("preflight_cleanup non-fatal:", e)
+          );
+
+          // Listen for progress events emitted by the Rust side (gateway + agents).
+          const { listen } = await import('@tauri-apps/api/event');
+          const unlisten = await listen<string>('boot-sync-progress', (event) => {
+            setLoadStatus(event.payload);
+          });
+
+          setLoadStatus("Starting infrastructure gateway...");
+          await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
+
+          setLoadStatus("Registering agents with gateway...");
+          await withStartupTimeout(invoke("boot_sync_agents"), 15_000, "Agent registration")
+            .catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
+          unlisten();
+
+          setLoadStatus("Checking DB for Agents...");
+          // Keep secrets inside Rust/Keychain. The frontend requests an
+          // agent-scoped refresh but never reads or transports raw key values.
+          setLoadStatus("Refreshing agent credentials...");
+          for (const ag of loadedAgents) {
+            setLoadStatus("Syncing credentials: " + ag.id);
+            await withStartupTimeout(
+              syncAgentProviderCredentials(invoke, ag.id),
+              5_000,
+              `Credential sync for ${ag.id}`,
+            ).catch(console.warn);
+          }
 
           // ── Wait for gateway readiness ──────────────────────────────────────
           // boot_sync_agents registers agents in OpenClaw's DB, but the gateway
@@ -1493,7 +1942,7 @@ export default function App() {
           // (or 60 s elapses, in which case we proceed with a warning banner).
           {
             const agentIds = loadedAgents.map(a => a.id);
-            const READY_TIMEOUT_MS = 60_000;
+            const READY_TIMEOUT_MS = 15_000;
             const POLL_INTERVAL_MS = 2_500;
             const deadline = Date.now() + READY_TIMEOUT_MS;
             let agentsReady = false;
@@ -1527,17 +1976,14 @@ export default function App() {
             }
           }
 
-          const hash = window.location.hash.replace('#/', '').replace('#', '');
-          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
-          if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
-            setActiveView(hash as any);
-          } else {
-            setActiveView("canopy");
-          }
         }
       } catch (error) {
         console.error("Failed to load agents:", error);
-        setActiveView("onboarding");
+        if (!localAgentsHydrated) {
+          setActiveView("onboarding");
+        } else {
+          console.warn("Background gateway startup failed; keeping the local workspace open.");
+        }
       } finally {
         setInitialized(true);
       }
@@ -1703,6 +2149,11 @@ export default function App() {
           <UserProfileView />
         </div>
       )}
+      {activeView === "dashboard" && (
+        <div style={{ flex: 1, overflow: "auto" }}>
+          <Dashboard />
+        </div>
+      )}
       {activeView === "diagnostics" && (
         <div style={{ flex: 1, overflow: "auto" }}>
           <DiagnosticsView />
@@ -1825,7 +2276,6 @@ export default function App() {
           70%  { transform: scale(1.04) rotate(2deg); }
           100% { transform: scale(1); }
         }
-        /* temp pulse override just to be safe */ /* @keyframes pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
         * { box-sizing: border-box; margin: 0; padding: 0; }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }

@@ -1,18 +1,19 @@
 use crate::app_state::AppState;
 use crate::errors::{CanopyError, Result as CanopyResult};
 use crate::model_constants::{
-    agent_auth_profile_path, agent_soul_path, DEFAULT_ANTHROPIC_MODEL, GATEWAY_INTERNAL_TOKEN,
-    GATEWAY_URL,
+    agent_auth_profile_path, agent_soul_path, DEFAULT_ANTHROPIC_MODEL, GATEWAY_URL,
 };
 use crate::models::{
     Agent, AgentCapabilities, AgentPersonality, AgentStats, AgentStatus, DiscoveredAgent,
 };
+use futures_util::StreamExt;
 use lazy_static::lazy_static;
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, State};
+use tokio::io::AsyncWriteExt;
 
 pub mod workspace_files;
 pub use workspace_files::{
@@ -80,6 +81,34 @@ pub fn get_agent_isolated_port(agent_id: &str) -> u16 {
     18805 + (hash % 195) as u16
 }
 
+fn derive_agent_id(name: &str) -> CanopyResult<String> {
+    crate::validators::agent::validate_name(name)?;
+
+    let slug = name
+        .trim()
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    let trimmed = slug.chars().take(57).collect::<String>();
+    let agent_id = format!(
+        "agent-{}",
+        if trimmed.is_empty() {
+            "draft"
+        } else {
+            &trimmed
+        }
+    );
+
+    crate::validators::agent::validate_id(&agent_id)?;
+    Ok(agent_id)
+}
+
 /// Interface to the OpenClaw Gateway API with SQLite persistence.
 /// All agent management goes through here with dual persistence:
 /// 1. Docker containers for runtime
@@ -92,20 +121,26 @@ pub async fn create_agent(
     name: String,
     role: String,
     emoji: String,
-    personality: AgentPersonality,
+    mut personality: AgentPersonality,
     isolated: bool,
     capabilities: crate::models::AgentCapabilities,
 ) -> Result<Agent, String> {
-    // ─── SECURITY: Validate agent_id to prevent command injection ───────────────
-    // Only allow alphanumeric, dash, underscore. No shell special characters.
-    let agent_id_base = name.to_lowercase().replace(' ', "-");
-    if !agent_id_base
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(format!("Agent name contains invalid characters. Only letters, numbers, spaces, dashes, and underscores are allowed."));
+    let agent_id = derive_agent_id(&name).map_err(|e| e.to_string())?;
+
+    if let Some(model) = personality.active_model.clone() {
+        personality.active_model = Some(crate::model_constants::resolve_model_string(&model)?);
     }
-    let agent_id = format!("agent-{}", agent_id_base);
+
+    if db
+        .get_agent(&agent_id)
+        .map_err(|e| format!("Failed to check for existing agent: {}", e))?
+        .is_some()
+    {
+        return Err(format!(
+            "An agent named '{}' already exists. Choose a different name.",
+            name.trim()
+        ));
+    }
 
     // ─── Step 1: Persist to SQLite FIRST ────────────────────────────────────────
     // SQLite is always available locally. Persisting before any docker exec means
@@ -171,13 +206,13 @@ pub async fn create_agent(
         let port = get_agent_isolated_port(&agent_id);
         let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port);
         let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
-        let _ = std::fs::write(&compose_path, compose_content);
+        let _ = crate::docker::write_private_file(&compose_path, compose_content);
 
         let state_dir = data_dir.join("isolated").join(&agent_id).join("state");
         crate::docker::preflight_sanitize_and_merge_config(
             &state_dir,
             Some(agent_id.as_str()),
-            crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+            crate::model_constants::gateway_internal_token(),
         );
 
         let _ = crate::docker::get_docker_compose_command()
@@ -332,6 +367,7 @@ pub async fn list_agents(db: tauri::State<'_, crate::db::Database>) -> Result<Ve
 
     let configured_models = load_configured_agent_models();
     for agent in &mut agents {
+        let mut needs_persist = false;
         if agent
             .personality
             .active_model
@@ -341,7 +377,20 @@ pub async fn list_agents(db: tauri::State<'_, crate::db::Database>) -> Result<Ve
             .is_empty()
         {
             if let Some(model) = configured_models.get(&agent.id) {
-                agent.personality.active_model = Some(model.clone());
+                agent.personality.active_model =
+                    Some(crate::model_constants::canonicalize_model_string(model));
+                needs_persist = true;
+            }
+        }
+
+        if let Some(current_model) = agent.personality.active_model.clone() {
+            let canonical = crate::model_constants::resolve_model_string(&current_model)?;
+            if canonical != current_model {
+                agent.personality.active_model = Some(canonical.clone());
+                needs_persist = true;
+            }
+            if needs_persist {
+                let _ = db.update_agent(agent);
             }
         }
     }
@@ -479,10 +528,27 @@ fn agent_registration_missing_for_root(
 }
 
 fn agent_registration_missing(db: &crate::db::Database, agent_id: &str) -> bool {
-    let Some(data_dir) = dirs::data_dir() else {
+    let Ok(canopy_root) = canopy_data_root() else {
         return false;
     };
-    agent_registration_missing_for_root(db, &data_dir.join("Canopy"), agent_id)
+    agent_registration_missing_for_root(db, &canopy_root, agent_id)
+}
+
+async fn wait_for_agent_registration(
+    db: &crate::db::Database,
+    agent_id: &str,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !agent_registration_missing(db, agent_id) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }
 
 lazy_static::lazy_static! {
@@ -883,6 +949,9 @@ fn excerpt_for_thread_state(text: &str, max_chars: usize) -> String {
     }
 }
 
+const THREAD_RECENT_HISTORY_LIMIT: usize = 40;
+const THREAD_TIMELINE_TARGET_EVENTS: usize = 18;
+
 fn generate_thread_state_md(
     agent_id: &str,
     session_id: &str,
@@ -946,8 +1015,8 @@ _This file is app-managed and refreshed automatically to help you rejoin a speci
     }
 
     content.push_str("## Recent Milestones\n");
-    let milestone_slice = if messages.len() > 6 {
-        &messages[messages.len() - 6..]
+    let milestone_slice = if messages.len() > 10 {
+        &messages[messages.len() - 10..]
     } else {
         messages
     };
@@ -966,6 +1035,48 @@ _This file is app-managed and refreshed automatically to help you rejoin a speci
     content
 }
 
+fn generate_thread_timeline_md(session_id: &str, messages: &[crate::db::Message]) -> String {
+    let mut content = String::from(
+        "# THREAD_TIMELINE.md\n\n\
+_This file is app-managed and preserves representative checkpoints across the full thread, including older turns that may no longer appear in recent history._\n\n",
+    );
+    content.push_str(&format!("**Session id:** {}\n\n", session_id));
+
+    if messages.is_empty() {
+        content.push_str("No timeline yet.\n");
+        return content;
+    }
+
+    let step = std::cmp::max(1, messages.len().div_ceil(THREAD_TIMELINE_TARGET_EVENTS));
+    for (idx, msg) in messages.iter().enumerate().step_by(step) {
+        content.push_str(&format!(
+            "## Turn {} — {} — {}\n{}\n\n",
+            idx + 1,
+            msg.role,
+            msg.timestamp,
+            excerpt_for_thread_state(&msg.content, 700)
+        ));
+    }
+
+    if let Some(last) = messages.last() {
+        let already_included = messages
+            .iter()
+            .enumerate()
+            .step_by(step)
+            .any(|(_, msg)| msg.id == last.id);
+        if !already_included {
+            content.push_str(&format!(
+                "## Final Turn — {} — {}\n{}\n",
+                last.role,
+                last.timestamp,
+                excerpt_for_thread_state(&last.content, 700)
+            ));
+        }
+    }
+
+    content
+}
+
 fn generate_recent_history_md(session_id: &str, messages: &[crate::db::Message]) -> String {
     let mut content = String::from(
         "# RECENT_HISTORY.md\n\n\
@@ -973,8 +1084,8 @@ _This file is app-managed and contains a compact recent transcript for the activ
     );
     content.push_str(&format!("**Session id:** {}\n\n", session_id));
 
-    let history_slice = if messages.len() > 12 {
-        &messages[messages.len() - 12..]
+    let history_slice = if messages.len() > THREAD_RECENT_HISTORY_LIMIT {
+        &messages[messages.len() - THREAD_RECENT_HISTORY_LIMIT..]
     } else {
         messages
     };
@@ -1011,9 +1122,10 @@ _This file is app-managed and points to the current conversation context._\n\n\
 - **Session id:** {session_id}\n\
 - **Thread directory:** {thread_dir}\n\
 - **Read first:** `{thread_dir}/THREAD_STATE.md`\n\
-- **Then read:** `{thread_dir}/RECENT_HISTORY.md`\n\n\
+- **Then read:** `{thread_dir}/RECENT_HISTORY.md`\n\
+- **If you need older thread context:** `{thread_dir}/THREAD_TIMELINE.md`\n\n\
 ## Why this exists\n\
-Use the files above to recover the active thread's current goal, recent decisions, and unresolved follow-ups before answering.\n\n\
+Use the files above to recover the active thread's current goal, recent decisions, unresolved follow-ups, and older milestones before answering.\n\n\
 ## Latest User Request\n\
 {latest_excerpt}\n",
         session_id = session_id,
@@ -1028,7 +1140,7 @@ fn refresh_thread_context_files(
     session_id: &str,
 ) -> Result<(), String> {
     let messages = db
-        .get_messages(session_id, 24)
+        .get_all_messages(session_id)
         .map_err(|e| format!("Failed to load thread messages: {}", e))?;
     let thread_dir = get_thread_context_dir(db, agent_id, session_id)?;
     std::fs::create_dir_all(&thread_dir).map_err(|e| e.to_string())?;
@@ -1040,6 +1152,11 @@ fn refresh_thread_context_files(
     std::fs::write(
         thread_dir.join("RECENT_HISTORY.md"),
         generate_recent_history_md(session_id, &messages),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        thread_dir.join("THREAD_TIMELINE.md"),
+        generate_thread_timeline_md(session_id, &messages),
     )
     .map_err(|e| e.to_string())?;
     let workspace = get_agent_workspace_dir(db, agent_id)?;
@@ -1190,7 +1307,11 @@ pub fn log_terminal_command_internal(
     let file_path = workspace.join(".terminal_history.json");
     let mut history = vec![];
 
-    if file_path.exists() {
+    if file_path
+        .metadata()
+        .map(|metadata| metadata.len() <= 2 * 1024 * 1024)
+        .unwrap_or(false)
+    {
         if let Ok(content) = std::fs::read_to_string(&file_path) {
             if let Ok(parsed) = serde_json::from_str::<Vec<serde_json::Value>>(&content) {
                 history = parsed;
@@ -1200,17 +1321,65 @@ pub fn log_terminal_command_internal(
 
     let timestamp = chrono::Utc::now().to_rfc3339();
     let entry = serde_json::json!({
-        "command": command,
-        "output": output,
+        "command": sanitize_terminal_history_text(command, 4_096),
+        "output": sanitize_terminal_history_text(output, 16_384),
         "timestamp": timestamp
     });
 
     history.push(entry);
+    if history.len() > 200 {
+        history.drain(..history.len() - 200);
+    }
 
     if let Ok(json) = serde_json::to_string_pretty(&history) {
         let _ = std::fs::create_dir_all(&workspace);
-        let _ = std::fs::write(&file_path, json);
+        let _ = crate::docker::write_private_file(&file_path, json);
     }
+}
+
+fn sanitize_terminal_history_text(value: &str, max_chars: usize) -> String {
+    let mut sanitized = value
+        .lines()
+        .map(|line| {
+            let normalized = line.to_ascii_lowercase();
+            if [
+                "api_key",
+                "api-key",
+                "token=",
+                "password=",
+                "secret=",
+                "authorization:",
+                "bearer ",
+                "aiza",
+            ]
+            .iter()
+            .any(|marker| normalized.contains(marker))
+                || normalized.starts_with("sk-")
+                || normalized.contains("=sk-")
+                || normalized.contains(" sk-")
+            {
+                "[REDACTED SENSITIVE LINE]"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if sanitized.chars().count() > max_chars {
+        sanitized = sanitized.chars().take(max_chars).collect();
+        sanitized.push_str("\n[TRUNCATED]");
+    }
+    sanitized
+}
+
+fn validate_agent_command(agent: &Agent, command: &str) -> Result<(), String> {
+    if !agent.capabilities.coding {
+        return Err("This agent does not have the Coding capability".into());
+    }
+    if command.trim().is_empty() || command.len() > 16 * 1024 || command.contains('\0') {
+        return Err("Command must be between 1 byte and 16 KiB and contain no null bytes".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1219,34 +1388,51 @@ pub async fn run_agent_command(
     agent_id: String,
     command: String,
 ) -> Result<String, String> {
+    crate::validators::agent::validate_id(&agent_id).map_err(|error| error.to_string())?;
+    let agent = db
+        .get_agent(&agent_id)
+        .map_err(|error| format!("DB error: {error}"))?
+        .ok_or_else(|| format!("Agent not found: {agent_id}"))?;
+    validate_agent_command(&agent, &command)?;
     let container_name = get_agent_container_name(&db, &agent_id);
     let workspace_path = format!("/home/node/.openclaw/workspace/{}", agent_id);
-    let output = get_docker_command()
-        .args([
-            "exec",
-            "-u",
-            "node",
-            "-w",
-            &workspace_path,
-            &container_name,
-            "bash",
-            "-c",
-            &command,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to execute command: {}", e))?;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                "-w",
+                &workspace_path,
+                &container_name,
+                "bash",
+                "-c",
+                &command,
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| "Agent command timed out after 120 seconds".to_string())?
+    .map_err(|e| format!("Failed to execute command: {}", e))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
     let combined = format!("{}{}", stdout, stderr);
     log_terminal_command_internal(&db, &agent_id, &command, &combined);
+    let user_output = if combined.chars().count() > 1024 * 1024 {
+        let mut truncated: String = combined.chars().take(1024 * 1024).collect();
+        truncated.push_str("\n[OUTPUT TRUNCATED]");
+        truncated
+    } else {
+        combined
+    };
 
     if output.status.success() {
-        Ok(combined)
+        Ok(user_output)
     } else {
-        Err(format!("Error: {}", combined))
+        Err(format!("Error: {}", user_output))
     }
 }
 
@@ -1260,91 +1446,55 @@ pub async fn get_agent(
         .ok_or_else(|| format!("Agent not found: {}", agent_id))
 }
 
+fn write_agent_personality_files(
+    workspace: &std::path::Path,
+    personality: &AgentPersonality,
+) -> Result<(), String> {
+    std::fs::create_dir_all(workspace)
+        .map_err(|error| format!("Failed to create agent workspace: {error}"))?;
+    std::fs::write(
+        workspace.join("PREFERENCES.md"),
+        personality.custom_instructions.trim(),
+    )
+    .map_err(|error| format!("Failed to update PREFERENCES.md: {error}"))?;
+    std::fs::write(workspace.join("SOUL.md"), generate_soul_md(personality))
+        .map_err(|error| format!("Failed to update SOUL.md: {error}"))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn update_agent_personality(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
-    personality: AgentPersonality,
+    mut personality: AgentPersonality,
 ) -> Result<(), String> {
-    let soul_path = agent_soul_path(&agent_id);
-    let custom_instructions = personality.custom_instructions.trim();
-    let escaped_prefs = custom_instructions.replace('\'', "'\\''");
-    let escaped_path = soul_path.replace('\'', "'\\''");
-
-    let container_name = get_agent_container_name(&db, &agent_id);
-
-    // SECURITY: Properly quote all variables to prevent command injection
-    let prefs_cmd = format!(
-        "mkdir -p \"$(dirname '{}')\" && printf '%s' '{}' > \"$(dirname '{}')/PREFERENCES.md\"",
-        escaped_path, escaped_prefs, escaped_path
-    );
-    let output = get_docker_command()
-        .args([
-            "exec",
-            "-u",
-            "node",
-            &container_name,
-            "sh",
-            "-c",
-            &prefs_cmd,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to update PREFERENCES.md: {}", e))?;
-
-    log_terminal_command_internal(
-        &db,
-        &agent_id,
-        "printf '%s' '...' > ~/.openclaw/agents/[id]/agent/PREFERENCES.md",
-        "PREFERENCES.md successfully updated with latest personality.",
-    );
-
-    if !output.status.success() {
-        return Err("Failed to update personality in container".to_string());
+    crate::validators::agent::validate_id(&agent_id).map_err(|error| error.to_string())?;
+    if let Some(model) = personality.active_model.clone() {
+        personality.active_model = Some(crate::model_constants::resolve_model_string(&model)?);
     }
 
-    // Regenerate SOUL.md from the new personality so the running agent's identity, vibe,
-    // soul template, and identity template all reflect the user's latest edits. Previously
-    // this function only wrote PREFERENCES.md, which left SOUL.md frozen at whatever was
-    // generated on agent creation — every personality edit silently no-op'd in the agent's
-    // actual behavior. Mirrors the SOUL.md write block in `update_agent_details`.
-    let soul_md = generate_soul_md(&personality);
-    let soul_cmd = format!(
-        "mkdir -p \"$(dirname '{}')\" && cat > '{}' << 'SOULEOF'\n{}\nSOULEOF",
-        escaped_path, escaped_path, soul_md
-    );
-    let _ = get_docker_command()
-        .args(["exec", "-u", "node", &container_name, "sh", "-c", &soul_cmd])
-        .output()
-        .await;
-    log_terminal_command_internal(
-        &db,
-        &agent_id,
-        "regenerated SOUL.md from updated personality",
-        "",
-    );
+    let mut agent = db
+        .get_agent(&agent_id)
+        .map_err(|error| format!("DB error: {error}"))?
+        .ok_or_else(|| format!("Agent not found: {agent_id}"))?;
+    let workspace = get_agent_workspace_dir(&db, &agent_id)?;
+    write_agent_personality_files(&workspace, &personality)?;
 
-    // Update agent in DB with new personality
-    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
-        agent.personality = personality;
-        let _ = db.update_agent(&agent);
-        if let Ok(workspace) = get_agent_workspace_dir(&db, &agent_id) {
-            let _ = std::fs::create_dir_all(&workspace);
-            let _ = std::fs::write(
-                workspace.join("SOUL.md"),
-                generate_soul_md(&agent.personality),
-            );
-        }
-        ensure_visible_workspace_files(&agent, &db, true);
-        write_app_managed_instruction_files(&agent, &db);
-        let _ = db.log_audit(
-            &agent_id,
-            "update_personality",
-            Some("openclaw"),
-            "Agent personality updated",
-            None,
-        );
-    }
+    // Both shared and isolated workspaces are bind-mounted into OpenClaw, so a
+    // host-side write is immediately visible without interpolating user text into
+    // a container shell command.
+    agent.personality = personality;
+    db.update_agent(&agent)
+        .map_err(|error| format!("DB error: {error}"))?;
+    ensure_visible_workspace_files(&agent, &db, true);
+    write_app_managed_instruction_files(&agent, &db);
+    let _ = db.log_audit(
+        &agent_id,
+        "update_personality",
+        Some("openclaw"),
+        "Agent personality updated",
+        None,
+    );
 
     Ok(())
 }
@@ -1502,7 +1652,8 @@ if(i>=0){{
                 crate::browser_manager::enable_jit_proxy(app_handle_clone, agent_id_clone.clone())
                     .await
             {
-                let ws_endpoint = format!("ws://host.docker.internal:{}", port);
+                let ws_endpoint =
+                    crate::browser_manager::browser_bridge_url("ws", port, &agent_id_clone);
                 let env_arg = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(8),
@@ -1585,8 +1736,11 @@ pub async fn update_agent_capabilities(
 ) -> Result<(), String> {
     // 1. Save to SQLite
     if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        crate::computer_control::validate_capabilities(&agent, &capabilities)
+            .map_err(|e| e.to_string())?;
         agent.capabilities = capabilities.clone();
         let _ = db.update_agent(&agent);
+        crate::workspace_manager::refresh_folder_delivery(&db, &agent_id, true).await?;
         let _ = db.log_audit(
             &agent_id,
             "update_capabilities",
@@ -1636,8 +1790,10 @@ pub async fn update_agent_details(
     name: String,
     role: String,
 ) -> Result<(), String> {
+    crate::validators::agent::validate_id(&agent_id).map_err(|error| error.to_string())?;
+    crate::validators::agent::validate_name(&name).map_err(|error| error.to_string())?;
+    crate::validators::agent::validate_name(&role).map_err(|error| error.to_string())?;
     if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
-        let container_name = get_agent_container_name(&db, &agent_id);
         agent.name = name.clone();
         agent.role = role;
 
@@ -1645,24 +1801,8 @@ pub async fn update_agent_details(
         agent.personality.name = name;
 
         // Refresh SOUL.md so the agent knows its new name
-        let soul_md = generate_soul_md(&agent.personality);
-        let soul_path = agent_soul_path(&agent_id);
-        let escaped_path = soul_path.replace('\'', "'\\''");
-
-        // SECURITY: Properly quote the path variable to prevent command injection
-        let soul_cmd = format!(
-            "mkdir -p \"$(dirname '{}')\" && cat > '{}' << 'SOULEOF'\n{}\nSOULEOF",
-            escaped_path, escaped_path, soul_md
-        );
-        let _ = get_docker_command()
-            .args(["exec", "-u", "node", &container_name, "sh", "-c", &soul_cmd])
-            .output()
-            .await;
-
-        if let Ok(workspace) = get_agent_workspace_dir(&db, &agent_id) {
-            let _ = std::fs::create_dir_all(&workspace);
-            let _ = std::fs::write(workspace.join("SOUL.md"), &soul_md);
-        }
+        let workspace = get_agent_workspace_dir(&db, &agent_id)?;
+        write_agent_personality_files(&workspace, &agent.personality)?;
         ensure_visible_workspace_files(&agent, &db, true);
 
         db.update_agent(&agent)
@@ -1706,6 +1846,11 @@ pub async fn toggle_agent_isolation(
         return Err("Agent not found".to_string());
     }
 
+    // Rebind custom-folder delivery to the new trust boundary before either
+    // container is started. Shared agents are downgraded to the authenticated
+    // read-only broker; isolated agents retain their explicit mount modes.
+    crate::workspace_manager::refresh_folder_delivery(&db, &agent_id, false).await?;
+
     // 1. Remove the agent from the shared gateway (best-effort).
     // NODE_OPTIONS=--v8-pool-size=1 prevents uv_thread_create EAGAIN under PID pressure
     // (see OPENCLAW_INTEGRATION.md §5).
@@ -1735,7 +1880,7 @@ pub async fn toggle_agent_isolation(
     let port = get_agent_isolated_port(&agent_id);
     let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port); // using stable port offset
     let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
-    std::fs::write(&compose_path, compose_content).map_err(|e| e.to_string())?;
+    crate::docker::write_private_file(&compose_path, compose_content)?;
 
     if isolated {
         // Stop any old container just in case
@@ -2118,24 +2263,25 @@ pub async fn delete_agent(
 fn cleanup_agent_text(s: &str) -> String {
     if let Some(start) = s.find("<final>") {
         if let Some(end_offset) = s[start..].find("</final>") {
-            let inside = s[start + 7 .. start + end_offset].trim();
+            let inside = s[start + 7..start + end_offset].trim();
             let mut outside_str = s.to_string();
-            outside_str.replace_range(start .. start + end_offset + 8, "");
+            outside_str.replace_range(start..start + end_offset + 8, "");
             let outside = outside_str.trim();
-            
+
             if outside.is_empty() {
                 return inside.to_string();
             }
             if inside.is_empty() {
                 return outside.to_string();
             }
-            
+
             let inside_words: std::collections::HashSet<&str> = inside.split_whitespace().collect();
-            let outside_words: std::collections::HashSet<&str> = outside.split_whitespace().collect();
-            
+            let outside_words: std::collections::HashSet<&str> =
+                outside.split_whitespace().collect();
+
             let common_words = inside_words.intersection(&outside_words).count();
             let min_len = std::cmp::min(inside_words.len(), outside_words.len());
-            
+
             if min_len > 0 && (common_words as f64 / min_len as f64) > 0.5 {
                 if outside.len() > inside.len() {
                     return outside.to_string();
@@ -2157,6 +2303,20 @@ pub async fn send_message_internal(
     message: &str,
     session_id: Option<String>,
 ) -> Result<Value, String> {
+    send_message_internal_with_context(db, app, agent_id, message, session_id, None).await
+}
+
+/// Send a message while keeping app-managed companion context out of the
+/// persisted user transcript. The visible `message` is stored as authored;
+/// `runtime_context` is supplied only to the model invocation.
+pub async fn send_message_internal_with_context(
+    db: &crate::db::Database,
+    app: &tauri::AppHandle,
+    agent_id: &str,
+    message: &str,
+    session_id: Option<String>,
+    runtime_context: Option<&str>,
+) -> Result<Value, String> {
     // Step 1: Get or create conversation
     let conv_id = match session_id {
         Some(id) => {
@@ -2168,6 +2328,9 @@ pub async fn send_message_internal(
             .get_or_create_conversation(agent_id)
             .map_err(|e| format!("Failed to get conversation: {}", e))?,
     };
+    let run_id = db
+        .start_thread_run(&conv_id, agent_id, "user_message")
+        .map_err(|e| format!("Failed to create thread run: {}", e))?;
 
     // Step 2: Log user message to DB
     let _ = db.insert_message(&conv_id, "user", message);
@@ -2220,8 +2383,16 @@ pub async fn send_message_internal(
 
     // Step 4: Send via native OpenClaw CLI — up to 3 attempts with 5s backoff on timeout.
     let proxy_port = crate::browser_manager::jit_proxy_port_for(agent_id);
-    let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
+    let ws_endpoint = crate::browser_manager::browser_bridge_url("ws", proxy_port, agent_id);
     let cdp_env = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
+    let runtime_message = runtime_context
+        .map(|context| {
+            format!(
+                "<canopy_companion_context>\n{}\n</canopy_companion_context>\n\n<user_message>\n{}\n</user_message>",
+                context, message
+            )
+        })
+        .unwrap_or_else(|| message.to_string());
     // Timeouts are usually transient (Node event loop momentarily busy); a single retry
     // resolves the majority of "LLM request timeout" failures without user intervention.
     let max_attempts: u32 = 3;
@@ -2252,7 +2423,7 @@ pub async fn send_message_internal(
             "--agent",
             agent_id,
             "--message",
-            message,
+            &runtime_message,
             "--json",
             "--session-id",
             &conv_id,
@@ -2268,6 +2439,11 @@ pub async fn send_message_internal(
             }
             Ok(Err(e)) => {
                 // I/O error spawning docker — not a retry-able timeout, bail immediately.
+                let _ = db.finish_thread_run(
+                    &run_id,
+                    "failed",
+                    Some(&json!({ "error": e.to_string() }).to_string()),
+                );
                 return Err(format!("Failed to send message: {}", e));
             }
             Err(_) => {
@@ -2284,7 +2460,14 @@ pub async fn send_message_internal(
 
     let output = match attempt_output {
         Some(o) => o,
-        None => return Err(last_timeout_err),
+        None => {
+            let _ = db.finish_thread_run(
+                &run_id,
+                "failed",
+                Some(&json!({ "error": last_timeout_err.clone() }).to_string()),
+            );
+            return Err(last_timeout_err);
+        }
     };
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -2305,6 +2488,11 @@ pub async fn send_message_internal(
         if combined.contains("cannot exec in a stopped container")
             || combined.contains("OCI runtime exec failed")
         {
+            let _ = db.finish_thread_run(
+                &run_id,
+                "failed",
+                Some(&json!({ "error": combined.clone() }).to_string()),
+            );
             return Err(
                 "Infrastructure gateway is offline or has crashed (Stopped Container).".to_string(),
             );
@@ -2313,6 +2501,12 @@ pub async fn send_message_internal(
         if combined.is_empty() {
             // Exit code 137 usually means OOM in Docker
             if output.status.code() == Some(137) {
+                let oom_error = "Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string();
+                let _ = db.finish_thread_run(
+                    &run_id,
+                    "failed",
+                    Some(&json!({ "error": oom_error.clone() }).to_string()),
+                );
                 return Err("Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string());
             }
             combined = format!(
@@ -2331,6 +2525,11 @@ pub async fn send_message_internal(
         };
         let _ = db.insert_agent_bug_report(&bug);
 
+        let _ = db.finish_thread_run(
+            &run_id,
+            "failed",
+            Some(&json!({ "error": combined.clone() }).to_string()),
+        );
         return Err(combined);
     }
 
@@ -2437,6 +2636,15 @@ pub async fn send_message_internal(
     // OpenClaw emits "OpenClaw: <error>" lines when the agent is misconfigured.
     // Return these as errors so the UI can offer the repair flow.
     if response_text.starts_with("OpenClaw:") {
+        let final_error = format!(
+            "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
+            response_text.trim()
+        );
+        let _ = db.finish_thread_run(
+            &run_id,
+            "failed",
+            Some(&json!({ "error": final_error.clone() }).to_string()),
+        );
         return Err(format!(
             "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
             response_text.trim()
@@ -2505,6 +2713,24 @@ pub async fn send_message_internal(
         .or_else(|| body["result"]["meta"]["model"].as_str())
         .unwrap_or("unknown");
 
+    // DIAGNOSTIC (2026-07): unlike the `payloads[0].text` extraction above
+    // (comment: "confirmed from live run"), the usage/token paths here were
+    // never verified against a real openclaw --json payload — git history
+    // shows they were added without a citation or sample response. Every
+    // downstream cost/token figure (agent.stats.total_cost_usd,
+    // token_usage_history, the My Usage dashboard, admin telemetry) reads
+    // zero as a direct result whenever this stays 0 despite a real reply.
+    // Log the full body (not just the 500-char stdout_preview above) the
+    // first time this happens so the real `meta` shape can be read off and
+    // the extraction paths above fixed precisely instead of re-guessed.
+    if prompt_tokens == 0 && completion_tokens == 0 && !response_text.trim().is_empty() {
+        tracing::warn!(
+            "send_message_internal: token extraction found 0 tokens despite a non-empty reply for agent={} — full body follows (compare against body[\"meta\"][\"usage\"][\"prompt_tokens\"]/[\"completion_tokens\"] paths in the code above this log line): {}",
+            agent_id,
+            body
+        );
+    }
+
     if prompt_tokens > 0 || completion_tokens > 0 {
         if let Ok(Some(mut agent)) = db.get_agent(agent_id) {
             agent
@@ -2572,12 +2798,16 @@ pub async fn send_message_internal(
         "Message sent to agent".to_string()
     };
     let _ = db.log_audit(agent_id, "chatted", Some("openclaw"), &detail, None);
+    let _ = db.finish_thread_run(&run_id, "completed", None);
 
     Ok(json!({
         "response": response_text,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
-        "model": model
+        "model": model,
+        "conversation_id": conv_id,
+        "run_id": run_id,
+        "thread_status": "idle"
     }))
 }
 
@@ -2594,9 +2824,18 @@ async fn ensure_agent_runtime_registration(
         "ensure_agent_runtime_registration: agent {} missing from OpenClaw registry, running boot sync repair",
         agent_id
     );
-    let _ = boot_sync_agents_internal(app.clone(), db).await?;
+    let sync_was_already_running = BOOT_SYNC_RUNNING.load(Ordering::SeqCst);
+    let boot_sync_result = boot_sync_agents_internal(app.clone(), db).await?;
 
     if agent_registration_missing(db, agent_id) {
+        let wait_budget = if sync_was_already_running || boot_sync_result == "Already running" {
+            std::time::Duration::from_secs(45)
+        } else {
+            std::time::Duration::from_secs(10)
+        };
+        if wait_for_agent_registration(db, agent_id, wait_budget).await {
+            return Ok(());
+        }
         return Err(format!(
             "Agent {} is still missing from the OpenClaw registry after repair. Please restart the gateway or run re-initialize setup.",
             agent_id
@@ -2742,7 +2981,7 @@ pub async fn get_conversation_history(
                         if role != "user" && role != "assistant" && role != "agent" {
                             continue;
                         }
-                        
+
                         let api = msg_obj.get("api").and_then(|v| v.as_str()).unwrap_or("");
                         if api == "cli" {
                             continue;
@@ -2864,6 +3103,26 @@ pub async fn get_conversation_history(
 }
 
 #[tauri::command]
+pub async fn list_agent_conversations(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::db::ConversationSummary>, String> {
+    db.list_agent_conversation_summaries(&agent_id, limit.unwrap_or(100))
+        .map_err(|e| format!("Failed to load conversations: {}", e))
+}
+
+#[tauri::command]
+pub async fn list_thread_runs(
+    db: tauri::State<'_, crate::db::Database>,
+    conversation_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<crate::db::ThreadRun>, String> {
+    db.list_thread_runs(&conversation_id, limit.unwrap_or(25))
+        .map_err(|e| format!("Failed to load thread runs: {}", e))
+}
+
+#[tauri::command]
 pub async fn import_agent(
     db: tauri::State<'_, crate::db::Database>,
     name: String,
@@ -2908,8 +3167,7 @@ pub async fn import_agent(
     let imported_model = agent_data
         .get("model")
         .and_then(|v| v.as_str())
-        .and_then(|m| crate::model_constants::validate_model_string(m).ok())
-        .map(|s| s.to_string())
+        .and_then(|m| crate::model_constants::resolve_model_string(m).ok())
         .unwrap_or_else(|| {
             crate::model_constants::default_model_from_available_keys(
                 has_anthropic,
@@ -3861,6 +4119,44 @@ fn build_app_capabilities_md(agent: &crate::models::Agent) -> String {
             .join("\n")
     };
 
+    let mut mounted_folders_section = String::new();
+    if let Ok(grants) = crate::workspace_manager::get_folder_grants_for_agent(&agent.id) {
+        let saved_grant_count = grants.len();
+        let grants = grants
+            .into_iter()
+            .filter(|grant| grant.active)
+            .collect::<Vec<_>>();
+        if !grants.is_empty() && agent.isolated {
+            mounted_folders_section.push_str("## Live Mounted Host Folders\n");
+            mounted_folders_section.push_str("These folders are direct bind mounts inside your dedicated container. The mount mode below is enforced by Docker.\n\n");
+            for grant in grants {
+                let access = match grant.access {
+                    crate::workspace_manager::FolderAccessMode::ReadOnly => "read-only",
+                    crate::workspace_manager::FolderAccessMode::ReadWrite => "read & write",
+                };
+                mounted_folders_section.push_str(&format!(
+                    "- **{}** (`{}`) — {} at `/home/node/.openclaw/workspace/mounts/{}`\n",
+                    grant.name, grant.path, access, grant.id
+                ));
+            }
+            mounted_folders_section.push_str("\nNever attempt to write to a read-only mount. For read & write mounts, edit the mounted file directly instead of making a duplicate sandbox copy.\n\n");
+        } else if !grants.is_empty() {
+            mounted_folders_section.push_str("## Brokered Read-Only Host Folders\n");
+            mounted_folders_section.push_str("These host folders are not mounted into the shared gateway. Access them only through the per-agent Files Bridge client. The broker supports bounded list, UTF-8 text read, and text search operations; it cannot write or delete.\n\n");
+            mounted_folders_section.push_str("Commands:\n- `./.canopy/files-bridge list <folder-id> [relative-directory]`\n- `./.canopy/files-bridge read <folder-id> <relative-file>`\n- `./.canopy/files-bridge search <folder-id> <query>`\n\nGranted folders:\n");
+            for grant in grants {
+                mounted_folders_section.push_str(&format!(
+                    "- **{}** (`{}`) — folder id `{}` (read-only broker)\n",
+                    grant.name, grant.path, grant.id
+                ));
+            }
+            mounted_folders_section.push_str("\nDo not try to reach these host paths directly or request write access through the broker. Direct write access requires Isolated Mode.\n\n");
+        } else if saved_grant_count > 0 {
+            mounted_folders_section.push_str("## Saved Host Folders (Inactive)\n");
+            mounted_folders_section.push_str("Custom folder grants are saved, but File System Read is disabled. Do not attempt to access them unless the user enables that capability.\n\n");
+        }
+    }
+
     format!(
         "# APP_CAPABILITIES.md\n\n\
 _This file is app-managed and not user-editable. It describes what {name} can actually use right now._\n\n\
@@ -3889,6 +4185,7 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
 {spend_auto}\n\n\
 ## Connected Integrations\n\
 {integrations}\n\n\
+{mounted_folders}\
 ## Decision Rule\n\
 - Use the smallest enabled capability that gets the job done.\n\
 - If a missing capability would unlock meaningful user value, request it with a concrete rationale instead of repeatedly failing.\n",
@@ -3911,6 +4208,7 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         payments = capability_status(caps.payments, "Never spend or request money casually; follow approval thresholds and user intent strictly."),
         spend_auto = capability_status(caps.spend_auto, "Auto-approval is limited and should still be treated as high-trust behavior."),
         integrations = integrations,
+        mounted_folders = mounted_folders_section,
     )
 }
 
@@ -3934,6 +4232,7 @@ _This file is app-managed and not user-editable. It defines the proactive operat
 1. Read `APP_PROTOCOLS.md`, `APP_CAPABILITIES.md`, `USER.md`, and `SOUL.md` before deciding how to help.\n\
 2. If present, read `MEMORY.md` and `HEARTBEAT.md` to recover continuity.\n\
 3. If `ACTIVE_THREAD.md` is present, read it, then read the referenced `THREAD_STATE.md` and `RECENT_HISTORY.md` before answering.\n\
+   Read `THREAD_TIMELINE.md` too when the thread has older context that might matter.\n\
 4. Inspect `DIAGNOSTICS.md` before proposing integration-dependent workflows.\n\n\
 ## Proactivity Standard\n\
 - Create leverage, not just answers.\n\
@@ -3948,7 +4247,7 @@ _This file is app-managed and not user-editable. It defines the proactive operat
 - `MEMORY.md` is private to this agent and should hold role-specific learnings, corrections, and project continuity.\n\
 - `HEARTBEAT.md` is private to this agent and should contain recurring monitors or checks this role owns.\n\
 - `ACTIVE_THREAD.md` points at the current per-conversation continuity files.\n\
-- `.threads/<session_id>/THREAD_STATE.md` and `RECENT_HISTORY.md` are per-conversation continuity files. Use them to resume the current thread without treating every thread detail as durable memory.\n\n\
+- `.threads/<session_id>/THREAD_STATE.md`, `RECENT_HISTORY.md`, and `THREAD_TIMELINE.md` are per-conversation continuity files. Use them to resume the current thread without treating every thread detail as durable memory.\n\n\
 ## Memory Hygiene\n\
 - Write only durable facts, decisions, constraints, and preferences.\n\
 - Avoid duplicate entries and transcript-like summaries.\n\
@@ -3965,6 +4264,15 @@ pub(crate) fn write_app_managed_instruction_files(
     agent: &crate::models::Agent,
     db: &crate::db::Database,
 ) {
+    if let Ok(grants) = crate::workspace_manager::get_folder_grants_for_agent(&agent.id) {
+        if let Err(error) = crate::bridge::sync_files_bridge(db, agent, &grants) {
+            tracing::warn!(
+                "Failed to refresh Files Bridge runtime for {}: {}",
+                agent.id,
+                error
+            );
+        }
+    }
     let Ok(workspace) = get_agent_workspace_dir(db, &agent.id) else {
         return;
     };
@@ -4560,7 +4868,6 @@ pub async fn repair_gateway(
         log,
         "Step 5/6: Applying gateway configuration (direct JSON write)..."
     );
-    let token = GATEWAY_INTERNAL_TOKEN;
     // Determine the correct default model based on which API keys are actually stored.
     // This ALWAYS writes the model (not just when unset) so we override the container's
     // built-in default (google/gemini-2.0-flash) with the user's preferred model.
@@ -4723,6 +5030,8 @@ pub async fn update_agent_model(
     agent_id: String,
     model: String,
 ) -> Result<(), String> {
+    let model = crate::model_constants::resolve_model_string(&model)?;
+
     // Write directly into openclaw.json via Node.js — this triggers OpenClaw's hot reload
     // (file watcher detects the change and applies it without restarting the process).
     // Do NOT use `docker restart` here: a full restart takes 10-15s and loses in-memory
@@ -4770,6 +5079,11 @@ console.log('model updated to {model}');
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
         return Err(format!("Model update failed: {}", err));
+    }
+
+    if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
+        agent.personality.active_model = Some(model);
+        let _ = db.update_agent(&agent);
     }
 
     Ok(())
@@ -5467,7 +5781,8 @@ async fn boot_sync_agents_internal(
                     crate::browser_manager::enable_jit_proxy(app_handle_clone, id_clone.clone())
                         .await
                 {
-                    let ws_endpoint = format!("ws://host.docker.internal:{}", port);
+                    let ws_endpoint =
+                        crate::browser_manager::browser_bridge_url("ws", port, &id_clone);
                     let _ = crate::openclaw::get_docker_command()
                         .args([
                             "exec",
@@ -5516,7 +5831,7 @@ async fn boot_sync_agents_internal(
                 let port = get_agent_isolated_port(id);
                 let compose_content = crate::docker::generate_isolated_compose(id, &data_dir, port); // using stable port offset
                 let compose_path = data_dir.join(format!("docker-compose-{}.yml", id));
-                let _ = std::fs::write(&compose_path, compose_content);
+                let _ = crate::docker::write_private_file(&compose_path, compose_content);
 
                 // Write a minimal valid openclaw.json to the state dir BEFORE the container
                 // starts. OpenClaw 2026.5.26 crashes at startup with a bare state dir, causing
@@ -5526,7 +5841,7 @@ async fn boot_sync_agents_internal(
                 crate::docker::preflight_sanitize_and_merge_config(
                     &state_dir,
                     Some(id.as_str()),
-                    crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+                    crate::model_constants::gateway_internal_token(),
                 );
 
                 let container_name = format!("canopy-isolated-{}", id);
@@ -5607,7 +5922,8 @@ async fn boot_sync_agents_internal(
                     .personality
                     .active_model
                     .clone()
-                    .unwrap_or_else(|| "google/gemini-3.1-pro-preview".to_string());
+                    .map(|model| crate::model_constants::canonicalize_model_string(&model))
+                    .unwrap_or_else(|| crate::model_constants::DEFAULT_GEMINI_MODEL.to_string());
                 add_args.push("--model");
                 add_args.push(&active_model);
 
@@ -5641,7 +5957,7 @@ async fn boot_sync_agents_internal(
             // Also, we MUST validate the model. If an invalid/deprecated model like
             // 'google/gemini-flash-latest' is pushed, LiteLLM enters an infinite crash loop.
             let active_model = agent.personality.active_model.clone().unwrap_or_default();
-            let model_to_set = crate::model_constants::validate_model_string(&active_model)
+            let model_to_set = crate::model_constants::resolve_model_string(&active_model)
                 .ok()
                 .filter(|m| {
                     crate::model_constants::all_models()
@@ -5760,7 +6076,7 @@ async fn boot_sync_agents_internal(
 
         let active_model = agent.personality.active_model.clone().unwrap_or_default();
         let keys_existing = get_creds_for_agent(&id);
-        let model_to_set = crate::model_constants::validate_model_string(&active_model)
+        let model_to_set = crate::model_constants::resolve_model_string(&active_model)
             .ok()
             .filter(|m| {
                 crate::model_constants::all_models()
@@ -5999,14 +6315,20 @@ async fn boot_sync_agents_internal(
     }
     // ── Apply per-agent Slack/Google config to ALL RUNNING containers ────────
     // Group active agents by container name
-    let mut container_agents: std::collections::HashMap<String, Vec<crate::models::Agent>> = std::collections::HashMap::new();
+    let mut container_agents: std::collections::HashMap<String, Vec<crate::models::Agent>> =
+        std::collections::HashMap::new();
     for agent in &active_agents {
         let container_name = get_agent_container_name(&db, &agent.id);
-        container_agents.entry(container_name).or_default().push((*agent).clone());
+        container_agents
+            .entry(container_name)
+            .or_default()
+            .push((*agent).clone());
     }
 
     for (container_name, agents) in container_agents {
-        let channels_changed = sync_container_channels_internal(&container_name, &agents).await.unwrap_or(false);
+        let channels_changed = sync_container_channels_internal(&container_name, &agents)
+            .await
+            .unwrap_or(false);
         if channels_changed {
             tracing::info!(
                 "boot_sync_agents: per-agent channel config was written — \
@@ -6020,7 +6342,7 @@ async fn boot_sync_agents_internal(
                     .output(),
             )
             .await;
-            
+
             // Wait for gateway ready (only necessary for the main gateway)
             if container_name == "canopy-gateway" {
                 if let Err(e) = wait_for_gateway_ready(60, Some(app_handle.clone())).await {
@@ -6136,7 +6458,9 @@ async fn file_channels_match(
     desired_calendar: &serde_json::Map<String, serde_json::Value>,
     desired_drive: &serde_json::Map<String, serde_json::Value>,
     desired_bindings: &[serde_json::Value],
-    desired_imessage_enabled: bool,
+    // iMessage is no longer wired through openclaw.json — kept for call-site
+    // compatibility but intentionally unused (see bluebubbles note below).
+    _desired_imessage_enabled: bool,
 ) -> bool {
     let cat_out = match tokio::time::timeout(
         std::time::Duration::from_secs(5),
@@ -6173,26 +6497,41 @@ async fn file_channels_match(
     };
 
     let on_disk_slack = extract_accounts("/channels/slack/accounts");
-    let on_disk_gmail = extract_accounts("/channels/gmail/accounts");
-    let on_disk_calendar = extract_accounts("/channels/googleCalendar/accounts");
-    let on_disk_drive = extract_accounts("/channels/googleDrive/accounts");
+
+    // Google channels are no longer injected into openclaw.json; instead, the
+    // `google` plugin is enabled if ANY google accounts are desired.
+    let on_disk_google_enabled = cfg
+        .pointer("/plugins/entries/google/enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let desired_google_enabled =
+        !desired_gmail.is_empty() || !desired_calendar.is_empty() || !desired_drive.is_empty();
+
     let on_disk_bindings: Vec<serde_json::Value> = cfg
         .pointer("/bindings")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
 
+    // iMessage no longer lives in openclaw.json: it runs over the background MCP
+    // bridge, and the patch script now DELETES any `bluebubbles` channel entry.
+    // The desired on-disk state is therefore always "no bluebubbles", regardless
+    // of whether iMessage is enabled. Previously this compared the (now always
+    // false) on-disk value against `desired_imessage_enabled`; for any agent with
+    // iMessage on that comparison was `false == true`, so the config NEVER matched
+    // and the gateway was re-patched and restarted on every sync — an endless
+    // restart loop that surfaced as "could not connect to the server" on boot.
+    // Match now only requires that bluebubbles is absent/disabled on disk.
     let on_disk_bluebubbles_enabled = cfg
         .pointer("/channels/bluebubbles/enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
     &on_disk_slack == desired_slack
-        && &on_disk_gmail == desired_gmail
-        && &on_disk_calendar == desired_calendar
-        && &on_disk_drive == desired_drive
+        && on_disk_google_enabled == desired_google_enabled
         && on_disk_bindings.as_slice() == desired_bindings
-        && on_disk_bluebubbles_enabled == desired_imessage_enabled
+        && !on_disk_bluebubbles_enabled
 }
 
 /// Rebuild the gateway's per-agent `channels.*.accounts` maps and `bindings` from
@@ -6297,7 +6636,7 @@ pub async fn sync_container_channels_internal(
         &bindings,
         imessage_enabled,
     );
-    
+
     // Cache miss or isolated agent: check the file.
     if file_channels_match(
         container_name,
@@ -6348,16 +6687,11 @@ c.channels.slack.accounts={};
 c.plugins.entries.slack=c.plugins.entries.slack||{{}};
 if (c.channels.slack.enabled === true) c.plugins.entries.slack.enabled=true;
 
-// iMessage / BlueBubbles
-c.channels.bluebubbles=c.channels.bluebubbles||{{}};
-c.channels.bluebubbles.enabled={};
-c.plugins.entries.bluebubbles=c.plugins.entries.bluebubbles||{{}};
-if (c.channels.bluebubbles.enabled === true) c.plugins.entries.bluebubbles.enabled=true;
-
 // Remove any broken channel injections
 if (c.channels.gmail) delete c.channels.gmail;
 if (c.channels.googleCalendar) delete c.channels.googleCalendar;
 if (c.channels.googleDrive) delete c.channels.googleDrive;
+if (c.channels.bluebubbles) delete c.channels.bluebubbles;
 
 // Enable google plugin if any accounts exist
 c.plugins.entries.google=c.plugins.entries.google||{{}};
@@ -6379,7 +6713,6 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
             "true"
         },
         serde_json::to_string(&slack_accounts).unwrap_or_else(|_| "{}".to_string()),
-        if imessage_enabled { "true" } else { "false" },
         if gmail_accounts.is_empty() && calendar_accounts.is_empty() && drive_accounts.is_empty() {
             "false"
         } else {
@@ -6422,7 +6755,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
 
     // Since we now call this for multiple containers, we rely purely on the file check
     // instead of an in-memory hash cache, because the cache would thrash between containers.
-    
+
     Ok(true)
 }
 
@@ -6545,6 +6878,10 @@ mod tests {
     use crate::model_constants;
     use chrono::Utc;
 
+    lazy_static::lazy_static! {
+        static ref CANOPY_DATA_DIR_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());
+    }
+
     fn create_test_db() -> crate::db::Database {
         crate::db::Database::init_in_memory().unwrap()
     }
@@ -6587,6 +6924,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn terminal_commands_require_coding_and_history_redacts_secrets() {
+        let mut agent = test_agent("agent-test", "Test", "assistant");
+        assert!(super::validate_agent_command(&agent, "pwd").is_ok());
+        assert!(super::validate_agent_command(&agent, "").is_err());
+        assert!(super::validate_agent_command(&agent, &"x".repeat(16 * 1024 + 1)).is_err());
+
+        agent.capabilities.coding = false;
+        assert!(super::validate_agent_command(&agent, "pwd").is_err());
+
+        let sanitized = super::sanitize_terminal_history_text(
+            "echo safe\nexport OPENAI_API_KEY=sk-proj-super-secret\ndisk-usage",
+            4_096,
+        );
+        assert!(sanitized.contains("echo safe"));
+        assert!(sanitized.contains("disk-usage"));
+        assert!(sanitized.contains("[REDACTED SENSITIVE LINE]"));
+        assert!(!sanitized.contains("super-secret"));
+    }
+
     // ── Gateway URL / token ────────────────────────────────────────────────
 
     #[test]
@@ -6612,10 +6969,11 @@ mod tests {
             header.starts_with("Bearer "),
             "Bearer header must start with 'Bearer '"
         );
-        assert!(
-            header.contains(model_constants::GATEWAY_INTERNAL_TOKEN),
-            "Bearer header must contain the gateway token"
+        assert_eq!(
+            header,
+            format!("Bearer {}", model_constants::gateway_internal_token())
         );
+        assert!(!header.contains("canopy_internal_token_2026"));
     }
 
     // ── Auth-profile path ─────────────────────────────────────────────────
@@ -6833,25 +7191,63 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn wait_for_agent_registration_observes_repair_completion() {
+        let _env_guard = CANOPY_DATA_DIR_ENV_LOCK.lock().await;
+        let previous_canopy_data_dir = std::env::var_os("CANOPY_DATA_DIR");
+        let db = create_test_db();
+        let agent = test_agent("agent-sloane", "Sloane", "Executive Assistant");
+        db.insert_agent(&agent).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CANOPY_DATA_DIR", tmp.path());
+        let canopy_root = tmp.path().join("Canopy");
+        std::fs::create_dir_all(canopy_root.join("openclaw-state")).unwrap();
+        let config_path = canopy_root.join("openclaw-state").join("openclaw.json");
+        std::fs::write(&config_path, r#"{ "agents": { "list": [] } }"#).unwrap();
+
+        let config_path_clone = config_path.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            std::fs::write(
+                config_path_clone,
+                r#"{ "agents": { "list": [{ "id": "agent-sloane" }] } }"#,
+            )
+            .unwrap();
+        });
+
+        assert!(
+            wait_for_agent_registration(&db, "agent-sloane", std::time::Duration::from_secs(2))
+                .await
+        );
+
+        if let Some(previous) = previous_canopy_data_dir {
+            std::env::set_var("CANOPY_DATA_DIR", previous);
+        } else {
+            std::env::remove_var("CANOPY_DATA_DIR");
+        }
+    }
+
     #[test]
     fn thread_context_files_are_generated_for_session() {
+        let _env_guard = CANOPY_DATA_DIR_ENV_LOCK.blocking_lock();
+        let previous_canopy_data_dir = std::env::var_os("CANOPY_DATA_DIR");
         let db = create_test_db();
         let agent = test_agent("agent-sloane", "Sloane", "Executive Assistant");
         db.insert_agent(&agent).unwrap();
 
         let conv_id = db.get_or_create_conversation(&agent.id).unwrap();
-        db.insert_message(
-            &conv_id,
-            "user",
-            "Please plan my Wednesday around a dentist visit.",
-        )
-        .unwrap();
-        db.insert_message(
-            &conv_id,
-            "assistant",
-            "I will build a schedule around your 2pm appointment.",
-        )
-        .unwrap();
+        for idx in 0..30 {
+            db.insert_message(
+                &conv_id,
+                if idx % 2 == 0 { "user" } else { "assistant" },
+                &format!(
+                    "Thread turn {} about the material participation tracker",
+                    idx + 1
+                ),
+            )
+            .unwrap();
+        }
 
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("CANOPY_DATA_DIR", tmp.path());
@@ -6860,6 +7256,7 @@ mod tests {
         let thread_dir = get_thread_context_dir(&db, &agent.id, &conv_id).unwrap();
         let state = std::fs::read_to_string(thread_dir.join("THREAD_STATE.md")).unwrap();
         let history = std::fs::read_to_string(thread_dir.join("RECENT_HISTORY.md")).unwrap();
+        let timeline = std::fs::read_to_string(thread_dir.join("THREAD_TIMELINE.md")).unwrap();
         let active = std::fs::read_to_string(
             get_agent_workspace_dir(&db, &agent.id)
                 .unwrap()
@@ -6867,15 +7264,21 @@ mod tests {
         )
         .unwrap();
 
-        assert!(state.contains("Please plan my Wednesday"));
-        assert!(state.contains("I will build a schedule"));
+        assert!(state.contains("material participation tracker"));
         assert!(history.contains("assistant"));
-        assert!(history.contains("Wednesday"));
+        assert!(history.contains("Thread turn 30"));
+        assert!(timeline.contains("Thread turn 1"));
+        assert!(timeline.contains("Thread turn 30"));
         assert!(active.contains("ACTIVE_THREAD.md"));
         assert!(active.contains("THREAD_STATE.md"));
+        assert!(active.contains("THREAD_TIMELINE.md"));
         assert!(active.contains(&conv_id));
 
-        std::env::remove_var("CANOPY_DATA_DIR");
+        if let Some(previous) = previous_canopy_data_dir {
+            std::env::set_var("CANOPY_DATA_DIR", previous);
+        } else {
+            std::env::remove_var("CANOPY_DATA_DIR");
+        }
     }
 
     #[test]
@@ -6964,6 +7367,20 @@ mod tests {
         ensure_file_with_default(&path, "Default library");
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "My custom shelf");
+    }
+
+    #[test]
+    fn derive_agent_id_matches_frontend_slugging() {
+        assert_eq!(
+            derive_agent_id("  My Agent!!!  ").unwrap(),
+            "agent-my-agent"
+        );
+        assert_eq!(derive_agent_id("A&B / C").unwrap(), "agent-a-b-c");
+    }
+
+    #[test]
+    fn derive_agent_id_rejects_control_characters() {
+        assert!(derive_agent_id("bad\nname").is_err());
     }
 
     // ── SOUL.md path ──────────────────────────────────────────────────────
@@ -7089,33 +7506,41 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_jit_credential_flow() {
-        // We can't easily mock the docker exec command without refactoring, but we can verify the
-        // string formatting is correct for the injection command.
-        let credential_id = "test-api-key";
-        let env_var_name = format!(
-            "JIT_TOKEN_{}",
-            credential_id.replace("-", "_").to_uppercase()
-        );
-
+    #[test]
+    fn test_jit_credential_flow_rejects_command_injection() {
+        let env_var_name = super::jit_env_var_name("test-api-key").unwrap();
         assert_eq!(env_var_name, "JIT_TOKEN_TEST_API_KEY");
 
-        // This is a minimal unit test to ensure the variable naming logic is sound
-        let write_cmd_inject = format!(
-            "echo 'export {}={}' >> /home/node/.bashrc",
-            env_var_name, "secret"
-        );
+        let assignment = super::jit_shell_assignment(&env_var_name, "a'b;$HOME").unwrap();
         assert_eq!(
-            write_cmd_inject,
-            "echo 'export JIT_TOKEN_TEST_API_KEY=secret' >> /home/node/.bashrc"
+            assignment,
+            "export JIT_TOKEN_TEST_API_KEY='a'\\''b;$HOME'\n"
         );
+        assert!(super::jit_env_var_name("test; touch /tmp/pwned").is_err());
+        assert!(super::jit_env_var_name("../other").is_err());
+        assert!(super::jit_shell_assignment(&env_var_name, "line1\nline2").is_err());
+    }
 
-        let write_cmd_revoke = format!("sed -i '/{}/d' /home/node/.bashrc", env_var_name);
-        assert_eq!(
-            write_cmd_revoke,
-            "sed -i '/JIT_TOKEN_TEST_API_KEY/d' /home/node/.bashrc"
+    #[test]
+    fn personality_files_write_shell_payloads_as_literal_text() {
+        let workspace = tempfile::tempdir().unwrap();
+        let payload_target = workspace.path().join("executed");
+        let mut personality = crate::models::AgentPersonality::default();
+        personality.custom_instructions = format!(
+            "SOULEOF\n$(touch {})\n'; rm -rf / #",
+            payload_target.display()
         );
+        personality.soul_template = Some("`id` && ${HOME}".into());
+
+        super::write_agent_personality_files(workspace.path(), &personality).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(workspace.path().join("PREFERENCES.md")).unwrap(),
+            personality.custom_instructions
+        );
+        let soul = std::fs::read_to_string(workspace.path().join("SOUL.md")).unwrap();
+        assert!(soul.contains("`id` && ${HOME}"));
+        assert!(!payload_target.exists());
     }
 
     #[test]
@@ -7156,16 +7581,67 @@ mod tests {
 /// Path: `~/Library/Application Support/Canopy/openclaw-state/workspace/{agent_id}/PERMISSIONS.md`
 /// Inside the container the workspace mount surfaces it at
 /// `/home/node/.openclaw/workspace/{agent_id}/PERMISSIONS.md`.
-pub fn write_permissions_md(agent: &crate::models::Agent) {
-    let Some(workspace_root) = dirs::data_dir().map(|d| {
-        d.join("Canopy")
+fn permissions_workspace_root(
+    canopy_root: &std::path::Path,
+    agent: &crate::models::Agent,
+) -> std::path::PathBuf {
+    if agent.isolated {
+        canopy_root
+            .join("isolated")
+            .join(&agent.id)
+            .join("workspace")
+            .join(&agent.id)
+    } else {
+        canopy_root
             .join("openclaw-state")
             .join("workspace")
             .join(&agent.id)
-    }) else {
+    }
+}
+
+fn install_agent_private_file(
+    workspace_root: &std::path::Path,
+    filename: &str,
+    value: &str,
+) -> Result<(), String> {
+    let canopy_dir = workspace_root.join(".canopy");
+    std::fs::create_dir_all(&canopy_dir)
+        .map_err(|e| format!("Failed to create agent capability directory: {}", e))?;
+    let private_path = canopy_dir.join(filename);
+    std::fs::write(&private_path, value)
+        .map_err(|e| format!("Failed to install private agent file: {}", e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&canopy_dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| format!("Failed to protect agent capability directory: {}", e))?;
+        std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|e| format!("Failed to protect private agent file: {}", e))?;
+    }
+    Ok(())
+}
+
+fn install_jit_capability_file(
+    workspace_root: &std::path::Path,
+    agent_id: &str,
+) -> Result<(), String> {
+    let capability = crate::jit_server::agent_jit_token(agent_id)?;
+    install_agent_private_file(workspace_root, "jit-bridge-token", &capability)
+}
+
+pub fn write_permissions_md(agent: &crate::models::Agent) {
+    let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
+    let workspace_root = permissions_workspace_root(&canopy_root, agent);
     let _ = std::fs::create_dir_all(&workspace_root);
+    if let Err(error) = install_jit_capability_file(&workspace_root, &agent.id) {
+        tracing::error!(
+            "write_permissions_md: could not install JIT bridge capability for {}: {}",
+            agent.id,
+            error
+        );
+    }
     let path = workspace_root.join("PERMISSIONS.md");
 
     // Capability skills the agent currently has.
@@ -7301,6 +7777,58 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
             .join("\n")
     };
 
+    let computer_control_block = match crate::computer_control::control_plane(caps) {
+        crate::computer_control::ComputerControlPlane::Disabled => "Disabled.".to_string(),
+        crate::computer_control::ComputerControlPlane::Container => {
+            "Enabled for an isolated container desktop only. This does not grant host macOS control."
+                .to_string()
+        }
+        crate::computer_control::ComputerControlPlane::Host => {
+            "Host macOS control is enabled in principle, but every live session still requires explicit human approval, a short timebox, and emergency-stop support."
+                .to_string()
+        }
+    };
+
+    let screen_record_block = if caps.screen_record {
+        "Enabled. Screenshots or accessibility snapshots may be provided for observation and audit."
+            .to_string()
+    } else {
+        "Disabled.".to_string()
+    };
+
+    let mut custom_instructions = String::new();
+    if integrations.contains(&"google_photos") {
+        if let Ok(token) =
+            crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id))
+        {
+            if let Err(error) =
+                install_agent_private_file(&workspace_root, "google-photos-token", token.trim())
+            {
+                tracing::error!(
+                    "write_permissions_md: could not install Google Photos capability for {}: {}",
+                    agent.id,
+                    error
+                );
+            }
+            custom_instructions.push_str(
+                "**Google Photos**: You have read-only API access to the user's Google Photos. \n\
+                DO NOT try to use the browser to log in to Google Photos. \n\
+                Instead, use the Google Photos REST API (https://photoslibrary.googleapis.com/v1/) directly from your coding tools (e.g., using curl, Python, or Node). Read the OAuth token at execution time from `.canopy/google-photos-token`; never print it or include it in a message. For curl, use `Authorization: Bearer $(cat .canopy/google-photos-token)`.\n\n",
+            );
+        }
+    }
+    if integrations.contains(&"apple_photos") {
+        custom_instructions.push_str(
+            "**Apple Photos (Mac)**: You have Full Disk Access to the user's local Apple Photos database. \n\
+            DO NOT try to use the browser. You can query the SQLite database directly at `~/Pictures/Photos Library.photoslibrary/database/Photos.sqlite` using your coding tools.\n\n"
+        );
+    }
+    if integrations.contains(&"imessage") {
+        custom_instructions.push_str(
+            "**iMessage**: You receive and send iMessage messages via the background MCP bridge. Do NOT use the browser or bluebubbles. Do NOT try to enable `channels.imessage` in the OpenClaw configuration file (it is intentionally disabled because we use MCP instead).\n\n"
+        );
+    }
+
     let content = format!(
         "# PERMISSIONS.md — What you have access to\n\n\
          _This file is regenerated whenever your permissions change. Read it at the start \
@@ -7311,6 +7839,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          ## Integrations connected\n\
          {integrations}\n\
          *(Note: When an integration like `gmail` is connected, its dedicated MCP tools are automatically provided. Do NOT use `gog` or generic web search to access integration data.)*\n\n\
+         {custom_instructions}\
          ## LLM provider keys available\n\
          {providers}\n\n\
          ## Web access\n\
@@ -7335,6 +7864,10 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          in through Canopy's trusted-login window (a non-automated Chrome on the same \
          profile you browse with), and once they resume automation the session is \
          yours.\n\n\
+         ## Computer control\n\
+         {computer_control}\n\n\
+         ## Screen recording / observation\n\
+         {screen_record}\n\n\
          ## Saved web logins\n\
          The user has stored credentials for these domains. Open them with your \
          managed browser profile (see \"Using the browser\" above — default profile, \
@@ -7352,7 +7885,8 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          If you need a permission you don't have, ask the user **once** by POSTing to:\n\n\
          ```\n\
          POST http://host.docker.internal:18802/request_permission\n\
-         Content-Type: application/json\n\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"permission_id\": \"<id>\",\n  \"justification\": \"<why you need it>\"\n}}\n\
          ```\n\n\
          The user will see a modal with four buttons: **Allow once** (single use), \
@@ -7361,7 +7895,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          you'll get `{{\"status\":\"granted\",\"scope\":\"once|session|forever\"}}`; on deny, \
          `{{\"status\":\"denied\"}}` with HTTP 403.\n\n\
          Valid `permission_id` values:\n\
-         - Skill names: `browser`, `proxy`, `vision`, `canvas`, `coding`, `gog`, `summarize`, `genui`\n\
+         - Skill names: `browser`, `proxy`, `vision`, `canvas`, `coding`, `gog`, `summarize`, `genui`, `computer_control`, `screen_record`, `host_control`\n\
          - Integration names: `gmail`, `googleCalendar`, `googleDrive`, `slack`, `github`, etc.\n\
          - Domain access: `domain:example.com` (adds to your web allowlist)\n\n\
          ## Asking the user to look at your browser\n\n\
@@ -7369,7 +7903,8 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          (CAPTCHA, 2FA prompt, ambiguous result), POST to:\n\n\
          ```\n\
          POST http://host.docker.internal:18802/request_attention\n\
-         Content-Type: application/json\n\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"reason\": \"<short reason>\"\n}}\n\
          ```\n\n\
          This is fire-and-forget. You'll get an immediate ack and the user gets a toast \
@@ -7390,7 +7925,8 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          window by POSTing to the JIT bridge:\n\n\
          ```\n\
          POST http://host.docker.internal:18802/spawn_genui\n\
-         Content-Type: application/json\n\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"component\": \"<component_name>\",\n  \"props\": {{ ... }}\n}}\n\
          ```\n\
          This spawns a translucent, frameless window on the host OS. Interactions with it \
@@ -7398,8 +7934,11 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         agent_id    = agent.id,
         skills      = skills_block,
         integrations = integrations_block,
+        custom_instructions = custom_instructions,
         providers   = providers_block,
         allowlist   = allowlist_block,
+        computer_control = computer_control_block,
+        screen_record = screen_record_block,
         saved_logins = saved_logins_block,
         isolation   = isolation_note,
     );
@@ -7454,6 +7993,8 @@ pub async fn inject_jit_credential(
     agent_id: &str,
     credential_id: &str,
 ) -> Result<(), String> {
+    crate::validators::agent::validate_id(agent_id).map_err(|error| error.to_string())?;
+    let env_var_name = jit_env_var_name(credential_id)?;
     tracing::info!(
         "JIT INJECTION: Provisioning {} into container for agent {}",
         credential_id,
@@ -7461,47 +8002,49 @@ pub async fn inject_jit_credential(
     );
 
     // Fetch the real credential from the secure macOS Keychain
-    let secret = crate::keychain::get_secret(credential_id).unwrap_or_else(|_| {
-        tracing::warn!(
-            "Failed to fetch {} from keychain, falling back to dummy",
-            credential_id
-        );
-        "unconfigured_secret".to_string()
-    });
-
-    let env_var_name = format!(
-        "JIT_TOKEN_{}",
-        credential_id.replace("-", "_").to_uppercase()
-    );
-
-    // We append the secret to the node user's .bashrc.
-    // In a real system we'd inject into auth-profiles.json or a `.env` file that Node loads,
-    // but .bashrc is an effective placeholder for the container environment.
-    // SECURITY: Properly quote the secret value to prevent command injection via special characters
-    let escaped_secret = secret.replace('\\', "\\\\").replace('"', "\\\"");
-    let write_cmd = format!(
-        "echo 'export {}=\"{}\"' >> /home/node/.bashrc",
-        env_var_name, escaped_secret
-    );
+    let secret = crate::keychain::get_secret(credential_id)
+        .map_err(|_| "Requested JIT credential is not configured".to_string())?;
+    let assignment = jit_shell_assignment(&env_var_name, &secret)?;
 
     let container_name = get_agent_container_name(db, agent_id);
 
-    let _ = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        get_docker_command()
-            .args([
-                "exec",
-                "-u",
-                "node",
-                &container_name,
-                "sh",
-                "-c",
-                &write_cmd,
-            ])
-            .output(),
-    )
-    .await
-    .map_err(|e| format!("Timeout injecting JIT credential: {}", e))?;
+    // Feed the assignment to `tee` over stdin. The secret is never part of a
+    // command argument, shell program, process listing, or captured stdout.
+    let mut command = get_docker_command();
+    command
+        .args([
+            "exec",
+            "-i",
+            "-u",
+            "node",
+            &container_name,
+            "tee",
+            "-a",
+            "/home/node/.bashrc",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to start JIT credential injection: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| "JIT credential injection stdin was unavailable".to_string())?
+        .write_all(assignment.as_bytes())
+        .await
+        .map_err(|error| format!("Failed to write JIT credential: {error}"))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
+        .await
+        .map_err(|_| "Timeout injecting JIT credential".to_string())?
+        .map_err(|error| format!("JIT credential injection failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "JIT credential injection failed with status {}",
+            output.status
+        ));
+    }
 
     Ok(())
 }
@@ -7511,23 +8054,19 @@ pub async fn revoke_jit_credential(
     agent_id: &str,
     credential_id: &str,
 ) -> Result<(), String> {
+    crate::validators::agent::validate_id(agent_id).map_err(|error| error.to_string())?;
+    let env_var_name = jit_env_var_name(credential_id)?;
     tracing::info!(
         "JIT REVOCATION: Removing {} from container for agent {}",
         credential_id,
         agent_id
     );
 
-    let env_var_name = format!(
-        "JIT_TOKEN_{}",
-        credential_id.replace("-", "_").to_uppercase()
-    );
-    // SECURITY: Escape special characters in the pattern to prevent sed injection
-    let escaped_pattern = env_var_name.replace('\\', "\\\\").replace('/', "\\/");
-    let write_cmd = format!("sed -i '/{}/d' /home/node/.bashrc", escaped_pattern);
+    let sed_expression = format!("/^export {env_var_name}=/d");
 
     let container_name = get_agent_container_name(db, agent_id);
 
-    let _ = tokio::time::timeout(
+    let output = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         get_docker_command()
             .args([
@@ -7535,16 +8074,48 @@ pub async fn revoke_jit_credential(
                 "-u",
                 "node",
                 &container_name,
-                "sh",
-                "-c",
-                &write_cmd,
+                "sed",
+                "-i",
+                &sed_expression,
+                "/home/node/.bashrc",
             ])
             .output(),
     )
     .await
-    .map_err(|e| format!("Timeout revoking JIT credential: {}", e))?;
+    .map_err(|_| "Timeout revoking JIT credential".to_string())?
+    .map_err(|error| format!("JIT credential revocation failed: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "JIT credential revocation failed with status {}",
+            output.status
+        ));
+    }
 
     Ok(())
+}
+
+fn jit_env_var_name(credential_id: &str) -> Result<String, String> {
+    if credential_id.is_empty()
+        || credential_id.len() > 128
+        || !credential_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("JIT credential ID contains unsupported characters".into());
+    }
+    Ok(format!(
+        "JIT_TOKEN_{}",
+        credential_id.replace('-', "_").to_ascii_uppercase()
+    ))
+}
+
+fn jit_shell_assignment(env_var_name: &str, secret: &str) -> Result<String, String> {
+    if secret.is_empty() || secret.len() > 16 * 1024 || secret.contains(['\0', '\r', '\n']) {
+        return Err("JIT credential value is empty or contains unsupported characters".into());
+    }
+    // POSIX single-quote escaping: close quote, emit a literal quote, reopen.
+    let quoted = secret.replace('\'', "'\\''");
+    Ok(format!("export {env_var_name}='{quoted}'\n"))
 }
 
 #[tauri::command]
@@ -7594,6 +8165,48 @@ pub async fn fetch_apple_health_data(
 // Used for internal system coordination (e.g. forum brief assessment) where we
 // want the cheapest available model with zero conversation footprint.
 
+const MAX_SYSTEM_ASSESS_PROMPT_BYTES: usize = 64 * 1024;
+const MAX_SYSTEM_ASSESS_RESPONSE_BYTES: usize = 1024 * 1024;
+
+fn validate_direct_model_name(model: &str) -> Result<(), String> {
+    if model.is_empty()
+        || model.len() > 128
+        || !model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("Model name contains unsupported characters".into());
+    }
+    Ok(())
+}
+
+fn validate_system_assess_prompt(prompt: &str) -> Result<(), String> {
+    if prompt.trim().is_empty() || prompt.len() > MAX_SYSTEM_ASSESS_PROMPT_BYTES {
+        return Err("Assessment prompt must be between 1 byte and 64 KiB".into());
+    }
+    Ok(())
+}
+
+async fn read_direct_provider_json(resp: reqwest::Response) -> Result<Value, String> {
+    if resp
+        .content_length()
+        .is_some_and(|length| length > MAX_SYSTEM_ASSESS_RESPONSE_BYTES as u64)
+    {
+        return Err("Provider response exceeded the safe size limit".into());
+    }
+
+    let mut bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_| "Could not read provider response".to_string())?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_SYSTEM_ASSESS_RESPONSE_BYTES {
+            return Err("Provider response exceeded the safe size limit".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| "Provider returned an invalid response".into())
+}
+
 async fn call_anthropic_direct(
     client: &Client,
     api_key: &str,
@@ -7618,18 +8231,14 @@ async fn call_anthropic_direct(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Anthropic API {} — {}", status, text));
+        return Err(format!("Anthropic API returned {}", status));
     }
 
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse error: {}", e))?;
+    let json = read_direct_provider_json(resp).await?;
     json["content"][0]["text"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("unexpected shape: {}", json))
+        .ok_or_else(|| "Anthropic returned an unexpected response".into())
 }
 
 async fn call_openai_direct(
@@ -7646,7 +8255,7 @@ async fn call_openai_direct(
 
     let resp = client
         .post("https://api.openai.com/v1/chat/completions")
-        .header("Authorization", format!("Bearer {}", api_key))
+        .bearer_auth(api_key)
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -7655,18 +8264,14 @@ async fn call_openai_direct(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("OpenAI API {} — {}", status, text));
+        return Err(format!("OpenAI API returned {}", status));
     }
 
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse error: {}", e))?;
+    let json = read_direct_provider_json(resp).await?;
     json["choices"][0]["message"]["content"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("unexpected shape: {}", json))
+        .ok_or_else(|| "OpenAI returned an unexpected response".into())
 }
 
 async fn call_gemini_direct(
@@ -7677,9 +8282,10 @@ async fn call_gemini_direct(
 ) -> Result<String, String> {
     // Strip provider prefix — Gemini REST API uses bare model names
     let model_name = model.strip_prefix("google/").unwrap_or(model);
+    validate_direct_model_name(model_name)?;
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        model_name, api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model_name
     );
 
     let body = json!({
@@ -7689,6 +8295,7 @@ async fn call_gemini_direct(
 
     let resp = client
         .post(&url)
+        .header("x-goog-api-key", api_key)
         .header("content-type", "application/json")
         .json(&body)
         .send()
@@ -7697,18 +8304,14 @@ async fn call_gemini_direct(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Gemini API {} — {}", status, text));
+        return Err(format!("Gemini API returned {}", status));
     }
 
-    let json: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse error: {}", e))?;
+    let json = read_direct_provider_json(resp).await?;
     json["candidates"][0]["content"]["parts"][0]["text"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("unexpected shape: {}", json))
+        .ok_or_else(|| "Gemini returned an unexpected response".into())
 }
 
 /// Make a single-shot LLM call using the user's lightest available model.
@@ -7722,12 +8325,14 @@ async fn call_gemini_direct(
 /// no keys are configured.
 #[tauri::command]
 pub async fn system_assess(prompt: String) -> Result<String, String> {
+    validate_system_assess_prompt(&prompt)?;
     // Longer timeout for LLM API calls — models can take 30-60s under load.
     let client = Client::builder()
         .timeout(std::time::Duration::from_secs(60))
         .connect_timeout(std::time::Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
-        .unwrap_or_default();
+        .map_err(|_| "Could not initialize provider connection".to_string())?;
 
     // 1. Gemini Flash Lite (cheapest available)
     if let Ok(key) = crate::keychain::get_secret("GEMINI_API_KEY") {
@@ -7772,4 +8377,26 @@ pub async fn system_assess(prompt: String) -> Result<String, String> {
         "system_assess: no provider API keys configured (checked Gemini, Anthropic, OpenAI)"
             .to_string(),
     )
+}
+
+#[cfg(test)]
+mod system_assess_tests {
+    use super::*;
+
+    #[test]
+    fn direct_provider_model_names_reject_url_injection() {
+        assert!(validate_direct_model_name("gemini-2.5-flash-lite").is_ok());
+        assert!(validate_direct_model_name("../other:generateContent?key=secret").is_err());
+        assert!(validate_direct_model_name("model\r\nInjected: yes").is_err());
+    }
+
+    #[test]
+    fn assessment_prompt_is_bounded_before_any_provider_request() {
+        assert!(validate_system_assess_prompt("a useful assessment").is_ok());
+        assert!(validate_system_assess_prompt("  ").is_err());
+        assert!(
+            validate_system_assess_prompt(&"x".repeat(MAX_SYSTEM_ASSESS_PROMPT_BYTES + 1)).is_err()
+        );
+        assert_eq!(MAX_SYSTEM_ASSESS_RESPONSE_BYTES, 1024 * 1024);
+    }
 }

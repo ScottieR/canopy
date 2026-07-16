@@ -12,6 +12,7 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, MultiPicker, glass } from "../../App";
 import { PasswordInput } from "../../components/shared/PasswordInput";
 import { ConfirmDisconnectModal } from "../../components/shared/ConfirmDisconnectModal";
+import { CONNECTOR_CATALOG, buildCompanionUrl, getConnectorSecretKey } from "../../utils/connectorCatalog";
 import {
   ACCESS_TIERS,
   AccessTier,
@@ -64,6 +65,12 @@ export const UPGRADE_MAP: Record<string, string> = {
   "anthropic/claude-3-opus-20240229": "anthropic/claude-opus-4-7",
 };
 
+function normalizeSecretValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value == null) return "";
+  return String(value);
+}
+
 export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: AgentData, onOpenTerminal?: (cmd: string) => void }) {
   const fallbackIntegrations = useMemo(() => [], []);
   const fallbackPermissions = useMemo(() => [], []);
@@ -82,8 +89,14 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   const [githubConnected, setGithubConnected] = useState(false);
   const [telegramConnected, setTelegramConnected] = useState(false);
   const [iMsgConnected, setIMsgConnected] = useState(false);
+  const [gPhotosConnected, setGPhotosConnected] = useState(false);
+  const [applePhotosConnected, setApplePhotosConnected] = useState(false);
   const [allowedDirs, setAllowedDirs] = useState<string[]>([]);
   const [foldersExpanded, setFoldersExpanded] = useState(false);
+  const [isolationBusy, setIsolationBusy] = useState(false);
+  const [isolationError, setIsolationError] = useState("");
+  const [folderAccessBusy, setFolderAccessBusy] = useState(false);
+  const [folderAccessError, setFolderAccessError] = useState("");
   const [pluginSetupTarget, setPluginSetupTarget] = useState<string | null>(null);
 
   // Fetch allowed directories for the agent
@@ -107,25 +120,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   const [pluginSearch, setPluginSearch] = useState("");
 
   // Dynamic Connectors
-  const [connectors, setConnectors] = useState<any[]>([
-    { id: "slack", name: "Slack", subtitle: "Control which Slack channels route messages to this agent", icon: "slack", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "gmail", name: "Gmail", subtitle: "Read and send emails using your Google account", icon: "mail", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "imessage", name: "iMessage", subtitle: "Choose which contacts and group threads this agent can read and reply to", icon: "message-circle", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "filesystem", name: "Workspace (File System)", subtitle: "Allow agent to read and mutate local files in their designated workspace directory.", icon: "folder", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "calendar", name: "Google Calendar", subtitle: "Allow agent to view and schedule events on your Google Calendar", icon: "calendar", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "drive", name: "Google Drive", subtitle: "Allow agent to read, write, and organize files in your Google Drive", icon: "hard-drive", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "github", name: "GitHub", subtitle: "Allow agent to read repositories, create PRs, and review code", icon: "github", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "telegram", name: "Telegram", subtitle: "Connect a Telegram bot so this agent can chat in channels or DMs", icon: "send", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "discord", name: "Discord", subtitle: "Connect a Discord bot to respond in channels and DMs.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "figma", name: "Figma", subtitle: "A design agent can co-create and modify design files directly in Figma.", icon: "figma", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true, type: "oauth" },
-    { id: "twilio", name: "Twilio Voice & SMS", subtitle: "Connect a Twilio phone number so this agent can make and receive calls or texts.", icon: "message-circle", isGlobal: false, isVisible: true, isSuggested: true, needsCompanion: false },
-    { id: "apple_health", name: "Apple Health", subtitle: "Allow agent to read and analyze your Apple Health data", icon: "activity", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "live_location", name: "Live Location & Geofencing", subtitle: "Agent knows when you leave home or arrive at work", icon: "map-pin", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "shortcuts", name: "Apple Shortcuts", subtitle: "Allow the agent to trigger Siri Intents and Shortcuts", icon: "zap", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "vision", name: "Vision & Photo Sync", subtitle: "Agent silently indexes your recent camera roll for context", icon: "camera", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "notifications", name: "Actionable Push Notifications", subtitle: "Approve agent actions directly from your lock screen", icon: "bell", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true },
-    { id: "homekit", name: "Smart Home / HomeKit", subtitle: "Bridge HomeKit access so the agent can control lights", icon: "home", isGlobal: true, isVisible: true, isSuggested: true, needsCompanion: true }
-  ]);
+  const [connectors, setConnectors] = useState<any[]>(CONNECTOR_CATALOG);
   const [dynamicEnabled, setDynamicEnabled] = useState<Record<string, boolean>>({});
   const [dynamicStatuses, setDynamicStatuses] = useState<Record<string, boolean>>({});
   const [dynamicSetupState, setDynamicSetupState] = useState<Record<string, boolean>>({});
@@ -143,6 +138,28 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       setShowHighRiskModal(true);
     } else {
       action();
+    }
+  };
+
+  const setAgentIsolation = async (isolated: boolean) => {
+    if (isolationBusy || agent.isolated === isolated) return;
+
+    setIsolationBusy(true);
+    setIsolationError("");
+    try {
+      await invoke("toggle_agent_isolation", { agentId: agent.id, isolated });
+
+      // Set the exact value returned by the successful backend operation. Using
+      // the old toggle helper here could invert newer state after a slow reboot.
+      const store = useWorldStore.getState();
+      store.setAgents(store.agents.map(a => (
+        a.id === agent.id ? { ...a, isolated } : a
+      )));
+    } catch (e) {
+      console.error("Failed to toggle isolation:", e);
+      setIsolationError(`Could not switch workspace mode: ${String(e)}`);
+    } finally {
+      setIsolationBusy(false);
     }
   };
 
@@ -242,14 +259,17 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   useEffect(() => {
     if (typeof (window as any).__TAURI_INTERNALS__?.invoke === 'function') {
       const invoke = (window as any).__TAURI_INTERNALS__.invoke;
-      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_app_token` }).then((t: any) => setSlackAppToken(t as string)).catch(() => {});
-      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_bot_token` }).then((t: any) => setSlackBotToken(t as string)).catch(() => {});
-      invoke("get_secret_cmd", { key: `github-access-token-${agent.id}` }).then((t: any) => setGithubToken(t as string)).catch(() => {});
+      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_app_token` }).then((t: unknown) => setSlackAppToken(normalizeSecretValue(t))).catch(() => {});
+      invoke("get_secret_cmd", { key: `agent_${agent.id}_slack_bot_token` }).then((t: unknown) => setSlackBotToken(normalizeSecretValue(t))).catch(() => {});
+      invoke("get_secret_cmd", { key: `github-access-token-${agent.id}` }).then((t: unknown) => setGithubToken(normalizeSecretValue(t))).catch(() => {});
     }
   }, [agent.id]);
 
   // Per-agent iMessage thread allowlist
+  const [telegramEnabled, setTelegramEnabled] = useState(agent.integrations.includes("telegram"));
   const [iMsgEnabled, setIMsgEnabled] = useState(agent.integrations.includes("imessage"));
+  const [gPhotosEnabled, setGPhotosEnabled] = useState(agent.integrations.includes("google_photos"));
+  const [applePhotosEnabled, setApplePhotosEnabled] = useState(agent.integrations.includes("apple_photos"));
   const [iMsgThreads, setIMsgThreads] = useState<Array<{ chat_identifier: string; display_name: string; last_message_date: string }>>([]);
   const [allowedThreads, setAllowedThreads] = useState<string[]>([]);
   const [iMsgPickerOpen, setIMsgPickerOpen] = useState(false);
@@ -340,7 +360,41 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     "OpenAI": "", "Anthropic": "", "Gemini": "", "Grok": ""
   });
   const [selectedModel, setSelectedModel] = useState<string>((agent.personality as any)?.active_model || "");
+  useEffect(() => {
+    setSelectedModel((agent.personality as any)?.active_model || "");
+  }, [agent.id, (agent.personality as any)?.active_model]);
   const [llmSaveStatus, setLlmSaveStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [provisioningProvider, setProvisioningProvider] = useState<string | null>(null);
+  const [provisioningMessage, setProvisioningMessage] = useState("");
+  const [provisionedProviders, setProvisionedProviders] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setProvisionedProviders(new Set());
+  }, [agent.id]);
+
+  const provisionDedicatedKey = async (providerLabel: "OpenAI" | "Grok") => {
+    const provider = providerLabel === "Grok" ? "xai" : "openai";
+    setProvisioningProvider(providerLabel);
+    setProvisioningMessage("");
+    try {
+      const status: any = await invoke("get_provider_management_status", { provider });
+      if (!status?.connected) {
+        const credential = window.prompt(provider === "xai" ? "Paste your xAI Management API key" : "Paste your OpenAI organization Admin key");
+        if (!credential) return;
+        const scopeId = window.prompt(provider === "xai" ? "Paste your xAI team ID" : "Paste your OpenAI project ID");
+        if (!scopeId) return;
+        await invoke("connect_provider_management", { provider, credential, scopeId });
+      }
+      await invoke("provision_agent_provider_key", { agentId: agent.id, provider });
+      // The generated key remains in Rust/Keychain. Track its presence without
+      // reading the secret back into the webview.
+      setProvisionedProviders(previous => new Set(previous).add(providerLabel));
+      setProvisioningMessage(`Dedicated ${providerLabel} key created for ${agent.name}.`);
+    } catch (error) {
+      setProvisioningMessage(String(error));
+    } finally {
+      setProvisioningProvider(null);
+    }
+  };
 
   const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
   const getDynamicRecommendedModel = () => {
@@ -376,7 +430,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       const providers = ["OpenAI", "Anthropic", "Gemini", "Grok"];
       providers.forEach(prov => {
         invoke("get_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` })
-          .then(k => setKeys(prev => ({ ...prev, [prov]: k as string })))
+          .then(k => setKeys(prev => ({ ...prev, [prov]: normalizeSecretValue(k) })))
           .catch(() => { });
       });
     }
@@ -392,6 +446,10 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           try {
             if (val && val.trim()) {
               await invoke("store_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key`, value: val.trim() });
+            } else if (provisionedProviders.has(prov)) {
+              // Automatic provisioning already stored this credential in the
+              // target agent's slot; blank means the webview never received it.
+              continue;
             } else {
               await invoke("delete_secret_cmd", { key: `agent_${agent.id}_${prov.toLowerCase()}_key` });
             }
@@ -492,16 +550,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     const obj: Record<string, boolean> = {};
     for (const c of connectors) {
       if (['slack', 'gmail', 'imessage', 'filesystem', 'github'].includes(c.id)) continue;
-      let key = c.id.toUpperCase() + "_TOKEN";
-      if (c.id === 'calendar') key = `agent_${agent.id}_google_calendar_access_token`;
-      if (c.id === 'drive') key = `agent_${agent.id}_google_drive_access_token`;
-      if (c.id === 'apple_health') key = `agent_${agent.id}_APPLE_HEALTH_TOKEN`;
-      if (c.id === 'live_location') key = `agent_${agent.id}_LIVE_LOCATION_TOKEN`;
-      if (c.id === 'shortcuts') key = `agent_${agent.id}_SHORTCUTS_TOKEN`;
-      if (c.id === 'vision') key = `agent_${agent.id}_VISION_TOKEN`;
-      if (c.id === 'notifications') key = `agent_${agent.id}_NOTIFICATIONS_TOKEN`;
-      if (c.id === 'homekit') key = `agent_${agent.id}_HOMEKIT_TOKEN`;
-      if (c.id === 'bluetooth') key = `agent_${agent.id}_BLUETOOTH_TOKEN`;
+      const key = getConnectorSecretKey(c.id, agent.id);
       try {
         const tok = await invoke("get_secret_cmd", { key });
         obj[c.id] = !!tok;
@@ -586,8 +635,14 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     } catch { setGDriveConnected(false); }
 
     try {
+      const tok = await invoke<string>("get_secret_cmd", { key: `agent_${agent.id}_google_photos_access_token` });
+      setGPhotosConnected(!!tok);
+    } catch { setGPhotosConnected(false); }
+
+    try {
       const granted = await invoke<boolean>("check_full_disk_access");
       setIMsgConnected(granted);
+      setApplePhotosConnected(granted);
       if (granted) {
         const threads = await invoke<Array<{ chat_identifier: string; display_name: string; last_message_date: string }>>("list_imessage_threads").catch(() => []);
         setIMsgThreads(threads);
@@ -680,26 +735,24 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           </div>
         </div>
         <button
-          onClick={async () => {
-            const wasIsolated = agent.isolated;
-            try {
-              if (typeof invoke === 'function') {
-                await invoke("toggle_agent_isolation", { agentId: agent.id, isolated: !wasIsolated });
-                useWorldStore.getState().toggleIsolation(agent.id);
-              }
-            } catch (e) {
-              console.error("Failed to toggle isolation:", e);
-            }
-          }}
+          type="button"
+          disabled={isolationBusy}
+          onClick={() => { void setAgentIsolation(!agent.isolated); }}
           style={{
             padding: "6px 14px", borderRadius: 8, border: "1px solid #6B6BAE",
             background: agent.isolated ? "#6B6BAE" : "transparent",
             color: agent.isolated ? "var(--surface-card)" : "#6B6BAE",
-            fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+            fontSize: 12, fontWeight: 600, cursor: isolationBusy ? "wait" : "pointer", fontFamily: "inherit",
+            opacity: isolationBusy ? 0.65 : 1,
             transition: "all 0.2s", whiteSpace: "nowrap",
           }}
-        >{agent.isolated ? "Make shared" : "Isolate"}</button>
+        >{isolationBusy ? "Switching..." : agent.isolated ? "Make shared" : "Isolate"}</button>
       </div>
+      {isolationError && (
+        <div role="alert" style={{ marginTop: -8, marginBottom: 16, padding: "8px 12px", borderRadius: 6, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 11 }}>
+          {isolationError}
+        </div>
+      )}
 
       {/* ── Access Level ────────────────────────────────────────────────────
           The single tier preset for the whole agent. Replaces the previous
@@ -772,6 +825,21 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   <div style={{ fontSize: 12, fontWeight: 700, color: "#D4A04A", marginBottom: 4 }}>Risky combination</div>
                   <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.5 }}>
                     Web browsing + file writes means {agent.name} could download something from the web and save it locally. Only use this combination if {agent.name} specifically needs to.
+                  </div>
+                </div>
+              </div>
+            )}
+            {(agent.permissions.find(p => p.id === "computer_control")?.enabled
+              || agent.permissions.find(p => p.id === "host_control")?.enabled
+              || agent.permissions.find(p => p.id === "screen_record")?.enabled) && (
+              <div style={{ marginTop: 14, padding: 14, background: "rgba(198,40,40,0.06)", border: "1px solid rgba(198,40,40,0.22)", borderRadius: 10, display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#C62828" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
+                  <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#C62828", marginBottom: 4 }}>Computer control is separately gated</div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                    Container desktop control is the safe default. Host computer control is only valid for isolated agents and still requires a short live approval window, rate limits, and an emergency stop.
                   </div>
                 </div>
               </div>
@@ -885,8 +953,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
 
                     try {
                       const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-                      const companionWindow = new WebviewWindow('companion_' + Date.now(), {
-                        url: `/index.html?companion=${companionId}`,
+                    const companionWindow = new WebviewWindow('companion_' + Date.now(), {
+                        url: buildCompanionUrl(companionId),
                         title: 'Setup Guide',
                         width: 420,
                         height: 760,
@@ -926,9 +994,15 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                 onChange={(e) => setKeys(prev => ({ ...prev, [prov]: e.target.value }))}
                 style={{ padding: "10px 14px", width: "100%", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "var(--glass-light)" }}
               />
+              {(prov === "OpenAI" || prov === "Grok") && (
+                <button type="button" onClick={() => provisionDedicatedKey(prov as "OpenAI" | "Grok")} disabled={provisioningProvider !== null} style={{ marginTop: 7, padding: "7px 10px", width: "100%", borderRadius: 7, border: "1px solid rgba(33,131,128,0.3)", background: "rgba(33,131,128,0.07)", color: "#218380", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                  {provisioningProvider === prov ? "Creating dedicated key…" : `Create dedicated ${prov} key`}
+                </button>
+              )}
             </div>
           ))}
         </div>
+        {provisioningMessage && <div style={{ marginTop: -10, marginBottom: 14, fontSize: 11, color: provisioningMessage.startsWith("Dedicated") ? "#218380" : "#b42318" }}>{provisioningMessage}</div>}
 
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <button onClick={saveOverrides} disabled={llmSaveStatus === "loading"} style={{
@@ -985,7 +1059,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
             const windowLabel = 'companion_slack_' + Date.now();
             const companionWindow = new WebviewWindow(windowLabel, {
-              url: `/index.html?companion=slack&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
+              url: buildCompanionUrl("slack", { agentId: agent.id, agentName: agent.name }),
               title: 'Setup Guide',
               width: 420,
               height: 760,
@@ -1017,6 +1091,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           idKey="id"
           labelKey="name"
           sublabelKey="member_count"
+          labelPrefix="#"
+          selectedHelpText="agent only receives messages from these"
         />
 
         <div id="slack-pairing-section" style={{ marginTop: 24, paddingTop: 16, borderTop: "1px solid var(--border-subtle)" }}>
@@ -1155,6 +1231,23 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         subtitle="Read and send emails using your Google account"
         connected={gmailConnected}
         enabled={emailMode !== "none"}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_gmail_' + Date.now(), {
+            url: buildCompanionUrl("gmail", {
+              agentId: agent.id,
+              agentName: agent.name,
+              extraParams: { mode: emailMode },
+            }),
+            title: "Setup Gmail",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
         onToggle={async (v) => {
           setEmailMode(v ? "read" : "none");
           await toggleIntegration("email_read", v, ["email_write"]);
@@ -1216,6 +1309,23 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         subtitle="Allow agent to view and schedule events on your Google Calendar"
         connected={calConnected}
         enabled={calendarMode !== "none"}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_calendar_' + Date.now(), {
+            url: buildCompanionUrl("calendar", {
+              agentId: agent.id,
+              agentName: agent.name,
+              extraParams: { mode: calendarMode },
+            }),
+            title: "Setup Google Calendar",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
         onToggle={async (v) => {
           setCalendarMode(v ? "read" : "none");
           await toggleIntegration("calendar_read", v, ["calendar_write", "calendar"]);
@@ -1268,6 +1378,23 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         subtitle="Allow agent to read, write, and organize files in your Google Drive"
         connected={gDriveConnected}
         enabled={driveMode !== "none"}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_drive_' + Date.now(), {
+            url: buildCompanionUrl("drive", {
+              agentId: agent.id,
+              agentName: agent.name,
+              extraParams: { mode: driveMode, scope: driveAccessScope },
+            }),
+            title: "Setup Google Drive",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
         onToggle={async (v) => {
           setDriveMode(v ? "read" : "none");
           await toggleIntegration("drive_read", v, ["drive_write", "drive"]);
@@ -1349,6 +1476,100 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         </div>
       </ServiceRow>
 
+      {/* Google Photos */}
+      <ServiceRow
+        icon={<Camera size={18} style={{ color: "#3c6663" }} />}
+        name="Google Photos"
+        subtitle="Allow this agent to read from your Google Photos library"
+        connected={gPhotosConnected}
+        enabled={gPhotosEnabled}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_gphotos_' + Date.now(), {
+            url: buildCompanionUrl("google_photos", {
+              agentId: agent.id,
+              agentName: agent.name
+            }),
+            title: "Setup Google Photos",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
+        onToggle={async (v) => {
+          setGPhotosEnabled(v);
+          await toggleIntegration("google_photos", v);
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Access level</div>
+          <span style={{ color: "var(--text-main)", fontSize: 12 }}>
+            Read-only — can view photo library metadata and download images.
+          </span>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
+            <button
+              onClick={async () => {
+                try {
+                  const invoke = (window as any).__TAURI_INTERNALS__?.invoke || (async () => {});
+                  const res: any = await invoke('start_google_oauth', { agentId: agent.id, scopes: ['photos'], readOnly: true });
+                  if (res && res.access_token) {
+                    checkDynamicStatuses();
+                    await invoke("sync_gateway_channels");
+                  }
+                } catch (e) { console.error(e); }
+              }}
+              style={{
+                display: "flex", alignItems: "center", gap: 4,
+                background: "var(--bg-elevated)", border: "1px solid var(--border-subtle)",
+                padding: "4px 10px", borderRadius: 6, fontSize: 11, cursor: "pointer",
+                color: "var(--text-main)", fontWeight: 500
+              }}
+            >
+              <Camera size={12} />
+              {gPhotosConnected ? "Update Connection" : "Connect Account"}
+            </button>
+          </div>
+        </div>
+      </ServiceRow>
+
+      {/* Apple Photos */}
+      <ServiceRow
+        icon={<Camera size={18} style={{ color: "#34C759" }} />}
+        name="Apple Photos (Mac)"
+        subtitle="Allow this agent to read your local Apple Photos library"
+        connected={applePhotosConnected}
+        enabled={applePhotosEnabled}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_apple_photos_' + Date.now(), {
+            url: buildCompanionUrl("apple_photos", { agentId: agent.id, agentName: agent.name }),
+            title: "Setup Apple Photos",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
+        onToggle={async (enabled: boolean) => {
+          setApplePhotosEnabled(enabled);
+          await toggleIntegration("apple_photos", enabled);
+        }}
+      >
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>
+          Local Database Access
+        </div>
+        <div style={{ fontSize: 11, color: "var(--text-main)", lineHeight: "1.4" }}>
+          {applePhotosConnected
+            ? "Full Disk Access is enabled. The agent can access your local Photos database."
+            : "Complete the Apple Photos setup to grant Full Disk Access to load your local photo library."}
+        </div>
+      </ServiceRow>
+
       {/* iMessage */}
       <ServiceRow
         icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.02 2 11c0 2.64 1.15 5.02 3 6.71V22l4.29-2.13C10.12 20.28 11.04 20.5 12 20.5c5.52 0 10-3.58 10-8s-4.48-8-10-8z" fill="#34C759"/></svg>}
@@ -1356,6 +1577,19 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         subtitle="Choose which contacts and group threads this agent can read and reply to"
         connected={iMsgConnected}
         enabled={iMsgEnabled}
+        onSetup={async () => {
+          const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+          new WebviewWindow('companion_imessage_' + Date.now(), {
+            url: buildCompanionUrl("imessage", { agentId: agent.id, agentName: agent.name }),
+            title: "Setup iMessage",
+            width: 420,
+            height: 760,
+            x: window.screen.availWidth - 440,
+            y: 50,
+            alwaysOnTop: true,
+            decorations: true,
+          });
+        }}
         onToggle={async (enabled: boolean) => {
           setIMsgEnabled(enabled);
           await toggleIntegration("imessage", enabled);
@@ -1378,6 +1612,12 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           onSearch={setIMsgSearch}
           idKey="chat_identifier"
           labelKey="display_name"
+          searchKeys={["display_name", "chat_identifier"]}
+          selectedHelpText="agent only receives messages from these threads"
+          emptyStateText={iMsgConnected
+            ? "No matching iMessage threads"
+            : "Complete iMessage setup and grant Full Disk Access to load your threads and contact names."}
+          disabled={!iMsgConnected}
         />
       </ServiceRow>
 
@@ -1441,7 +1681,16 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                          if (!currentAgent) return;
                          const capabilitiesObj: any = {};
                          currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                         try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                         try {
+                           await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+                           if (allowedDirs.length > 0) {
+                             await invoke("update_agent_allowed_directories", {
+                               agentId: agent.id,
+                               directories: allowedDirs,
+                               access: agent.isolated ? "read_write" : "read_only",
+                             });
+                           }
+                         } catch (e) { console.error(e); }
                        }, 100);
                      };
                      executeOrConfirmHighRisk(true, "File System Write", action);
@@ -1453,7 +1702,16 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                        if (!currentAgent) return;
                        const capabilitiesObj: any = {};
                        currentAgent.permissions.forEach(px => capabilitiesObj[px.id] = px.enabled);
-                       try { await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj }); } catch (e) { console.error(e); }
+                       try {
+                         await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+                         if (allowedDirs.length > 0) {
+                           await invoke("update_agent_allowed_directories", {
+                             agentId: agent.id,
+                             directories: allowedDirs,
+                             access: "read_only",
+                           });
+                         }
+                       } catch (e) { console.error(e); }
                      }, 100);
                    }
                 }} style={{ accentColor: "#3c6663" }} />
@@ -1468,6 +1726,11 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               </label>
             );
           })}
+          {!agent.isolated && (
+            <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4 }}>
+              In Shared Mode, this access level applies to the agent&apos;s own workspace. Any custom host folders remain brokered and read-only.
+            </div>
+          )}
         </div>
 
         {/* Allowed Folders section */}
@@ -1485,43 +1748,58 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           {foldersExpanded && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 4 }}>
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button 
-                  disabled={!agent.isolated}
-                onClick={async () => {
-                  if (!agent.isolated) return;
-                  try {
-                    const selected = await open({
-                      directory: true,
-                      multiple: true,
-                      title: "Select Allowed Folders"
-                    });
-                    if (selected) {
-                      const newDirs = Array.isArray(selected) ? selected : [selected];
-                      const uniqueDirs = Array.from(new Set([...allowedDirs, ...newDirs]));
-                      setAllowedDirs(uniqueDirs);
-                      await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: uniqueDirs });
-                      // Force a restart of the gateway to pick up the new volumes
-                      await invoke("start_gateway");
+                <button
+                  type="button"
+                  disabled={folderAccessBusy}
+                  onClick={async () => {
+                    setFolderAccessBusy(true);
+                    setFolderAccessError("");
+                    try {
+                      const selected = await open({
+                        directory: true,
+                        multiple: true,
+                        title: "Select Allowed Folders"
+                      });
+                      if (selected) {
+                        const newDirs = Array.isArray(selected) ? selected : [selected];
+                        const uniqueDirs = Array.from(new Set([...allowedDirs, ...newDirs]));
+                        await invoke("update_agent_allowed_directories", {
+                          agentId: agent.id,
+                          directories: uniqueDirs,
+                          access: agent.isolated && agent.permissions.find(p => p.id === "file_write")?.enabled
+                            ? "read_write"
+                            : "read_only",
+                        });
+                        setAllowedDirs(uniqueDirs);
+                      }
+                    } catch (e) {
+                      console.error("Failed to select directories:", e);
+                      setFolderAccessError(`Could not add folder access: ${String(e)}`);
+                    } finally {
+                      setFolderAccessBusy(false);
                     }
-                  } catch (e) {
-                    console.error("Failed to select directories:", e);
-                  }
-                }}
-                style={{ 
-                  display: "flex", alignItems: "center", gap: 4, 
-                  background: agent.isolated ? "transparent" : "var(--bg-subtle)", 
-                  border: "1px solid var(--border-subtle)", 
-                  padding: "4px 8px", borderRadius: 6, fontSize: 11, 
-                  cursor: agent.isolated ? "pointer" : "not-allowed",
-                  color: agent.isolated ? "var(--text-main)" : "var(--text-muted)",
-                  opacity: agent.isolated ? 1 : 0.6
-                }}
-                title={!agent.isolated ? "Agent must be isolated to add custom folders" : ""}
-              >
-                <Plus size={12} />
-                Add Folder
-              </button>
+                  }}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 4,
+                    background: "transparent",
+                    border: "1px solid var(--border-subtle)",
+                    padding: "4px 8px", borderRadius: 6, fontSize: 11,
+                    cursor: folderAccessBusy ? "wait" : "pointer",
+                    color: "var(--text-main)",
+                    opacity: folderAccessBusy ? 0.6 : 1
+                  }}
+                  title={!agent.isolated ? "Shared agents receive brokered read-only access" : ""}
+                >
+                  <Plus size={12} />
+                  {folderAccessBusy ? "Adding..." : "Add Folder"}
+                </button>
             </div>
+
+            {folderAccessError && (
+              <div role="alert" style={{ padding: "8px 12px", borderRadius: 6, background: "#fef2f2", border: "1px solid #fecaca", color: "#b91c1c", fontSize: 11 }}>
+                {folderAccessError}
+              </div>
+            )}
             
             {allowedDirs.length === 0 ? (
               <div style={{ fontSize: 12, color: "var(--text-muted)", fontStyle: "italic" }}>
@@ -1529,8 +1807,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                 {!agent.isolated && (
                   <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg-subtle)", border: "1px solid var(--border-subtle)", borderRadius: 6, color: "var(--text-main)", display: "flex", alignItems: "flex-start", gap: 6 }}>
                     <ShieldCheck size={14} style={{ flexShrink: 0, marginTop: 1, color: "var(--brand-main)" }} />
-                    <span style={{ fontSize: 11, lineHeight: "1.4" }}>
-                      <strong>Strict Isolation Required:</strong> Custom folder access must be explicitly scoped per-agent. To enforce this security boundary, you must switch this agent to <strong>Isolated Mode</strong> before selecting custom folders. Alternatively, for agents in the Shared Gateway, consider connecting Google Drive where folder access can be scoped explicitly per-agent via OAuth.
+                    <span style={{ fontSize: 11, lineHeight: "1.4", flex: 1 }}>
+                      <strong>Read-only Files Bridge:</strong> Shared agents can list, read, and search selected folders through a per-agent broker. The folder is not mounted into the shared gateway and cannot be modified. Switch to <strong>Isolated Mode</strong> only if direct write access is needed.
                     </span>
                   </div>
                 )}
@@ -1547,10 +1825,21 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                     </div>
                     <button 
                       onClick={async () => {
+                        setFolderAccessError("");
                         const newDirs = allowedDirs.filter(d => d !== dir);
-                        setAllowedDirs(newDirs);
-                        await invoke("update_agent_allowed_directories", { agentId: agent.id, directories: newDirs });
-                        await invoke("start_gateway");
+                        try {
+                          await invoke("update_agent_allowed_directories", {
+                            agentId: agent.id,
+                            directories: newDirs,
+                            access: agent.isolated && agent.permissions.find(p => p.id === "file_write")?.enabled
+                              ? "read_write"
+                              : "read_only",
+                          });
+                          setAllowedDirs(newDirs);
+                        } catch (e) {
+                          console.error("Failed to remove directory:", e);
+                          setFolderAccessError(`Could not remove folder access: ${String(e)}`);
+                        }
                       }}
                       style={{ background: "transparent", border: "none", cursor: "pointer", padding: 4, display: "flex", alignItems: "center", color: "var(--text-muted)" }}
                       title="Remove folder"
@@ -1563,7 +1852,11 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   <div style={{ marginTop: 8, padding: "8px 12px", background: "#fefce8", border: "1px solid #fef08a", borderRadius: 6, color: "#854d0e", display: "flex", alignItems: "flex-start", gap: 6 }}>
                     <Shield size={14} style={{ flexShrink: 0, marginTop: 1, color: "#ca8a04" }} />
                     <span style={{ fontSize: 11, lineHeight: "1.4" }}>
-                      <strong>Warning:</strong> These folders were added during a previous session. Because this agent is currently in the Shared Gateway, these folders are mounted into the shared container and could theoretically be accessed by other non-isolated agents. <strong>Please switch to Isolated Mode for strict security scoping, or consider using Google Drive for secure file access in the Shared Gateway.</strong>
+                      {agent.permissions.find(p => p.id === "file_read")?.enabled ? (
+                        <><strong>Brokered read-only access:</strong> These folders are active for this agent through the Files Bridge. They are not mounted into the Shared Gateway, and write or delete operations are unavailable.</>
+                      ) : (
+                        <><strong>Saved but inactive:</strong> Enable File System Read to activate brokered access to these folders.</>
+                      )}
                     </span>
                   </div>
                 )}
@@ -1656,6 +1949,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             </div>
             {webCredentials
               .filter(cred => cred.domain.toLowerCase().includes(webCredSearch.toLowerCase()) || cred.username.toLowerCase().includes(webCredSearch.toLowerCase()))
+              .sort((a, b) => {
+                const aHasAccess = agent.integrations.includes(`web_${a.domain}_${a.username}`);
+                const bHasAccess = agent.integrations.includes(`web_${b.domain}_${b.username}`);
+                if (aHasAccess && !bHasAccess) return -1;
+                if (!aHasAccess && bHasAccess) return 1;
+                return a.domain.localeCompare(b.domain);
+              })
               .map(cred => {
               const integrationKey = `web_${cred.domain}_${cred.username}`;
               const hasAccess = agent.integrations.includes(integrationKey);
@@ -1906,7 +2206,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               if (c.needsCompanion) {
                  const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                  new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
-                   url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
+                   url: buildCompanionUrl(c.id, { agentId: agent.id, agentName: agent.name }),
                    title: `Setup ${c.name}`,
                    width: 420,
                    height: 760,
@@ -1954,7 +2254,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                           
                           const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
                           new WebviewWindow('companion_' + c.id + '_' + Date.now(), {
-                            url: `/index.html?companion=${c.id}&agentId=${encodeURIComponent(agent.id)}&agentName=${encodeURIComponent(agent.name)}`,
+                            url: buildCompanionUrl(c.id, { agentId: agent.id, agentName: agent.name }),
                             title: `Setup ${c.name}`,
                             width: 420,
                             height: 760,
@@ -1983,7 +2283,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   />
                   <button
                     onClick={async () => {
-                      const val = c.id === 'github' ? githubToken : dynamicSetupValue[c.id];
+                      const val = (c.id === 'github' ? githubToken : dynamicSetupValue[c.id])?.trim();
                       if (val) {
                         setDynamicSetupLoading(prev => ({ ...prev, [c.id]: true }));
                         try {
@@ -2001,7 +2301,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                             await invoke("configure_discord", { agentId: agent.id, botToken: val });
                             await toggleIntegration("discord", true);
                           } else {
-                            await invoke("store_secret_cmd", { key: `${c.id.toUpperCase()}_TOKEN`, value: val });
+                            await invoke("store_secret_cmd", { key: getConnectorSecretKey(c.id, agent.id), value: val });
                             // Auto-enable integration after successful configuration
                             await toggleIntegration(c.id, true);
                             await invoke("sync_gateway_channels");
@@ -2020,8 +2320,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                         setDynamicSetupLoading(prev => ({ ...prev, [c.id]: false }));
                       }
                     }}
-                    disabled={dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id]}
-                    style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: dynamicSetupLoading[c.id] || !dynamicSetupValue[c.id] ? 0.5 : 1 }}
+                    disabled={dynamicSetupLoading[c.id] || !(c.id === 'github' ? githubToken.trim() : dynamicSetupValue[c.id]?.trim())}
+                    style={{ padding: "6px 12px", background: "#3c6663", color: "#fff", border: "none", borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: "pointer", opacity: dynamicSetupLoading[c.id] || !(c.id === 'github' ? githubToken.trim() : dynamicSetupValue[c.id]?.trim()) ? 0.5 : 1 }}
                   >
                     {dynamicSetupLoading[c.id] ? "Saving..." : "Save"}
                   </button>

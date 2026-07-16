@@ -46,13 +46,38 @@ fn normalize_model(provider: &str, model: Option<String>) -> String {
     match model {
         Some(m) if !m.trim().is_empty() => {
             let m = m.trim();
-            m.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or_else(|| m.to_string())
+            m.split_once('/')
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_else(|| m.to_string())
         }
         _ => default_model(provider).to_string(),
     }
 }
 
-fn status_from_http(code: u16, body_snippet: &str) -> (String, Option<String>) {
+fn validate_model_name(model: &str) -> Result<(), String> {
+    if model.is_empty()
+        || model.len() > 128
+        || !model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err("Model name contains unsupported characters".into());
+    }
+    Ok(())
+}
+
+fn validate_provider_key(provider: &str, key: &str) -> Result<(), String> {
+    let result = match provider {
+        "anthropic" => crate::validators::keys::validate_anthropic_key(key),
+        "openai" => crate::validators::keys::validate_openai_key(key),
+        "xai" => crate::validators::keys::validate_xai_key(key),
+        "gemini" => crate::validators::keys::validate_gemini_key(key),
+        _ => return Err("Unsupported model provider".into()),
+    };
+    result.map_err(|error| error.to_string())
+}
+
+fn status_from_http(code: u16) -> (String, Option<String>) {
     match code {
         200 => ("ok".into(), None),
         401 | 403 => (
@@ -69,13 +94,18 @@ fn status_from_http(code: u16, body_snippet: &str) -> (String, Option<String>) {
         ),
         _ => (
             "error".into(),
-            Some(format!("Provider returned HTTP {}: {}", code, body_snippet.chars().take(160).collect::<String>())),
+            Some(format!("Provider returned HTTP {}.", code)),
         ),
     }
 }
 
 async fn ping_provider(provider: &str, key: &str, model: &str) -> (String, Option<String>) {
-    let client = match reqwest::Client::builder().timeout(Duration::from_secs(8)).build() {
+    let client = match reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(4))
+        .timeout(Duration::from_secs(8))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
         Ok(c) => c,
         Err(e) => return ("error".into(), Some(format!("HTTP client error: {}", e))),
     };
@@ -114,11 +144,12 @@ async fn ping_provider(provider: &str, key: &str, model: &str) -> (String, Optio
         _ => {
             // gemini
             let url = format!(
-                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-                model, key
+                "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+                model
             );
             client
                 .post(&url)
+                .header("x-goog-api-key", key)
                 .json(&serde_json::json!({
                     "contents": [{"parts": [{"text": "hi"}]}],
                     "generationConfig": {"maxOutputTokens": 1}
@@ -131,24 +162,25 @@ async fn ping_provider(provider: &str, key: &str, model: &str) -> (String, Optio
     match result {
         Ok(resp) => {
             let code = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            status_from_http(code, &body)
+            status_from_http(code)
         }
         Err(e) if e.is_timeout() => ("error".into(), Some("Provider request timed out.".into())),
         Err(e) => ("error".into(), Some(format!("Network error: {}", e))),
     }
 }
 
-fn canonical_provider(p: &str) -> String {
+fn canonical_provider(p: &str) -> Result<String, String> {
     let lower = p.to_lowercase();
     if lower.contains("anthropic") || lower.contains("claude") {
-        "anthropic".into()
+        Ok("anthropic".into())
     } else if lower.contains("openai") || lower.contains("gpt") {
-        "openai".into()
+        Ok("openai".into())
     } else if lower.contains("xai") || lower.contains("grok") {
-        "xai".into()
+        Ok("xai".into())
+    } else if lower.contains("gemini") || lower.contains("google") {
+        Ok("gemini".into())
     } else {
-        "gemini".into()
+        Err("Unsupported model provider".into())
     }
 }
 
@@ -164,15 +196,29 @@ pub async fn check_model_health(
     // just pasted (it isn't stored in the keychain until deploy).
     if let (Some(p), Some(k)) = (provider.as_ref(), key_override.as_ref()) {
         if !k.trim().is_empty() {
-            let canon = canonical_provider(p);
+            let canon = canonical_provider(p)?;
             let model_str = normalize_model(&canon, model);
+            validate_model_name(&model_str)?;
+            if validate_provider_key(&canon, k.trim()).is_err() {
+                return Ok(vec![ProviderHealth {
+                    provider: canon,
+                    status: "invalid_key".into(),
+                    detail: Some("The provider key has an invalid format.".into()),
+                    model: model_str,
+                }]);
+            }
             let (status, detail) = ping_provider(&canon, k.trim(), &model_str).await;
-            return Ok(vec![ProviderHealth { provider: canon, status, detail, model: model_str }]);
+            return Ok(vec![ProviderHealth {
+                provider: canon,
+                status,
+                detail,
+                model: model_str,
+            }]);
         }
     }
     let targets: Vec<(String, String)> = match provider {
         Some(p) => {
-            let canon = canonical_provider(&p);
+            let canon = canonical_provider(&p)?;
             let key_name = KEY_NAMES
                 .iter()
                 .find(|(id, _)| *id == canon)
@@ -180,16 +226,34 @@ pub async fn check_model_health(
                 .unwrap_or_else(|| "GEMINI_API_KEY".to_string());
             vec![(canon, key_name)]
         }
-        None => KEY_NAMES.iter().map(|(p, k)| (p.to_string(), k.to_string())).collect(),
+        None => KEY_NAMES
+            .iter()
+            .map(|(p, k)| (p.to_string(), k.to_string()))
+            .collect(),
     };
 
     let mut results = Vec::new();
     for (prov, key_name) in targets {
         let model_str = normalize_model(&prov, model.clone());
+        validate_model_name(&model_str)?;
         match keychain::get_secret(&key_name) {
             Ok(key) if !key.trim().is_empty() => {
+                if validate_provider_key(&prov, key.trim()).is_err() {
+                    results.push(ProviderHealth {
+                        provider: prov,
+                        status: "invalid_key".into(),
+                        detail: Some("The stored provider key has an invalid format.".into()),
+                        model: model_str,
+                    });
+                    continue;
+                }
                 let (status, detail) = ping_provider(&prov, key.trim(), &model_str).await;
-                results.push(ProviderHealth { provider: prov, status, detail, model: model_str });
+                results.push(ProviderHealth {
+                    provider: prov,
+                    status,
+                    detail,
+                    model: model_str,
+                });
             }
             _ => {
                 // No global key — only report as missing when explicitly asked
@@ -204,4 +268,26 @@ pub async fn check_model_health(
         }
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_and_model_inputs_fail_closed() {
+        assert_eq!(canonical_provider("Google Gemini").unwrap(), "gemini");
+        assert!(canonical_provider("unknown-provider").is_err());
+        assert!(validate_model_name("gemini-2.5-flash").is_ok());
+        assert!(validate_model_name("../models/other?key=secret").is_err());
+        assert!(validate_model_name("model\r\nInjected: yes").is_err());
+    }
+
+    #[test]
+    fn health_errors_do_not_echo_provider_response_bodies() {
+        let (_, detail) = status_from_http(500);
+        let detail = detail.unwrap();
+        assert_eq!(detail, "Provider returned HTTP 500.");
+        assert!(!detail.contains("secret"));
+    }
 }

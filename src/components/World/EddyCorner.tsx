@@ -20,7 +20,7 @@ export function EddyCorner() {
       title="Eddy — your Canopy guide"
       style={{
         position: "absolute", bottom: 12, left: 8, width: 320, height: 320,
-        zIndex: 10, cursor: "pointer",
+        zIndex: 5, cursor: "pointer",
         transition: "transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1)",
         transform: hovered ? "translateY(-5px)" : "none",
       }}

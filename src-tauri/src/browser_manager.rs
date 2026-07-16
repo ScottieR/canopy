@@ -543,7 +543,7 @@ pub async fn start_machine_browser(
     let proxy_port = enable_jit_proxy(app_handle.clone(), agent_id.clone())
         .await
         .map_err(|e| e.to_string())?;
-    let ws_endpoint = format!("ws://host.docker.internal:{}", proxy_port);
+    let ws_endpoint = browser_bridge_url("ws", proxy_port, &agent_id);
     use tauri::Manager;
     let db = app_handle.state::<crate::db::Database>();
     let container_name = crate::openclaw::get_agent_container_name(&db, &agent_id);
@@ -761,6 +761,115 @@ fn resolve_lock_for(agent_id: &str) -> &'static tokio::sync::Mutex<()> {
 /// (gateway: 18799, JIT: 18802) so they're easy to spot together when troubleshooting.
 pub const SHARED_BRIDGE_PORT: u16 = 19800;
 
+/// Return a process-stable, installation-local capability for a browser bridge.
+///
+/// The bridge must listen on all interfaces so Docker Desktop/OrbStack containers can
+/// reach it through `host.docker.internal`. A high-entropy path capability prevents
+/// other LAN clients from driving the user's authenticated browser. The value is kept
+/// in the encrypted vault and is intentionally unavailable to frontend IPC.
+fn safe_browser_bridge_scope(scope: &str) -> String {
+    let safe_scope: String = scope
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(80)
+        .collect();
+    if safe_scope.is_empty() {
+        "invalid-scope".to_string()
+    } else {
+        safe_scope
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn browser_bridge_token(scope: &str) -> String {
+    // Keep unit tests deterministic and completely isolated from the host Keychain.
+    format!(
+        "canopy_browser_test_{}_000000000000000000000000000000000000000000000000",
+        safe_browser_bridge_scope(scope)
+    )
+}
+
+#[cfg(not(test))]
+pub(crate) fn browser_bridge_token(scope: &str) -> String {
+    use std::sync::{Mutex as StdMutex, OnceLock};
+    static TOKENS: OnceLock<StdMutex<HashMap<String, String>>> = OnceLock::new();
+
+    let safe_scope = safe_browser_bridge_scope(scope);
+    let tokens = TOKENS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut tokens = tokens.lock().expect("browser bridge token cache poisoned");
+    if let Some(token) = tokens.get(&safe_scope) {
+        return token.clone();
+    }
+
+    let key = format!("internal_browser_bridge_{}", safe_scope);
+    let token = crate::keychain::get_or_create_internal_secret(&key, "canopy_browser_")
+        .unwrap_or_else(|error| {
+            tracing::warn!(
+                "Could not persist browser bridge capability for {}; using a process-local capability: {}",
+                safe_scope,
+                error
+            );
+            format!(
+                "canopy_browser_{}{}",
+                uuid::Uuid::new_v4().simple(),
+                uuid::Uuid::new_v4().simple()
+            )
+        });
+    tokens.insert(safe_scope, token.clone());
+    token
+}
+
+pub(crate) fn browser_bridge_url(scheme: &str, port: u16, scope: &str) -> String {
+    format!(
+        "{}://host.docker.internal:{}/{}",
+        scheme,
+        port,
+        browser_bridge_token(scope)
+    )
+}
+
+/// Validate and remove the unguessable first path segment before forwarding to Chrome.
+/// The returned request has the same method/version and all original headers, but Chrome
+/// sees `/`, `/json/version`, or `/devtools/...` instead of the private capability.
+fn authenticate_bridge_request(headers: &str, expected_token: &str) -> Option<String> {
+    let trimmed = headers.trim_end_matches("\r\n");
+    let mut lines = trimmed.split("\r\n");
+    let request_line = lines.next()?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next()?;
+    let path_and_query = parts.next()?;
+    let version = parts.next()?;
+    if parts.next().is_some() || !version.starts_with("HTTP/") {
+        return None;
+    }
+
+    let (path, query) = path_and_query
+        .split_once('?')
+        .map_or((path_and_query, None), |(path, query)| (path, Some(query)));
+    let expected_prefix = format!("/{}", expected_token);
+    let stripped_path = if path == expected_prefix {
+        "/"
+    } else {
+        path.strip_prefix(&(expected_prefix + "/"))?
+    };
+    let normalized_path = if stripped_path.starts_with('/') {
+        stripped_path.to_string()
+    } else {
+        format!("/{}", stripped_path)
+    };
+    let normalized_target = query.map_or(normalized_path.clone(), |query| {
+        format!("{}?{}", normalized_path, query)
+    });
+
+    let mut out = format!("{} {} {}\r\n", method, normalized_target, version);
+    for line in lines {
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    out.push_str("\r\n");
+    Some(out)
+}
+
 /// Start the gateway-wide browser bridge that OpenClaw connects to as its `cdpUrl`.
 ///
 /// Idempotent — if the port is already bound, returns immediately. Mirror of
@@ -782,6 +891,7 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
     let active_connections = Arc::new(AtomicUsize::new(0));
     let app_handle_clone = app_handle.clone();
     const SHARED_AGENT_ID: &str = "shared-browser";
+    let bridge_token = browser_bridge_token(SHARED_AGENT_ID);
 
     tauri::async_runtime::spawn(async move {
         tracing::info!(
@@ -796,9 +906,52 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                 tracing::info!("Shared bridge: accepted connection from {}", peer_addr);
                 let app_handle_inner = app_handle_clone.clone();
                 let conn_counter = active_connections.clone();
+                let expected_token = bridge_token.clone();
 
                 tauri::async_runtime::spawn(async move {
                     conn_counter.fetch_add(1, Ordering::SeqCst);
+
+                    // Authenticate before starting or connecting to Chrome. This listener
+                    // must be reachable from Docker, so an unauthenticated LAN connection
+                    // must not be able to trigger a browser spawn or consume proxy work.
+                    let mut buf = Vec::with_capacity(8192);
+                    let mut chunk = [0u8; 4096];
+                    let mut header_end: Option<usize> = None;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while header_end.is_none() && std::time::Instant::now() < deadline {
+                        let n = match client_stream.read(&mut chunk).await {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(_) => break,
+                        };
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(pos) = find_header_terminator(&buf) {
+                            header_end = Some(pos);
+                        }
+                        if buf.len() > 64 * 1024 {
+                            break;
+                        }
+                    }
+                    let Some(end) = header_end else {
+                        tracing::warn!("Shared bridge: rejected incomplete HTTP request");
+                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    };
+                    let (headers, body) = buf.split_at(end + 4);
+                    let headers_str = String::from_utf8_lossy(headers);
+                    let Some(authenticated_headers) =
+                        authenticate_bridge_request(&headers_str, &expected_token)
+                    else {
+                        let _ = client_stream
+                            .write_all(
+                                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await;
+                        tracing::warn!("Shared bridge: rejected unauthenticated connection");
+                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    };
+
                     use tauri::Manager;
                     let browser_manager = app_handle_inner.state::<BrowserManager>();
 
@@ -893,7 +1046,9 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                                 let _recover_guard = resolve_lock_for(SHARED_AGENT_ID).lock().await;
                                 // Drop the stale AUTOMATED entry only — never touch a
                                 // trusted-login window that may have just opened.
-                                let _ = browser_manager.stop_automated_browser(SHARED_AGENT_ID).await;
+                                let _ = browser_manager
+                                    .stop_automated_browser(SHARED_AGENT_ID)
+                                    .await;
                                 let Some((h, p, pth)) =
                                     resolve_endpoint(&*browser_manager, &app_handle_inner).await
                                 else {
@@ -934,44 +1089,11 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                         chrome_host,
                         chrome_port
                     );
-                    let mut buf = Vec::with_capacity(8192);
-                    let mut chunk = [0u8; 4096];
-                    let mut header_end: Option<usize> = None;
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                    while header_end.is_none() && std::time::Instant::now() < deadline {
-                        let n = match client_stream.read(&mut chunk).await {
-                            Ok(0) => break,
-                            Ok(n) => n,
-                            Err(_) => break,
-                        };
-                        buf.extend_from_slice(&chunk[..n]);
-                        if let Some(pos) = find_header_terminator(&buf) {
-                            header_end = Some(pos);
-                        }
-                        if buf.len() > 64 * 1024 {
-                            break;
-                        }
-                    }
-
-                    let Some(end) = header_end else {
-                        tracing::warn!(
-                            "Shared bridge: incomplete HTTP headers from client (buffered {} bytes in {}ms)",
-                            buf.len(),
-                            deadline.saturating_duration_since(std::time::Instant::now()).as_millis()
-                        );
-                        conn_counter.fetch_sub(1, Ordering::SeqCst);
-                        return;
-                    };
-
-                    let (headers, body) = buf.split_at(end + 4);
-                    let headers_str = String::from_utf8_lossy(headers).to_string();
-                    let first_line = headers_str.lines().next().unwrap_or("").to_string();
-                    tracing::info!(
-                        "Shared bridge: forwarding request `{}` to Chrome",
-                        first_line
+                    let rewritten = rewrite_cdp_request_headers(
+                        &authenticated_headers,
+                        chrome_port,
+                        &chrome_path,
                     );
-                    let rewritten =
-                        rewrite_cdp_request_headers(&headers_str, chrome_port, &chrome_path);
 
                     if let Err(e) = chrome_stream.write_all(rewritten.as_bytes()).await {
                         tracing::warn!("Shared bridge: failed to write headers to Chrome: {}", e);
@@ -1001,7 +1123,10 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                     // directly to `127.0.0.1:<chrome_port>` from inside the container,
                     // and OpenClaw reports "Remote CDP for profile 'openclaw' is not
                     // reachable" — which is exactly what the user just saw.
-                    let bridge_origin = format!("host.docker.internal:{}", SHARED_BRIDGE_PORT);
+                    let bridge_origin = format!(
+                        "host.docker.internal:{}/{}",
+                        SHARED_BRIDGE_PORT, expected_token
+                    );
                     let chrome_origin = format!("127.0.0.1:{}", chrome_port);
 
                     if let Err(e) = relay_chrome_response_to_client(
@@ -1027,7 +1152,9 @@ pub async fn ensure_shared_browser_bridge(app_handle: tauri::AppHandle) -> Resul
                             // Automated only: a trusted-login window on the shared
                             // profile must survive idle shutdown (the user may take
                             // minutes to finish signing in).
-                            let _ = browser_manager.stop_automated_browser(SHARED_AGENT_ID).await;
+                            let _ = browser_manager
+                                .stop_automated_browser(SHARED_AGENT_ID)
+                                .await;
                         }
                     }
                 });
@@ -1063,6 +1190,7 @@ pub async fn enable_jit_proxy(
     use tokio::net::{TcpListener, TcpStream};
 
     let proxy_port = jit_proxy_port_for(&agent_id);
+    let bridge_token = browser_bridge_token(&agent_id);
 
     let listener = match TcpListener::bind(("0.0.0.0", proxy_port)).await {
         Ok(l) => l,
@@ -1084,9 +1212,53 @@ pub async fn enable_jit_proxy(
                 let agent_id_inner = agent_id_clone.clone();
                 let app_handle_inner = app_handle_clone.clone();
                 let conn_counter = active_connections.clone();
+                let expected_token = bridge_token.clone();
 
                 tauri::async_runtime::spawn(async move {
                     conn_counter.fetch_add(1, Ordering::SeqCst);
+
+                    let mut buf = Vec::with_capacity(8192);
+                    let mut chunk = [0u8; 4096];
+                    let mut header_end: Option<usize> = None;
+                    let header_read_deadline =
+                        std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while header_end.is_none() && std::time::Instant::now() < header_read_deadline {
+                        let n = match client_stream.read(&mut chunk).await {
+                            Ok(0) => break,
+                            Ok(n) => n,
+                            Err(_) => break,
+                        };
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(pos) = find_header_terminator(&buf) {
+                            header_end = Some(pos);
+                        }
+                        if buf.len() > 64 * 1024 {
+                            break;
+                        }
+                    }
+                    let Some(end) = header_end else {
+                        tracing::warn!("JIT Proxy: rejected incomplete HTTP request");
+                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    };
+                    let (headers, body) = buf.split_at(end + 4);
+                    let headers_str = String::from_utf8_lossy(headers);
+                    let Some(authenticated_headers) =
+                        authenticate_bridge_request(&headers_str, &expected_token)
+                    else {
+                        let _ = client_stream
+                            .write_all(
+                                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            )
+                            .await;
+                        tracing::warn!(
+                            "JIT Proxy: rejected unauthenticated connection for {}",
+                            agent_id_inner
+                        );
+                        conn_counter.fetch_sub(1, Ordering::SeqCst);
+                        return;
+                    };
+
                     use tauri::Manager;
                     let browser_manager = app_handle_inner.state::<BrowserManager>();
 
@@ -1151,54 +1323,55 @@ pub async fn enable_jit_proxy(
                     // spawn a fresh Chrome, and retry once. Previously this silently
                     // dropped the agent's connection — the "works on the second try"
                     // flakiness users hit after any Chrome death.
-                    let connect_result = match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
-                        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-                            tracing::warn!(
+                    let connect_result =
+                        match TcpStream::connect((chrome_host.as_str(), chrome_port)).await {
+                            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                                tracing::warn!(
                                 "JIT Proxy: cached Chrome at {}:{} is dead ({}); respawning for {}",
                                 chrome_host,
                                 chrome_port,
                                 e,
                                 agent_id_inner
                             );
-                            let _ = browser_manager
-                                .stop_automated_browser(&agent_id_inner)
-                                .await;
-                            match browser_manager
-                                .start_browser(app_handle_inner.clone(), &agent_id_inner)
-                                .await
-                            {
-                                Ok(status) if !status.cdp_endpoint.is_empty() => {
-                                    match url::Url::parse(&status.cdp_endpoint) {
-                                        Ok(u) => {
-                                            // The fresh Chrome has a new port AND a new
-                                            // /devtools/browser/<guid> path — update all
-                                            // three so the header/path rewrite below
-                                            // targets the live instance, not the corpse.
-                                            chrome_host =
-                                                u.host_str().unwrap_or("127.0.0.1").to_string();
-                                            chrome_port = u.port().unwrap_or(0);
-                                            chrome_path = u.path().to_string();
-                                            TcpStream::connect((
-                                                chrome_host.as_str(),
-                                                chrome_port,
-                                            ))
-                                            .await
+                                let _ = browser_manager
+                                    .stop_automated_browser(&agent_id_inner)
+                                    .await;
+                                match browser_manager
+                                    .start_browser(app_handle_inner.clone(), &agent_id_inner)
+                                    .await
+                                {
+                                    Ok(status) if !status.cdp_endpoint.is_empty() => {
+                                        match url::Url::parse(&status.cdp_endpoint) {
+                                            Ok(u) => {
+                                                // The fresh Chrome has a new port AND a new
+                                                // /devtools/browser/<guid> path — update all
+                                                // three so the header/path rewrite below
+                                                // targets the live instance, not the corpse.
+                                                chrome_host =
+                                                    u.host_str().unwrap_or("127.0.0.1").to_string();
+                                                chrome_port = u.port().unwrap_or(0);
+                                                chrome_path = u.path().to_string();
+                                                TcpStream::connect((
+                                                    chrome_host.as_str(),
+                                                    chrome_port,
+                                                ))
+                                                .await
+                                            }
+                                            Err(_) => Err(std::io::Error::new(
+                                                std::io::ErrorKind::InvalidData,
+                                                "unparseable respawned CDP endpoint",
+                                            )),
                                         }
-                                        Err(_) => Err(std::io::Error::new(
-                                            std::io::ErrorKind::InvalidData,
-                                            "unparseable respawned CDP endpoint",
-                                        )),
                                     }
+                                    Ok(_) => Err(std::io::Error::new(
+                                        std::io::ErrorKind::InvalidData,
+                                        "respawned Chrome returned empty CDP endpoint",
+                                    )),
+                                    Err(e) => Err(std::io::Error::other(e.to_string())),
                                 }
-                                Ok(_) => Err(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    "respawned Chrome returned empty CDP endpoint",
-                                )),
-                                Err(e) => Err(std::io::Error::other(e.to_string())),
                             }
-                        }
-                        other => other,
-                    };
+                            other => other,
+                        };
 
                     if let Ok(mut chrome_stream) = connect_result.map_err(|e| {
                         tracing::error!(
@@ -1223,42 +1396,11 @@ pub async fn enable_jit_proxy(
                         // CDP URL does this), rewrite the path to Chrome's actual browser
                         // path so the upgrade lands on a real target. Everything else
                         // (path, body) flows through unchanged.
-                        let mut buf = Vec::with_capacity(8192);
-                        let mut chunk = [0u8; 4096];
-                        let mut header_end: Option<usize> = None;
-                        let header_read_deadline =
-                            std::time::Instant::now() + std::time::Duration::from_secs(5);
-                        while header_end.is_none()
-                            && std::time::Instant::now() < header_read_deadline
-                        {
-                            let n = match client_stream.read(&mut chunk).await {
-                                Ok(0) => break,
-                                Ok(n) => n,
-                                Err(_) => break,
-                            };
-                            buf.extend_from_slice(&chunk[..n]);
-                            if let Some(pos) = find_header_terminator(&buf) {
-                                header_end = Some(pos);
-                            }
-                            if buf.len() > 64 * 1024 {
-                                // Defensive: don't unbounded-buffer if the client never sends \r\n\r\n.
-                                break;
-                            }
-                        }
-
-                        let Some(end) = header_end else {
-                            tracing::warn!(
-                                "JIT Proxy: incomplete HTTP headers from client for {}",
-                                agent_id_inner
-                            );
-                            conn_counter.fetch_sub(1, Ordering::SeqCst);
-                            return;
-                        };
-
-                        let (headers, body) = buf.split_at(end + 4);
-                        let headers_str = String::from_utf8_lossy(headers).to_string();
-                        let rewritten_headers =
-                            rewrite_cdp_request_headers(&headers_str, chrome_port, &chrome_path);
+                        let rewritten_headers = rewrite_cdp_request_headers(
+                            &authenticated_headers,
+                            chrome_port,
+                            &chrome_path,
+                        );
 
                         // Write the rewritten headers, then any body bytes we
                         // already over-read while looking for "\r\n\r\n".
@@ -1283,7 +1425,8 @@ pub async fn enable_jit_proxy(
                         //     container can't reach. Rewriting it to this proxy's origin is
                         //     what lets OpenClaw's `attachOnly` preflight work when an
                         //     isolated container's `browser.cdpUrl` points at the JIT proxy.
-                        let proxy_origin = format!("host.docker.internal:{}", proxy_port);
+                        let proxy_origin =
+                            format!("host.docker.internal:{}/{}", proxy_port, expected_token);
                         let chrome_origin = format!("127.0.0.1:{}", chrome_port);
                         if let Err(e) = relay_chrome_response_to_client(
                             &mut chrome_stream,
@@ -1310,7 +1453,9 @@ pub async fn enable_jit_proxy(
                                 agent_id_inner
                             );
                             // Automated only — never reap a trusted-login window.
-                            let _ = browser_manager.stop_automated_browser(&agent_id_inner).await;
+                            let _ = browser_manager
+                                .stop_automated_browser(&agent_id_inner)
+                                .await;
                         }
                     }
                 });
@@ -1578,7 +1723,38 @@ fn rewrite_request_line(line: &str, chrome_path: &str) -> Option<String> {
 
 #[cfg(test)]
 mod jit_proxy_tests {
-    use super::{rewrite_cdp_request_headers, rewrite_request_line};
+    use super::{authenticate_bridge_request, rewrite_cdp_request_headers, rewrite_request_line};
+
+    #[test]
+    fn bridge_capability_is_required_and_removed_before_forwarding() {
+        let request = "GET /secret-cap/json/version?verbose=1 HTTP/1.1\r\nHost: host.docker.internal:19800\r\n\r\n";
+        let authenticated =
+            authenticate_bridge_request(request, "secret-cap").expect("valid capability");
+        assert!(authenticated.starts_with("GET /json/version?verbose=1 HTTP/1.1\r\n"));
+        assert!(!authenticated.contains("secret-cap"));
+
+        assert!(authenticate_bridge_request(request, "wrong-cap").is_none());
+        assert!(authenticate_bridge_request(
+            "GET /secret-cap-extra/json/version HTTP/1.1\r\nHost: x\r\n\r\n",
+            "secret-cap"
+        )
+        .is_none());
+        assert!(authenticate_bridge_request(
+            "GET /json/version HTTP/1.1\r\nHost: x\r\n\r\n",
+            "secret-cap"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn bridge_capability_root_maps_to_chrome_root() {
+        let authenticated = authenticate_bridge_request(
+            "GET /secret-cap HTTP/1.1\r\nHost: x\r\n\r\n",
+            "secret-cap",
+        )
+        .expect("valid capability");
+        assert!(authenticated.starts_with("GET / HTTP/1.1\r\n"));
+    }
 
     #[test]
     fn host_header_is_rewritten_to_loopback() {
@@ -1778,7 +1954,11 @@ mod connectability_tests {
 
     #[test]
     fn automated_with_port_zero_is_not_connectable() {
-        let s = status(BrowserMode::Automated, 0, "ws://127.0.0.1:0/devtools/browser/abc");
+        let s = status(
+            BrowserMode::Automated,
+            0,
+            "ws://127.0.0.1:0/devtools/browser/abc",
+        );
         assert!(!status_is_connectable(&s));
     }
 }

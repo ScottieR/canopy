@@ -29,6 +29,40 @@ pub struct Message {
     pub timestamp: String,
 }
 
+/// Lightweight thread metadata for frontend hydration and recovery.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConversationSummary {
+    pub id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub message_count: u32,
+    pub first_user_message: Option<String>,
+    pub thread_status: String,
+    pub background_allowed: bool,
+    pub active_run_count: u32,
+    pub last_run_id: Option<String>,
+    pub last_run_status: Option<String>,
+    pub checkpoint_count: u32,
+    pub last_checkpoint_at: Option<String>,
+}
+
+/// A single execution attempt within a conversation thread.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ThreadRun {
+    pub id: String,
+    pub conversation_id: String,
+    pub agent_id: String,
+    pub status: String,
+    pub trigger_type: String,
+    pub started_at: String,
+    pub updated_at: String,
+    pub completed_at: Option<String>,
+    pub checkpoint_payload_json: Option<String>,
+    pub error_payload_json: Option<String>,
+}
+
 /// Represents an audit log entry
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AuditEntry {
@@ -49,6 +83,95 @@ pub struct ActivityHeatmapEntry {
     pub tools: u32,
     pub system: u32,
     pub total: u32,
+}
+
+/// A person using one or more agents through the focused companion app.
+/// Profiles are deliberately separate from the desktop owner's global profile.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionProfile {
+    pub id: String,
+    pub display_name: String,
+    pub profile_type: String,
+    pub context_json: serde_json::Value,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// A revocable, device-bound grant for a constrained subset of agents.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionDeviceGrant {
+    pub device_id: String,
+    pub profile_id: String,
+    pub device_name: String,
+    pub experience: String,
+    pub allowed_agent_ids: Vec<String>,
+    pub created_at: String,
+    pub last_seen_at: Option<String>,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionLearningEvent {
+    pub id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub session_id: String,
+    pub event_type: String,
+    pub subject: Option<String>,
+    pub skill: Option<String>,
+    pub outcome: Option<String>,
+    pub score: Option<f64>,
+    pub confidence: Option<f64>,
+    pub evidence: Option<String>,
+    pub recommended_next: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionReport {
+    pub id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub period_start: String,
+    pub period_end: String,
+    pub report_json: serde_json::Value,
+    pub created_at: String,
+}
+
+/// Versioned content published into a companion assignment. `mini_app` is the
+/// first resource type; learning plans and other parent-managed material use
+/// the same transport without coupling the grant layer to tutoring.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionResource {
+    pub id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub resource_type: String,
+    pub title: String,
+    pub version: i64,
+    pub content_json: serde_json::Value,
+    pub source: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanionResourceEvent {
+    pub id: String,
+    pub resource_id: String,
+    pub device_id: String,
+    pub profile_id: String,
+    pub agent_id: String,
+    pub action: String,
+    pub data_json: serde_json::Value,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -183,6 +306,34 @@ impl Database {
             )",
             [],
         )?;
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN thread_status TEXT NOT NULL DEFAULT 'idle'",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN background_allowed BOOLEAN NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN active_run_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN last_run_id TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN last_run_status TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN checkpoint_count INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE conversations ADD COLUMN last_checkpoint_at TEXT",
+            [],
+        );
 
         // Create messages table
         conn.execute(
@@ -193,6 +344,23 @@ impl Database {
                 content TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 FOREIGN KEY(conversation_id) REFERENCES conversations(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS thread_runs (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                trigger_type TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                checkpoint_payload_json TEXT,
+                error_payload_json TEXT,
+                FOREIGN KEY(conversation_id) REFERENCES conversations(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
             )",
             [],
         )?;
@@ -316,6 +484,30 @@ impl Database {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feedback_reports (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL,
+                agent_id TEXT,
+                reporter_name TEXT NOT NULL,
+                reporter_email TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                context_json TEXT NOT NULL,
+                remote_status TEXT NOT NULL DEFAULT 'pending',
+                remote_error TEXT,
+                slack_notified INTEGER NOT NULL DEFAULT 0,
+                dispatched_agent_id TEXT,
+                dispatched_at TEXT,
+                FOREIGN KEY(agent_id) REFERENCES agents(id),
+                FOREIGN KEY(dispatched_agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+
         // Create inbox_items table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS inbox_items (
@@ -369,12 +561,137 @@ impl Database {
             [],
         )?;
 
+        // Managed companion/family foundation. The same grant model supports a
+        // child with a Tutor, a teammate with a Developer, or a guest with any
+        // other explicitly shared agent. Provider credentials remain agent-scoped.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_profiles (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                profile_type TEXT NOT NULL,
+                context_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_device_grants (
+                device_id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                experience TEXT NOT NULL,
+                allowed_agent_ids_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_seen_at TEXT,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_learning_events (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                subject TEXT,
+                skill TEXT,
+                outcome TEXT,
+                score REAL,
+                confidence REAL,
+                evidence TEXT,
+                recommended_next TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_reports (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                report_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_resources (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                content_json TEXT NOT NULL,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS companion_resource_events (
+                id TEXT PRIMARY KEY,
+                resource_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                profile_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                action TEXT NOT NULL,
+                data_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(resource_id) REFERENCES companion_resources(id),
+                FOREIGN KEY(profile_id) REFERENCES companion_profiles(id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_grants_profile ON companion_device_grants(profile_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_events_profile_agent ON companion_learning_events(profile_id, agent_id, created_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_reports_profile_agent ON companion_reports(profile_id, agent_id, created_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_resources_profile_agent ON companion_resources(profile_id, agent_id, status, updated_at)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_companion_resource_events_resource ON companion_resource_events(resource_id, created_at)",
+            [],
+        )?;
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_conversations_agent ON conversations(agent_id)",
             [],
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_thread_runs_conversation ON thread_runs(conversation_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_thread_runs_agent_status ON thread_runs(agent_id, status)",
             [],
         )?;
         conn.execute(
@@ -391,6 +708,10 @@ impl Database {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_purchase_history_agent ON purchase_history(agent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feedback_reports_created_at ON feedback_reports(created_at DESC)",
             [],
         )?;
 
@@ -428,6 +749,146 @@ impl Database {
         Ok(())
     }
 
+    pub fn list_feedback_reports(&self) -> SqlResult<Vec<FeedbackReport>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, status, title, description, agent_id, reporter_name, reporter_email,
+                    created_at, updated_at, context_json, remote_status, remote_error, slack_notified,
+                    dispatched_agent_id, dispatched_at
+             FROM feedback_reports
+             ORDER BY created_at DESC",
+        )?;
+
+        let reports = stmt
+            .query_map([], |row| {
+                let context_json: String = row.get(10)?;
+                Ok(FeedbackReport {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    status: row.get(2)?,
+                    title: row.get(3)?,
+                    description: row.get(4)?,
+                    agent_id: row.get(5)?,
+                    reporter_name: row.get(6)?,
+                    reporter_email: row.get(7)?,
+                    created_at: row.get(8)?,
+                    updated_at: row.get(9)?,
+                    context: serde_json::from_str(&context_json).unwrap_or_else(|_| json!({})),
+                    remote_status: row.get(11)?,
+                    remote_error: row.get(12)?,
+                    slack_notified: row.get(13)?,
+                    dispatched_agent_id: row.get(14)?,
+                    dispatched_at: row.get(15)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(reports)
+    }
+
+    pub fn get_feedback_report(&self, report_id: &str) -> SqlResult<Option<FeedbackReport>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, status, title, description, agent_id, reporter_name, reporter_email,
+                    created_at, updated_at, context_json, remote_status, remote_error, slack_notified,
+                    dispatched_agent_id, dispatched_at
+             FROM feedback_reports
+             WHERE id = ?1",
+        )?;
+
+        stmt.query_row(params![report_id], |row| {
+            let context_json: String = row.get(10)?;
+            Ok(FeedbackReport {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                status: row.get(2)?,
+                title: row.get(3)?,
+                description: row.get(4)?,
+                agent_id: row.get(5)?,
+                reporter_name: row.get(6)?,
+                reporter_email: row.get(7)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
+                context: serde_json::from_str(&context_json).unwrap_or_else(|_| json!({})),
+                remote_status: row.get(11)?,
+                remote_error: row.get(12)?,
+                slack_notified: row.get(13)?,
+                dispatched_agent_id: row.get(14)?,
+                dispatched_at: row.get(15)?,
+            })
+        })
+        .optional()
+    }
+
+    pub fn insert_feedback_report(&self, report: &FeedbackReport) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO feedback_reports (
+                id, kind, status, title, description, agent_id, reporter_name, reporter_email,
+                created_at, updated_at, context_json, remote_status, remote_error, slack_notified,
+                dispatched_agent_id, dispatched_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                &report.id,
+                &report.kind,
+                &report.status,
+                &report.title,
+                &report.description,
+                &report.agent_id,
+                &report.reporter_name,
+                &report.reporter_email,
+                &report.created_at,
+                &report.updated_at,
+                &serde_json::to_string(&report.context).unwrap_or_else(|_| "{}".to_string()),
+                &report.remote_status,
+                &report.remote_error,
+                report.slack_notified,
+                &report.dispatched_agent_id,
+                &report.dispatched_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_feedback_report_delivery(
+        &self,
+        report_id: &str,
+        remote_status: &str,
+        remote_error: Option<&str>,
+        slack_notified: bool,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE feedback_reports
+             SET remote_status = ?1, remote_error = ?2, slack_notified = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![
+                remote_status,
+                remote_error,
+                slack_notified,
+                Utc::now().to_rfc3339(),
+                report_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_feedback_report_dispatched(
+        &self,
+        report_id: &str,
+        dispatched_agent_id: &str,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "UPDATE feedback_reports
+             SET status = 'sent_to_engineer', dispatched_agent_id = ?1, dispatched_at = ?2, updated_at = ?2
+             WHERE id = ?3",
+            params![dispatched_agent_id, now, report_id],
+        )?;
+        Ok(())
+    }
+
     // ─── Inbox Operations ────────────────────────────────────────────────────
 
     pub fn get_inbox_items(&self) -> SqlResult<Vec<InboxItem>> {
@@ -436,15 +897,17 @@ impl Database {
             "SELECT id, item_type, status, payload_json, timestamp FROM inbox_items ORDER BY timestamp DESC"
         )?;
 
-        let items = stmt.query_map([], |row| {
-            Ok(InboxItem {
-                id: row.get(0)?,
-                item_type: row.get(1)?,
-                status: row.get(2)?,
-                payload_json: row.get(3)?,
-                timestamp: row.get(4)?,
-            })
-        })?.collect::<SqlResult<Vec<_>>>()?;
+        let items = stmt
+            .query_map([], |row| {
+                Ok(InboxItem {
+                    id: row.get(0)?,
+                    item_type: row.get(1)?,
+                    status: row.get(2)?,
+                    payload_json: row.get(3)?,
+                    timestamp: row.get(4)?,
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(items)
     }
@@ -454,7 +917,13 @@ impl Database {
         conn.execute(
             "INSERT INTO inbox_items (id, item_type, status, payload_json, timestamp)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![&item.id, &item.item_type, &item.status, &item.payload_json, &item.timestamp],
+            params![
+                &item.id,
+                &item.item_type,
+                &item.status,
+                &item.payload_json,
+                &item.timestamp
+            ],
         )?;
         Ok(())
     }
@@ -789,8 +1258,10 @@ impl Database {
         // Create
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO conversations (id, agent_id, title, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO conversations (
+                id, agent_id, title, created_at, updated_at, thread_status,
+                background_allowed, active_run_count, checkpoint_count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'idle', 0, 0, 0)",
             params![conv_id, agent_id, "New Conversation", &now, &now],
         )?;
 
@@ -818,8 +1289,10 @@ impl Database {
         let now = Utc::now().to_rfc3339();
 
         conn.execute(
-            "INSERT INTO conversations (id, agent_id, title, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO conversations (
+                id, agent_id, title, created_at, updated_at, thread_status,
+                background_allowed, active_run_count, checkpoint_count
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 'idle', 0, 0, 0)",
             params![
                 &conv_id,
                 agent_id,
@@ -880,6 +1353,224 @@ impl Database {
 
         // Reverse to get oldest first
         Ok(messages.into_iter().rev().collect())
+    }
+
+    /// Get the full message history for a conversation in chronological order.
+    pub fn get_all_messages(&self, conv_id: &str) -> SqlResult<Vec<Message>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, conversation_id, role, content, timestamp
+             FROM messages
+             WHERE conversation_id = ?1
+             ORDER BY timestamp ASC",
+        )?;
+
+        let rows = stmt.query_map(params![conv_id], |row| {
+            Ok(Message {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                timestamp: row.get(4)?,
+            })
+        })?;
+
+        rows.collect::<SqlResult<Vec<_>>>()
+    }
+
+    /// Mark the start of a new thread run and push the parent conversation into
+    /// the running state. This creates the durable execution primitive needed
+    /// for true concurrent per-thread work.
+    pub fn start_thread_run(
+        &self,
+        conversation_id: &str,
+        agent_id: &str,
+        trigger_type: &str,
+    ) -> SqlResult<String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let run_id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        tx.execute(
+            "INSERT INTO thread_runs (
+                id, conversation_id, agent_id, status, trigger_type, started_at, updated_at
+             ) VALUES (?1, ?2, ?3, 'running', ?4, ?5, ?5)",
+            params![&run_id, conversation_id, agent_id, trigger_type, &now],
+        )?;
+        tx.execute(
+            "UPDATE conversations
+             SET thread_status = 'running',
+                 active_run_count = active_run_count + 1,
+                 last_run_id = ?1,
+                 last_run_status = 'running',
+                 updated_at = ?2
+             WHERE id = ?3",
+            params![&run_id, &now, conversation_id],
+        )?;
+
+        tx.commit()?;
+        Ok(run_id)
+    }
+
+    /// Complete a thread run and reconcile the parent conversation state.
+    pub fn finish_thread_run(
+        &self,
+        run_id: &str,
+        final_status: &str,
+        error_payload_json: Option<&str>,
+    ) -> SqlResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+
+        let conversation_id: String = tx.query_row(
+            "SELECT conversation_id FROM thread_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+
+        tx.execute(
+            "UPDATE thread_runs
+             SET status = ?1,
+                 updated_at = ?2,
+                 completed_at = ?2,
+                 error_payload_json = COALESCE(?3, error_payload_json)
+             WHERE id = ?4",
+            params![final_status, &now, error_payload_json, run_id],
+        )?;
+        tx.execute(
+            "UPDATE conversations
+             SET active_run_count = CASE
+                     WHEN active_run_count > 0 THEN active_run_count - 1
+                     ELSE 0
+                 END,
+                 last_run_id = ?1,
+                 last_run_status = ?2,
+                 thread_status = CASE
+                     WHEN active_run_count > 1 THEN 'running'
+                     WHEN ?2 = 'completed' THEN 'idle'
+                     ELSE ?2
+                 END,
+                 updated_at = ?3
+             WHERE id = ?4",
+            params![run_id, final_status, &now, &conversation_id],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_thread_runs(&self, conversation_id: &str, limit: u32) -> SqlResult<Vec<ThreadRun>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT
+                id,
+                conversation_id,
+                agent_id,
+                status,
+                trigger_type,
+                started_at,
+                updated_at,
+                completed_at,
+                checkpoint_payload_json,
+                error_payload_json
+             FROM thread_runs
+             WHERE conversation_id = ?1
+             ORDER BY started_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![conversation_id, limit as i32], |row| {
+            Ok(ThreadRun {
+                id: row.get(0)?,
+                conversation_id: row.get(1)?,
+                agent_id: row.get(2)?,
+                status: row.get(3)?,
+                trigger_type: row.get(4)?,
+                started_at: row.get(5)?,
+                updated_at: row.get(6)?,
+                completed_at: row.get(7)?,
+                checkpoint_payload_json: row.get(8)?,
+                error_payload_json: row.get(9)?,
+            })
+        })?;
+
+        rows.collect::<SqlResult<Vec<_>>>()
+    }
+
+    /// List durable conversation summaries for an agent, newest activity first.
+    pub fn list_agent_conversation_summaries(
+        &self,
+        agent_id: &str,
+        limit: u32,
+    ) -> SqlResult<Vec<ConversationSummary>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT
+                c.id,
+                c.agent_id,
+                c.title,
+                c.created_at,
+                c.updated_at,
+                COUNT(m.id) AS message_count,
+                (
+                    SELECT content
+                    FROM messages fm
+                    WHERE fm.conversation_id = c.id
+                      AND fm.role = 'user'
+                    ORDER BY fm.timestamp ASC
+                    LIMIT 1
+                ) AS first_user_message,
+                c.thread_status,
+                c.background_allowed,
+                c.active_run_count,
+                c.last_run_id,
+                c.last_run_status,
+                c.checkpoint_count,
+                c.last_checkpoint_at
+             FROM conversations c
+             LEFT JOIN messages m ON m.conversation_id = c.id
+             WHERE c.agent_id = ?1
+             GROUP BY
+                c.id,
+                c.agent_id,
+                c.title,
+                c.created_at,
+                c.updated_at,
+                c.thread_status,
+                c.background_allowed,
+                c.active_run_count,
+                c.last_run_id,
+                c.last_run_status,
+                c.checkpoint_count,
+                c.last_checkpoint_at
+             ORDER BY c.updated_at DESC
+             LIMIT ?2",
+        )?;
+
+        let rows = stmt.query_map(params![agent_id, limit as i32], |row| {
+            Ok(ConversationSummary {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                title: row.get(2)?,
+                created_at: row.get(3)?,
+                updated_at: row.get(4)?,
+                message_count: row.get::<_, i64>(5)?.max(0) as u32,
+                first_user_message: row.get(6)?,
+                thread_status: row.get(7)?,
+                background_allowed: row.get::<_, bool>(8)?,
+                active_run_count: row.get::<_, i64>(9)?.max(0) as u32,
+                last_run_id: row.get(10)?,
+                last_run_status: row.get(11)?,
+                checkpoint_count: row.get::<_, i64>(12)?.max(0) as u32,
+                last_checkpoint_at: row.get(13)?,
+            })
+        })?;
+
+        rows.collect::<SqlResult<Vec<_>>>()
     }
 
     // ─── Bridge Operations ──────────────────────────────────────────────────
@@ -1723,6 +2414,7 @@ impl Database {
         &self,
         agent_id: Option<&str>,
         conversation_id: Option<&str>,
+        conversation_id_prefix: Option<&str>,
         days: u32,
     ) -> SqlResult<Vec<crate::models::TokenUsageRecord>> {
         let conn = self.conn.lock().unwrap();
@@ -1748,6 +2440,25 @@ impl Database {
         if let Some(ref c_id) = conversation_id {
             query.push_str(&format!(" AND conversation_id = ?{}", next_param_idx));
             sql_params.push(c_id);
+            next_param_idx += 1;
+        }
+
+        // Prefix match — forum sends use session ids like
+        // forum_{forumId}_{agentId}_{phase}, so per-forum aggregation needs
+        // LIKE 'forum_{forumId}_%'. ESCAPE '\' guards the underscores/percents
+        // inside the prefix itself from acting as wildcards.
+        let like_pattern;
+        if let Some(prefix) = conversation_id_prefix {
+            let escaped = prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            like_pattern = format!("{}%", escaped);
+            query.push_str(&format!(
+                " AND conversation_id LIKE ?{} ESCAPE '\\'",
+                next_param_idx
+            ));
+            sql_params.push(&like_pattern);
             next_param_idx += 1;
         }
 
@@ -1808,6 +2519,347 @@ impl Database {
         conn.execute(
             "UPDATE system_warnings SET resolved = 1 WHERE id = ?1",
             rusqlite::params![warning_id],
+        )?;
+        Ok(())
+    }
+
+    // ─── Managed companion profiles, grants, resources, and reports ────────
+
+    pub fn insert_companion_profile(&self, profile: &CompanionProfile) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_profiles
+                (id, display_name, profile_type, context_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                profile.id,
+                profile.display_name,
+                profile.profile_type,
+                profile.context_json.to_string(),
+                profile.created_at,
+                profile.updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_companion_profile(&self, profile_id: &str) -> SqlResult<Option<CompanionProfile>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, display_name, profile_type, context_json, created_at, updated_at
+             FROM companion_profiles WHERE id = ?1",
+            params![profile_id],
+            |row| {
+                let context: String = row.get(3)?;
+                Ok(CompanionProfile {
+                    id: row.get(0)?,
+                    display_name: row.get(1)?,
+                    profile_type: row.get(2)?,
+                    context_json: serde_json::from_str(&context).unwrap_or_else(|_| json!({})),
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn update_companion_profile(&self, profile: &CompanionProfile) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_profiles
+             SET display_name = ?1, profile_type = ?2, context_json = ?3, updated_at = ?4
+             WHERE id = ?5",
+            params![
+                profile.display_name,
+                profile.profile_type,
+                profile.context_json.to_string(),
+                profile.updated_at,
+                profile.id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_companion_grant(&self, grant: &CompanionDeviceGrant) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_device_grants
+                (device_id, profile_id, device_name, experience, allowed_agent_ids_json,
+                 created_at, last_seen_at, revoked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                grant.device_id,
+                grant.profile_id,
+                grant.device_name,
+                grant.experience,
+                serde_json::to_string(&grant.allowed_agent_ids).unwrap_or_else(|_| "[]".into()),
+                grant.created_at,
+                grant.last_seen_at,
+                grant.revoked
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_companion_grant(&self, device_id: &str) -> SqlResult<Option<CompanionDeviceGrant>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT device_id, profile_id, device_name, experience, allowed_agent_ids_json,
+                    created_at, last_seen_at, revoked
+             FROM companion_device_grants WHERE device_id = ?1",
+            params![device_id],
+            |row| {
+                let allowed: String = row.get(4)?;
+                Ok(CompanionDeviceGrant {
+                    device_id: row.get(0)?,
+                    profile_id: row.get(1)?,
+                    device_name: row.get(2)?,
+                    experience: row.get(3)?,
+                    allowed_agent_ids: serde_json::from_str(&allowed).unwrap_or_default(),
+                    created_at: row.get(5)?,
+                    last_seen_at: row.get(6)?,
+                    revoked: row.get(7)?,
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn update_companion_grant(&self, grant: &CompanionDeviceGrant) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_device_grants
+             SET device_name = ?1, experience = ?2, allowed_agent_ids_json = ?3
+             WHERE device_id = ?4 AND revoked = 0",
+            params![
+                grant.device_name,
+                grant.experience,
+                serde_json::to_string(&grant.allowed_agent_ids).unwrap_or_else(|_| "[]".into()),
+                grant.device_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_companion_grants(&self) -> SqlResult<Vec<CompanionDeviceGrant>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT device_id, profile_id, device_name, experience, allowed_agent_ids_json,
+                    created_at, last_seen_at, revoked
+             FROM companion_device_grants ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let allowed: String = row.get(4)?;
+            Ok(CompanionDeviceGrant {
+                device_id: row.get(0)?,
+                profile_id: row.get(1)?,
+                device_name: row.get(2)?,
+                experience: row.get(3)?,
+                allowed_agent_ids: serde_json::from_str(&allowed).unwrap_or_default(),
+                created_at: row.get(5)?,
+                last_seen_at: row.get(6)?,
+                revoked: row.get(7)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn touch_companion_grant(&self, device_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_device_grants SET last_seen_at = ?1 WHERE device_id = ?2",
+            params![Utc::now().to_rfc3339(), device_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn revoke_companion_grant(&self, device_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE companion_device_grants SET revoked = 1 WHERE device_id = ?1",
+            params![device_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn insert_companion_learning_event(&self, event: &CompanionLearningEvent) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_learning_events
+                (id, profile_id, agent_id, session_id, event_type, subject, skill,
+                 outcome, score, confidence, evidence, recommended_next, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                event.id,
+                event.profile_id,
+                event.agent_id,
+                event.session_id,
+                event.event_type,
+                event.subject,
+                event.skill,
+                event.outcome,
+                event.score,
+                event.confidence,
+                event.evidence,
+                event.recommended_next,
+                event.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_companion_messages(
+        &self,
+        profile_id: &str,
+        agent_id: &str,
+    ) -> SqlResult<Vec<Message>> {
+        let grants = self.list_companion_grants()?;
+        let mut messages = Vec::new();
+        for grant in grants.into_iter().filter(|grant| {
+            !grant.revoked
+                && grant.profile_id == profile_id
+                && grant.allowed_agent_ids.iter().any(|id| id == agent_id)
+        }) {
+            let session_id = format!("companion_{}_{}", grant.device_id, agent_id);
+            messages.extend(self.get_all_messages(&session_id)?);
+        }
+        messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        Ok(messages)
+    }
+
+    pub fn insert_companion_report(&self, report: &CompanionReport) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_reports
+                (id, profile_id, agent_id, period_start, period_end, report_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                report.id,
+                report.profile_id,
+                report.agent_id,
+                report.period_start,
+                report.period_end,
+                report.report_json.to_string(),
+                report.created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_companion_reports(
+        &self,
+        profile_id: &str,
+        agent_id: &str,
+    ) -> SqlResult<Vec<CompanionReport>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, agent_id, period_start, period_end, report_json, created_at
+             FROM companion_reports
+             WHERE profile_id = ?1 AND agent_id = ?2
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(params![profile_id, agent_id], |row| {
+            let report: String = row.get(5)?;
+            Ok(CompanionReport {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                agent_id: row.get(2)?,
+                period_start: row.get(3)?,
+                period_end: row.get(4)?,
+                report_json: serde_json::from_str(&report).unwrap_or_else(|_| json!({})),
+                created_at: row.get(6)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn upsert_companion_resource(&self, resource: &CompanionResource) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_resources
+                (id, profile_id, agent_id, resource_type, title, version, content_json,
+                 source, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                version = companion_resources.version + 1,
+                content_json = excluded.content_json,
+                source = excluded.source,
+                status = excluded.status,
+                updated_at = excluded.updated_at",
+            params![
+                resource.id,
+                resource.profile_id,
+                resource.agent_id,
+                resource.resource_type,
+                resource.title,
+                resource.version,
+                resource.content_json.to_string(),
+                resource.source,
+                resource.status,
+                resource.created_at,
+                resource.updated_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_companion_resources(
+        &self,
+        profile_id: &str,
+        allowed_agent_ids: &[String],
+    ) -> SqlResult<Vec<CompanionResource>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, profile_id, agent_id, resource_type, title, version, content_json,
+                    source, status, created_at, updated_at
+             FROM companion_resources
+             WHERE profile_id = ?1 AND status = 'published'
+             ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map(params![profile_id], |row| {
+            let content: String = row.get(6)?;
+            Ok(CompanionResource {
+                id: row.get(0)?,
+                profile_id: row.get(1)?,
+                agent_id: row.get(2)?,
+                resource_type: row.get(3)?,
+                title: row.get(4)?,
+                version: row.get(5)?,
+                content_json: serde_json::from_str(&content).unwrap_or_else(|_| json!({})),
+                source: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+                updated_at: row.get(10)?,
+            })
+        })?;
+        let mut resources = Vec::new();
+        for row in rows {
+            let resource = row?;
+            if allowed_agent_ids.iter().any(|id| id == &resource.agent_id) {
+                resources.push(resource);
+            }
+        }
+        Ok(resources)
+    }
+
+    pub fn insert_companion_resource_event(&self, event: &CompanionResourceEvent) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO companion_resource_events
+                (id, resource_id, device_id, profile_id, agent_id, action, data_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                event.id,
+                event.resource_id,
+                event.device_id,
+                event.profile_id,
+                event.agent_id,
+                event.action,
+                event.data_json.to_string(),
+                event.created_at
+            ],
         )?;
         Ok(())
     }
@@ -1958,6 +3010,142 @@ mod tests {
     }
 
     #[test]
+    fn test_thread_run_lifecycle_updates_conversation_summary() {
+        let db = create_test_db();
+
+        let agent = Agent {
+            id: "agent-threads".to_string(),
+            name: "Thread Agent".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#00AA88".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Thread Agent".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: vec![],
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
+
+        let conv_id = db.get_or_create_conversation("agent-threads").unwrap();
+        let run_id = db
+            .start_thread_run(&conv_id, "agent-threads", "user_message")
+            .unwrap();
+
+        let running_summary = db
+            .list_agent_conversation_summaries("agent-threads", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(running_summary.thread_status, "running");
+        assert_eq!(running_summary.active_run_count, 1);
+        assert_eq!(running_summary.last_run_status.as_deref(), Some("running"));
+        assert_eq!(running_summary.last_run_id.as_deref(), Some(run_id.as_str()));
+
+        db.finish_thread_run(&run_id, "completed", None).unwrap();
+
+        let completed_summary = db
+            .list_agent_conversation_summaries("agent-threads", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(completed_summary.thread_status, "idle");
+        assert_eq!(completed_summary.active_run_count, 0);
+        assert_eq!(
+            completed_summary.last_run_status.as_deref(),
+            Some("completed")
+        );
+
+        let runs = db.list_thread_runs(&conv_id, 10).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].status, "completed");
+        assert_eq!(runs[0].trigger_type, "user_message");
+    }
+
+    #[test]
+    fn test_thread_summary_stays_running_when_multiple_runs_overlap() {
+        let db = create_test_db();
+
+        let agent = Agent {
+            id: "agent-overlap".to_string(),
+            name: "Overlap Agent".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#3366FF".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Overlap Agent".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: vec![],
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
+
+        let conv_id = db.get_or_create_conversation("agent-overlap").unwrap();
+        let run_a = db
+            .start_thread_run(&conv_id, "agent-overlap", "user_message")
+            .unwrap();
+        let run_b = db
+            .start_thread_run(&conv_id, "agent-overlap", "resume")
+            .unwrap();
+
+        db.finish_thread_run(&run_a, "completed", None).unwrap();
+
+        let mid_summary = db
+            .list_agent_conversation_summaries("agent-overlap", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(mid_summary.thread_status, "running");
+        assert_eq!(mid_summary.active_run_count, 1);
+
+        db.finish_thread_run(&run_b, "failed", Some("{\"error\":\"boom\"}"))
+            .unwrap();
+
+        let final_summary = db
+            .list_agent_conversation_summaries("agent-overlap", 10)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == conv_id)
+            .unwrap();
+        assert_eq!(final_summary.thread_status, "failed");
+        assert_eq!(final_summary.active_run_count, 0);
+        assert_eq!(final_summary.last_run_status.as_deref(), Some("failed"));
+    }
+
+    #[test]
     fn test_bridge_operations() {
         let db = create_test_db();
 
@@ -2096,5 +3284,43 @@ mod tests {
         let updated = db.get_budget("agent-1").unwrap().unwrap();
         assert_eq!(updated.daily_spent_cents, 1500);
         assert_eq!(updated.monthly_spent_cents, 5500);
+    }
+
+    #[test]
+    fn companion_profiles_and_device_grants_are_scoped_and_revocable() {
+        let db = create_test_db();
+        let now = Utc::now().to_rfc3339();
+        let profile = CompanionProfile {
+            id: "profile-child-1".into(),
+            display_name: "Maya".into(),
+            profile_type: "child".into(),
+            context_json: json!({"grade": 5}),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        db.insert_companion_profile(&profile).unwrap();
+        let grant = CompanionDeviceGrant {
+            device_id: "device-ipad-1".into(),
+            profile_id: profile.id.clone(),
+            device_name: "Maya's iPad".into(),
+            experience: "learning".into(),
+            allowed_agent_ids: vec!["tutor-maya".into()],
+            created_at: now,
+            last_seen_at: None,
+            revoked: false,
+        };
+        db.insert_companion_grant(&grant).unwrap();
+
+        let stored = db.get_companion_grant(&grant.device_id).unwrap().unwrap();
+        assert_eq!(stored.allowed_agent_ids, vec!["tutor-maya"]);
+        assert!(!stored.revoked);
+
+        db.revoke_companion_grant(&grant.device_id).unwrap();
+        assert!(
+            db.get_companion_grant(&grant.device_id)
+                .unwrap()
+                .unwrap()
+                .revoked
+        );
     }
 }

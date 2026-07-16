@@ -6,7 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip,
   AlertTriangle
 } from "lucide-react";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, fireActivationEvent } from "../../store/worldStore";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { useForumStore } from "../../store/forumStore";
 import { GenerativeResult } from "../../components/GenerativeStudio";
@@ -14,6 +14,7 @@ import { Toggle, ServiceRow, glass } from "../../App";
 import MDEditor from "@uiw/react-md-editor";
 import { invoke } from "@tauri-apps/api/core";
 import { PasswordInput } from "../../components/shared/PasswordInput";
+import { isolateGeneratedHtml } from "../../security/generatedHtml";
 
 // ─── Format-aware message parsing ────────────────────────────────────────────
 // Agents can return ---FORMAT--- html/markdown/genui ---CONTENT--- blocks in both
@@ -76,8 +77,8 @@ function HtmlAppBubble({
       {/* Iframe — only mounted when expanded to avoid loading all inline */}
       {expanded && (
         <iframe
-          srcDoc={content}
-          sandbox="allow-scripts allow-same-origin"
+          srcDoc={isolateGeneratedHtml(content)}
+          sandbox="allow-scripts"
           style={{ width: "100%", height: 400, border: "none", display: "block" }}
           title="Agent-generated app"
         />
@@ -113,6 +114,56 @@ const formatMessageTime = (dateInput: Date | string | number) => {
 const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?)$/i;
 const HTML_EXTS  = /\.(html?|htm)$/i;
 
+type BackendConversationSummary = {
+  id: string;
+  agent_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  first_user_message?: string | null;
+  thread_status: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed";
+  background_allowed: boolean;
+  active_run_count: number;
+  last_run_id?: string | null;
+  last_run_status?: string | null;
+  checkpoint_count: number;
+  last_checkpoint_at?: string | null;
+};
+
+function toUnixMs(value?: string | number | null): number {
+  if (typeof value === "number") return value;
+  if (!value) return Date.now();
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function deriveConversationTitle(rawTitle?: string | null, firstUserMessage?: string | null): string {
+  const preferred = firstUserMessage?.trim() || rawTitle?.trim() || "Untitled conversation";
+  const fallbackTitle = rawTitle?.trim();
+  const titleSource =
+    !fallbackTitle ||
+    fallbackTitle === "New Conversation" ||
+    fallbackTitle.startsWith("Conversation with ")
+      ? preferred
+      : fallbackTitle;
+
+  return titleSource.length > 40 ? titleSource.slice(0, 40).trimEnd() + "…" : titleSource;
+}
+
+function sameMessages(a: ChatMessage[] = [], b: ChatMessage[] = []): boolean {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const left = a[i];
+    const right = b[i];
+    if (left.id !== right.id) return false;
+    if (left.sender !== right.sender) return false;
+    if (left.text !== right.text) return false;
+    if ((left.attachments?.length || 0) !== (right.attachments?.length || 0)) return false;
+  }
+  return true;
+}
 
 // ─── Proactive UX Updates ──────────────────────────────────────────────
 function WorkflowApprovalCard({ routineName }: { routineName: string }) {
@@ -235,7 +286,7 @@ function EmbedPreview({ agentId, refName, title, height, messageId }: { agentId:
         <iframe
           src={`canopy-workspace://${agentId}/${encodeURIComponent(HTML_EXTS.test(refName) ? refName : `${refName}.html`)}`}
           style={{ width: "100%", height: height ? `${height}px` : "400px", border: "none", background: "#fff" }}
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts"
           title={title}
         />
       )}
@@ -421,6 +472,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   // We use a ref of the last seen ID so we only re-seed on actual switches,
   // not on the routine setAgents calls that fire after every message.
   const lastSeenConvIdRef = useRef<string | null | undefined>(agent.activeConversationId);
+  const suppressThreadActivityTouchRef = useRef(false);
   // Throttle for background boot_sync re-registration after gateway timeouts
   // (used in handleSendMessage's error recovery; was referenced without being
   // declared — pre-existing compile error fixed June 9, 2026).
@@ -428,6 +480,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   useEffect(() => {
     if (lastSeenConvIdRef.current !== agent.activeConversationId) {
       lastSeenConvIdRef.current = agent.activeConversationId;
+      suppressThreadActivityTouchRef.current = true;
       setChatLog(capLog(agent.chatLog || []));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -478,7 +531,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           localStorage.removeItem("canopy_starter_task");
           // Small delay so the freshly-mounted chat surface settles before the
           // send kicks off (mirrors the one-tick defer in onSendChat above).
-          starterTimer = setTimeout(() => handleSendMessage(st.prompt), 800);
+          starterTimer = setTimeout(() => handleSendMessage(st.prompt, undefined, undefined, true), 800);
         }
       }
     } catch { /* malformed payload — drop it rather than block chat */ }
@@ -557,7 +610,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       }
     };
   }, [agent.id]);
-  const [loading, setLoading] = useState(false);
+  const [loadingSessionIds, setLoadingSessionIds] = useState<string[]>([]);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
   const [likedMsgIds, setLikedMsgIds] = useState<Set<string>>(new Set());
   const [dislikedMsgIds, setDislikedMsgIds] = useState<Set<string>>(new Set());
@@ -579,10 +632,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const [attachments, setAttachments] = useState<{name: string, dataUrl: string}[]>([]);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(true);
-  const abortRef = useRef(false);
+  const stoppedSessionIdsRef = useRef<Set<string>>(new Set());
 
   // Message Queueing State
-  const [queuedMessages, setQueuedMessages] = useState<{text: string, attachments: any[], threadMode: "same" | "new"}[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<{
+    text: string;
+    attachments: any[];
+    threadMode: "same" | "new";
+    sessionId: string | null;
+  }[]>([]);
 
   const handleQueueMessage = (threadMode: "same" | "new" = "same") => {
     const baseText = message.trim();
@@ -591,18 +649,58 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     setQueuedMessages(prev => [...prev, {
       text: baseText,
       attachments: [...attachments],
-      threadMode
+      threadMode,
+      sessionId: threadMode === "same" ? agentRef.current.activeConversationId || null : null,
     }]);
     
     setMessage("");
     setAttachments([]);
   };
 
+  const isSessionLoading = useCallback(
+    (sessionId?: string | null) => !!sessionId && loadingSessionIds.includes(sessionId),
+    [loadingSessionIds]
+  );
+
+  const markSessionLoading = useCallback((sessionId: string) => {
+    setLoadingSessionIds(prev => (prev.includes(sessionId) ? prev : [...prev, sessionId]));
+  }, []);
+
+  const clearSessionLoading = useCallback((sessionId?: string | null) => {
+    if (!sessionId) return;
+    setLoadingSessionIds(prev => prev.filter(id => id !== sessionId));
+  }, []);
+
+  const markSessionStopped = useCallback((sessionId?: string | null) => {
+    if (!sessionId) return;
+    stoppedSessionIdsRef.current.add(sessionId);
+    clearSessionLoading(sessionId);
+  }, [clearSessionLoading]);
+
+  const clearStoppedMarker = useCallback((sessionId?: string | null) => {
+    if (!sessionId) return;
+    stoppedSessionIdsRef.current.delete(sessionId);
+  }, []);
+
+  const wasSessionStopped = useCallback(
+    (sessionId?: string | null) => !!sessionId && stoppedSessionIdsRef.current.has(sessionId),
+    []
+  );
+
+  const activeThreadLoading = isSessionLoading(agent.activeConversationId);
+
   // Process queued messages when loading finishes
   useEffect(() => {
-    if (!loading && queuedMessages.length > 0 && !abortRef.current) {
+    if (queuedMessages.length > 0) {
       const timer = setTimeout(() => {
         const nextMsg = queuedMessages[0];
+        if (
+          nextMsg.threadMode === "same" &&
+          nextMsg.sessionId &&
+          isSessionLoading(nextMsg.sessionId)
+        ) {
+          return;
+        }
         setQueuedMessages(prev => prev.slice(1));
         
         if (nextMsg.threadMode === "new") {
@@ -617,12 +715,16 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
              handleSendMessage(nextMsg.text, nextMsg.attachments, newSessionId);
            }, 100);
         } else {
-           handleSendMessage(nextMsg.text, nextMsg.attachments);
+           handleSendMessage(
+             nextMsg.text,
+             nextMsg.attachments,
+             nextMsg.sessionId || undefined
+           );
         }
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [loading, queuedMessages, agent.id]);
+  }, [queuedMessages, agent.id, isSessionLoading]);
 
   const handleScroll = useCallback(() => {
     if (chatContainerRef.current) {
@@ -675,13 +777,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     
     // Determine if we have actual new content
     const activeConv = currentAgent.conversations?.find(c => c.id === agent.activeConversationId);
-    const isNewContent = !activeConv || chatLog.length !== activeConv.messages.length || 
-                         chatLog[chatLog.length - 1]?.id !== activeConv.messages[activeConv.messages.length - 1]?.id;
+    const isNewContent = !activeConv || !sameMessages(chatLog, activeConv.messages);
     
     // If local state perfectly matches the global store, bail out early to prevent an infinite render loop.
-    if (currentAgent.chatLog === chatLog && !isNewContent) {
+    if (sameMessages(currentAgent.chatLog || [], chatLog) && !isNewContent) {
       return; 
     }
+
+    const preserveLastActiveAt = suppressThreadActivityTouchRef.current;
+    suppressThreadActivityTouchRef.current = false;
 
     useWorldStore.setState(state => ({
       agents: state.agents.map(a => {
@@ -694,7 +798,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             return {
               ...c, 
               messages: chatLog, 
-              lastActiveAt: isNewContent ? Date.now() : c.lastActiveAt 
+              lastActiveAt: isNewContent && !preserveLastActiveAt ? Date.now() : c.lastActiveAt 
             };
           });
         }
@@ -705,6 +809,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
   // When switching threads externally, update the local chatLog immediately
   useEffect(() => {
+    suppressThreadActivityTouchRef.current = true;
     setChatLog(agent.chatLog || []);
     // Ensure we start at the bottom of the newly loaded thread
     isAtBottomRef.current = true;
@@ -715,6 +820,95 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   useEffect(() => {
     agentRef.current = agent;
   }, [agent]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateConversations = async () => {
+      try {
+        const summaries = await invoke<BackendConversationSummary[]>("list_agent_conversations", {
+          agentId: agent.id,
+          limit: 100,
+        });
+        if (cancelled || !Array.isArray(summaries) || summaries.length === 0) return;
+
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => {
+            if (a.id !== agent.id) return a;
+
+            const merged = [...(a.conversations || [])];
+            const existing = new Map(merged.map(conv => [conv.id, conv]));
+
+            for (const summary of summaries) {
+              const nextTitle = deriveConversationTitle(summary.title, summary.first_user_message);
+              const createdAt = toUnixMs(summary.created_at);
+              const lastActiveAt = toUnixMs(summary.updated_at);
+              const existingConv = existing.get(summary.id);
+
+              if (existingConv) {
+                const nextExisting = {
+                  ...existingConv,
+                  title: deriveConversationTitle(existingConv.title, summary.first_user_message) || nextTitle,
+                  createdAt: existingConv.createdAt || createdAt,
+                  lastActiveAt: Math.max(existingConv.lastActiveAt || 0, lastActiveAt),
+                  threadStatus: summary.thread_status,
+                  backgroundAllowed: summary.background_allowed,
+                  activeRunCount: summary.active_run_count,
+                  lastRunId: summary.last_run_id || null,
+                  lastRunStatus: summary.last_run_status || null,
+                  checkpointCount: summary.checkpoint_count,
+                  lastCheckpointAt: summary.last_checkpoint_at ? toUnixMs(summary.last_checkpoint_at) : null,
+                };
+                const index = merged.findIndex(conv => conv.id === summary.id);
+                if (index >= 0) merged[index] = nextExisting;
+                existing.set(summary.id, nextExisting);
+                continue;
+              }
+
+              const hydrated = {
+                id: summary.id,
+                title: nextTitle,
+                messages: [],
+                createdAt,
+                lastActiveAt,
+                type: "dm" as const,
+                status: "active" as const,
+                threadStatus: summary.thread_status,
+                backgroundAllowed: summary.background_allowed,
+                activeRunCount: summary.active_run_count,
+                lastRunId: summary.last_run_id || null,
+                lastRunStatus: summary.last_run_status || null,
+                checkpointCount: summary.checkpoint_count,
+                lastCheckpointAt: summary.last_checkpoint_at ? toUnixMs(summary.last_checkpoint_at) : null,
+              };
+              existing.set(summary.id, hydrated);
+              merged.push(hydrated);
+            }
+
+            const shouldRestoreLatest =
+              !a.activeConversationId &&
+              (!a.chatLog || a.chatLog.length === 0) &&
+              summaries.length > 0;
+
+            return {
+              ...a,
+              conversations: merged,
+              activeConversationId: shouldRestoreLatest ? summaries[0].id : a.activeConversationId,
+            };
+          })
+        }));
+      } catch (err) {
+        console.warn("Failed to hydrate conversation list:", err);
+      }
+    };
+
+    hydrateConversations();
+    const interval = setInterval(hydrateConversations, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [agent.id]);
 
   useEffect(() => {
     if (typeof invoke === 'function') {
@@ -749,6 +943,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             allMessages = allMessages.filter((m: any) => m.ts >= currentAgent.chatClearedAt!);
           }
 
+          suppressThreadActivityTouchRef.current = true;
           setChatLog(prev => {
             const nowMs = Date.now();
             const localOnly = prev.filter(msg => {
@@ -899,18 +1094,16 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   };
 
   const handleStop = () => {
-    abortRef.current = true;
-    setLoading(false);
+    markSessionStopped(agentRef.current.activeConversationId);
     setQueuedMessages([]); // Clear queue on stop
   };
 
-  const handleSendMessage = async (overrideText?: string, overrideAttachments?: any[], overrideSessionId?: string) => {
-    if (loading) return;
+  const handleSendMessage = async (overrideText?: string, overrideAttachments?: any[], overrideSessionId?: string, isStarterTask?: boolean) => {
     const baseText = (overrideText ?? message).trim();
     const activeAttachments = overrideAttachments ?? attachments;
     if (!baseText && activeAttachments.length === 0) return;
-
-    abortRef.current = false;
+    let activeSessionId = overrideSessionId || agentRef.current.activeConversationId;
+    if (isSessionLoading(activeSessionId)) return;
 
     let finalMessage = baseText;
     if (activeAttachments.length > 0) {
@@ -932,7 +1125,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       setMessage("");
       setAttachments([]);
     }
-    setLoading(true);
 
     try {
       if (userMsg.attachments) {
@@ -945,7 +1137,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         }
       }
 
-      let activeSessionId = overrideSessionId || agentRef.current.activeConversationId;
       const convExists = agentRef.current.conversations?.some(c => c.id === activeSessionId);
       
       if (!activeSessionId || !convExists) {
@@ -962,11 +1153,41 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 messages: [userMsg],
                 createdAt: Date.now(),
                 lastActiveAt: Date.now(),
+                threadStatus: "idle",
+                backgroundAllowed: false,
+                activeRunCount: 0,
+                checkpointCount: 0,
               }]
             };
           })
         }));
       }
+
+      if (isSessionLoading(activeSessionId)) {
+        return;
+      }
+      clearStoppedMarker(activeSessionId);
+      markSessionLoading(activeSessionId);
+
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => {
+          if (a.id !== agent.id) return a;
+          return {
+            ...a,
+            conversations: (a.conversations || []).map(c =>
+              c.id === activeSessionId
+                ? {
+                    ...c,
+                    threadStatus: "running",
+                    activeRunCount: (c.activeRunCount || 0) + 1,
+                    lastRunStatus: "running",
+                    lastActiveAt: Date.now(),
+                  }
+                : c
+            ),
+          };
+        }),
+      }));
 
       const response: any = await invoke("send_message", {
         agentId: agent.id,
@@ -974,10 +1195,19 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         sessionId: activeSessionId,
       });
 
-      if (abortRef.current) {
+      if (wasSessionStopped(activeSessionId)) {
         if (!overrideText) setMessage(baseText);
         setChatLog(prev => prev.filter(m => m.id !== userMsg.id));
         return;
+      }
+
+      // A1 activation: first agent reply seen. A2: first deliverable, specifically
+      // the reply to the onboarding starter task ("watch [agent] work" — the
+      // product's "aha moment"). Fire-once, see fireActivationEvent. Only the
+      // milestone name is sent, never reply content.
+      fireActivationEvent("activation_a1_first_reply");
+      if (isStarterTask) {
+        fireActivationEvent("activation_a2_first_deliverable");
       }
 
       let responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
@@ -995,6 +1225,27 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         time: formatMessageTime(new Date()),
         ts: Date.now(),
       };
+
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => {
+          if (a.id !== agentRef.current.id) return a;
+          return {
+            ...a,
+            conversations: (a.conversations || []).map(c =>
+              c.id === activeSessionId
+                ? {
+                    ...c,
+                    threadStatus: response?.thread_status || "idle",
+                    activeRunCount: Math.max(0, (c.activeRunCount || 1) - 1),
+                    lastRunId: response?.run_id || c.lastRunId || null,
+                    lastRunStatus: "completed",
+                    lastActiveAt: Date.now(),
+                  }
+                : c
+            ),
+          };
+        }),
+      }));
 
       if (agentRef.current.activeConversationId === activeSessionId) {
         setChatLog(prev => capLog([...prev, agentMsg]));
@@ -1031,10 +1282,10 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           const retryResponse: any = await invoke("send_message", {
             agentId: agent.id,
             message: finalMessage,
-            sessionId: agent.activeConversationId || null,
+            sessionId: activeSessionId,
           });
           
-          if (abortRef.current) {
+          if (wasSessionStopped(activeSessionId)) {
             if (!overrideText) setMessage(baseText);
             setChatLog(prev => prev.filter(m => m.id !== userMsg.id));
             return;
@@ -1050,6 +1301,27 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             time: formatMessageTime(new Date()),
             ts: Date.now(),
           };
+
+          useWorldStore.setState(state => ({
+            agents: state.agents.map(a => {
+              if (a.id !== agentRef.current.id) return a;
+              return {
+                ...a,
+                conversations: (a.conversations || []).map(c =>
+                  c.id === activeSessionId
+                    ? {
+                        ...c,
+                        threadStatus: retryResponse?.thread_status || "idle",
+                        activeRunCount: Math.max(0, (c.activeRunCount || 1) - 1),
+                        lastRunId: retryResponse?.run_id || c.lastRunId || null,
+                        lastRunStatus: "completed",
+                        lastActiveAt: Date.now(),
+                      }
+                    : c
+                ),
+              };
+            }),
+          }));
 
           if (agentRef.current.activeConversationId === activeSessionId) {
             setChatLog(prev => capLog([...prev, retryAgentMsg]));
@@ -1128,14 +1400,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         time: formatMessageTime(new Date()),
         ts: Date.now(),
       };
+
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(a => {
+          if (a.id !== agent.id) return a;
+          return {
+            ...a,
+            chatLog: [...a.chatLog, errorMsg],
+            conversations: (a.conversations || []).map(c =>
+              c.id === activeSessionId
+                ? {
+                    ...c,
+                    threadStatus: "failed",
+                    activeRunCount: 0,
+                    lastRunStatus: "failed",
+                    lastActiveAt: Date.now(),
+                  }
+                : c
+            ),
+          };
+        }),
+      }));
       
       setChatLog(prev => capLog([...prev, errorMsg]));
-      
-      useWorldStore.setState(state => ({
-        agents: state.agents.map(a => a.id === agent.id ? { ...a, chatLog: [...a.chatLog, errorMsg] } : a)
-      }));
     } finally {
-      setLoading(false);
+      clearSessionLoading(activeSessionId);
+      clearStoppedMarker(activeSessionId);
     }
   };
 
@@ -1256,8 +1546,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 {msg.attachments && msg.attachments.length > 0 && (
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
                     {msg.attachments.map((a, i) => (
-                      <div key={i} style={{ width: 80, height: 80, borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.2)" }}>
-                        <AttachmentThumbnail agentId={agent.id} attachment={a} />
+                      <div
+                        key={i}
+                        style={{
+                          width: 96,
+                          borderRadius: 8,
+                          overflow: "hidden",
+                          border: "1px solid rgba(255,255,255,0.2)",
+                          background: "rgba(255,255,255,0.08)",
+                        }}
+                      >
+                        <div style={{ width: 96, height: 80 }}>
+                          <AttachmentThumbnail agentId={agent.id} attachment={a} />
+                        </div>
+                        <div
+                          title={a.name}
+                          style={{
+                            padding: "6px 8px",
+                            fontSize: 10,
+                            lineHeight: 1.3,
+                            whiteSpace: "normal",
+                            wordBreak: "break-word",
+                            borderTop: "1px solid rgba(255,255,255,0.15)",
+                          }}
+                        >
+                          {a.name}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1277,6 +1591,20 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                     textTrimmed.startsWith("[Queued messages while agent was busy]")
                   ) {
                     return null;
+                  }
+
+                  if (msg.sender === "user") {
+                    return (
+                      <div
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          overflowWrap: "anywhere",
+                        }}
+                      >
+                        {msg.text}
+                      </div>
+                    );
                   }
 
                   // ── Image attachments from tool-delivered messages ────────────────────
@@ -1428,16 +1756,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                   text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/gi, "");
                   text = text.replace(/(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\][^\.\n]+\.\s*/gi, "");
                   text = text.replace(/\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*/gi, "");
-
-                  if (msg.sender === "user") {
-                      text = text.replace(/\[Queued messages while agent was busy\][\s\S]*?---\n?/i, "");
-                      text = text.replace(/Queued #\d+\s*\(from[^)]+\)\s*/gi, "");
-
-                      const blocks = text.split(/\n\s*\n/).map(b => b.trim()).filter(b => b);
-                      const deduped = blocks.filter((item, pos, arr) => pos === 0 || item !== arr[pos - 1]);
-                      text = deduped.join("\n\n");
-                      if (!text) text = "[System Event]";
-                  }
 
                   const elements: React.ReactNode[] = [];
                   const thoughtStartRegex = /\[THOUGHT_PROCESS\]/i;
@@ -1660,17 +1978,17 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                     }}>
                       <button
                         onClick={() => {
-                          if (loading) return;
+                          if (activeThreadLoading) return;
                           handleSendMessage(msg.text);
                         }}
-                        disabled={loading}
+                        disabled={activeThreadLoading}
                         title="Retry — send this message again"
                         style={{
                           padding: 3, border: "none", background: "transparent",
-                          cursor: loading ? "not-allowed" : "pointer",
+                          cursor: activeThreadLoading ? "not-allowed" : "pointer",
                           borderRadius: 4, display: "flex", alignItems: "center",
                           color: "var(--text-muted)",
-                          opacity: loading ? 0.4 : 1,
+                          opacity: activeThreadLoading ? 0.4 : 1,
                         }}
                       >
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1726,7 +2044,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           })
         )}
 
-        {loading && (
+        {activeThreadLoading && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 12, height: 12, borderRadius: "50%", background: "#3c6663",
@@ -1982,15 +2300,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       <div style={{ display: "flex", gap: 8, marginTop: attachments.length > 0 ? 8 : 16, alignItems: "flex-end", padding: "0 10px 10px 10px" }}>
         <button
           onClick={() => fileInputRef.current?.click()}
-          disabled={loading || !gatewayReady || agent.paused}
+          disabled={activeThreadLoading || !gatewayReady || agent.paused}
           title="Attach File or Screenshot"
           style={{
             padding: "14px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.08)",
             background: "var(--glass-light)",
             color: "var(--text-main)",
-            cursor: (loading || !gatewayReady || agent.paused) ? "default" : "pointer",
+            cursor: (activeThreadLoading || !gatewayReady || agent.paused) ? "default" : "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
-            opacity: (loading || !gatewayReady || agent.paused) ? 0.6 : 1,
+            opacity: (activeThreadLoading || !gatewayReady || agent.paused) ? 0.6 : 1,
             height: "46px"
           }}
         >
@@ -2020,7 +2338,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               if ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) {
-                 if (loading) handleQueueMessage("same");
+                 if (activeThreadLoading) handleQueueMessage("same");
                  else handleSendMessage();
               }
             }
@@ -2041,7 +2359,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               }
             }
           }}
-          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : loading ? "Type here to queue another task..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
+          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : activeThreadLoading ? "Type here to queue another task..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
           disabled={!gatewayReady || agent.paused}
           rows={1}
           style={{
@@ -2054,7 +2372,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           }}
         />
         <div style={{ display: "flex", gap: 8, flexDirection: "row" }}>
-          {loading && (
+          {activeThreadLoading && (
             <button
               onClick={handleStop}
               style={{
@@ -2069,7 +2387,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             >Stop</button>
           )}
 
-          {!loading ? (
+          {!activeThreadLoading ? (
             <button
               onClick={() => handleSendMessage()}
               disabled={(!message.trim() && attachments.length === 0) || !gatewayReady || agent.paused}

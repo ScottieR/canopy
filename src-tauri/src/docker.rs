@@ -4,10 +4,44 @@ use bollard::Docker;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use crate::models::ContainerStatus;
 use crate::openclaw::get_docker_command;
+
+/// Write a runtime control file with owner-only permissions.
+///
+/// Compose files must not contain provider credentials, but they still describe
+/// local ports and host mount paths. Keeping every generated control file at
+/// `0600` prevents other local users from learning or modifying that topology.
+pub(crate) fn write_private_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<(), String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+
+    let mut file = options
+        .open(path)
+        .map_err(|error| format!("Failed to open {}: {}", path.display(), error))?;
+    file.write_all(contents.as_ref())
+        .map_err(|error| format!("Failed to write {}: {}", path.display(), error))?;
+    file.sync_data()
+        .map_err(|error| format!("Failed to flush {}: {}", path.display(), error))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("Failed to secure {}: {}", path.display(), error))?;
+    }
+
+    Ok(())
+}
 
 /// Manages OrbStack/Docker containers for OpenClaw instances.
 /// Users never see Docker — this is the invisible infrastructure layer.
@@ -54,6 +88,52 @@ impl DockerManager {
     pub fn client(&self) -> &Docker {
         &self.docker
     }
+}
+
+/// Restart the local container engine without invoking a command shell.
+///
+/// All executable names and arguments are fixed application constants. Keeping
+/// this as direct process execution prevents future refactors from accidentally
+/// interpolating container names or error text into a `sh -c` string.
+fn restart_local_container_engine() {
+    let orb_stopped = std::process::Command::new("orbctl")
+        .arg("stop")
+        .status()
+        .is_ok_and(|status| status.success());
+    if orb_stopped {
+        if !std::process::Command::new("orbctl")
+            .arg("start")
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            tracing::warn!("restart_local_container_engine: orbctl start failed");
+        }
+        return;
+    }
+
+    for (app, quit_script) in [
+        ("OrbStack", "quit app \"OrbStack\""),
+        ("Docker", "quit app \"Docker\""),
+    ] {
+        let quit_succeeded = std::process::Command::new("osascript")
+            .args(["-e", quit_script])
+            .status()
+            .is_ok_and(|status| status.success());
+        if !quit_succeeded {
+            continue;
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if std::process::Command::new("open")
+            .args(["-a", app])
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            return;
+        }
+    }
+
+    tracing::warn!("restart_local_container_engine: no supported engine could be restarted");
 }
 
 // ─── Tauri Commands ──────────────────────────────────────────────────────────
@@ -271,12 +351,10 @@ pub async fn get_container_status(
 /// - The healthcheck curl runs *inside* the container, so it correctly uses 18789
 ///   (GATEWAY_CONTAINER_PORT). Do NOT change the healthcheck URL to 18799.
 ///
-/// `provider_keys` — API keys read from the macOS Keychain at compose-generation time.
-/// Injected as container env vars so OpenClaw/LiteLLM can discover them without needing
-/// auth-profiles.json written to disk (which is still written as belt-and-suspenders).
-/// The compose file is regenerated on every start_gateway call; if keys change the content
-/// hash changes, triggering a compose-up container recreate automatically.
-fn generate_compose_file(data_dir: &PathBuf, provider_keys: &HashMap<String, String>) -> String {
+/// Provider credentials are deliberately absent from this file. Agent-scoped
+/// auth-profiles.json files are generated from the macOS Keychain at runtime,
+/// avoiding plaintext secrets in compose files and container metadata.
+fn generate_compose_file(data_dir: &PathBuf) -> String {
     let crash_guard_js = r#"// [Canopy Auto-Generated] Prevent unhandled exceptions from taking down the container
 process.on('uncaughtException', (err) => {
     console.error('[CRASH GUARD] Prevented fatal container exit from uncaught exception:', err);
@@ -289,29 +367,6 @@ process.on('unhandledRejection', (reason, promise) => {
     let _ = std::fs::create_dir_all(&state_dir);
     let _ = std::fs::write(state_dir.join("crash_guard.cjs"), crash_guard_js);
 
-    // Build the extra env lines. Keys are YAML-safe (alphanumeric + underscores).
-    // Values are injected as literal strings — no shell quoting needed in YAML block lists.
-    // Sorted for deterministic output (so the content-hash comparison is stable).
-    let mut sorted_keys: Vec<(&String, &String)> = provider_keys.iter().collect();
-    sorted_keys.sort_by_key(|(k, _)| k.as_str());
-    let extra_env: String = sorted_keys
-        .into_iter()
-        .map(|(k, v)| format!("      - {}={}\n", k, v))
-        .collect();
-
-    let mut extra_volumes = String::new();
-    if let Ok(dirs) = crate::workspace_manager::get_all_agents_allowed_directories() {
-        for dir in dirs {
-            let path = std::path::Path::new(&dir);
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                extra_volumes.push_str(&format!(
-                    "      - {}:/home/node/.openclaw/workspace/mounts/{}\n",
-                    dir, name
-                ));
-            }
-        }
-    }
-
     format!(
         r#"services:
   canopy-gateway:
@@ -322,19 +377,19 @@ process.on('unhandledRejection', (reason, promise) => {
       - "com.canopy.managed=true"
       - "com.canopy.type=shared-gateway"
     ports:
-      - "18799:18789"   # HOST:CONTAINER — Rust code connects on 18799; OpenClaw listens on 18789
-      - "18800:18790"
-      - "18801:18791"
+      - "127.0.0.1:18799:18789"   # Loopback only — never expose the gateway on the LAN
+      - "127.0.0.1:18800:18790"
+      - "127.0.0.1:18801:18791"
     volumes:
       # config dir → /home/node/.openclaw  (openclaw.json, agents/, credentials/, etc.)
       - {data}/openclaw-state:/home/node/.openclaw
       # workspace → /home/node/.openclaw/workspace  (SOUL.md, IDENTITY.md, state/, etc.)
       # ⚠️  Must be INSIDE .openclaw, not a sibling dir — verified from working reference agent
       - {data}/openclaw-state/workspace:/home/node/.openclaw/workspace
-{extra_volumes}    environment:
+    environment:
       - NODE_ENV=production
       - NODE_OPTIONS=--require /home/node/.openclaw/crash_guard.cjs
-{extra_env}    extra_hosts:
+    extra_hosts:
       - "host.docker.internal:host-gateway"
     # init: true runs a minimal init process (PID 1) inside the container that:
     #   1. Forwards signals (SIGTERM/SIGKILL) to the Node.js process — critical for clean shutdown
@@ -388,11 +443,11 @@ process.on('unhandledRejection', (reason, promise) => {
       retries: 3
       
   canopy-chroma:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:0.4.24
     container_name: canopy-chroma
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - {data}/chroma-data:/chroma/chroma
     deploy:
@@ -409,9 +464,23 @@ volumes:
   openclaw-workspace:
 "#,
         data = data_dir.display(),
-        extra_env = extra_env,
-        extra_volumes = extra_volumes,
     )
+}
+
+fn format_allowed_directory_volume(
+    grant: &crate::workspace_manager::FolderGrant,
+) -> Option<String> {
+    let source = serde_json::to_string(&grant.path).ok()?;
+    let target = serde_json::to_string(&format!(
+        "/home/node/.openclaw/workspace/mounts/{}",
+        grant.id
+    ))
+    .ok()?;
+    let read_only = grant.access == crate::workspace_manager::FolderAccessMode::ReadOnly;
+    Some(format!(
+        "      - type: bind\n        source: {}\n        target: {}\n        read_only: {}\n",
+        source, target, read_only
+    ))
 }
 
 /// Generate docker-compose for an isolated agent container
@@ -429,18 +498,10 @@ process.on('unhandledRejection', (reason, promise) => {
     let _ = std::fs::write(state_dir.join("crash_guard.cjs"), crash_guard_js);
 
     let mut extra_volumes = String::new();
-    if let Ok(path) = crate::workspace_manager::get_agent_workspace_config_path(agent_id) {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&content) {
-                for dir in dirs {
-                    let path = std::path::Path::new(&dir);
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        extra_volumes.push_str(&format!(
-                            "      - {}:/home/node/.openclaw/workspace/mounts/{}\n",
-                            dir, name
-                        ));
-                    }
-                }
+    if let Ok(grants) = crate::workspace_manager::get_folder_grants_for_agent(agent_id) {
+        for grant in grants.into_iter().filter(|grant| grant.active) {
+            if let Some(volume) = format_allowed_directory_volume(&grant) {
+                extra_volumes.push_str(&volume);
             }
         }
     }
@@ -456,7 +517,7 @@ process.on('unhandledRejection', (reason, promise) => {
       - "com.canopy.type=isolated"
       - "com.canopy.agent-id={id}"
     ports:
-      - "{port}:18789"
+      - "127.0.0.1:{port}:18789"
     volumes:
       - {data}/isolated/{id}/state:/home/node/.openclaw
       - {data}/isolated/{id}/workspace:/home/node/.openclaw/workspace
@@ -608,13 +669,29 @@ fn merge_json(a: &mut serde_json::Value, b: &serde_json::Value) {
     }
 }
 
-pub fn preflight_sanitize_and_merge_config(
+#[derive(Clone, Copy, Debug)]
+struct ProviderKeyAvailability {
+    has_anthropic: bool,
+    has_openai: bool,
+    has_gemini: bool,
+}
+
+fn discover_provider_key_availability() -> ProviderKeyAvailability {
+    ProviderKeyAvailability {
+        has_anthropic: crate::keychain::get_secret("ANTHROPIC_API_KEY").is_ok(),
+        has_openai: crate::keychain::get_secret("OPENAI_API_KEY").is_ok(),
+        has_gemini: crate::keychain::get_secret("GEMINI_API_KEY").is_ok(),
+    }
+}
+
+fn preflight_sanitize_and_merge_config_with_keys(
     state_dir: &std::path::Path,
     // `Some(agent_id)` → this is an isolated agent container; `None` → main gateway.
     // The id is needed (not just a bool) so the isolated branch can compute the
     // agent's deterministic JIT-proxy port for its `browser.cdpUrl`.
     isolated_agent_id: Option<&str>,
     token: &str,
+    key_availability: ProviderKeyAvailability,
 ) {
     let is_isolated = isolated_agent_id.is_some();
     let config_path = state_dir.join("openclaw.json");
@@ -692,13 +769,10 @@ pub fn preflight_sanitize_and_merge_config(
         }
     }
 
-    let has_anthropic = crate::keychain::get_secret("ANTHROPIC_API_KEY").is_ok();
-    let has_openai = crate::keychain::get_secret("OPENAI_API_KEY").is_ok();
-    let has_gemini = crate::keychain::get_secret("GEMINI_API_KEY").is_ok();
     let default_model = crate::model_constants::default_model_from_available_keys(
-        has_anthropic,
-        has_openai,
-        has_gemini,
+        key_availability.has_anthropic,
+        key_availability.has_openai,
+        key_availability.has_gemini,
     );
 
     cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": default_model });
@@ -731,7 +805,11 @@ pub fn preflight_sanitize_and_merge_config(
         required_baseline["browser"] = serde_json::json!({
             "noSandbox": true,
             "attachOnly": true,
-            "cdpUrl": format!("http://host.docker.internal:{}", crate::browser_manager::SHARED_BRIDGE_PORT),
+            "cdpUrl": crate::browser_manager::browser_bridge_url(
+                "http",
+                crate::browser_manager::SHARED_BRIDGE_PORT,
+                "shared-browser"
+            ),
             "defaultProfile": "openclaw"
         });
 
@@ -760,9 +838,10 @@ pub fn preflight_sanitize_and_merge_config(
         required_baseline["browser"] = serde_json::json!({
             "noSandbox": true,
             "attachOnly": true,
-            "cdpUrl": format!(
-                "http://host.docker.internal:{}",
-                crate::browser_manager::jit_proxy_port_for(agent_id)
+            "cdpUrl": crate::browser_manager::browser_bridge_url(
+                "http",
+                crate::browser_manager::jit_proxy_port_for(agent_id),
+                agent_id
             ),
             "defaultProfile": "openclaw"
         });
@@ -777,6 +856,19 @@ pub fn preflight_sanitize_and_merge_config(
         let _ = std::fs::write(&config_path, updated);
         tracing::info!("preflight_sanitize_and_merge_config (isolated={}): ensured safe baseline config at {:?}", is_isolated, config_path);
     }
+}
+
+pub fn preflight_sanitize_and_merge_config(
+    state_dir: &std::path::Path,
+    isolated_agent_id: Option<&str>,
+    token: &str,
+) {
+    preflight_sanitize_and_merge_config_with_keys(
+        state_dir,
+        isolated_agent_id,
+        token,
+        discover_provider_key_availability(),
+    );
 }
 
 #[tauri::command]
@@ -922,7 +1014,7 @@ pub async fn start_gateway_internal(
     preflight_sanitize_and_merge_config(
         &state_dir,
         None,
-        crate::model_constants::GATEWAY_INTERNAL_TOKEN,
+        crate::model_constants::gateway_internal_token(),
     );
     let openclaw_path = state_dir.join("openclaw.json");
     let desired_config = std::fs::read_to_string(&openclaw_path).unwrap_or_default();
@@ -991,33 +1083,7 @@ pub async fn start_gateway_internal(
     // loop that spirals to 300+ PIDs and OOM-kills the container in under 30 seconds.
     preflight_sanitize_auth_profiles(&data_dir);
 
-    // Read provider API keys from the macOS Keychain so they can be injected as
-    // container env vars. LiteLLM (inside OpenClaw) checks standard env var names
-    // like GEMINI_API_KEY, ANTHROPIC_API_KEY, etc. — no auth-profiles.json needed.
-    // auth-profiles.json is still written by boot_sync_agents as belt-and-suspenders.
-    let provider_keys = {
-        let mut m = HashMap::new();
-        for key in &[
-            "GEMINI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "OPENAI_API_KEY",
-            "XAI_API_KEY",
-        ] {
-            if let Ok(v) = crate::keychain::get_secret(key) {
-                if !v.trim().is_empty() {
-                    m.insert(key.to_string(), v.trim().to_string());
-                }
-            }
-        }
-        // DO NOT include global SLACK_BOT_TOKEN to prevent cross-agent context bleed
-        m
-    };
-    tracing::info!(
-        "start_gateway: injecting {} provider env var(s) into compose",
-        provider_keys.len()
-    );
-
-    let compose = generate_compose_file(&data_dir, &provider_keys);
+    let compose = generate_compose_file(&data_dir);
     let compose_path = data_dir.join("docker-compose.yml");
 
     // Only write the compose file if it doesn't exist or the content changed.
@@ -1029,7 +1095,7 @@ pub async fn start_gateway_internal(
 
     if needs_write {
         tracing::info!("docker-compose.yml changed or missing — writing new version");
-        std::fs::write(&compose_path, &compose).map_err(|e| e.to_string())?;
+        write_private_file(&compose_path, &compose)?;
     }
 
     // ── Always purge hash-prefixed "mangled" containers ──────────────────────
@@ -1092,10 +1158,7 @@ pub async fn start_gateway_internal(
                             emit_progress(
                                 "Docker daemon frozen. Restarting engine (takes ~12s)...",
                             );
-                            let _ = std::process::Command::new("sh")
-                                .arg("-c")
-                                .arg("if command -v orbctl >/dev/null; then orbctl stop && orbctl start; else osascript -e 'quit app \"OrbStack\"' 2>/dev/null || osascript -e 'quit app \"Docker\"' 2>/dev/null && sleep 3 && (open -a OrbStack 2>/dev/null || open -a Docker 2>/dev/null); fi")
-                                .output();
+                            restart_local_container_engine();
                             tracing::info!("start_gateway: Docker engine restart command issued. Waiting 12 seconds...");
                             tokio::time::sleep(std::time::Duration::from_secs(12)).await;
                         }
@@ -1137,10 +1200,7 @@ pub async fn start_gateway_internal(
                                 "Docker daemon frozen. Restarting engine (takes ~12s)...",
                             );
                             // Try OrbStack first, fallback to Docker Desktop
-                            let _ = std::process::Command::new("sh")
-                                .arg("-c")
-                                .arg("if command -v orbctl >/dev/null; then orbctl stop && orbctl start; else osascript -e 'quit app \"OrbStack\"' 2>/dev/null || osascript -e 'quit app \"Docker\"' 2>/dev/null && sleep 3 && (open -a OrbStack 2>/dev/null || open -a Docker 2>/dev/null); fi")
-                                .output();
+                            restart_local_container_engine();
 
                             tracing::info!("start_gateway: Docker engine restart command issued. Waiting 12 seconds for daemon to recover...");
                             tokio::time::sleep(std::time::Duration::from_secs(12)).await;
@@ -1529,7 +1589,10 @@ for (const file of files) {
             .output()
             .await;
 
-        tracing::info!("ensure_browser_dependencies: Background Slack plugin installation complete for {}.", container_name);
+        tracing::info!(
+            "ensure_browser_dependencies: Background Slack plugin installation complete for {}.",
+            container_name
+        );
     });
 }
 
@@ -1655,6 +1718,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shared_compose_never_mounts_agent_custom_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let compose = generate_compose_file(&dir.path().to_path_buf());
+
+        assert!(
+            !compose.contains("/home/node/.openclaw/workspace/mounts/"),
+            "custom folders must never cross into the shared gateway"
+        );
+    }
+
+    #[test]
+    fn shared_compose_keeps_secrets_out_and_services_on_loopback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let compose = generate_compose_file(&dir.path().to_path_buf());
+
+        for secret_name in [
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "XAI_API_KEY",
+            "SLACK_BOT_TOKEN",
+        ] {
+            assert!(!compose.contains(secret_name));
+        }
+        assert!(compose.contains("127.0.0.1:18799:18789"));
+        assert!(compose.contains("127.0.0.1:8000:8000"));
+        assert!(!compose.contains("\n      - \"8000:8000\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_runtime_files_are_owner_only_even_when_rewriting_existing_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("docker-compose.yml");
+        std::fs::write(&path, "old").expect("seed public file");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("make seed public");
+
+        write_private_file(&path, "new").expect("private rewrite");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn custom_directory_volume_is_yaml_escaped_and_read_only() {
+        let grant = crate::workspace_manager::FolderGrant {
+            id: "folder-test".to_string(),
+            path: "/tmp/folder\"with\ncontrols".to_string(),
+            name: "folder".to_string(),
+            access: crate::workspace_manager::FolderAccessMode::ReadOnly,
+            active: true,
+        };
+        let volume = format_allowed_directory_volume(&grant).expect("volume entry");
+
+        assert!(volume.contains("\\\""));
+        assert!(volume.contains("\\n"));
+        assert!(volume.contains("target: \"/home/node/.openclaw/workspace/mounts/folder-test\""));
+        assert!(volume.contains("read_only: true"));
+    }
+
+    #[test]
+    fn read_write_grant_is_explicit_in_compose() {
+        let grant = crate::workspace_manager::FolderGrant {
+            id: "folder-write".to_string(),
+            path: "/tmp/write".to_string(),
+            name: "write".to_string(),
+            access: crate::workspace_manager::FolderAccessMode::ReadWrite,
+            active: true,
+        };
+        let volume = format_allowed_directory_volume(&grant).expect("volume entry");
+
+        assert!(volume.contains("read_only: false"));
+    }
+
+    #[test]
     fn test_generate_isolated_compose() {
         let agent_id = "agent-123";
         let data_dir = PathBuf::from("/tmp/canopy");
@@ -1663,7 +1807,8 @@ mod tests {
         let compose = generate_isolated_compose(agent_id, &data_dir, port);
 
         assert!(compose.contains("canopy-isolated-agent-123"));
-        assert!(compose.contains("18805:18789"));
+        assert!(compose.contains("127.0.0.1:18805:18789"));
+        assert!(!compose.contains("\n      - \"18805:18789\""));
         assert!(compose.contains("- \"com.canopy.type=isolated\""));
         assert!(compose.contains("- \"com.canopy.agent-id=agent-123\""));
         assert!(compose.contains("isolated-agent-123"));
@@ -1676,7 +1821,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let agent_id = "agent-iso-test";
 
-        preflight_sanitize_and_merge_config(dir.path(), Some(agent_id), "test-token");
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            Some(agent_id),
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: false,
+                has_openai: false,
+                has_gemini: true,
+            },
+        );
 
         let cfg: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
@@ -1688,9 +1842,10 @@ mod tests {
             Some(&serde_json::json!(true)),
             "browser plugin must be enabled for isolated containers"
         );
-        let expected_url = format!(
-            "http://host.docker.internal:{}",
-            crate::browser_manager::jit_proxy_port_for(agent_id)
+        let expected_url = crate::browser_manager::browser_bridge_url(
+            "http",
+            crate::browser_manager::jit_proxy_port_for(agent_id),
+            agent_id,
         );
         assert_eq!(
             cfg.pointer("/browser/cdpUrl").and_then(|v| v.as_str()),
@@ -1707,21 +1862,64 @@ mod tests {
     fn gateway_preflight_uses_shared_bridge_not_jit() {
         let dir = tempfile::tempdir().expect("tempdir");
 
-        preflight_sanitize_and_merge_config(dir.path(), None, "test-token");
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            None,
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: true,
+                has_openai: false,
+                has_gemini: false,
+            },
+        );
 
         let cfg: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
         )
         .expect("valid json");
 
-        let expected_url = format!(
-            "http://host.docker.internal:{}",
-            crate::browser_manager::SHARED_BRIDGE_PORT
+        let expected_url = crate::browser_manager::browser_bridge_url(
+            "http",
+            crate::browser_manager::SHARED_BRIDGE_PORT,
+            "shared-browser",
         );
         assert_eq!(
             cfg.pointer("/browser/cdpUrl").and_then(|v| v.as_str()),
             Some(expected_url.as_str()),
             "gateway must keep pointing at the shared bridge"
+        );
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary")
+                .and_then(|v| v.as_str()),
+            Some(crate::model_constants::DEFAULT_ANTHROPIC_MODEL),
+            "preflight model selection should be deterministic in tests and not depend on host keychain state"
+        );
+    }
+
+    #[test]
+    fn preflight_helper_unit_tests_do_not_touch_host_keychain() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            None,
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: false,
+                has_openai: true,
+                has_gemini: false,
+            },
+        );
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
+        )
+        .expect("valid json");
+
+        assert_eq!(
+            cfg.pointer("/agents/defaults/model/primary")
+                .and_then(|v| v.as_str()),
+            Some(crate::model_constants::DEFAULT_OPENAI_MODEL)
         );
     }
 }

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-shell";
 import { ProvidersVault } from "./ProvidersVault";
 import { WebVault } from "./WebVault";
 import { PasswordInput } from "./shared/PasswordInput";
@@ -46,6 +45,17 @@ interface ServiceStatus {
 }
 
 type Section = "providers" | "services";
+
+const PER_AGENT_BRIDGE_CONNECTOR_IDS = [
+  "figma",
+  "apple_health",
+  "live_location",
+  "shortcuts",
+  "vision",
+  "notifications",
+  "homekit",
+  "bluetooth",
+];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -186,9 +196,6 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
   const [gmailStatus, setGmailStatus] = useState<ServiceStatus>({ connected: false });
   const [calendarStatus, setCalendarStatus] = useState<ServiceStatus>({ connected: false });
   const [iMessageStatus, setIMessageStatus] = useState<ServiceStatus>({ connected: false });
-  const [telegramStatus, setTelegramStatus] = useState<ServiceStatus>({ connected: false });
-  const [discordStatus, setDiscordStatus] = useState<ServiceStatus>({ connected: false });
-  const [githubStatus, setGithubStatus] = useState<ServiceStatus>({ connected: false });
 
   // UI states
   const [gmailLoading, setGmailLoading] = useState(false);
@@ -244,23 +251,6 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       setIMessageStatus({ connected: granted });
     } catch { setIMessageStatus({ connected: false }); }
 
-    // Github
-    try {
-      const tok = await invoke<string>("get_secret_cmd", { key: "GITHUB_TOKEN" });
-      setGithubStatus({ connected: !!tok });
-    } catch { setGithubStatus({ connected: false }); }
-
-    // Telegram
-    try {
-      const tok = await invoke<string>("get_secret_cmd", { key: "telegram-bot-token" });
-      setTelegramStatus({ connected: !!tok });
-    } catch { setTelegramStatus({ connected: false }); }
-
-    // Discord
-    try {
-      const tok = await invoke<string>("get_secret_cmd", { key: "discord-bot-token" });
-      setDiscordStatus({ connected: !!tok });
-    } catch { setDiscordStatus({ connected: false }); }
   }, []);
 
   // Disconnect handler — declared here (after `checkStatuses`) so we can re-check
@@ -291,20 +281,6 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       window.removeEventListener("refresh_integrations", handleUpdate);
     };
   }, [checkStatuses]);
-
-  const launchCompanion = async (id: string, name: string) => {
-    const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    new WebviewWindow('companion_' + id + '_' + Date.now(), {
-      url: `/index.html?companion=${id}&agentName=Shared`,
-      title: `Setup ${name}`,
-      width: 420,
-      height: 760,
-      x: window.screen.availWidth - 440,
-      y: 50,
-      alwaysOnTop: true,
-      decorations: true,
-    });
-  };
 
   // Agents connected to each service
   const getConnectedAgentsWithMode = (integration: string) =>
@@ -343,8 +319,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
       const granted = await invoke<boolean>("check_full_disk_access");
       setIMessageStatus({ connected: granted });
       if (!granted) {
-        // Open System Settings to the FDA pane
-        await open("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles");
+        await invoke("open_full_disk_access_settings");
       }
     } catch (e) {
       console.error("iMessage setup error:", e);
@@ -360,7 +335,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
           Integrations
         </h1>
         <p style={{ fontSize: 14, color: "var(--text-sub)", marginTop: 8, marginBottom: 24, lineHeight: 1.5 }}>
-          Connect services here once — all your agents can use them. Per-agent channel access is configured in each agent's Connections tab.
+          AI providers live here; most runtime connections are configured per-agent from each agent's Skills & Access page.
         </p>
 
         {/* Section tabs */}
@@ -390,7 +365,7 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
           <>
             <SectionHeader
               title="AI Providers"
-              subtitle="Global API keys used by all agents. Individual agents can override with their own keys in their Overview tab."
+              subtitle="Legacy provider vault. Keys here are not assigned automatically; connect or provision a dedicated key from each agent's Skills & Access tab."
             />
             <ProvidersVault />
           </>
@@ -464,36 +439,54 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
             <ServiceCard
               icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="12" fill="#2AABEE"/><path d="M18.6 6.8l-2.4 11.4c-.2.8-.7 1-1.3.6l-3.6-2.7-1.7 1.7c-.2.2-.4.3-.7.3l.3-3.8 6.5-5.9c.3-.3-.1-.4-.4-.2L6 14.2 2.5 13c-.8-.3-.8-.8.2-1.1l15.1-5.8c.6-.3 1.2.1 1 1.1-.1-.1-.2-.1-.2.6z" fill="#fff"/></svg>}
               name="Telegram"
-              description="Connect a Telegram bot. One bot per gateway — shared across all agents."
-              status={telegramStatus}
+              description="Connect a Telegram bot from the specific agent that should own it."
+              status={{ connected: getConnectedAgentsWithMode("telegram").length > 0 }}
               connectedAgents={getConnectedAgentsWithMode("telegram")}
-              onConnect={() => launchCompanion("telegram", "Telegram")}
-              onDisconnect={() => setDisconnectTarget("telegram")}
             />
 
             {/* Discord */}
             <ServiceCard
               icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="#5865F2"><path d="M20.3 4.4A19.4 19.4 0 0015.1 3a.1.1 0 00-.1.1c-.2.4-.4.9-.6 1.3a17.9 17.9 0 00-5.3 0 13 13 0 00-.6-1.3.1.1 0 00-.1-.1A19.3 19.3 0 003.7 4.4a.1.1 0 000 .1C1 8.7.3 12.9.7 17.1a.1.1 0 00.1.1 19.5 19.5 0 005.7 2.9.1.1 0 00.1-.1c.4-.6.8-1.2 1.2-1.9a.1.1 0 000-.1 12.8 12.8 0 01-2-.9.1.1 0 010-.2l.4-.3a.1.1 0 01.1 0c4.2 1.9 8.7 1.9 12.8 0a.1.1 0 01.1 0l.4.3a.1.1 0 010 .2 12.8 12.8 0 01-2 .9.1.1 0 000 .1c.4.7.8 1.3 1.2 1.9a.1.1 0 00.1.1 19.4 19.4 0 005.7-2.9.1.1 0 00.1-.1c.4-4.8-.7-9-3-12.7a.1.1 0 00-.1 0zM8.5 14.5c-1.1 0-2.1-1-2.1-2.3s.9-2.3 2.1-2.3 2.1 1 2.1 2.3-.9 2.3-2.1 2.3zm7 0c-1.1 0-2.1-1-2.1-2.3s.9-2.3 2.1-2.3 2.1 1 2.1 2.3-.9 2.3-2.1 2.3z"/></svg>}
               name="Discord"
-              description="Connect a Discord bot to respond in channels and DMs."
-              status={discordStatus}
+              description="Connect a Discord bot from the specific agent that should own it."
+              status={{ connected: getConnectedAgentsWithMode("discord").length > 0 }}
               connectedAgents={getConnectedAgentsWithMode("discord")}
-              onConnect={() => launchCompanion("discord", "Discord")}
-              onDisconnect={() => setDisconnectTarget("discord")}
             />
 
             {/* Github */}
             <ServiceCard
               icon={<Github size={20} color="#3c6663" />}
               name="GitHub"
-              description="Allow agent to read repositories, create PRs, and review code"
-              status={githubStatus}
+              description="Connect GitHub from the specific agent that should own the token and repo bindings."
+              status={{ connected: getConnectedAgentsWithMode("github").length > 0 }}
               connectedAgents={getConnectedAgentsWithMode("github")}
-              onConnect={() => launchCompanion("github", "GitHub")}
             />
 
+            {connectors
+              .filter(c => c.isVisible && PER_AGENT_BRIDGE_CONNECTOR_IDS.includes(c.id))
+              .map(c => {
+                let IconComponent: any = Link;
+                if (c.icon === 'calendar') IconComponent = Calendar;
+                if (c.icon === 'hard-drive') IconComponent = HardDrive;
+                if (c.icon === 'github') IconComponent = Github;
+                if (c.icon === 'send' || c.icon === 'message-circle') IconComponent = MessageCircle;
+                if (c.icon === 'cloud') IconComponent = Cloud;
+                if (c.icon === 'database') IconComponent = Database;
+
+                return (
+                  <ServiceCard
+                    key={c.id}
+                    icon={<IconComponent size={20} color="#3c6663" />}
+                    name={c.name}
+                    description={`Connect ${c.name} from the specific agent that should own this bridge token.`}
+                    status={{ connected: getConnectedAgentsWithMode(c.id).length > 0 }}
+                    connectedAgents={getConnectedAgentsWithMode(c.id)}
+                  />
+                );
+              })}
+
             {/* Dynamic Global Connectors from Admin */}
-            {connectors.filter(c => c.isVisible && c.isGlobal && !c.isPlugin && !['slack', 'gmail', 'calendar', 'imessage', 'filesystem', 'telegram', 'discord', 'github'].includes(c.id)).map(c => {
+            {connectors.filter(c => c.isVisible && c.isGlobal && !c.isPlugin && !['slack', 'gmail', 'calendar', 'imessage', 'filesystem', 'telegram', 'discord', 'github', ...PER_AGENT_BRIDGE_CONNECTOR_IDS].includes(c.id)).map(c => {
               let IconComponent: any = Link;
               if (c.icon === 'calendar') IconComponent = Calendar;
               if (c.icon === 'hard-drive') IconComponent = HardDrive;

@@ -1,4 +1,5 @@
 import React from 'react';
+import { isolateGeneratedHtml } from '../../security/generatedHtml';
 
 // The universal GenUI component registry
 // In the future, this can be dynamically loaded or expanded by agents proposing new ones.
@@ -76,7 +77,7 @@ function CustomHtml({ props, attachments }: { props: any, attachments?: any[] })
   return (
     <iframe
       title="Generated mini-app"
-      srcDoc={html}
+      srcDoc={isolateGeneratedHtml(html)}
       sandbox="allow-scripts"
       style={{
         marginTop: 8,

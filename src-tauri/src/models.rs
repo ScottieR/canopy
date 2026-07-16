@@ -90,8 +90,8 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
 
                     // Only use the candidate if it passes format validation
                     if let Some(ref s) = candidate {
-                        if model_constants::validate_model_string(s).is_ok() {
-                            return s.clone();
+                        if let Ok(resolved) = model_constants::resolve_model_string(s) {
+                            return resolved;
                         } else {
                             tracing::warn!(
                                 "Dynamic models.json produced invalid model string '{}' for provider '{}'; \
@@ -201,6 +201,12 @@ pub struct AgentCapabilities {
     pub summarize: bool,
     #[serde(default)]
     pub genui: bool,
+    #[serde(default)]
+    pub computer_control: bool,
+    #[serde(default)]
+    pub host_control: bool,
+    #[serde(default)]
+    pub screen_record: bool,
 }
 
 impl Default for AgentCapabilities {
@@ -223,6 +229,9 @@ impl Default for AgentCapabilities {
             gog: true,
             summarize: true,
             genui: false,
+            computer_control: false,
+            host_control: false,
+            screen_record: false,
         }
     }
 }
@@ -518,6 +527,27 @@ impl Default for UserProfile {
             global_directives: "Always cite your sources and optimize for safety.".to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FeedbackReport {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    pub title: String,
+    pub description: String,
+    pub agent_id: Option<String>,
+    pub reporter_name: String,
+    pub reporter_email: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub context: serde_json::Value,
+    pub remote_status: String,
+    pub remote_error: Option<String>,
+    pub slack_notified: bool,
+    pub dispatched_agent_id: Option<String>,
+    pub dispatched_at: Option<String>,
 }
 
 // ─── Telemetry & Warnings ────────────────────────────────────────────────────
