@@ -24,6 +24,7 @@ mod canopy_helper;
 pub mod db;
 mod dispatch;
 mod docker;
+mod durable_content;
 mod feedback;
 mod google;
 mod health_monitor;
@@ -857,6 +858,13 @@ pub fn run() {
             openclaw::get_conversation_history,
             openclaw::list_agent_conversations,
             openclaw::list_thread_runs,
+            durable_content::save_forum_state,
+            durable_content::get_forum_state,
+            durable_content::list_forum_summaries,
+            durable_content::delete_forum_state,
+            durable_content::save_agent_mini_apps,
+            durable_content::get_agent_mini_apps,
+            durable_content::delete_agent_mini_apps,
             openclaw::get_agent_health,
             openclaw::check_agent_status,
             openclaw::get_gateway_log_tail,

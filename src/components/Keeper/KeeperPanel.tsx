@@ -30,12 +30,39 @@ type KeeperAction = {
   highlightText?: string;
 };
 
-type KeeperMsg = { role: "user" | "assistant"; content: string; ts: number; action?: KeeperAction };
+type FeedbackKind = "bug" | "feature_request";
+type KeeperFeedbackDraft = {
+  kind: FeedbackKind;
+  title: string;
+  description: string;
+  agentId: string | null;
+  prompt: string;
+};
+type KeeperMsg = {
+  role: "user" | "assistant";
+  content: string;
+  ts: number;
+  action?: KeeperAction;
+  feedbackDraft?: KeeperFeedbackDraft;
+  feedbackSent?: boolean;
+};
+type SubmittedFeedbackReport = {
+  id: string;
+  kind: string;
+  title: string;
+  description: string;
+  agentId?: string | null;
+  context?: Record<string, unknown>;
+};
 
 type ProviderHealth = { provider: string; status: string; detail?: string; model: string };
 type HelperMode = "hosted" | "provider" | "local";
 type HelperConfig = { mode: HelperMode; provider?: string; model?: string; credentialPresent: boolean };
 type HelperContinuity = { topic?: "provider_setup" | "integration_setup" | "diagnostics" | "onboarding"; target_agent?: string; provider?: "openai" | "anthropic" | "gemini" | "xai"; expires_at: number };
+
+const BUG_RELAY_PROMPT = "Do you want me to send this to the Canopy developers so they can fix the app?";
+const IDEA_RELAY_PROMPT = "If you want, I can relay this idea to the Canopy developers so they can improve your experience.";
+const EDDY_FEEDBACK_NUDGE = "If you ever have an idea about how this whole experience could be better, let me know, and I'll relay it so that Canopy can improve your experience.";
 
 // ── Guided actions: Eddy takes the user there ────────────────────────────────
 // The server (and the offline fallback) can attach an <ACTION>{json}</ACTION>
@@ -161,6 +188,69 @@ function updateContinuity(previous: HelperContinuity, message: string, agents: a
   else if (/\b(onboard|setup wizard|new agent)\b/.test(lower)) next.topic = "onboarding";
   next.expires_at = Date.now() + 30 * 60_000;
   return next;
+}
+
+function inferFeedbackKind(message: string): FeedbackKind | null {
+  const lower = message.toLowerCase();
+  if (/\b(bug|broken|broke|error|issue|problem|stuck|freeze|frozen|hang|crash|crashed|not working|doesn't work|isn't working|not responding|failed|failure)\b/.test(lower)) {
+    return "bug";
+  }
+  if (/\b(feature|idea|wish|better|improve|improvement|should|could you|would love|it would be nice|request)\b/.test(lower)) {
+    return "feature_request";
+  }
+  return null;
+}
+
+function summarizeFeedbackTitle(message: string, kind: FeedbackKind): string {
+  const normalized = message.replace(/\s+/g, " ").trim();
+  const firstSentence = normalized.split(/(?<=[.!?])\s/)[0] || normalized;
+  const title = firstSentence.slice(0, 120).trim();
+  if (title) return title;
+  return kind === "bug" ? "App issue reported to Eddy" : "Feature idea shared with Eddy";
+}
+
+function pickEngineerAgent(agents: any[]) {
+  const matches = agents.filter((agent) => {
+    const role = String(agent.role || "").toLowerCase();
+    const name = String(agent.name || "").toLowerCase();
+    return role === "engineer" || role === "developer" || role === "coder" || name.includes("engineer") || name.includes("developer");
+  });
+
+  return matches.sort((a, b) => {
+    const aScore = (a.paused ? 0 : 2) + (a.status === "active" ? 2 : 0) + (String(a.role || "").toLowerCase() === "engineer" ? 2 : 0);
+    const bScore = (b.paused ? 0 : 2) + (b.status === "active" ? 2 : 0) + (String(b.role || "").toLowerCase() === "engineer" ? 2 : 0);
+    return bScore - aScore;
+  })[0] ?? null;
+}
+
+function resolveFeedbackAgentId(
+  selectedAgentId: string | null,
+  continuity: HelperContinuity,
+  agents: any[],
+): string | null {
+  if (continuity.target_agent) {
+    const match = agents.find((agent) =>
+      String(agent.name || "").toLowerCase() === String(continuity.target_agent || "").toLowerCase()
+    );
+    if (match?.id) return match.id;
+  }
+  return selectedAgentId;
+}
+
+function buildFeedbackDraft(
+  message: string,
+  kind: FeedbackKind,
+  selectedAgentId: string | null,
+  continuity: HelperContinuity,
+  agents: any[],
+): KeeperFeedbackDraft {
+  return {
+    kind,
+    title: summarizeFeedbackTitle(message, kind),
+    description: message.trim(),
+    agentId: resolveFeedbackAgentId(selectedAgentId, continuity, agents),
+    prompt: kind === "bug" ? BUG_RELAY_PROMPT : IDEA_RELAY_PROMPT,
+  };
 }
 
 // ── Context payload (same data the wrench icon sees) ─────────────────────────
@@ -302,10 +392,12 @@ function offlineDiagnosis(ctx: any, question: string = ""): string {
 // ── Panel ────────────────────────────────────────────────────────────────────
 export function KeeperPanel() {
   const activeView = useWorldStore(s => s.activeView);
+  const selectedAgentId = useWorldStore(s => s.selectedAgent);
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<KeeperMsg[]>(loadChat);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [submittingFeedbackTs, setSubmittingFeedbackTs] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [helperConfig, setHelperConfig] = useState<HelperConfig>({ mode: "hosted", credentialPresent: false });
   const [settingsMode, setSettingsMode] = useState<HelperMode>("hosted");
@@ -349,7 +441,7 @@ export function KeeperPanel() {
         setMessages([{
           role: "assistant",
           ts: Date.now(),
-          content: "Hey — I'm Eddy. I keep the reef running around here. I'll hang out in the corner while you set up; if anything gets confusing or stuck, just ask. No question too small.",
+          content: `Hey — I'm Eddy. I keep the reef running around here. I'll hang out in the corner while you set up; if anything gets confusing or stuck, just ask. ${EDDY_FEEDBACK_NUDGE}`,
         }]);
       }
     }
@@ -371,6 +463,10 @@ export function KeeperPanel() {
 
     const ctx = await getContext();
     const continuity = updateContinuity(continuityRef.current, content, agents);
+    const feedbackKind = inferFeedbackKind(content);
+    const feedbackDraft = feedbackKind
+      ? buildFeedbackDraft(content, feedbackKind, selectedAgentId, continuity, agents)
+      : undefined;
     continuityRef.current = continuity;
     try { localStorage.setItem(CONTINUITY_KEY, JSON.stringify(continuity)); } catch { /* ignore */ }
     try {
@@ -388,15 +484,86 @@ export function KeeperPanel() {
       }
       if (!reply) throw new Error("empty reply");
       const parsed = parseKeeperReply(reply);
-      setMessages(prev => [...prev, { role: "assistant", content: parsed.text, action: parsed.action, ts: Date.now() }]);
+      const assistantContent = feedbackDraft ? `${parsed.text}\n\n${feedbackDraft.prompt}` : parsed.text;
+      setMessages(prev => [...prev, { role: "assistant", content: assistantContent, action: parsed.action, feedbackDraft, ts: Date.now() }]);
     } catch (e) {
       // Offline fallback: rule-based diagnosis from live context. Eddy must
       // never be the thing that's broken with no explanation.
       console.warn("Keeper endpoint unreachable, using local diagnosis:", e);
       const parsed = parseKeeperReply(offlineDiagnosis(ctx, content));
-      setMessages(prev => [...prev, { role: "assistant", content: parsed.text, action: parsed.action, ts: Date.now() }]);
+      const assistantContent = feedbackDraft ? `${parsed.text}\n\n${feedbackDraft.prompt}` : parsed.text;
+      setMessages(prev => [...prev, { role: "assistant", content: assistantContent, action: parsed.action, feedbackDraft, ts: Date.now() }]);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const relayFeedbackToEngineer = async (report: SubmittedFeedbackReport) => {
+    const engineer = pickEngineerAgent(agents);
+    if (!engineer) return null;
+
+    const contextText = JSON.stringify(report.context ?? {}, null, 2).slice(0, 4000);
+    const message = [
+      `A user asked Eddy to relay a ${report.kind.replace(/_/g, " ")} about the Canopy product experience.`,
+      `Report ID: ${report.id}`,
+      `Title: ${report.title}`,
+      report.agentId ? `Related agent: ${report.agentId}` : "",
+      `Description:\n${report.description}`,
+      contextText ? `Diagnostics context:\n${contextText}` : "",
+      "Please triage this, reproduce it if needed, and either fix it or propose the smallest correct implementation plan.",
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    await invoke("send_message", {
+      agentId: engineer.id,
+      message,
+      sessionId: null,
+    });
+    await invoke("mark_feedback_report_dispatched", {
+      reportId: report.id,
+      agentId: engineer.id,
+    });
+
+    return engineer;
+  };
+
+  const submitFeedbackDraft = async (messageTs: number, draft: KeeperFeedbackDraft) => {
+    if (submittingFeedbackTs === messageTs) return;
+    setSubmittingFeedbackTs(messageTs);
+    try {
+      const report = await invoke<SubmittedFeedbackReport>("submit_feedback_report", {
+        submission: {
+          kind: draft.kind,
+          title: draft.title,
+          description: draft.description,
+          agentId: draft.agentId,
+          currentView: activeView,
+          includeDiagnostics: true,
+        },
+      });
+      const engineer = await relayFeedbackToEngineer(report);
+      setMessages((prev) => [
+        ...prev.map((msg) => msg.ts === messageTs ? { ...msg, feedbackSent: true } : msg),
+        {
+          role: "assistant",
+          ts: Date.now(),
+          content: engineer
+            ? `I sent that to the Canopy developers and handed it to ${engineer.name} inside this workspace.`
+            : "I sent that to the Canopy developers. Slack notifications will still fire if a webhook is configured, but there isn't an engineer agent available in this workspace right now.",
+        },
+      ]);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          ts: Date.now(),
+          content: `I couldn't relay that just now: ${String(error)}`,
+        },
+      ]);
+    } finally {
+      setSubmittingFeedbackTs(null);
     }
   };
 
@@ -511,7 +678,7 @@ export function KeeperPanel() {
           <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
             {messages.length === 0 && (
               <div style={{ fontSize: 12.5, color: "var(--text-sub, #636E72)", lineHeight: 1.6, padding: "8px 4px" }}>
-                I'm Eddy — I keep the reef running. Ask me about setup, why an agent isn't responding, or what to try next.
+                I'm Eddy — I keep the reef running. Ask me about setup, why an agent isn't responding, or what to try next. {EDDY_FEEDBACK_NUDGE}
               </div>
             )}
             {messages.map((m, i) => (
@@ -538,6 +705,30 @@ export function KeeperPanel() {
                   >
                     Take me there
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+                  </button>
+                )}
+                {m.feedbackDraft && !m.feedbackSent && (
+                  <button
+                    onClick={() => submitFeedbackDraft(m.ts, m.feedbackDraft!)}
+                    disabled={submittingFeedbackTs === m.ts}
+                    style={{
+                      alignSelf: "flex-start",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "7px 12px",
+                      borderRadius: 10,
+                      cursor: submittingFeedbackTs === m.ts ? "default" : "pointer",
+                      border: "1px solid rgba(60,102,99,0.24)",
+                      background: "rgba(60,102,99,0.08)",
+                      color: "#3c6663",
+                      fontSize: 12,
+                      fontWeight: 800,
+                      fontFamily: "inherit",
+                      opacity: submittingFeedbackTs === m.ts ? 0.75 : 1,
+                    }}
+                  >
+                    {submittingFeedbackTs === m.ts ? "Sending to Canopy..." : "Send to Canopy developers"}
                   </button>
                 )}
               </div>
@@ -567,7 +758,7 @@ export function KeeperPanel() {
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder="Ask Eddy…"
+              placeholder="Tell Eddy what's wrong or what you wish worked better…"
               style={{
                 flex: 1, padding: "10px 12px", borderRadius: 10, fontSize: 13,
                 border: "1px solid rgba(0,0,0,0.12)", outline: "none",

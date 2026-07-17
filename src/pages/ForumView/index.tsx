@@ -3233,7 +3233,9 @@ function ForumCard({
           ))}
         </div>
         <div style={{ fontSize: 10, color: "var(--text-sub, #636E72)", opacity: 0.5, flexShrink: 0 }}>
-          {f.messages.filter(m => m.sender === "agent").length} messages
+          {f.contentLoaded
+            ? f.messages.filter(m => m.sender === "agent").length
+            : (f.agentMessageCount || 0)} messages
         </div>
       </div>
     </div>
@@ -3255,6 +3257,7 @@ export function ForumView() {
   const disconnectFolder = useForumStore(s => s.disconnectFolder);
   const updateScratchpadSyncState = useForumStore(s => s.updateScratchpadSyncState);
   const updateTrustBudget = useForumStore(s => s.updateTrustBudget);
+  const hydratingForumId = useForumStore(s => s.hydratingForumId);
   const { activeForumId, setActiveForumId } = useWorldStore();
   const engineRef = useRef<{ stop: () => void } | null>(null);
   const [briefModalOpen, setBriefModalOpen] = useState(false);
@@ -3453,6 +3456,14 @@ export function ForumView() {
         {briefModalOpen && <ForumBriefModal onClose={() => setBriefModalOpen(false)} />}
         <ForumsList onNewForum={() => setBriefModalOpen(true)} onEditBudget={setEditingForum} />
       </>
+    );
+  }
+
+  if (!forum.contentLoaded || hydratingForumId === forum.id) {
+    return (
+      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--surface, #faf9f6)", color: "var(--text-sub, #636E72)", fontSize: 13 }}>
+        Loading forum workspace…
+      </div>
     );
   }
 

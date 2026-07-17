@@ -1249,6 +1249,10 @@ impl Database {
             "DELETE FROM agent_bug_reports WHERE agent_id = ?1",
             params![id],
         )?;
+        tx.execute(
+            "DELETE FROM agent_mini_apps WHERE agent_id = ?1",
+            params![id],
+        )?;
 
         // Finally delete the main agent record
         tx.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
@@ -3896,6 +3900,71 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .revoked
+        );
+    }
+
+    #[test]
+    fn durable_forum_content_round_trips_without_browser_sized_limits() {
+        let db = create_test_db();
+        let large_body = "x".repeat(2_000_000);
+        let content = json!({
+            "id": "forum_large",
+            "messages": [{"text": large_body}],
+            "artifacts": []
+        })
+        .to_string();
+        let summary = json!({
+            "id": "forum_large",
+            "messages": [],
+            "artifacts": [],
+            "contentLoaded": false
+        })
+        .to_string();
+
+        assert!(db
+            .upsert_forum_state("forum_large", &summary, &content, false)
+            .unwrap());
+        assert_eq!(
+            db.get_forum_state_json("forum_large").unwrap().unwrap(),
+            content
+        );
+        assert_eq!(db.list_forum_summary_jsons().unwrap(), vec![summary]);
+    }
+
+    #[test]
+    fn legacy_content_migration_never_overwrites_existing_backend_state() {
+        let db = create_test_db();
+        db.upsert_forum_state("forum_1", "{\"id\":\"forum_1\"}", "{\"version\":2}", false)
+            .unwrap();
+
+        assert!(!db
+            .upsert_forum_state("forum_1", "{\"id\":\"forum_1\"}", "{\"version\":1}", true)
+            .unwrap());
+        assert_eq!(
+            db.get_forum_state_json("forum_1").unwrap().as_deref(),
+            Some("{\"version\":2}")
+        );
+    }
+
+    #[test]
+    fn durable_mini_apps_round_trip_all_versions() {
+        let db = create_test_db();
+        let apps = json!([{
+            "id": "app_1",
+            "versions": (0..25).map(|index| json!({
+                "id": format!("version_{}", index),
+                "htmlContent": "<main>complete source</main>"
+            })).collect::<Vec<_>>()
+        }])
+        .to_string();
+
+        db.upsert_agent_mini_apps("agent_atlas", &apps, false)
+            .unwrap();
+        assert_eq!(
+            db.get_agent_mini_apps_json("agent_atlas")
+                .unwrap()
+                .unwrap(),
+            apps
         );
     }
 }

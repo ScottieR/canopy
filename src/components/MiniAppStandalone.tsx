@@ -8,17 +8,23 @@ export function MiniAppStandalone({ payload }: { payload: string }) {
   const agents = useWorldStore((s) => s.agents);
   const setAgents = useWorldStore((s) => s.setAgents);
   const setGatewayReady = useWorldStore((s) => s.setGatewayReady);
+  const ensureAgentMiniApps = useWorldStore((s) => s.ensureAgentMiniApps);
 
   useEffect(() => {
     setGatewayReady(true);
     if (agents.length === 0) {
-      invoke<AgentData[]>("get_agents")
+      invoke<AgentData[]>("list_agents")
         .then((data) => {
           setAgents(data);
         })
         .catch(console.error);
     }
   }, [agents.length, setAgents, setGatewayReady]);
+
+  const agent = agents.find((candidate) => candidate.id === agentId);
+  useEffect(() => {
+    if (agent && !agent.miniAppsLoaded) void ensureAgentMiniApps(agentId);
+  }, [agent, agentId, ensureAgentMiniApps]);
 
   if (agents.length === 0) {
     return (
@@ -28,7 +34,14 @@ export function MiniAppStandalone({ payload }: { payload: string }) {
     );
   }
 
-  const agent = agents.find((a) => a.id === agentId);
+  if (agent && !agent.miniAppsLoaded) {
+    return (
+      <div style={{ width: "100%", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--surface-base)", color: "var(--text-sub)", fontFamily: "'Geist', sans-serif" }}>
+        Loading mini app...
+      </div>
+    );
+  }
+
   const app = agent?.miniApps?.find((m) => m.id === appId);
 
   if (!app) {

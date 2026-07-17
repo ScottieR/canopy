@@ -2,6 +2,11 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import RAW_AGENT_TYPE_INFO from "../../shared/agents.json";
 import { getQuotaSafeLocalStorage } from "./safeStorage";
+import {
+  loadMiniApps,
+  saveMiniAppsNow,
+  scheduleMiniAppsSave,
+} from "./durableContent";
 
 export interface UserProfile {
   name: string;
@@ -165,6 +170,8 @@ export interface AgentData extends Agent {
   chatClearedAt?: number;
   /** HTML mini-apps saved from this agent's chat messages — the agent's "app shelf". */
   miniApps?: MiniApp[];
+  /** Transient: the complete mini-app collection is hydrated from SQLite. */
+  miniAppsLoaded?: boolean;
   memories: Array<{ type: string; text: string; when: string; confidence: number }>;
   browser_status?: BrowserStatus | null;
   personalityPrompt: string;
@@ -309,6 +316,7 @@ export interface WorldState {
   removeInboxItem: (id: string) => void;
   // ── Mini Apps ─────────────────────────────────────────────────────────────
   addMiniApp: (agentId: string, app: { name: string; description?: string; sourceMessageId?: string; entrypoint?: string; htmlContent?: string; }) => void;
+  ensureAgentMiniApps: (agentId: string) => Promise<void>;
   updateMiniAppVersion: (agentId: string, appId: string, versionId: string) => void;
   deleteMiniApp: (agentId: string, appId: string) => void;
   // ── Decision Queue ────────────────────────────────────────────────────
@@ -502,7 +510,6 @@ export function injectPrincipalContext(basePrompt: string, profile: UserProfile 
 const PERSISTED_CHAT_MESSAGE_LIMIT = 10;
 const PERSISTED_MESSAGE_TEXT_LIMIT = 10_000;
 const PERSISTED_CONVERSATION_LIMIT = 100;
-const PERSISTED_MINI_APP_CONTENT_BUDGET = 100_000;
 
 function boundedText(value: string | undefined, limit: number): string | undefined {
   if (typeof value !== "string") return value;
@@ -520,10 +527,9 @@ function persistedMessage(message: ChatMessage): ChatMessage {
   };
 }
 
-function persistedMiniApps(miniApps: MiniApp[] | undefined): MiniApp[] | undefined {
+function recoveryMiniApps(miniApps: MiniApp[] | undefined): MiniApp[] | undefined {
   if (!miniApps) return miniApps;
-  let remainingContent = PERSISTED_MINI_APP_CONTENT_BUDGET;
-
+  let remainingContent = 100_000;
   return miniApps.slice(0, 10).map(app => ({
     ...app,
     versions: app.versions.slice(0, 3).map(version => {
@@ -534,6 +540,8 @@ function persistedMiniApps(miniApps: MiniApp[] | undefined): MiniApp[] | undefin
     }),
   }));
 }
+
+let miniAppDurableBackendReady = false;
 
 /** Produce a bounded local cache. Durable conversation history lives in SQLite/OpenClaw. */
 export function createWorldPersistenceSnapshot(state: WorldState) {
@@ -548,7 +556,10 @@ export function createWorldPersistenceSnapshot(state: WorldState) {
           // Thread contents are rehydrated from the backend when selected.
           messages: [],
         })),
-        miniApps: persistedMiniApps(miniApps),
+        // Mini-app source and version history live in SQLite and hydrate only
+        // when an agent or sharing surface becomes active.
+        miniApps: undefined,
+        miniAppsLoaded: false,
       };
     }),
     inbox: state.inbox,
@@ -560,9 +571,22 @@ export function createWorldPersistenceSnapshot(state: WorldState) {
   };
 }
 
+function createWorldStorageSnapshot(state: WorldState) {
+  const snapshot = createWorldPersistenceSnapshot(state);
+  if (miniAppDurableBackendReady) return snapshot;
+  return {
+    ...snapshot,
+    agents: snapshot.agents.map((agent, index) => ({
+      ...agent,
+      miniApps: recoveryMiniApps(state.agents[index]?.miniApps),
+      miniAppsLoaded: state.agents[index]?.miniAppsLoaded,
+    })),
+  };
+}
+
 export const useWorldStore = create<WorldState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       agents: [],
       inbox: [],
   selectedAgent: null,
@@ -583,10 +607,30 @@ export const useWorldStore = create<WorldState>()(
     document.documentElement.setAttribute('data-theme', nextTheme);
     return { theme: nextTheme };
   }),
-  setSelectedAgent: (id) => set({ selectedAgent: id }),
+  setSelectedAgent: (id) => {
+    const previousId = get().selectedAgent;
+    const previous = get().agents.find(agent => agent.id === previousId);
+    if (previous?.miniAppsLoaded) scheduleMiniAppsSave(previous.id, previous.miniApps || []);
+    set(state => ({
+      selectedAgent: id,
+      agents: state.agents.map(agent =>
+        agent.id === previousId && agent.id !== id
+          ? { ...agent, miniApps: undefined, miniAppsLoaded: false }
+          : agent
+      ),
+    }));
+    if (id) void get().ensureAgentMiniApps(id);
+  },
   setHoveredAgent: (id) => set({ hoveredAgent: id }),
   setActiveView: (view) => set({ activeView: view }),
-  setActiveForumId: (id) => set({ activeForumId: id }),
+  setActiveForumId: (id) => {
+    set({ activeForumId: id });
+    // Keep the navigation store lightweight while the forum store owns
+    // durable-content hydration and eviction.
+    void import("./forumStore").then(({ useForumStore }) =>
+      useForumStore.getState().setActiveForumId(id)
+    );
+  },
   setArchitectTab: (tab) => set({ architectTab: tab }),
   setGatewayReady: (ready) => set({ gatewayReady: ready }),
   setAutoCloakEnabled: (enabled) => set({ isAutoCloakEnabled: enabled }),
@@ -872,8 +916,27 @@ export const useWorldStore = create<WorldState>()(
   })),
 
   // ── Mini Apps ─────────────────────────────────────────────────────────────
-  addMiniApp: (agentId, app) => set((state) => ({
-    agents: state.agents.map(a => {
+  ensureAgentMiniApps: async (agentId) => {
+    const existing = get().agents.find(agent => agent.id === agentId);
+    if (!existing || existing.miniAppsLoaded) return;
+    try {
+      const miniApps = await loadMiniApps(agentId);
+      set(state => ({
+        agents: state.agents.map(agent =>
+          agent.id === agentId
+            ? { ...agent, miniApps: miniApps || agent.miniApps || [], miniAppsLoaded: true }
+            : agent
+        ),
+      }));
+    } catch (error) {
+      console.error(`[world-store] failed to hydrate mini-apps for ${agentId}`, error instanceof Error ? error.name : "UnknownError");
+    }
+  },
+
+  addMiniApp: (agentId, app) => { void (async () => {
+    await get().ensureAgentMiniApps(agentId);
+    set((state) => ({
+      agents: state.agents.map(a => {
       if (a.id !== agentId) return a;
       const existing = a.miniApps ?? [];
       
@@ -901,7 +964,7 @@ export const useWorldStore = create<WorldState>()(
         };
         const newApps = [...existing];
         newApps[existingAppIndex] = updatedApp;
-        return { ...a, miniApps: newApps };
+        return { ...a, miniApps: newApps, miniAppsLoaded: true };
       }
 
       // Otherwise create a new app
@@ -914,12 +977,17 @@ export const useWorldStore = create<WorldState>()(
         versions: [newVersion],
         activeVersionId: newVersion.id,
       };
-      return { ...a, miniApps: [newApp, ...existing] };
-    }),
-  })),
+      return { ...a, miniApps: [newApp, ...existing], miniAppsLoaded: true };
+      }),
+    }));
+    const updated = get().agents.find(agent => agent.id === agentId);
+    if (updated) scheduleMiniAppsSave(agentId, updated.miniApps || []);
+  })(); },
 
-  updateMiniAppVersion: (agentId, appId, versionId) => set((state) => ({
-    agents: state.agents.map(a => {
+  updateMiniAppVersion: (agentId, appId, versionId) => { void (async () => {
+    await get().ensureAgentMiniApps(agentId);
+    set((state) => ({
+      agents: state.agents.map(a => {
       if (a.id !== agentId) return a;
       return {
         ...a,
@@ -927,23 +995,83 @@ export const useWorldStore = create<WorldState>()(
           m.id === appId ? { ...m, activeVersionId: versionId } : m
         )
       };
-    })
-  })),
+      })
+    }));
+    const updated = get().agents.find(agent => agent.id === agentId);
+    if (updated) scheduleMiniAppsSave(agentId, updated.miniApps || []);
+  })(); },
 
-  deleteMiniApp: (agentId, appId) => set((state) => ({
-    agents: state.agents.map(a =>
-      a.id !== agentId ? a : { ...a, miniApps: (a.miniApps ?? []).filter(m => m.id !== appId) }
-    ),
-  })),
+  deleteMiniApp: (agentId, appId) => { void (async () => {
+    await get().ensureAgentMiniApps(agentId);
+    set((state) => ({
+      agents: state.agents.map(a =>
+        a.id !== agentId ? a : { ...a, miniApps: (a.miniApps ?? []).filter(m => m.id !== appId), miniAppsLoaded: true }
+      ),
+    }));
+    const updated = get().agents.find(agent => agent.id === agentId);
+    if (updated) scheduleMiniAppsSave(agentId, updated.miniApps || []);
+  })(); },
 }),
 {
   name: "canopy-world-store",
   storage: createJSONStorage(getQuotaSafeLocalStorage),
-  version: 1,
-  migrate: persistedState => persistedState as WorldState,
-  partialize: createWorldPersistenceSnapshot,
+  version: 2,
+  migrate: (persistedState, version) => {
+    const state = persistedState as WorldState;
+    if (version < 2) {
+      return {
+        ...state,
+        agents: (state.agents || []).map(agent => ({
+          ...agent,
+          miniAppsLoaded: Array.isArray(agent.miniApps),
+        })),
+      };
+    }
+    return state;
+  },
+  partialize: createWorldStorageSnapshot,
 }
 ));
+
+let initializeMiniAppsPromise: Promise<void> | null = null;
+
+/** Migrate legacy local mini-apps once, then leave only active agents hydrated. */
+export function initializeMiniAppDurablePersistence(): Promise<void> {
+  if (initializeMiniAppsPromise) return initializeMiniAppsPromise;
+  initializeMiniAppsPromise = (async () => {
+    try {
+      const agents = useWorldStore.getState().agents;
+      const legacyAgents = agents.filter(
+        agent => agent.miniAppsLoaded && (agent.miniApps?.length || 0) > 0,
+      );
+      await Promise.all(legacyAgents.map(agent =>
+        saveMiniAppsNow(agent.id, agent.miniApps || [], true),
+      ));
+      // If there is nothing to migrate, this read still acts as the command
+      // readiness handshake before WebKit drops its recovery copy.
+      if (legacyAgents.length === 0) {
+        await loadMiniApps(agents[0]?.id || "canopy_probe");
+      }
+
+      miniAppDurableBackendReady = true;
+      const selected = useWorldStore.getState().selectedAgent;
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(agent =>
+          agent.id === selected
+            ? agent
+            : { ...agent, miniApps: undefined, miniAppsLoaded: false }
+        ),
+      }));
+      if (selected) await useWorldStore.getState().ensureAgentMiniApps(selected);
+    } catch (error) {
+      console.error("[world-store] durable mini-app backend is not ready; retaining recovery cache", error instanceof Error ? error.name : "UnknownError");
+      initializeMiniAppsPromise = null;
+      await new Promise(resolve => window.setTimeout(resolve, 2_000));
+      return initializeMiniAppDurablePersistence();
+    }
+  })();
+  return initializeMiniAppsPromise;
+}
 
 export function pickNextAction(agent: AgentData): { action: string; target: [number, number, number] } {
   const actions = [

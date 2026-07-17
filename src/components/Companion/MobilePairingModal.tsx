@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { ArrowLeft, BookOpen, Code2, Share2, Smartphone, X } from 'lucide-react';
+import { BookOpen, Code2, Share2, Smartphone, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { MiniApp, useWorldStore, reportTelemetryEvent } from '../../store/worldStore';
 
@@ -8,6 +8,7 @@ interface MobilePairingModalProps {
   isOpen: boolean;
   onClose: () => void;
   defaultAgentId?: string;
+  initialView?: 'pair-device' | 'share-agent';
 }
 
 interface CompanionProfile {
@@ -61,8 +62,10 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
   isOpen,
   onClose,
   defaultAgentId,
+  initialView = 'pair-device',
 }) => {
   const agents = useWorldStore((state) => state.agents);
+  const ensureAgentMiniApps = useWorldStore((state) => state.ensureAgentMiniApps);
   const [view, setView] = useState<'pair-device' | 'share-agent'>('pair-device');
   const [mobilePairingData, setMobilePairingData] = useState<MobilePairingData | null>(null);
   const [pairingData, setPairingData] = useState<PairingData | null>(null);
@@ -107,15 +110,21 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
       return;
     }
 
-    setView('pair-device');
+    setView(initialView);
     setMobilePairingData(null);
     setPairingData(null);
     setEditingDeviceId(null);
     setReport(null);
     setError(null);
     setSelectedAgentIds(defaultAgentId ? [defaultAgentId] : agents[0]?.id ? [agents[0].id] : []);
-    generateMobilePairing();
-  }, [isOpen, defaultAgentId]);
+    if (initialView === 'share-agent') {
+      // A scoped share must never inherit a broad mobile pairing token.
+      invoke('revoke_pairing_token').catch(console.error);
+      refreshAssignments().catch((err) => setError(String(err)));
+    } else {
+      generateMobilePairing();
+    }
+  }, [isOpen, defaultAgentId, initialView]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -126,29 +135,26 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  const openShareAgent = async () => {
-    // Do not leave the broad mobile pairing token active while creating a scoped share.
-    await invoke('revoke_pairing_token').catch(console.error);
-    setMobilePairingData(null);
-    setPairingData(null);
-    setEditingDeviceId(null);
-    setReport(null);
-    setError(null);
-    setView('share-agent');
-    refreshAssignments().catch((err) => setError(String(err)));
-  };
-
-  const returnToMobilePairing = () => {
-    setView('pair-device');
-    setPairingData(null);
-    setError(null);
-    generateMobilePairing();
-  };
-
   const activeAssignments = useMemo(
     () => assignments.filter((assignment) => !assignment.grant.revoked),
     [assignments],
   );
+
+  useEffect(() => {
+    if (!isOpen || view !== 'share-agent') return;
+    const agentIds = new Set(activeAssignments.flatMap(assignment => assignment.grant.allowedAgentIds));
+    for (const agentId of agentIds) void ensureAgentMiniApps(agentId);
+    return () => {
+      const selected = useWorldStore.getState().selectedAgent;
+      useWorldStore.setState(state => ({
+        agents: state.agents.map(agent =>
+          agentIds.has(agent.id) && agent.id !== selected
+            ? { ...agent, miniApps: undefined, miniAppsLoaded: false }
+            : agent
+        ),
+      }));
+    };
+  }, [activeAssignments, ensureAgentMiniApps, isOpen, view]);
 
   const selectExperience = (next: 'focused' | 'learning') => {
     setExperience(next);
@@ -385,20 +391,6 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
             )}
           </div>
 
-          <div className="flex items-center gap-3 border-t border-black/10 bg-[#f3f1ec] px-5 py-4">
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-bold text-[#303330]">Sharing with someone else?</div>
-              <div className="mt-0.5 text-[11px] text-[#7a8381]">Give them access to selected agents only.</div>
-            </div>
-            <button
-              type="button"
-              onClick={openShareAgent}
-              className="flex shrink-0 items-center gap-2 rounded-lg border border-[#218380]/30 bg-[#faf9f6] px-3 py-2 text-xs font-bold text-[#218380] hover:bg-[#218380]/5"
-            >
-              <Share2 size={15} />
-              Share agent
-            </button>
-          </div>
         </div>
       </div>
     );
@@ -420,14 +412,6 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
         className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-[20px] border border-black/10 bg-[#faf9f6] shadow-2xl"
       >
         <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-black/10 bg-[#f3f1ec] px-5 py-4">
-          <button
-            type="button"
-            aria-label="Back to mobile pairing"
-            onClick={returnToMobilePairing}
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-black/10 bg-[#faf9f6] text-[#218380] hover:bg-[#218380]/5"
-          >
-            <ArrowLeft size={17} />
-          </button>
           <div className="flex items-center gap-3">
             <div className="rounded-xl bg-[#218380]/10 p-2.5 text-[#218380]">
               <Share2 size={19} />

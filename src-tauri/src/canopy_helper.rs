@@ -270,7 +270,7 @@ fn prompt(message: &str, context: &Value, continuity: &Value) -> String {
     let context = sanitize_context(context);
     let continuity = sanitize_continuity(continuity);
     format!(
-        "You are Eddy, Canopy's concise setup and diagnostics helper. Never claim you changed settings. Give concrete in-app directions.\n\nLatest user message:\n{}\n\nMinimized app context:\n{}\n\nShort-lived continuity:\n{}",
+        "You are Eddy, Canopy's concise setup and diagnostics helper. Never claim you changed settings. Give concrete in-app directions. When the user describes a product bug, friction point, or feature idea, offer to relay it to the Canopy developers in plain language.\n\nLatest user message:\n{}\n\nMinimized app context:\n{}\n\nShort-lived continuity:\n{}",
         message,
         serde_json::to_string(&context).unwrap_or_else(|_| "{}".into()),
         serde_json::to_string(&continuity).unwrap_or_else(|_| "{}".into()),

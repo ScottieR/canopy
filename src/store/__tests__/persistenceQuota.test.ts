@@ -19,7 +19,7 @@ describe("bounded local persistence", () => {
     expect(onError).toHaveBeenCalledWith("canopy-world-store", quotaError);
   });
 
-  it("persists only a bounded chat cache and conversation metadata", () => {
+  it("persists only a bounded chat cache, conversation metadata, and no mini-app bodies", () => {
     const messages = Array.from({ length: 25 }, (_, index) => ({
       id: `message-${index}`,
       sender: index % 2 ? "agent" : "user",
@@ -61,11 +61,12 @@ describe("bounded local persistence", () => {
     expect(snapshot.agents[0].chatLog[0].attachments?.[0].dataUrl).toBe("");
     expect(snapshot.agents[0].conversations).toHaveLength(100);
     expect(snapshot.agents[0].conversations.every(conversation => conversation.messages.length === 0)).toBe(true);
-    expect(snapshot.agents[0].miniApps?.[0].versions[0].htmlContent).toHaveLength(100_000);
+    expect(snapshot.agents[0].miniApps).toBeUndefined();
+    expect(snapshot.agents[0].miniAppsLoaded).toBe(false);
     expect(JSON.stringify(snapshot).length).toBeLessThan(300_000);
   });
 
-  it("bounds runaway forum messages, artifacts, snapshots, and scratchpad data", () => {
+  it("keeps only forum metadata in WebKit without truncating the source record", () => {
     const messages = Array.from({ length: 1_000 }, (_, index) => ({
       id: `message-${index}`,
       kind: "chat",
@@ -93,14 +94,14 @@ describe("bounded local persistence", () => {
     const snapshot = createForumPersistenceSnapshot({ forums: [forum] } as any);
     const persisted = snapshot.forums[0];
 
-    expect(persisted.messages).toHaveLength(200);
-    expect(persisted.messages[0].id).toBe("message-0");
-    expect(persisted.messages[persisted.messages.length - 1]?.id).toBe("message-999");
-    expect(persisted.messages[0].attachments?.[0].dataUrl).toBe("");
-    expect(persisted.artifacts).toHaveLength(100);
-    expect(persisted.artifacts.some(artifact => artifact.id === "artifact-10")).toBe(true);
-    expect(persisted.blackboardHistory).toHaveLength(3);
-    expect(persisted.scratchpadContent).toHaveLength(65_536);
-    expect(JSON.stringify(snapshot).length).toBeLessThan(200_000);
+    expect(persisted.messages).toEqual([]);
+    expect(persisted.artifacts).toEqual([]);
+    expect(persisted.blackboardHistory).toEqual([]);
+    expect(persisted.scratchpadContent).toBe("");
+    expect(persisted.contentLoaded).toBe(false);
+    expect(forum.messages).toHaveLength(1_000);
+    expect(forum.artifacts).toHaveLength(500);
+    expect(forum.scratchpadContent).toHaveLength(100_000);
+    expect(JSON.stringify(snapshot).length).toBeLessThan(1_000);
   });
 });

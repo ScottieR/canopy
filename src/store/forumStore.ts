@@ -2,6 +2,13 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { applyForumBudgetIncrement } from "./forumBudget";
 import { getQuotaSafeLocalStorage } from "./safeStorage";
+import {
+  loadForum,
+  loadForumCatalog,
+  removeForum,
+  saveForumNow,
+  scheduleForumSave,
+} from "./durableContent";
 
 // ─── Message Types ────────────────────────────────────────────────────────────
 
@@ -198,6 +205,10 @@ export interface Forum {
   // useEffect distinguish a fresh run from one that already ran for this version.
   orchestratorVersion: number;
   draftMessage?: string;
+  agentMessageCount?: number;
+  artifactCount?: number;
+  /** Transient: full unbounded content is currently hydrated from SQLite. */
+  contentLoaded?: boolean;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -206,10 +217,12 @@ export interface ForumState {
   forums: Forum[];
   incrementTokensAndCost: (forumId: string, tokens: number, cost: number) => void;
   activeForumId: string | null;
+  hydratingForumId: string | null;
 
   // Actions
   createForum: (brief: string, agents: ForumAgent[], tags: string[]) => string;
   setActiveForumId: (id: string | null) => void;
+  ensureForumContent: (id: string) => Promise<void>;
   /** Adds a message and returns the generated message ID. */
   addForumMessage: (forumId: string, msg: Omit<ForumMessage, "id" | "timestamp">) => string;
   setMilestones: (forumId: string, milestones: Milestone[]) => void;
@@ -262,54 +275,93 @@ function generateId(prefix: string) {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-const PERSISTED_FORUM_MESSAGE_LIMIT = 200;
-const PERSISTED_FORUM_ARTIFACT_LIMIT = 100;
-const PERSISTED_BLACKBOARD_HISTORY_LIMIT = 3;
-const PERSISTED_SCRATCHPAD_LIMIT = 65_536;
-const PERSISTED_FORUM_MESSAGE_TEXT_LIMIT = 50_000;
+const FORUM_CONTENT_FIELDS = new Set([
+  "messages",
+  "artifacts",
+  "blackboardContent",
+  "blackboardHistory",
+  "blackboardBlock",
+  "scratchpadContent",
+  "contentLoaded",
+]);
 
-function boundedForumMessages(messages: ForumMessage[]): ForumMessage[] {
-  const bounded = messages.length <= PERSISTED_FORUM_MESSAGE_LIMIT
-    ? messages
-    : [messages[0], ...messages.slice(-(PERSISTED_FORUM_MESSAGE_LIMIT - 1))];
+/** Catalog entry safe for WebKit localStorage; full bodies live in SQLite. */
+export function createForumCatalogEntry(forum: Forum): Forum {
+  const agentMessageCount = forum.contentLoaded
+    ? (forum.messages || []).filter(message => message.sender === "agent").length
+    : (forum.agentMessageCount || 0);
+  const artifactCount = forum.contentLoaded
+    ? (forum.artifacts || []).length
+    : (forum.artifactCount || 0);
+  return {
+    ...forum,
+    agentMessageCount,
+    artifactCount,
+    messages: [],
+    artifacts: [],
+    blackboardContent: "",
+    blackboardHistory: [],
+    blackboardBlock: null,
+    scratchpadContent: "",
+    contentLoaded: false,
+  };
+}
 
-  return bounded.map(message => {
-    const miniAppSize = message.miniApp ? JSON.stringify(message.miniApp).length : 0;
-    return {
+function mergeForumContent(catalog: Forum, content: Forum): Forum {
+  const catalogMetadata = Object.fromEntries(
+    Object.entries(catalog).filter(([key]) => !FORUM_CONTENT_FIELDS.has(key)),
+  ) as Partial<Forum>;
+  return {
+    ...content,
+    ...catalogMetadata,
+    messages: content.messages || [],
+    artifacts: content.artifacts || [],
+    blackboardContent: content.blackboardContent || "",
+    blackboardHistory: content.blackboardHistory || [],
+    blackboardBlock: content.blackboardBlock || null,
+    scratchpadContent: content.scratchpadContent || "",
+    contentLoaded: true,
+  };
+}
+
+let forumDurableBackendReady = false;
+
+export function createForumPersistenceSnapshot(state: ForumState) {
+  return {
+    forums: (state.forums || []).map(createForumCatalogEntry),
+  };
+}
+
+// Upgrade safety only: until the Rust command is confirmed available, keep the
+// same bounded recovery copy used by v1. SQLite remains the unlimited source
+// of truth once the migration handshake succeeds.
+function createLegacyForumRecoverySnapshot(state: ForumState) {
+  const messages = (items: ForumMessage[]) => {
+    const bounded = items.length <= 200 ? items : [items[0], ...items.slice(-199)];
+    return bounded.map(message => ({
       ...message,
-      text: message.text.slice(0, PERSISTED_FORUM_MESSAGE_TEXT_LIMIT),
-      // Large generated UI payloads should live as artifacts, not inline in
-      // every persisted message. Keep reasonably-sized cards intact.
-      miniApp: miniAppSize <= 100_000 ? message.miniApp : undefined,
+      text: (message.text || "").slice(0, 50_000),
       attachments: message.attachments?.map(attachment => ({
         ...attachment,
         dataUrl: attachment.dataUrl?.startsWith("data:") ? "" : (attachment.dataUrl || ""),
       })),
-    };
-  });
-}
-
-function boundedForumArtifacts(artifacts: ForumArtifact[]): ForumArtifact[] {
-  if (artifacts.length <= PERSISTED_FORUM_ARTIFACT_LIMIT) return artifacts;
-
-  const deliverables = artifacts.filter(artifact => artifact.isDeliverable).slice(-25);
-  const deliverableIds = new Set(deliverables.map(artifact => artifact.id));
-  const recent = artifacts
-    .filter(artifact => !deliverableIds.has(artifact.id))
-    .slice(-(PERSISTED_FORUM_ARTIFACT_LIMIT - deliverables.length));
-  return [...deliverables, ...recent].sort((left, right) => left.createdAt - right.createdAt);
-}
-
-export function createForumPersistenceSnapshot(state: ForumState) {
+    }));
+  };
   return {
     forums: (state.forums || []).map(forum => ({
       ...forum,
-      messages: boundedForumMessages(forum.messages || []),
-      artifacts: boundedForumArtifacts(forum.artifacts || []),
-      blackboardHistory: (forum.blackboardHistory || []).slice(-PERSISTED_BLACKBOARD_HISTORY_LIMIT),
-      scratchpadContent: (forum.scratchpadContent || "").slice(-PERSISTED_SCRATCHPAD_LIMIT),
+      messages: messages(forum.messages || []),
+      artifacts: (forum.artifacts || []).slice(-100),
+      blackboardHistory: (forum.blackboardHistory || []).slice(-3),
+      scratchpadContent: (forum.scratchpadContent || "").slice(-65_536),
     })),
   };
+}
+
+function createForumStorageSnapshot(state: ForumState) {
+  return forumDurableBackendReady
+    ? createForumPersistenceSnapshot(state)
+    : createLegacyForumRecoverySnapshot(state);
 }
 
 function deriveTitle(brief: string): string {
@@ -329,6 +381,7 @@ export const useForumStore = create<ForumState>()(
     (set, get) => ({
       forums: [],
       activeForumId: null,
+      hydratingForumId: null,
 
       createForum: (brief, agents, tags) => {
         const id = generateId("forum");
@@ -367,13 +420,46 @@ export const useForumStore = create<ForumState>()(
           createdAt: now,
           lastActiveAt: now,
           orchestratorVersion: 0,
+          contentLoaded: true,
         };
 
         set(state => ({ forums: [...state.forums, forum], activeForumId: id }));
         return id;
       },
 
-      setActiveForumId: (id) => set({ activeForumId: id }),
+      setActiveForumId: (id) => {
+        const previousId = get().activeForumId;
+        const previous = get().forums.find(forum => forum.id === previousId);
+        if (previous?.contentLoaded) scheduleForumSave(previous);
+
+        set(state => ({
+          activeForumId: id,
+          forums: state.forums.map(forum => {
+            if (forum.id !== previousId || forum.id === id || forum.status === "active") return forum;
+            return createForumCatalogEntry(forum);
+          }),
+        }));
+        if (id) void get().ensureForumContent(id);
+      },
+
+      ensureForumContent: async (id) => {
+        const existing = get().forums.find(forum => forum.id === id);
+        if (!existing || existing.contentLoaded) return;
+        set({ hydratingForumId: id });
+        try {
+          const durable = await loadForum(id);
+          set(state => ({
+            forums: state.forums.map(forum => {
+              if (forum.id !== id) return forum;
+              return durable ? mergeForumContent(forum, durable) : { ...forum, contentLoaded: true };
+            }),
+          }));
+        } catch (error) {
+          console.error(`[forum-store] failed to hydrate forum ${id}`, error instanceof Error ? error.name : "UnknownError");
+        } finally {
+          if (get().hydratingForumId === id) set({ hydratingForumId: null });
+        }
+      },
       incrementTokensAndCost: (forumId, tokens, cost) => set((state) => ({
         forums: state.forums.map((f) => 
           f.id === forumId
@@ -680,6 +766,9 @@ export const useForumStore = create<ForumState>()(
           forums: state.forums.filter(f => f.id !== forumId),
           activeForumId: state.activeForumId === forumId ? null : state.activeForumId,
         }));
+        removeForum(forumId).catch(error =>
+          console.error(`[forum-store] failed to delete forum ${forumId}`, error instanceof Error ? error.name : "UnknownError"),
+        );
       },
 
       retryForum: (forumId) => {
@@ -768,9 +857,86 @@ export const useForumStore = create<ForumState>()(
     {
       name: "canopy-forum-store",
       storage: createJSONStorage(getQuotaSafeLocalStorage),
-      version: 1,
-      migrate: persistedState => persistedState as ForumState,
-      partialize: createForumPersistenceSnapshot,
+      version: 2,
+      migrate: (persistedState, version) => {
+        const state = persistedState as ForumState;
+        if (version < 2) {
+          return {
+            ...state,
+            forums: (state.forums || []).map(forum => ({ ...forum, contentLoaded: true })),
+          };
+        }
+        return state;
+      },
+      partialize: createForumStorageSnapshot,
     }
   )
 );
+
+let forumPersistenceStarted = false;
+let initializeForumPromise: Promise<void> | null = null;
+
+/**
+ * Migrate any legacy browser-resident bodies once, load the SQLite catalog,
+ * then hydrate only running forums. Selected completed forums hydrate on click.
+ */
+export function initializeForumDurablePersistence(): Promise<void> {
+  if (initializeForumPromise) return initializeForumPromise;
+  initializeForumPromise = (async () => {
+    try {
+      const initialForums = useForumStore.getState().forums;
+      const migrationResults = await Promise.allSettled(initialForums
+      .filter(forum => forum.contentLoaded)
+      .map(forum => saveForumNow(forum, true)));
+      const failedMigration = migrationResults.find(result => result.status === "rejected");
+      if (failedMigration?.status === "rejected") throw failedMigration.reason;
+
+      let catalog = await loadForumCatalog();
+      const missingDurableBodies = initialForums.filter(
+        forum => !forum.contentLoaded && !catalog.some(entry => entry.id === forum.id),
+      );
+      if (missingDurableBodies.length > 0) {
+        // A prior interrupted upgrade may have already reduced localStorage to
+        // catalog entries. Preserve those records in SQLite so they remain
+        // discoverable; future content is durable from this point forward.
+        console.warn(`[forum-store] promoting ${missingDurableBodies.length} recovery catalog entries into SQLite`);
+        await Promise.all(missingDurableBodies.map(forum => saveForumNow(forum, true)));
+        catalog = await loadForumCatalog();
+      }
+      forumDurableBackendReady = true;
+      if (catalog.length > 0) {
+        useForumStore.setState(state => {
+          const localOnly = state.forums.filter(forum => !catalog.some(entry => entry.id === forum.id));
+          return { forums: [...catalog.map(createForumCatalogEntry), ...localOnly] };
+        });
+      } else {
+        // Trigger a post-handshake localStorage rewrite even for an empty catalog.
+        useForumStore.setState(state => ({ forums: [...state.forums] }));
+      }
+
+      const runningIds = useForumStore.getState().forums
+        .filter(forum => forum.status === "active")
+        .map(forum => forum.id);
+      await Promise.all(runningIds.map(id => useForumStore.getState().ensureForumContent(id)));
+
+      if (!forumPersistenceStarted) {
+        forumPersistenceStarted = true;
+        let previousRefs = new Map(useForumStore.getState().forums.map(forum => [forum.id, forum]));
+        useForumStore.subscribe(state => {
+          for (const forum of state.forums) {
+            if (forum.contentLoaded && previousRefs.get(forum.id) !== forum) {
+              scheduleForumSave(forum);
+            }
+          }
+          previousRefs = new Map(state.forums.map(forum => [forum.id, forum]));
+        });
+      }
+    } catch (error) {
+      console.error("[forum-store] durable backend is not ready; retaining recovery cache", error instanceof Error ? error.name : "UnknownError");
+      initializeForumPromise = null;
+      await new Promise(resolve => window.setTimeout(resolve, 2_000));
+      return initializeForumDurablePersistence();
+    }
+  })();
+  return initializeForumPromise;
+}

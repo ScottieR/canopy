@@ -40,6 +40,7 @@ export // ═══════════════════════�
 
   const { agents, setSelectedAgent, setActiveView, architectTab, setArchitectTab, togglePermission, gatewayReady } = useWorldStore();
   const [showPairingModal, setShowPairingModal] = useState(false);
+  const [pairingModalInitialView, setPairingModalInitialView] = useState<'pair-device' | 'share-agent'>('pair-device');
   const [showDangerZone, setShowDangerZone] = useState(false);
   const [diagErrors, setDiagErrors] = useState<string[]>([]);
   const [diagSuccess, setDiagSuccess] = useState<string>("");
@@ -320,7 +321,10 @@ export // ═══════════════════════�
 
         <div style={{ flex: 1 }} />
 
-        <button onClick={() => setShowPairingModal(true)} style={{
+        <button onClick={() => {
+          setPairingModalInitialView('pair-device');
+          setShowPairingModal(true);
+        }} style={{
           display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
           padding: "10px", border: "1px solid rgba(0,0,0,0.1)", borderRadius: 8, cursor: "pointer",
           background: "var(--surface-base)", color: "var(--text-main)", fontSize: 13, fontWeight: 600, fontFamily: "inherit",
@@ -506,7 +510,16 @@ export // ═══════════════════════�
           onScroll={handleScroll}
           style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", flexDirection: "column" }}
         >
-          {architectTab === "overview" && <OverviewTab key={agent.id} agent={agent} onUpdate={() => setShowUpdateTip(true)} onNavigate={setArchitectTab} />}
+          {architectTab === "overview" && <OverviewTab
+            key={agent.id}
+            agent={agent}
+            onUpdate={() => setShowUpdateTip(true)}
+            onNavigate={setArchitectTab}
+            onShareAgent={() => {
+              setPairingModalInitialView('share-agent');
+              setShowPairingModal(true);
+            }}
+          />}
           {architectTab === "identity" && <IdentityTab key={agent.id} agent={agent} />}
           {architectTab === "personality" && <PersonalityTab key={agent.id} agent={agent} />}
           {architectTab === "connections" && <ConnectionsTab key={agent.id} agent={agent} onOpenTerminal={(cmd) => {
@@ -527,6 +540,7 @@ export // ═══════════════════════�
         isOpen={showPairingModal}
         onClose={() => setShowPairingModal(false)}
         defaultAgentId={agent.id}
+        initialView={pairingModalInitialView}
       />
     </div>
   );

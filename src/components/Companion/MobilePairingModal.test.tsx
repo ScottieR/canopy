@@ -1,9 +1,23 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockInvoke, mockTelemetry } = vi.hoisted(() => ({
+const { mockInvoke, mockTelemetry, mockEnsureMiniApps, mockWorldState } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
   mockTelemetry: vi.fn(),
+  mockEnsureMiniApps: vi.fn(),
+  mockWorldState: {
+    selectedAgent: null as string | null,
+    agents: [
+      {
+        id: 'agent-riz',
+        name: 'Riz',
+        role: 'coach',
+        emoji: '🦞',
+        miniApps: [],
+        miniAppsLoaded: true,
+      },
+    ],
+  },
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
@@ -14,20 +28,17 @@ vi.mock('qrcode.react', () => ({
   QRCodeSVG: ({ value }: { value: string }) => <div data-testid="pairing-qr">{value}</div>,
 }));
 
-vi.mock('../../store/worldStore', () => ({
-  useWorldStore: (selector: (state: unknown) => unknown) => selector({
-    agents: [
-      {
-        id: 'agent-riz',
-        name: 'Riz',
-        role: 'coach',
-        emoji: '🦞',
-        miniApps: [],
-      },
-    ],
-  }),
-  reportTelemetryEvent: mockTelemetry,
-}));
+vi.mock('../../store/worldStore', () => {
+  const state = { ...mockWorldState, ensureAgentMiniApps: mockEnsureMiniApps };
+  const useWorldStore = Object.assign(
+    (selector: (value: typeof state) => unknown) => selector(state),
+    {
+      getState: () => state,
+      setState: (updater: any) => Object.assign(state, typeof updater === 'function' ? updater(state) : updater),
+    },
+  );
+  return { useWorldStore, reportTelemetryEvent: mockTelemetry };
+});
 
 import { MobilePairingModal } from './MobilePairingModal';
 
@@ -77,26 +88,23 @@ describe('MobilePairingModal', () => {
     expect(await screen.findByText('Scan with the Canopy mobile app')).toBeInTheDocument();
     expect(mockInvoke).toHaveBeenCalledWith('generate_pairing_token');
     expect(screen.queryByRole('heading', { name: 'Share an agent' })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Share agent' }));
-
-    expect(await screen.findByRole('heading', { name: 'Share an agent' })).toBeInTheDocument();
-    expect(mockInvoke).toHaveBeenCalledWith('revoke_pairing_token');
-    expect(mockInvoke).toHaveBeenCalledWith('list_companion_assignments');
+    expect(screen.queryByRole('button', { name: 'Share agent' })).not.toBeInTheDocument();
   });
 
-  it('creates a scoped companion share only after the secondary CTA is chosen', async () => {
+  it('opens directly into scoped sharing when launched from the agent dashboard', async () => {
     render(
       <MobilePairingModal
         isOpen
         onClose={vi.fn()}
         defaultAgentId="agent-riz"
+        initialView="share-agent"
       />,
     );
 
-    await screen.findByText('Scan with the Canopy mobile app');
-    fireEvent.click(screen.getByRole('button', { name: 'Share agent' }));
     await screen.findByRole('heading', { name: 'Share an agent' });
+    expect(mockInvoke).not.toHaveBeenCalledWith('generate_pairing_token');
+    expect(mockInvoke).toHaveBeenCalledWith('revoke_pairing_token');
+    expect(mockInvoke).toHaveBeenCalledWith('list_companion_assignments');
 
     fireEvent.change(screen.getByPlaceholderText('e.g. Maya'), { target: { value: 'Maya' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create share QR' }));

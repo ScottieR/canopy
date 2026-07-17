@@ -3,7 +3,7 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu,
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, Unlock, ShieldCheck, Activity as ActivityIcon, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown
+  Mail, Calendar, ExternalLink, HardDrive, Lock, Unlock, ShieldCheck, Activity as ActivityIcon, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown, Share2
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp } from "../../store/worldStore";
@@ -119,7 +119,7 @@ function MiniAppsDrawer({ agent, open, onClose }: { agent: AgentData; open: bool
 
 // ─── Overview Tab ────────────────────────────────────────────────────────────
 
-export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: AgentData; onUpdate?: () => void; onNavigate?: (tab: string) => void }) {
+export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent }: { agent: AgentData; onUpdate?: () => void; onNavigate?: (tab: string) => void; onShareAgent?: () => void }) {
   const fallbackIntegrations = useMemo(() => [], []);
   const fallbackPermissions = useMemo(() => [], []);
   const agent = { 
@@ -641,6 +641,22 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate }: { agent: Ag
                 {agent.paused ? "Paused" : (!gatewayReady || agent.status === "deploying") ? "Waking up…" : agent.status === "thinking" ? "Thinking…" : agent.status === "error" ? "Offline" : "Idle"}
               </span>
             </div>
+            {onShareAgent && (
+              <button
+                type="button"
+                onClick={onShareAgent}
+                aria-label={`Share ${agent.name}`}
+                title={`Share ${agent.name} with another person or device`}
+                style={{
+                  padding: "6px 10px", background: "transparent", border: "1px solid var(--border-subtle)",
+                  borderRadius: 8, cursor: "pointer", color: "#218380", display: "flex", alignItems: "center",
+                  gap: 6, fontFamily: "inherit", fontSize: 12, fontWeight: 600,
+                }}
+              >
+                <Share2 size={14} />
+                Share agent
+              </button>
+            )}
             <button
               onClick={() => setIsEditingDetails(true)}
               title="Edit name and role"

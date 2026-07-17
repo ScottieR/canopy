@@ -15,31 +15,11 @@ import { TokenSpendChart } from "../components/agents/TokenSpendChart";
 // USER PROFILE VIEW
 // ═══════════════════════════════════════════════════════════════════════════════
 
-interface FeedbackReport {
-  id: string;
-  kind: string;
-  status: string;
-  title: string;
-  description: string;
-  agentId?: string | null;
-  reporterName: string;
-  reporterEmail: string;
-  createdAt: string;
-  updatedAt: string;
-  context: Record<string, any>;
-  remoteStatus: string;
-  remoteError?: string | null;
-  slackNotified: boolean;
-  dispatchedAgentId?: string | null;
-  dispatchedAt?: string | null;
-}
-
 interface FeedbackNotificationSettings {
   slackConfigured: boolean;
 }
 
 export function UserProfileView() {
-  const agents = useWorldStore(s => s.agents);
   const [profile, setProfile] = useState<UserProfile>({
     name: "Admin", email: "", phone: "", timezone: "UTC", working_hours: "9:00 AM - 5:00 PM",
     communication_tone: "Professional", global_directives: "Always cite your sources and optimize for safety."
@@ -47,23 +27,17 @@ export function UserProfileView() {
   const [saving, setSaving] = useState(false);
   const [passcode, setPasscode] = useState("");
   const [passcodeSaved, setPasscodeSaved] = useState(false);
-  const [feedbackReports, setFeedbackReports] = useState<FeedbackReport[]>([]);
   const [feedbackSettings, setFeedbackSettings] = useState<FeedbackNotificationSettings>({ slackConfigured: false });
   const [feedbackWebhookInput, setFeedbackWebhookInput] = useState("");
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState("");
-  const [dispatchingReportId, setDispatchingReportId] = useState<string | null>(null);
 
-  const refreshFeedbackState = useCallback(async () => {
+  const refreshFeedbackSettings = useCallback(async () => {
     try {
-      const [reports, settings] = await Promise.all([
-        invoke<FeedbackReport[]>("list_feedback_reports"),
-        invoke<FeedbackNotificationSettings>("get_feedback_notification_settings"),
-      ]);
-      setFeedbackReports(reports || []);
+      const settings = await invoke<FeedbackNotificationSettings>("get_feedback_notification_settings");
       setFeedbackSettings(settings || { slackConfigured: false });
     } catch (error) {
-      console.error("Failed to load feedback state:", error);
+      console.error("Failed to load feedback settings:", error);
     }
   }, []);
 
@@ -79,13 +53,8 @@ export function UserProfileView() {
   }, []);
 
   useEffect(() => {
-    refreshFeedbackState();
-    const handleUpdated = () => {
-      refreshFeedbackState();
-    };
-    window.addEventListener("feedback_reports_updated", handleUpdated);
-    return () => window.removeEventListener("feedback_reports_updated", handleUpdated);
-  }, [refreshFeedbackState]);
+    refreshFeedbackSettings();
+  }, [refreshFeedbackSettings]);
 
   const handleSavePasscode = async () => {
     if (typeof invoke === 'function' && passcode && passcode !== "••••••") {
@@ -115,68 +84,11 @@ export function UserProfileView() {
       });
       setFeedbackWebhookInput("");
       setFeedbackStatus(feedbackWebhookInput.trim() ? "Slack webhook saved." : "Slack feedback notifications disabled.");
-      await refreshFeedbackState();
+      await refreshFeedbackSettings();
     } catch (error) {
       setFeedbackStatus(String(error));
     } finally {
       setFeedbackBusy(false);
-    }
-  };
-
-  const pickEngineerAgent = () => {
-    const matches = agents.filter((agent) => {
-      const role = agent.role.toLowerCase();
-      const name = agent.name.toLowerCase();
-      return role === "engineer" || role === "developer" || role === "coder" || name.includes("engineer") || name.includes("developer");
-    });
-
-    return matches.sort((a, b) => {
-      const aScore = (a.paused ? 0 : 2) + (a.status === "active" ? 2 : 0) + (a.role === "Engineer" ? 2 : 0);
-      const bScore = (b.paused ? 0 : 2) + (b.status === "active" ? 2 : 0) + (b.role === "Engineer" ? 2 : 0);
-      return bScore - aScore;
-    })[0] ?? null;
-  };
-
-  const handleDispatchToEngineer = async (report: FeedbackReport) => {
-    const engineer = pickEngineerAgent();
-    if (!engineer) {
-      setFeedbackStatus("No Engineer or Developer agent is available to receive feedback.");
-      return;
-    }
-
-    setDispatchingReportId(report.id);
-    setFeedbackStatus("");
-    try {
-      const contextText = JSON.stringify(report.context ?? {}, null, 2).slice(0, 4000);
-      const message = [
-        `A user submitted a ${report.kind.replace(/_/g, " ")} feedback report through Canopy.`,
-        `Report ID: ${report.id}`,
-        `Title: ${report.title}`,
-        report.agentId ? `Related agent: ${report.agentId}` : "",
-        `Description:\n${report.description}`,
-        contextText ? `Diagnostics context:\n${contextText}` : "",
-        "Please triage this report, reproduce it if possible, and either fix it or propose the smallest correct implementation plan.",
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-
-      await invoke("send_message", {
-        agentId: engineer.id,
-        message,
-        sessionId: null,
-      });
-      await invoke("mark_feedback_report_dispatched", {
-        reportId: report.id,
-        agentId: engineer.id,
-      });
-      await refreshFeedbackState();
-      setFeedbackStatus(`Sent to ${engineer.name}.`);
-      useWorldStore.getState().setSelectedAgent(engineer.id);
-      useWorldStore.getState().setActiveView("architect");
-    } catch (error) {
-      setFeedbackStatus(String(error));
-    } finally {
-      setDispatchingReportId(null);
     }
   };
 
@@ -303,9 +215,9 @@ export function UserProfileView() {
       <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, borderBottom: "1px solid rgba(0,0,0,0.05)", paddingBottom: 8 }}>
           <div>
-            <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: 0 }}>Product Feedback</h3>
+            <h3 style={{ fontSize: 16, fontWeight: 700, color: "#3c6663", margin: 0 }}>Developer Notifications</h3>
             <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 6 }}>
-              Feedback is submitted from the top navigation. Reports listed here can be forwarded to an Engineer agent.
+              When Eddy relays product feedback, Canopy can also send a Slack notification here.
             </div>
           </div>
           <div style={{ fontSize: 12, fontWeight: 600, color: feedbackSettings.slackConfigured ? "#166534" : "var(--text-sub)" }}>
@@ -313,10 +225,10 @@ export function UserProfileView() {
           </div>
         </div>
 
-        <div style={{ padding: 16, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)", marginBottom: 18 }}>
+        <div style={{ padding: 16, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Slack notification webhook</div>
           <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 12 }}>
-            Paste an incoming Slack webhook URL. It is stored in the macOS keychain and used only when a new feedback report arrives.
+            Paste an incoming Slack webhook URL. It is stored in the macOS keychain and used only when Eddy relays new feedback.
           </div>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <input
@@ -336,58 +248,10 @@ export function UserProfileView() {
         </div>
 
         {feedbackStatus && (
-          <div style={{ marginBottom: 16, padding: "10px 12px", borderRadius: 10, background: "rgba(60,102,99,0.08)", border: "1px solid rgba(60,102,99,0.16)", color: "var(--text-main)", fontSize: 13 }}>
+          <div style={{ marginTop: 16, padding: "10px 12px", borderRadius: 10, background: "rgba(60,102,99,0.08)", border: "1px solid rgba(60,102,99,0.16)", color: "var(--text-main)", fontSize: 13 }}>
             {feedbackStatus}
           </div>
         )}
-
-        <div style={{ display: "grid", gap: 12 }}>
-          {feedbackReports.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--text-sub)" }}>No feedback reports yet.</div>
-          ) : (
-            feedbackReports.map((report) => (
-              <div key={report.id} style={{ border: "1px solid rgba(0,0,0,0.07)", borderRadius: 12, padding: 16, background: "var(--surface-card)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 10 }}>
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "#3c6663" }}>
-                        {report.kind.replace(/_/g, " ")}
-                      </span>
-                      <span style={{ fontSize: 11, color: "var(--text-sub)" }}>
-                        {new Date(report.createdAt).toLocaleString()}
-                      </span>
-                      <span style={{ fontSize: 11, color: report.slackNotified ? "#166534" : "#b45309" }}>
-                        {report.slackNotified ? "Slack notified" : "Slack not notified"}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>{report.title}</div>
-                    <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>
-                      {report.agentId ? `Agent: ${report.agentId} • ` : ""}{report.reporterEmail || report.reporterName}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    {report.dispatchedAgentId ? (
-                      <span style={{ fontSize: 12, fontWeight: 600, color: "#166534" }}>
-                        Sent to {agents.find((agent) => agent.id === report.dispatchedAgentId)?.name || report.dispatchedAgentId}
-                      </span>
-                    ) : (
-                      <button
-                        onClick={() => handleDispatchToEngineer(report)}
-                        disabled={dispatchingReportId === report.id}
-                        style={{ padding: "8px 12px", borderRadius: 8, border: "none", background: "#3c6663", color: "#fff", fontSize: 12, fontWeight: 700, cursor: dispatchingReportId === report.id ? "default" : "pointer", opacity: dispatchingReportId === report.id ? 0.75 : 1 }}
-                      >
-                        {dispatchingReportId === report.id ? "Sending..." : "Send to Engineer"}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div style={{ fontSize: 13, color: "var(--text-main)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>
-                  {report.description}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
       </div>
 
 

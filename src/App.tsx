@@ -26,7 +26,7 @@ import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
 import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, ChevronDown, ChevronUp, Activity, Terminal, Shield, RefreshCw, Layers, Lock, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, pickNextAction, UserProfile } from "./store/worldStore";
+import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, pickNextAction, UserProfile, initializeMiniAppDurablePersistence } from "./store/worldStore";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { OnboardingWizard } from "./pages/OnboardingWizard";
 import { LockScreen } from "./components/LockScreen";
@@ -46,7 +46,7 @@ import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
 import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
 import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
-import { useForumStore } from './store/forumStore';
+import { initializeForumDurablePersistence, useForumStore } from './store/forumStore';
 import { syncAgentProviderCredentials } from './security/providerCredentials';
 let gatewayBootPromise: Promise<any> | null = null;
 const withStartupTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
@@ -1643,7 +1643,10 @@ export default function App() {
   const { activeView, selectedAgent, agents, setSelectedAgent, setActiveView, setAgents, theme, isAutoCloakEnabled, autoCloakTimeout, setIsCloaked, gatewayReady } = useWorldStore();
   
   useEffect(() => {
-    initializeGlobalBackgroundOrchestrator();
+    void initializeMiniAppDurablePersistence();
+    initializeForumDurablePersistence()
+      .then(() => initializeGlobalBackgroundOrchestrator())
+      .catch(error => console.error("Failed to initialize durable forum state:", error));
   }, []);
 
   const agent = agents.find(a => a.id === selectedAgent) || agents[0];
@@ -1886,6 +1889,7 @@ export default function App() {
             };
           });
           setAgents(mergedAgents);
+          void initializeMiniAppDurablePersistence();
           localAgentsHydrated = true;
 
           const hash = window.location.hash.replace('#/', '').replace('#', '');
