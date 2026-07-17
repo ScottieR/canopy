@@ -403,6 +403,10 @@ pub struct PurchaseRequest {
     pub is_recurring: bool,
 }
 
+fn default_hourly_velocity_limit() -> u32 {
+    5
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentBudget {
     pub agent_id: String,
@@ -411,7 +415,14 @@ pub struct AgentBudget {
     pub per_transaction_limit_cents: u64,
     pub daily_limit_cents: u64,
     pub monthly_limit_cents: u64,
+    #[serde(default = "default_hourly_velocity_limit")]
+    pub hourly_velocity_limit: u32,
+    #[serde(default)]
     pub allowed_categories: Vec<String>,
+    #[serde(default)]
+    pub allowed_merchants: Vec<String>,
+    #[serde(default)]
+    pub blocked_merchants: Vec<String>,
     pub daily_spent_cents: u64,
     pub monthly_spent_cents: u64,
     pub require_approval_new_merchant: bool,
@@ -422,8 +433,59 @@ pub struct AgentBudget {
 #[serde(rename_all = "snake_case")]
 pub enum PurchaseDecision {
     Approved,
-    RequiresUserApproval { reason: String },
-    Denied { reasons: Vec<String> },
+    RequiresUserApproval {
+        reason: String,
+        #[serde(default)]
+        flags: Vec<String>,
+        #[serde(default)]
+        approval_id: Option<String>,
+    },
+    Denied {
+        reasons: Vec<String>,
+        #[serde(default)]
+        flags: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PurchaseApprovalStatus {
+    Pending,
+    Approved,
+    Denied,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VirtualCardProviderKind {
+    Mock,
+    Privacy,
+    LithicSandbox,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VirtualCardStatus {
+    Active,
+    Consumed,
+    Cancelled,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurchaseApprovalRequest {
+    pub id: String,
+    pub agent_id: String,
+    pub purchase_record_id: String,
+    pub purchase_request: PurchaseRequest,
+    pub reason: String,
+    #[serde(default)]
+    pub flags: Vec<String>,
+    pub status: PurchaseApprovalStatus,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,6 +499,50 @@ pub struct PurchaseRecord {
     pub decision: PurchaseDecision,
     pub virtual_card_id: Option<String>,
     pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtualCardRecord {
+    pub id: String,
+    pub agent_id: String,
+    pub purchase_record_id: String,
+    pub provider: VirtualCardProviderKind,
+    pub provider_card_ref: String,
+    pub last_four: String,
+    pub amount_cents: u64,
+    pub merchant: String,
+    pub memo: String,
+    pub status: VirtualCardStatus,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentAuditEntry {
+    pub id: String,
+    pub agent_id: String,
+    pub event_type: String,
+    pub detail_json: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PurchaseExecutionResult {
+    pub agent_id: String,
+    pub decision: PurchaseDecision,
+    pub purchase_record: PurchaseRecord,
+    pub approval_request: Option<PurchaseApprovalRequest>,
+    pub virtual_card: Option<VirtualCardRecord>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentDashboard {
+    pub agent_id: String,
+    pub budget: AgentBudget,
+    pub pending_approvals: Vec<PurchaseApprovalRequest>,
+    pub recent_purchases: Vec<PurchaseRecord>,
+    pub active_virtual_cards: Vec<VirtualCardRecord>,
 }
 
 // ─── Data Flow / Handoff Models ──────────────────────────────────────────────

@@ -114,11 +114,14 @@ pub fn default_test_budget(agent_id: &str) -> AgentBudget {
         per_transaction_limit_cents: 20000, // $200
         daily_limit_cents: 50000,           // $500
         monthly_limit_cents: 200000,        // $2000
+        hourly_velocity_limit: 5,
         allowed_categories: vec![
             "cleaning_supplies".to_string(),
             "office_equipment".to_string(),
             "software".to_string(),
         ],
+        allowed_merchants: vec![],
+        blocked_merchants: vec![],
         daily_spent_cents: 0,
         monthly_spent_cents: 0,
         require_approval_new_merchant: true,

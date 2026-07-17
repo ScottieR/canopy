@@ -953,6 +953,12 @@ pub fn run() {
             provider_provisioning::provision_agent_provider_key,
             // Payment gateway (deterministic)
             payment::evaluate_purchase,
+            payment::request_purchase,
+            payment::approve_purchase,
+            payment::deny_purchase,
+            payment::list_pending_purchase_approvals,
+            payment::get_virtual_cards_for_agent,
+            payment::get_payment_dashboard,
             payment::get_agent_budget,
             payment::update_agent_budget,
             payment::get_purchase_history,

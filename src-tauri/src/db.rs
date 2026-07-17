@@ -424,11 +424,79 @@ impl Database {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS payment_approval_requests (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                purchase_record_id TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                flags_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                expires_at TEXT,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS virtual_cards (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                purchase_record_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                provider_card_ref TEXT NOT NULL,
+                last_four TEXT NOT NULL,
+                amount_cents INTEGER NOT NULL,
+                merchant TEXT NOT NULL,
+                memo TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS payment_audit_log (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                detail_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+
         // Create global_config table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS global_config (
                 key TEXT PRIMARY KEY,
                 value_json TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Durable UI content. WebKit localStorage only keeps lightweight
+        // catalogs; full forum bodies and mini-app source live in SQLite.
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS forum_states (
+                id TEXT PRIMARY KEY,
+                summary_json TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS agent_mini_apps (
+                agent_id TEXT PRIMARY KEY,
+                content_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             )",
             [],
         )?;
@@ -708,6 +776,21 @@ impl Database {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_purchase_history_agent ON purchase_history(agent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_payment_approval_requests_agent_status
+             ON payment_approval_requests(agent_id, status)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_virtual_cards_agent_status
+             ON virtual_cards(agent_id, status)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_payment_audit_log_agent_created
+             ON payment_audit_log(agent_id, created_at DESC)",
             [],
         )?;
         conn.execute(
@@ -1237,6 +1320,111 @@ impl Database {
     /// Check if a user has permission to delete an agent
     pub fn can_delete_agent(&self, agent_id: &str, user_id: &str) -> SqlResult<bool> {
         self.is_agent_owner(agent_id, user_id)
+    }
+
+    // ─── Durable Webview Content ───────────────────────────────────────────
+
+    /// Store a full forum body alongside a lightweight catalog entry.
+    /// `if_absent` is used by the one-time localStorage migration so an older
+    /// bounded cache can never overwrite a newer SQLite record.
+    pub fn upsert_forum_state(
+        &self,
+        forum_id: &str,
+        summary_json: &str,
+        content_json: &str,
+        if_absent: bool,
+    ) -> SqlResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let changed = if if_absent {
+            conn.execute(
+                "INSERT OR IGNORE INTO forum_states (id, summary_json, content_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![forum_id, summary_json, content_json, &now],
+            )?
+        } else {
+            conn.execute(
+                "INSERT INTO forum_states (id, summary_json, content_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET
+                    summary_json = excluded.summary_json,
+                    content_json = excluded.content_json,
+                    updated_at = excluded.updated_at",
+                params![forum_id, summary_json, content_json, &now],
+            )?
+        };
+        Ok(changed > 0)
+    }
+
+    pub fn get_forum_state_json(&self, forum_id: &str) -> SqlResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT content_json FROM forum_states WHERE id = ?1",
+            params![forum_id],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+
+    pub fn list_forum_summary_jsons(&self) -> SqlResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT summary_json FROM forum_states ORDER BY updated_at DESC",
+        )?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<SqlResult<Vec<_>>>()
+    }
+
+    pub fn delete_forum_state(&self, forum_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM forum_states WHERE id = ?1", params![forum_id])?;
+        Ok(())
+    }
+
+    pub fn upsert_agent_mini_apps(
+        &self,
+        agent_id: &str,
+        content_json: &str,
+        if_absent: bool,
+    ) -> SqlResult<bool> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        let changed = if if_absent {
+            conn.execute(
+                "INSERT OR IGNORE INTO agent_mini_apps (agent_id, content_json, updated_at)
+                 VALUES (?1, ?2, ?3)",
+                params![agent_id, content_json, &now],
+            )?
+        } else {
+            conn.execute(
+                "INSERT INTO agent_mini_apps (agent_id, content_json, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(agent_id) DO UPDATE SET
+                    content_json = excluded.content_json,
+                    updated_at = excluded.updated_at",
+                params![agent_id, content_json, &now],
+            )?
+        };
+        Ok(changed > 0)
+    }
+
+    pub fn get_agent_mini_apps_json(&self, agent_id: &str) -> SqlResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT content_json FROM agent_mini_apps WHERE agent_id = ?1",
+            params![agent_id],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+
+    pub fn delete_agent_mini_apps(&self, agent_id: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM agent_mini_apps WHERE agent_id = ?1",
+            params![agent_id],
+        )?;
+        Ok(())
     }
 
     // ─── Conversation & Message Operations ──────────────────────────────────
@@ -2059,7 +2247,10 @@ impl Database {
                     per_transaction_limit_cents: 0,
                     daily_limit_cents: 0,
                     monthly_limit_cents: 0,
+                    hourly_velocity_limit: 5,
                     allowed_categories: vec![],
+                    allowed_merchants: vec![],
+                    blocked_merchants: vec![],
                     daily_spent_cents: row.get(2)?,
                     monthly_spent_cents: row.get(3)?,
                     require_approval_new_merchant: false,
@@ -2128,6 +2319,69 @@ impl Database {
         Ok(())
     }
 
+    pub fn get_purchase_record(&self, id: &str) -> SqlResult<Option<PurchaseRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, description, merchant, amount_cents, category, decision, virtual_card_id, timestamp
+             FROM purchase_history
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+
+        stmt.query_row(params![id], |row| {
+            let decision_json: String = row.get(6)?;
+            let timestamp_str: String = row.get(8)?;
+
+            Ok(PurchaseRecord {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                description: row.get(2)?,
+                merchant: row.get(3)?,
+                amount_cents: row.get::<_, i64>(4)? as u64,
+                category: row.get(5)?,
+                decision: serde_json::from_str(&decision_json).unwrap_or(PurchaseDecision::Denied {
+                    reasons: vec!["Failed to deserialize decision".to_string()],
+                    flags: vec!["deserialization_error".to_string()],
+                }),
+                virtual_card_id: row.get(7)?,
+                timestamp: chrono::DateTime::parse_from_rfc3339(&timestamp_str)
+                    .unwrap_or_else(|_| chrono::DateTime::default())
+                    .with_timezone(&Utc),
+            })
+        })
+        .optional()
+    }
+
+    pub fn update_purchase_record(&self, record: &PurchaseRecord) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let decision_json =
+            serde_json::to_string(&record.decision).unwrap_or_else(|_| "{}".to_string());
+
+        conn.execute(
+            "UPDATE purchase_history
+             SET description = ?2,
+                 merchant = ?3,
+                 amount_cents = ?4,
+                 category = ?5,
+                 decision = ?6,
+                 virtual_card_id = ?7,
+                 timestamp = ?8
+             WHERE id = ?1",
+            params![
+                &record.id,
+                &record.description,
+                &record.merchant,
+                record.amount_cents as i64,
+                &record.category,
+                decision_json,
+                &record.virtual_card_id,
+                record.timestamp.to_rfc3339(),
+            ],
+        )?;
+
+        Ok(())
+    }
+
     /// Get purchase history for an agent
     pub fn get_purchase_history(
         &self,
@@ -2156,11 +2410,10 @@ impl Database {
                     merchant: row.get(3)?,
                     amount_cents: row.get::<_, i32>(4)? as u64,
                     category: row.get(5)?,
-                    decision: serde_json::from_str(&decision_json).unwrap_or(
-                        PurchaseDecision::Denied {
-                            reasons: vec!["Failed to deserialize decision".to_string()],
-                        },
-                    ),
+                    decision: serde_json::from_str(&decision_json).unwrap_or(PurchaseDecision::Denied {
+                        reasons: vec!["Failed to deserialize decision".to_string()],
+                        flags: vec!["deserialization_error".to_string()],
+                    }),
                     virtual_card_id: row.get(7)?,
                     timestamp: chrono::DateTime::parse_from_rfc3339(&timestamp_str)
                         .unwrap_or_else(|_| chrono::DateTime::default())
@@ -2170,6 +2423,325 @@ impl Database {
             .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(records)
+    }
+
+    pub fn create_payment_approval_request(
+        &self,
+        approval: &PurchaseApprovalRequest,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let request_json =
+            serde_json::to_string(&approval.purchase_request).unwrap_or_else(|_| "{}".to_string());
+        let flags_json = serde_json::to_string(&approval.flags).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "INSERT INTO payment_approval_requests
+             (id, agent_id, purchase_record_id, request_json, reason, flags_json, status, created_at, resolved_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                &approval.id,
+                &approval.agent_id,
+                &approval.purchase_record_id,
+                request_json,
+                &approval.reason,
+                flags_json,
+                serde_json::to_string(&approval.status).unwrap_or_else(|_| "\"pending\"".to_string()),
+                approval.created_at.to_rfc3339(),
+                approval.resolved_at.map(|value| value.to_rfc3339()),
+                approval.expires_at.map(|value| value.to_rfc3339()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_payment_approval_request(
+        &self,
+        approval_id: &str,
+    ) -> SqlResult<Option<PurchaseApprovalRequest>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, purchase_record_id, request_json, reason, flags_json, status, created_at, resolved_at, expires_at
+             FROM payment_approval_requests
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+
+        stmt.query_row(params![approval_id], |row| {
+            let request_json: String = row.get(3)?;
+            let flags_json: String = row.get(5)?;
+            let status_json: String = row.get(6)?;
+            let created_at: String = row.get(7)?;
+            let resolved_at: Option<String> = row.get(8)?;
+            let expires_at: Option<String> = row.get(9)?;
+
+            Ok(PurchaseApprovalRequest {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                purchase_record_id: row.get(2)?,
+                purchase_request: serde_json::from_str(&request_json).unwrap_or(PurchaseRequest {
+                    agent_id: row.get::<_, String>(1)?,
+                    description: "Unknown purchase".to_string(),
+                    merchant: "Unknown".to_string(),
+                    amount_cents: 0,
+                    category: "unknown".to_string(),
+                    is_recurring: false,
+                }),
+                reason: row.get(4)?,
+                flags: serde_json::from_str(&flags_json).unwrap_or_default(),
+                status: serde_json::from_str(&status_json).unwrap_or(PurchaseApprovalStatus::Pending),
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::DateTime::default())
+                    .with_timezone(&Utc),
+                resolved_at: resolved_at.and_then(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .ok()
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                }),
+                expires_at: expires_at.and_then(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .ok()
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                }),
+            })
+        })
+        .optional()
+    }
+
+    pub fn list_payment_approval_requests(
+        &self,
+        agent_id: Option<&str>,
+        pending_only: bool,
+    ) -> SqlResult<Vec<PurchaseApprovalRequest>> {
+        let conn = self.conn.lock().unwrap();
+        let query = match (agent_id, pending_only) {
+            (Some(_), true) => {
+                "SELECT id, agent_id, purchase_record_id, request_json, reason, flags_json, status, created_at, resolved_at, expires_at
+                 FROM payment_approval_requests
+                 WHERE agent_id = ?1 AND status = '\"pending\"'
+                 ORDER BY created_at DESC"
+            }
+            (Some(_), false) => {
+                "SELECT id, agent_id, purchase_record_id, request_json, reason, flags_json, status, created_at, resolved_at, expires_at
+                 FROM payment_approval_requests
+                 WHERE agent_id = ?1
+                 ORDER BY created_at DESC"
+            }
+            (None, true) => {
+                "SELECT id, agent_id, purchase_record_id, request_json, reason, flags_json, status, created_at, resolved_at, expires_at
+                 FROM payment_approval_requests
+                 WHERE status = '\"pending\"'
+                 ORDER BY created_at DESC"
+            }
+            (None, false) => {
+                "SELECT id, agent_id, purchase_record_id, request_json, reason, flags_json, status, created_at, resolved_at, expires_at
+                 FROM payment_approval_requests
+                 ORDER BY created_at DESC"
+            }
+        };
+
+        let mut stmt = conn.prepare(query)?;
+        let rows = if let Some(agent_id) = agent_id {
+            stmt.query_map(params![agent_id], |row| {
+                let request_json: String = row.get(3)?;
+                let flags_json: String = row.get(5)?;
+                let status_json: String = row.get(6)?;
+                let created_at: String = row.get(7)?;
+                let resolved_at: Option<String> = row.get(8)?;
+                let expires_at: Option<String> = row.get(9)?;
+                Ok(PurchaseApprovalRequest {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    purchase_record_id: row.get(2)?,
+                    purchase_request: serde_json::from_str(&request_json).unwrap_or(PurchaseRequest {
+                        agent_id: row.get::<_, String>(1)?,
+                        description: "Unknown purchase".to_string(),
+                        merchant: "Unknown".to_string(),
+                        amount_cents: 0,
+                        category: "unknown".to_string(),
+                        is_recurring: false,
+                    }),
+                    reason: row.get(4)?,
+                    flags: serde_json::from_str(&flags_json).unwrap_or_default(),
+                    status: serde_json::from_str(&status_json).unwrap_or(PurchaseApprovalStatus::Pending),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    resolved_at: resolved_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                    expires_at: expires_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?
+        } else {
+            stmt.query_map([], |row| {
+                let request_json: String = row.get(3)?;
+                let flags_json: String = row.get(5)?;
+                let status_json: String = row.get(6)?;
+                let created_at: String = row.get(7)?;
+                let resolved_at: Option<String> = row.get(8)?;
+                let expires_at: Option<String> = row.get(9)?;
+                Ok(PurchaseApprovalRequest {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    purchase_record_id: row.get(2)?,
+                    purchase_request: serde_json::from_str(&request_json).unwrap_or(PurchaseRequest {
+                        agent_id: row.get::<_, String>(1)?,
+                        description: "Unknown purchase".to_string(),
+                        merchant: "Unknown".to_string(),
+                        amount_cents: 0,
+                        category: "unknown".to_string(),
+                        is_recurring: false,
+                    }),
+                    reason: row.get(4)?,
+                    flags: serde_json::from_str(&flags_json).unwrap_or_default(),
+                    status: serde_json::from_str(&status_json).unwrap_or(PurchaseApprovalStatus::Pending),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    resolved_at: resolved_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                    expires_at: expires_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?
+        };
+
+        Ok(rows)
+    }
+
+    pub fn update_payment_approval_request(
+        &self,
+        approval: &PurchaseApprovalRequest,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let request_json =
+            serde_json::to_string(&approval.purchase_request).unwrap_or_else(|_| "{}".to_string());
+        let flags_json = serde_json::to_string(&approval.flags).unwrap_or_else(|_| "[]".to_string());
+        let status_json =
+            serde_json::to_string(&approval.status).unwrap_or_else(|_| "\"pending\"".to_string());
+        conn.execute(
+            "UPDATE payment_approval_requests
+             SET request_json = ?2,
+                 reason = ?3,
+                 flags_json = ?4,
+                 status = ?5,
+                 resolved_at = ?6,
+                 expires_at = ?7
+             WHERE id = ?1",
+            params![
+                &approval.id,
+                request_json,
+                &approval.reason,
+                flags_json,
+                status_json,
+                approval.resolved_at.map(|value| value.to_rfc3339()),
+                approval.expires_at.map(|value| value.to_rfc3339()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn record_virtual_card(&self, card: &VirtualCardRecord) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO virtual_cards
+             (id, agent_id, purchase_record_id, provider, provider_card_ref, last_four, amount_cents, merchant, memo, status, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                &card.id,
+                &card.agent_id,
+                &card.purchase_record_id,
+                serde_json::to_string(&card.provider).unwrap_or_else(|_| "\"mock\"".to_string()),
+                &card.provider_card_ref,
+                &card.last_four,
+                card.amount_cents as i64,
+                &card.merchant,
+                &card.memo,
+                serde_json::to_string(&card.status).unwrap_or_else(|_| "\"active\"".to_string()),
+                card.created_at.to_rfc3339(),
+                card.expires_at.map(|value| value.to_rfc3339()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_virtual_cards(
+        &self,
+        agent_id: &str,
+        active_only: bool,
+    ) -> SqlResult<Vec<VirtualCardRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let query = if active_only {
+            "SELECT id, agent_id, purchase_record_id, provider, provider_card_ref, last_four, amount_cents, merchant, memo, status, created_at, expires_at
+             FROM virtual_cards
+             WHERE agent_id = ?1 AND status = '\"active\"'
+             ORDER BY created_at DESC"
+        } else {
+            "SELECT id, agent_id, purchase_record_id, provider, provider_card_ref, last_four, amount_cents, merchant, memo, status, created_at, expires_at
+             FROM virtual_cards
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC"
+        };
+
+        let mut stmt = conn.prepare(query)?;
+        let cards = stmt.query_map(params![agent_id], |row| {
+            let provider_json: String = row.get(3)?;
+            let status_json: String = row.get(9)?;
+            let created_at: String = row.get(10)?;
+            let expires_at: Option<String> = row.get(11)?;
+            Ok(VirtualCardRecord {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                purchase_record_id: row.get(2)?,
+                provider: serde_json::from_str(&provider_json).unwrap_or(VirtualCardProviderKind::Mock),
+                provider_card_ref: row.get(4)?,
+                last_four: row.get(5)?,
+                amount_cents: row.get::<_, i64>(6)? as u64,
+                merchant: row.get(7)?,
+                memo: row.get(8)?,
+                status: serde_json::from_str(&status_json).unwrap_or(VirtualCardStatus::Active),
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::DateTime::default())
+                    .with_timezone(&Utc),
+                expires_at: expires_at.and_then(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .ok()
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                }),
+            })
+        })?
+        .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(cards)
+    }
+
+    pub fn record_payment_audit_entry(&self, entry: &PaymentAuditEntry) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO payment_audit_log (id, agent_id, event_type, detail_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                &entry.id,
+                &entry.agent_id,
+                &entry.event_type,
+                serde_json::to_string(&entry.detail_json).unwrap_or_else(|_| "{}".to_string()),
+                entry.created_at.to_rfc3339(),
+            ],
+        )?;
+        Ok(())
     }
 
     // ─── Budget Reset Operations ───────────────────────────────────────────
@@ -3265,7 +3837,10 @@ mod tests {
             per_transaction_limit_cents: 10000,
             daily_limit_cents: 50000,
             monthly_limit_cents: 500000,
+            hourly_velocity_limit: 5,
             allowed_categories: vec!["software".to_string()],
+            allowed_merchants: vec![],
+            blocked_merchants: vec![],
             daily_spent_cents: 1000,
             monthly_spent_cents: 5000,
             require_approval_new_merchant: true,

@@ -39,6 +39,24 @@ type ConnectionPrompt = {
     rationale: string;
 };
 
+type PaymentApproval = {
+    approval: {
+        id: string;
+        agent_id: string;
+        purchase_record_id: string;
+        purchase_request: {
+            description: string;
+            merchant: string;
+            amount_cents: number;
+            category: string;
+        };
+        reason: string;
+        flags: string[];
+        status: "pending" | "approved" | "denied" | "expired";
+    };
+    agent_name: string;
+};
+
 const TOAST_TIMEOUT_MS = 25_000;
 
 export function AgentRequestNotifier({
@@ -53,6 +71,7 @@ export function AgentRequestNotifier({
     const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
     const [pendingPermission, setPendingPermission] = useState<PermissionPrompt | null>(null);
     const [pendingConnection, setPendingConnection] = useState<ConnectionPrompt | null>(null);
+    const [pendingPaymentApproval, setPendingPaymentApproval] = useState<PaymentApproval | null>(null);
 
     const nameFor = useCallback((agentId: string) => {
         return agents?.find(a => a.id === agentId)?.name ?? agentId;
@@ -96,6 +115,48 @@ export function AgentRequestNotifier({
                 }
             } catch (e) {
                 console.warn("Attention listener setup failed", e);
+            }
+        }
+        setup();
+
+        return () => {
+            isMounted = false;
+            if (unlistenFn) {
+                try { unlistenFn(); } catch (e) {}
+                unlistenFn = undefined;
+            }
+        };
+    }, []);
+
+    useEffect(() => {
+        let unlistenFn: (() => void) | undefined;
+        let isMounted = true;
+
+        async function setup() {
+            try {
+                const { listen } = await import("@tauri-apps/api/event");
+                if (!isMounted) return;
+
+                const unlisten = await listen<PaymentApproval>("payment_approval_requested", (event) => {
+                    try {
+                        const payload = event?.payload;
+                        if (!payload?.approval?.id || !payload?.approval?.agent_id) {
+                            console.warn("payment_approval_requested: malformed payload, ignoring", payload);
+                            return;
+                        }
+                        setPendingPaymentApproval(prev => prev ?? payload);
+                    } catch (err) {
+                        console.warn("payment_approval_requested handler error:", err);
+                    }
+                });
+
+                if (isMounted) {
+                    unlistenFn = unlisten;
+                } else {
+                    try { unlisten(); } catch (e) {}
+                }
+            } catch (e) {
+                console.warn("Payment approval listener setup failed", e);
             }
         }
         setup();
@@ -237,6 +298,24 @@ export function AgentRequestNotifier({
         setPendingConnection(null);
     }, [pendingConnection]);
 
+    const handlePaymentDecision = useCallback(async (decision: "approve" | "deny") => {
+        if (!pendingPaymentApproval) return;
+        try {
+            if (decision === "approve") {
+                await invoke("approve_purchase", {
+                    approvalId: pendingPaymentApproval.approval.id,
+                });
+            } else {
+                await invoke("deny_purchase", {
+                    approvalId: pendingPaymentApproval.approval.id,
+                });
+            }
+        } catch (e) {
+            console.error("payment approval resolution failed:", e);
+        }
+        setPendingPaymentApproval(null);
+    }, [pendingPaymentApproval]);
+
     return (
         <>
             {/* Stack of attention toasts in the bottom-right corner. */}
@@ -335,6 +414,13 @@ export function AgentRequestNotifier({
                     prompt={pendingConnection}
                     agentName={nameFor(pendingConnection.agent_id)}
                     onDecide={handleConnectionDecision}
+                />
+            )}
+
+            {pendingPaymentApproval && (
+                <PaymentApprovalModal
+                    prompt={pendingPaymentApproval}
+                    onDecide={handlePaymentDecision}
                 />
             )}
         </>
@@ -505,6 +591,97 @@ function ConnectionModal({
 
                 <div style={{ fontSize: 11, color: "#8a9a8a", lineHeight: 1.4, textAlign: "center", marginTop: 12 }}>
                     <strong>Secure Modal</strong>: The agent will not have access to any tokens you provide.
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function PaymentApprovalModal({
+    prompt,
+    onDecide,
+}: {
+    prompt: PaymentApproval;
+    onDecide: (decision: "approve" | "deny") => void;
+}) {
+    const amount = (prompt.approval.purchase_request.amount_cents || 0) / 100;
+    const flags = Array.isArray(prompt.approval.flags) ? prompt.approval.flags : [];
+
+    return (
+        <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+                position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                zIndex: 9500,
+            }}
+        >
+            <div style={{
+                background: "#1a1f1a", color: "#e8efe8",
+                border: "1px solid #2d3a2d", borderRadius: 12,
+                padding: 24, width: 520, maxWidth: "calc(100vw - 32px)",
+                boxShadow: "0 12px 48px rgba(0,0,0,0.5)",
+            }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
+                    <div style={{
+                        background: "#3a2a1a", borderRadius: "50%",
+                        width: 36, height: 36, flexShrink: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                        <AlertTriangle size={18} color="#f0a060" />
+                    </div>
+                    <div>
+                        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
+                            {prompt.agent_name} needs payment approval
+                        </h2>
+                        <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#c8d0c8" }}>
+                            Review this purchase request before the agent can continue.
+                        </p>
+                    </div>
+                </div>
+
+                <div style={{
+                    background: "#0f130f", border: "1px solid #2a352a",
+                    borderRadius: 8, padding: 12, marginBottom: 18,
+                    display: "grid", gap: 8,
+                }}>
+                    <div style={{ fontSize: 13 }}><strong>Description:</strong> {prompt.approval.purchase_request.description}</div>
+                    <div style={{ fontSize: 13 }}><strong>Merchant:</strong> {prompt.approval.purchase_request.merchant}</div>
+                    <div style={{ fontSize: 13 }}><strong>Category:</strong> {prompt.approval.purchase_request.category}</div>
+                    <div style={{ fontSize: 13 }}><strong>Amount:</strong> ${amount.toFixed(2)}</div>
+                    <div style={{ fontSize: 13, color: "#d0d8d0", lineHeight: 1.5 }}>
+                        <strong>Reason:</strong> {prompt.approval.reason}
+                    </div>
+                </div>
+
+                {flags.length > 0 && (
+                    <div style={{ marginBottom: 16, display: "flex", flexWrap: "wrap", gap: 8 }}>
+                        {flags.map(flag => (
+                            <span
+                                key={flag}
+                                style={{
+                                    fontSize: 11,
+                                    padding: "4px 8px",
+                                    borderRadius: 999,
+                                    background: "rgba(240,160,96,0.15)",
+                                    color: "#f0a060",
+                                    border: "1px solid rgba(240,160,96,0.25)",
+                                }}
+                            >
+                                {flag}
+                            </span>
+                        ))}
+                    </div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <button onClick={() => onDecide("approve")} style={btnStyle("#3c6663")}>
+                        Approve purchase
+                    </button>
+                    <button onClick={() => onDecide("deny")} style={btnStyle("#5a3030")}>
+                        Deny purchase
+                    </button>
                 </div>
             </div>
         </div>
