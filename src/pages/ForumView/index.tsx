@@ -2385,6 +2385,9 @@ function ForumBlackboard({
   const annotation = useCanvasAnnotation(isAnnotationMode);
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
   const [drawMode, setDrawMode] = useState(false);
+  // App-style deliverables (html/genui) render full-bleed; the research &
+  // strategy reference rail becomes an on-demand drawer instead of a fixed 40%.
+  const [refsOpen, setRefsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wasCompleted = useRef(false);
@@ -2677,6 +2680,23 @@ function ForumBlackboard({
           "Save this interactive project app to the originating agent's mini-app shelf"
         )}
 
+        {/* Reference drawer toggle — app deliverables are full-bleed, so the
+            research/strategy rail lives behind this button */}
+        {isRendered && !selectedArtifact && !isScratchpadView && hasDeliverable && (isHtmlMode || isGenUIMode) && referenceCards.length > 0 && toolbarBtn(
+          () => setRefsOpen(o => !o), refsOpen, "#818CF8",
+          <>
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            Reference
+            <span style={{ fontSize: 9, background: "rgba(129,140,248,0.18)", borderRadius: 10, padding: "0 5px", marginLeft: 2 }}>
+              {referenceCards.length}
+            </span>
+          </>,
+          "Show the team's research & strategy notes beside the deliverable"
+        )}
+
         {/* Comment mode — highlight text to send a note to agents */}
         {!isHtmlMode && !isGenUIMode && !isScratchpadView && toolbarBtn(
           () => setIsAnnotationMode(a => !a), isAnnotationMode, "#EAB308",
@@ -2753,8 +2773,15 @@ function ForumBlackboard({
         {isRendered && !isScratchpadView && !selectedArtifact && (
           hasDeliverable ? (
             <div style={{ display: "flex", width: "100%", height: "100%", overflow: "hidden" }}>
-              {/* Left Panel: Deliverable Preview (60%) */}
-              <div style={{ width: "60%", height: "100%", borderRight: "1px solid var(--border-subtle, rgba(0,0,0,0.07))", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+              {/* Deliverable — app-style (html/genui) gets the full canvas unless the
+                  reference drawer is open; markdown keeps the 60/40 split. */}
+              <div style={{
+                width: (isHtmlMode || isGenUIMode) && !refsOpen ? "100%" : "60%",
+                height: "100%",
+                borderRight: (isHtmlMode || isGenUIMode) && !refsOpen ? "none" : "1px solid var(--border-subtle, rgba(0,0,0,0.07))",
+                display: "flex", flexDirection: "column", overflow: "hidden",
+                transition: "width 0.25s ease",
+              }}>
                 {isHtmlMode && htmlContent && (
                   <div style={{ position: "relative", width: "100%", height: "100%" }}>
                     <iframe
@@ -2827,21 +2854,24 @@ function ForumBlackboard({
                 )}
               </div>
 
-              {/* Right Panel: Reference Cards (40%) */}
-              <div style={{ width: "40%", height: "100%", overflowY: "auto", background: "rgba(0,0,0,0.015)", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
-                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-sub, #636E72)", opacity: 0.6, marginBottom: 4 }}>
-                  Research & Strategy Reference
-                </div>
-                {referenceCards.length > 0 ? (
-                  referenceCards.map(card => (
-                    <GlassCard key={card.id} card={card} mdComponents={localMdComponents} />
-                  ))
-                ) : (
-                  <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-sub, #636E72)", opacity: 0.5 }}>
-                    No reference cards available.
+              {/* Reference rail — always beside markdown deliverables; a toggleable
+                  drawer for app-style ones (the app embeds its own Library view). */}
+              {(!(isHtmlMode || isGenUIMode) || refsOpen) && (
+                <div style={{ width: "40%", height: "100%", overflowY: "auto", background: "rgba(0,0,0,0.015)", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-sub, #636E72)", opacity: 0.6, marginBottom: 4 }}>
+                    Research & Strategy Reference
                   </div>
-                )}
-              </div>
+                  {referenceCards.length > 0 ? (
+                    referenceCards.map(card => (
+                      <GlassCard key={card.id} card={card} mdComponents={localMdComponents} />
+                    ))
+                  ) : (
+                    <div style={{ fontSize: 11, fontStyle: "italic", color: "var(--text-sub, #636E72)", opacity: 0.5 }}>
+                      No reference cards available.
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ width: "100%", height: "100%", overflow: "hidden" }}>

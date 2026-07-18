@@ -411,6 +411,7 @@ ${safeResearch}
 This is the STRATEGIC APPROACH phase. Based on the research and your expertise as ${agent.role}, develop the recommended path forward:
 - Clear recommended direction with rationale
 - Deconstruct the UX paradigms of the best-in-class applications identified in the research phase and explain how we will emulate them
+- Sketch the structure of the final deliverable app: which views/tabs it should have, what the landing "takeaway" dashboard shows (the headline recommendation, 3–5 key stats, and one visual centerpiece), and what belongs in its embedded Library view of supporting material
 - Key decisions the user needs to make
 - How to sequence the work
 - What to prioritise and why
@@ -537,6 +538,13 @@ ENVIRONMENT (hard constraints):
 - No localStorage/sessionStorage/cookies (they throw in the sandbox) — keep state in JS variables. No alert/confirm/prompt.
 - FINISH the document. If you are running long, cut scope — fewer sections, tighter copy — but ALWAYS emit the closing </html>. A truncated page is the worst possible outcome.
 
+INFORMATION ARCHITECTURE (build an APP, not a scrolling document — this is the single most important section):
+- Structure the deliverable as a small product with distinct VIEWS switched by a persistent top nav (tabs), using JS show/hide. Never one long scroll of stacked sections.
+- The default landing view is the TAKEAWAY — an at-a-glance dashboard: the headline recommendation in one sentence, 3–5 key stats as stat cards, and ONE visual centerpiece built in inline SVG (a chart, map, timeline, or diagram of the core content — whatever best captures the essence of this project). Someone who reads ONLY this view must come away knowing the outcome and why.
+- Then one view per major facet of the work (e.g. Itinerary / Budget / Activities, or Plan / Options / Risks) carrying the full detail with its own interactions.
+- The LAST view is a "Library": the team's supporting material embedded IN the app. Condense the research findings and strategy from the board into browsable cards or accordions (grouped per topic or per agent, with attribution). The app must be fully self-contained — the user should never need another panel to understand how the team got here.
+- Depth over sprawl: each view fits its purpose in one or two screens; use progressive disclosure (accordions, drill-in, hover detail) instead of dumping prose.
+
 CONTENT GROUNDING (what makes it feel bespoke, not generic):
 - Every number, name, place, price, and recommendation must come from the research/strategy on the board, the brief, or the user's clarifications. No lorem ipsum, no "Sample item", no invented statistics, no empty "TBD" sections.
 - If the board lists specific items (routes, stops, dishes, exercises, line items), render THOSE items — the user should recognize their project instantly.
@@ -544,9 +552,9 @@ CONTENT GROUNDING (what makes it feel bespoke, not generic):
 
 DESIGN SYSTEM (Canopy house style):
 - Palette: primary #3c6663, accent #4A9E96, warm highlight #F59E3F, page background #faf9f6, card background #ffffff, text #303330, subtle borders rgba(0,0,0,0.07).
-- html,body { margin:0 } with the page background color on body; the panel is ~700–900px wide and scrolls vertically — design a fluid single-column-to-two-column layout (CSS grid with auto-fit/minmax), never fixed pixel page widths.
+- html,body { margin:0 } with the page background color on body; the panel scrolls vertically and can be anywhere from ~700px to full-desktop wide — design a fluid layout (CSS grid with auto-fit/minmax) that uses width when it has it, never fixed pixel page widths.
 - Cards: white, border-radius 14–16px, soft shadow (0 2px 12px rgba(0,0,0,0.06)), 20–24px padding, generous whitespace between sections.
-- Hierarchy: open with a hero header — project title, one-line purpose, and 2–4 key stats or highlights — then clearly-titled sections. Use a sticky top nav or tab bar when there are more than 3 sections.
+- Compact app chrome: a slim hero strip (project title + one-line purpose) directly above the nav — not a giant banner; the takeaway dashboard is the star, not the header.
 - Typography: 15–16px body, 1.6 line-height, headings with letter-spacing -0.01em; uppercase 11px letterspaced labels for section eyebrows.
 
 INTERACTIVITY & DELIGHT (this is what makes it magical):
@@ -572,7 +580,7 @@ ${attachments ? `\n**User uploaded files/attachments (reference these assets dir
 **Work so far (research + strategy):**
 ${safeBoard}
 
-**DEFAULT TO HTML.** The deliverable panel is a living canvas — rich interactive HTML is almost always more valuable than a static document. Choose HTML unless the output is genuinely prose-only (e.g. a cover letter, a recipe, a poem).
+**DEFAULT TO HTML.** The deliverable panel renders your output full-bleed, like an app the team shipped — not a document in a frame. Build a small self-contained product: the takeaway front and center as an interactive, visual dashboard; the full detail in navigable views; and the team's research & strategy (from the board content above) condensed into an embedded Library view. Choose HTML unless the output is genuinely prose-only (e.g. a cover letter, a recipe, a poem).
 
 ${GENUI_BEST_PRACTICES}
 
@@ -653,7 +661,8 @@ ${safeBoard}
 
 REVIEW PHASE — assess the deliverable:
 1. Does it address the brief and the user's steering?
-2. Any specific gap or improvement to flag?
+2. For HTML deliverables — is it structured as an app (nav with views), with the takeaway instantly digestible on the landing view (headline recommendation, key stats, a visual centerpiece)? Are the team's research and strategy embedded in a Library/supporting-docs view so it's self-contained? A single long scrolling document with no navigation is grounds for revision.
+3. Any specific gap or improvement to flag?
 
 Return ONLY valid JSON (no markdown, no fences):
 {

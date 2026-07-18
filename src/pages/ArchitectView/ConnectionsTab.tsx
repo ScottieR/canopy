@@ -12,6 +12,7 @@ import { GenerativeResult } from "../../components/GenerativeStudio";
 import { Toggle, ServiceRow, MultiPicker, glass } from "../../App";
 import { PasswordInput } from "../../components/shared/PasswordInput";
 import { ConfirmDisconnectModal } from "../../components/shared/ConfirmDisconnectModal";
+import { HeartbeatsManager } from "../../components/agents/HeartbeatsManager";
 import { CONNECTOR_CATALOG, buildCompanionUrl, getConnectorSecretKey } from "../../utils/connectorCatalog";
 import {
   ACCESS_TIERS,
@@ -874,6 +875,8 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           {isolationError}
         </div>
       )}
+
+      <HeartbeatsManager agent={agent} />
 
       {/* ── Access Level ────────────────────────────────────────────────────
           The single tier preset for the whole agent. Replaces the previous

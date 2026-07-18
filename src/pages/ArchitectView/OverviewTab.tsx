@@ -18,6 +18,7 @@ import { ProgressBar } from "../../App";
 import { ChatTab } from "./ChatTab";
 import { Toggle, ServiceRow, glass } from "../../App";
 import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
+import { HeartbeatsManager } from "../../components/agents/HeartbeatsManager";
 import { WorkspaceFilesDrawer } from "./WorkspaceFilesDrawer";
 import { ThreadsRail } from "./ThreadsRail";
 import { LiveVoiceOverlay } from "./LiveVoiceOverlay";
@@ -874,6 +875,12 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
         {/* "New conversation" used to live here — moved into the ThreadsRail
             as a more prominent "+ New chat" button at the top of the rail. */}
       </div>
+
+      <HeartbeatsManager
+        agent={agent}
+        mode="summary"
+        onOpenManage={() => onNavigate?.("connections")}
+      />
 
       {/* Live voice overlay — only mounted while open. Mounting/unmounting
           aligns the audio session lifecycle with the user's intent. */}

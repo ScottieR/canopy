@@ -39,6 +39,7 @@ This creates four avoidable problems:
 4. Keep integrations and API keys prominent enough that the user can unlock real power during onboarding, rather than being left with a weak toy agent.
 5. Reuse the same discovery pattern in Add Agent, with experienced-user framing.
 6. Make skill and connection recommendations dynamic based on the agent persona, not static generic lists.
+7. Make scheduled heartbeats a first-class, user-visible routine surface that agents can recommend and users can confirm, edit, and manage.
 
 ## Non-Goals
 
@@ -73,6 +74,8 @@ This role should be explicit in the UI from the first screen:
 - As a new user, I want the first conversation to show me what the agent can do now and what it could do with more access.
 - As an existing user, I want Add Agent to feel familiar but faster, without being treated like I am brand new.
 - As a user reviewing an agent's setup, I want the Connections tab to show skills and integrations that make sense for that agent's role.
+- As a user who wants ongoing value, I want the agent to suggest useful recurring heartbeats I can approve quickly instead of making me invent routines from scratch.
+- As a user managing an agent over time, I want heartbeats to be visible and editable in plain language rather than buried as hidden scheduled tasks.
 - As a user in Forums, I want each agent to be recognizable at a glance via a close-up portrait that includes face/head framing and key accessories.
 
 ## Design Principles
@@ -89,7 +92,10 @@ This role should be explicit in the UI from the first screen:
 4. **Setup should feel like momentum**
    Integrations, keys, and permissions should emerge from what the drafted agent says it can help with, not from an arbitrary checklist.
 
-5. **Same engine, different framing**
+5. **Routines should feel like promises**
+   Heartbeats should be presented as plain-language commitments the agent can keep on a schedule, not as opaque cron jobs.
+
+6. **Same engine, different framing**
    First-run onboarding and Add Agent should share a drafting system, but the copy and pacing should reflect the user's experience level.
 
 ## Experience Overview
@@ -108,6 +114,7 @@ Eddie then drafts one or more agents and recommends the best fit. The chosen dra
 - recommended access tier
 - recommended isolation mode
 - recommended integrations and bundled skills
+- recommended heartbeats / recurring routines
 - voice default
 - accessories from the current accessory library
 - a close-up identity portrait derived from the agent's face/head and key accessories
@@ -117,6 +124,7 @@ The user then meets the drafted agent quickly. The first conversation is not a g
 - what the agent can help with immediately
 - what it needs connected to become meaningfully more useful
 - what permissions it will ask for next and why
+- which recurring heartbeats it recommends once its core tools are connected
 
 The rest of onboarding is then structured as conversational upgrades driven by the agent's job-to-be-done.
 
@@ -182,6 +190,7 @@ Whether the user types freeform input or clicks a suggested agent, Canopy should
 - isolation recommendation
 - recommended integrations
 - recommended bundled skills
+- recommended heartbeats
 - voice default
 - accessory loadout from the current accessory library
 
@@ -273,6 +282,54 @@ The agent role should shape:
 
 In later iterations, the individual agent may suggest skill additions in its own voice, but the P0 requirement is that the recommendations are persona-driven and not generic.
 
+### P0.11 First-class heartbeats
+
+Heartbeats should be promoted from a backend scheduling concept into a visible customer-facing routine surface.
+
+The product should present heartbeats as:
+
+- recurring check-ins
+- standing jobs
+- plain-language routines
+
+Not as:
+
+- hidden cron expressions
+- invisible background automations
+
+Minimum P0 behavior:
+
+- the agent can suggest a list of recommended heartbeats based on role, access, and connected tools
+- the user can confirm these quickly one-by-one
+- heartbeats are visible after creation in an editable management surface
+- the user can add, pause, edit, or remove heartbeats later
+
+Examples:
+
+- “Every morning at 8:30, scan my calendar and prep me for the day.”
+- “Every Friday at 4 PM, summarize open GitHub work and blockers.”
+- “Every evening, look for customer emails that need follow-up.”
+
+These recommendations should be driven by the same persona-aware recommendation engine that powers:
+
+- suggested agents in onboarding
+- recommended connections
+- recommended bundled skills
+
+### P0.12 Heartbeats align with onboarding expansion suggestions
+
+Heartbeat recommendations should feel like a natural continuation of the agent's onboarding setup suggestions.
+
+If an agent says:
+
+- “Connect Calendar so I can prep you for meetings”
+
+It should later be able to say:
+
+- “Once Calendar is connected, I recommend a weekday 8 AM briefing heartbeat.”
+
+This keeps heartbeats attached to a believable user benefit instead of feeling like a separate automation builder.
+
 ## P1 Requirements
 
 ### P1.1 Agent-authored skill suggestions
@@ -285,7 +342,17 @@ Example:
 
 The underlying recommendation engine remains deterministic and persona-driven.
 
-### P1.2 Collaboration-aware drafting
+### P1.2 Agent-authored heartbeat suggestions
+
+The same recommendation surface should be able to present first-person heartbeat suggestions.
+
+Example:
+
+*If you’d like, I can check your calendar every weekday morning and prep your top priorities before you start.*
+
+The copy may be agent-authored, but the actual suggested heartbeat definitions should still come from a deterministic, inspectable system.
+
+### P1.3 Collaboration-aware drafting
 
 When adding a new agent, Canopy can suggest likely collaborators from the current roster.
 
@@ -294,7 +361,7 @@ Example:
 - “This agent would pair well with Sloane in strategy forums.”
 - “This role is missing from your current team.”
 
-### P1.3 Earned skills and collaboration reputation
+### P1.4 Earned skills and collaboration reputation
 
 Instead of generic gamified progress rituals, agents should accrue:
 
@@ -305,7 +372,7 @@ Instead of generic gamified progress rituals, agents should accrue:
 
 This should later become part of identity, trust, and roster management.
 
-### P1.4 Forum portrait system
+### P1.5 Forum portrait system
 
 Apply the close-up portrait system consistently in Forum roster, thread, handoffs, and vote surfaces.
 
@@ -467,6 +534,18 @@ Examples:
 - existing companion window / bridge pattern launches as needed
 - return to chat with success or failure state
 
+**Heartbeat pattern**
+
+Once the core connection is in place, the agent may suggest 1-3 heartbeat routines relevant to its role.
+
+Example:
+
+- `Add weekday morning briefing`
+- `Add Friday wrap-up`
+- `Skip for now`
+
+The user should be able to click through these quickly without entering a separate heavy configuration flow.
+
 **Important**
 
 This is still onboarding. Do not hide high-value integrations behind deep post-onboarding settings if they are needed for the agent's core job.
@@ -481,6 +560,7 @@ Close onboarding with clarity and momentum.
 - summary of what the agent can now do
 - connected tools
 - pending recommended upgrades
+- suggested heartbeats ready to confirm
 - suggested first task or first forum action
 
 **Optional Eddie nudge**
@@ -522,6 +602,14 @@ The new agent introduces itself and explains its relationship to the current tea
 
 The new agent asks for the most relevant connections and permissions needed for its role.
 
+### Add Agent Screen 6: Suggested heartbeats
+
+If the agent's role benefits from recurring work, it should suggest a few useful heartbeats immediately after setup.
+
+These should be phrased for an existing user, for example:
+
+*Want me to keep an eye on this every morning, every Friday, or only when you ask?*
+
 ## Connections Tab Requirements
 
 The Connections tab should evolve from a static setup area into a persona-aware recommendation surface.
@@ -532,6 +620,7 @@ For each agent, show:
 
 - recommended connections for this role
 - recommended bundled skills for this role
+- recommended heartbeats for this role
 - recommended access level for this role
 - recommended isolation guidance for this role
 
@@ -545,6 +634,30 @@ For each agent, show:
 ### Future behavior
 
 Later, the agent itself may phrase the recommendations in first person, but the actual recommendation engine should remain deterministic and inspectable.
+
+## Heartbeats Management Surface
+
+Heartbeats should have a dedicated, visible home in the agent management experience.
+
+Minimum expectations:
+
+- show all active heartbeats for the agent
+- show paused/inactive heartbeats
+- let the user add a new heartbeat manually
+- let the user approve recommended heartbeats with one click
+- let the user edit schedule, summary, and enabled state in plain language
+
+The user should not need to understand cron syntax to manage heartbeats.
+
+Recommended fields:
+
+- title
+- what the heartbeat does
+- schedule in plain language
+- last run
+- next run
+- enabled / paused
+- dependency badges, such as Calendar, Slack, Gmail, GitHub
 
 ## Data and Systems Impact
 
@@ -577,6 +690,7 @@ Need one shared service or utility that can produce:
 - prompt-to-agent draft recommendations
 - Add Agent suggestions
 - Connections tab persona-driven recommendations
+- recommended heartbeat templates per role and connection state
 
 ## Success Metrics
 
@@ -585,6 +699,7 @@ Need one shared service or utility that can produce:
 - % of new users who send a first message to a drafted agent
 - time from onboarding start to first agent reply
 - % of users who approve at least one recommended connection during onboarding
+- % of users who approve at least one recommended heartbeat during onboarding or add-agent flow
 - % of drafted agents deployed without manual role editing
 - % of users who create a second agent within 7 days
 
@@ -602,6 +717,7 @@ Need one shared service or utility that can produce:
 4. For close-up portraits, do we generate from the live 3D model, from cached role PNGs, or from a hybrid render pipeline?
 5. How much of the current onboarding wizard should be replaced versus wrapped by an Eddie conversation shell in v1?
 6. In Add Agent, should Eddie be able to explicitly recommend agents that complement the user's existing roster?
+7. Should heartbeats live in their own Architect surface, in Overview, or inside the merged Skills & Access area with a stronger routines treatment?
 
 ## Initial Rollout Recommendation
 
@@ -612,12 +728,14 @@ Need one shared service or utility that can produce:
 - auto-draft from prompt or card
 - pre-filled accessories and voice defaults
 - role-aware connection recommendations
+- role-aware heartbeat recommendations
 
 ### Phase B
 
 - conversational connection requests from drafted agent
 - add-agent variant
 - canonical portrait system for onboarding and chat
+- visible heartbeat management surface with add/edit/pause controls
 
 ### Phase C
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { X, Box } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Environment } from "@react-three/drei";
@@ -22,8 +22,15 @@ import { Toggle } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { getAssetUrl } from "../utils/assets";
 import { buildCompanionUrl } from "../utils/connectorCatalog";
+import {
+  DISCOVERY_EXAMPLES,
+  getRoleDefaultName,
+  getRoleVoiceDefault,
+  inferRoleFromPrompt,
+} from "../utils/onboardingDiscovery";
 import { getOnboardingIntegrationIds } from "../utils/onboardingIntegrations";
 import { getInitialOnboardingStep } from "../utils/onboardingFlow";
+import { getHeartbeatSuggestionsForProfile, serializeHeartbeatFile } from "../utils/heartbeats";
 import { getAgentProviderSecretSlot, getManagedProviderId, syncAgentProviderCredentials } from "../security/providerCredentials";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
@@ -62,6 +69,18 @@ const DEFAULT_STARTER_TASK = { teaser: "a first task picked to show their range"
   prompt: "Introduce yourself briefly, then show me what you can do: pick one small, genuinely useful task in your specialty and complete it right now. Produce something tangible — a document, plan, or template I can actually use." };
 const getStarterTask = (role: string | null) => (role && STARTER_TASKS[role]) || DEFAULT_STARTER_TASK;
 
+const DISCOVERY_CONNECTIONS: Record<string, string[]> = {
+  Assistant: ["Gmail", "Calendar", "Slack"],
+  Researcher: ["Browser", "Files", "Slack"],
+  Coder: ["GitHub", "Files", "Slack"],
+  Strategist: ["Browser", "Slack", "Files"],
+  Accountant: ["Files", "Payments"],
+  Editor: ["Files", "Slack"],
+  Chef: ["Photos", "Files"],
+  "Travel Agent": ["Calendar", "Gmail", "Browser"],
+  Trainer: ["Photos", "iMessage"],
+};
+
 // ─── Wizard progress — "show shape" (UX audit §5.1, spec Part 1C drift item 3)
 const PROGRESS_STAGES = ["Welcome", "Role", "Personality", "Intelligence", "Connections", "Launch"];
 const stageForStep = (s: number): number => {
@@ -95,6 +114,9 @@ export function OnboardingWizard() {
       if (parsed && parsed.step >= 6) {
         localStorage.removeItem('canopy_onboarding_draft');
         return null;
+      }
+      if (parsed && parsed.step === 0.5) {
+        return { ...parsed, step: 0 };
       }
       return parsed;
     } catch { return null; }
@@ -149,6 +171,7 @@ export function OnboardingWizard() {
   const [engineError, setEngineError] = useState("");
 
   const [userName, setUserName] = useState("");
+  const [discoveryInput, setDiscoveryInput] = useState(draft?.discoveryInput || "");
 
 
   const [selectedRole, setSelectedRole] = useState<string | null>(draft?.selectedRole || null);
@@ -173,6 +196,9 @@ export function OnboardingWizard() {
   const [managementBusy, setManagementBusy] = useState(false);
   const [managementError, setManagementError] = useState("");
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any; habitatId?: number; color?: string; decor?: string[]; decorTransforms?: any }>({ baseModelUrl: null, accessories: [], decor: [] });
+  const [selectedVoice, setSelectedVoice] = useState(draft?.selectedVoice || "alloy");
+  const [selectedVoiceRate, setSelectedVoiceRate] = useState<number>(draft?.selectedVoiceRate || 1);
+  const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
 
   const getNonOverlappingPosition = (existingAgents: AgentData[]): [number, number, number] => {
     if (existingAgents.length === 0) return [Math.random() * 2 - 1, 0, Math.random() * 2 - 1];
@@ -259,6 +285,33 @@ export function OnboardingWizard() {
   const enabledPlugins = Object.entries(plugins)
     .filter(([k, v]) => v && ONBOARDING_SETUP_PLUGINS.includes(k))
     .map(([k]) => k);
+  const [selectedHeartbeatNames, setSelectedHeartbeatNames] = useState<string[]>(draft?.selectedHeartbeatNames || []);
+
+  const heartbeatSuggestions = useMemo(() => getHeartbeatSuggestionsForProfile({
+    role: selectedRole || "Custom",
+    integrations: Object.entries(plugins)
+      .filter(([, enabled]) => enabled)
+      .map(([integration]) => integration),
+    permissions: agentPermissions
+      .filter(permission => permission.enabled)
+      .map(permission => permission.id),
+  }), [agentPermissions, plugins, selectedRole]);
+  const readyHeartbeatSuggestions = useMemo(
+    () => heartbeatSuggestions.filter(suggestion => suggestion.ready),
+    [heartbeatSuggestions]
+  );
+  const lockedHeartbeatSuggestions = useMemo(
+    () => heartbeatSuggestions.filter(suggestion => !suggestion.ready),
+    [heartbeatSuggestions]
+  );
+  const selectedHeartbeatTasks = useMemo(
+    () => readyHeartbeatSuggestions.filter(task => selectedHeartbeatNames.includes(task.name)),
+    [readyHeartbeatSuggestions, selectedHeartbeatNames]
+  );
+  const formatHeartbeatRequirements = (requirements: { missingIntegrations: string[]; missingPermissions: string[] }) =>
+    [...requirements.missingIntegrations, ...requirements.missingPermissions]
+      .map(item => item.replace(/_/g, " "))
+      .join(" or ");
 
   const [slackAppToken, setSlackAppToken] = useState("");
   const [slackBotToken, setSlackBotToken] = useState("");
@@ -286,6 +339,7 @@ export function OnboardingWizard() {
     setStep(initialStepTarget);
     setAgentName("");
     setSelectedRole(null);
+    setDiscoveryInput("");
     setApiKey("");
     setPersonalityPrompt("");
     setRecentlyRead([]);
@@ -299,7 +353,10 @@ export function OnboardingWizard() {
     setManagementBusy(false);
     setManagementError("");
     setCustomIdentity({ baseModelUrl: null, accessories: [], decor: [] });
+    setSelectedVoice("alloy");
+    setSelectedVoiceRate(1);
     setPlugins({ slack: false, imessage: false, email: false, calendar: false, folders: false, photos: false, github: false, telegram: false, discord: false, twilio: false });
+    setSelectedHeartbeatNames([]);
     setSelectedFolderPath("");
     setFolderAccessType("specific");
     setSelectedIMessageThreads([]);
@@ -339,10 +396,20 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (step >= 0) {
       localStorage.setItem('canopy_onboarding_draft', JSON.stringify({
-        step, agentName, selectedRole, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider
+        step, agentName, selectedRole, discoveryInput, selectedVoice, selectedVoiceRate, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider, selectedHeartbeatNames
       }));
     }
-  }, [step, agentName, selectedRole, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider]);
+  }, [step, agentName, selectedRole, discoveryInput, selectedVoice, selectedVoiceRate, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider, selectedHeartbeatNames]);
+
+  useEffect(() => {
+    setSelectedHeartbeatNames(previous => {
+      const readyNames = readyHeartbeatSuggestions.map(task => task.name);
+      const retained = previous.filter(name => readyNames.includes(name));
+      if (retained.length > 0) return retained;
+      if (readyNames.length === 0) return [];
+      return readyNames.slice(0, Math.min(2, readyNames.length));
+    });
+  }, [readyHeartbeatSuggestions]);
 
   const checkConnections = async () => {
       try {
@@ -657,6 +724,31 @@ export function OnboardingWizard() {
     }
     setStep(0);
   };
+  const discoveryExamples = DISCOVERY_EXAMPLES.filter(example => Boolean((agentTypeInfo as any)[example.role]));
+  const continueFromDiscovery = async () => {
+    const nextRole = selectedRole || discoveryDraft.primaryRole;
+    if (!nextRole) return;
+    if (!selectedRole) handleRoleSelect(nextRole, discoveryInput);
+
+    if (agents.length === 0) {
+      try {
+        await invoke("save_user_profile", {
+          profile: {
+            name: userName || "there",
+            email: "",
+            phone: "",
+            timezone: "UTC",
+            working_hours: "",
+            communication_tone: "Professional",
+            global_directives: "Always cite your sources and optimize for safety."
+          }
+        });
+      } catch (e) {
+        console.warn("Failed to save user profile", e);
+      }
+    }
+    setStep(2);
+  };
 
   const [agentTypeInfo, setAgentTypeInfo] = useState(AGENT_TYPE_INFO);
   const [globalLibrary, setGlobalLibrary] = useState<any[]>([]);
@@ -711,23 +803,340 @@ export function OnboardingWizard() {
       if (bOrder != null) return 1;
       return (b.popularity || 0) - (a.popularity || 0);
     });
-  const handleRoleSelect = (roleKey: string) => {
+  const discoveryDraft = useMemo(
+    () => inferRoleFromPrompt(discoveryInput, agentTypeInfo as any),
+    [agentTypeInfo, discoveryInput],
+  );
+  const draftRole = selectedRole || discoveryDraft.primaryRole || roleTypes[0]?.key || null;
+  const draftRoleInfo = draftRole ? (agentTypeInfo as any)[draftRole] : null;
+  const draftConnections = draftRole ? (DISCOVERY_CONNECTIONS[draftRole] || ["Files", "Slack"]) : [];
+  const draftVoice = getRoleVoiceDefault(draftRole || "Assistant");
+  const discoveryHeartbeats = useMemo(
+    () => draftRole
+      ? getHeartbeatSuggestionsForProfile({
+          role: draftRole,
+          integrations: [],
+          permissions: [],
+        }).slice(0, 3)
+      : [],
+    [draftRole],
+  );
+
+  const previewVoice = () => {
+    if (typeof window === "undefined" || typeof window.speechSynthesis === "undefined") return;
+    const utter = new SpeechSynthesisUtterance(
+      draftRole
+        ? getRoleVoiceDefault(draftRole).sample
+        : "I help you figure out which agents to create and what they should take off your plate.",
+    );
+    utter.rate = selectedVoiceRate;
+    utter.onend = () => setIsPreviewingVoice(false);
+    utter.onerror = () => setIsPreviewingVoice(false);
+    setIsPreviewingVoice(true);
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utter);
+  };
+
+  useEffect(() => {
+    if (!selectedRole || draft?.selectedVoice) return;
+    const roleDefaults = getRoleVoiceDefault(selectedRole);
+    setSelectedVoice(roleDefaults.voice);
+    setSelectedVoiceRate(roleDefaults.rate);
+  }, [draft?.selectedVoice, selectedRole]);
+
+  const handleRoleSelect = (roleKey: string, seedPrompt?: string) => {
+    const roleDefaults = getRoleVoiceDefault(roleKey);
+    const roleConfig = (agentTypeInfo as any)[roleKey] || {};
     setSelectedRole(roleKey);
     setLlmProvider(getDynamicRecommendedModel(roleKey).provider as any);
     setApiKeyMode("hidden");
     setApiKey("");
     setRecentlyRead([]);
-    setPersonalityPrompt(getDefaultPersonality(roleKey, agentName, agentTypeInfo));
+    setSelectedVoice(roleDefaults.voice);
+    setSelectedVoiceRate(roleDefaults.rate);
+    const defaultName = getRoleDefaultName(roleKey);
+    const nextName = agentName.trim() ? agentName : defaultName;
+    setAgentName(nextName);
+    const rolePersonality = getDefaultPersonality(roleKey, nextName, agentTypeInfo);
+    setPersonalityPrompt(seedPrompt?.trim()
+      ? `${rolePersonality}\n\n## Current user need\n\nThe user wants help with: ${seedPrompt.trim()}`
+      : rolePersonality);
     const shouldIsolate = agentTypeInfo[roleKey]?.recommended_isolated || false;
     setIsolated(shouldIsolate);
     setAgentPermissions(getPermissionsForRole(roleKey, shouldIsolate));
+    setSelectedHeartbeatNames([]);
+    if (seedPrompt) setDiscoveryInput(seedPrompt);
 
     // Also pick a random habitat default when role is selected
-    if (habitats.length > 0) {
+    if (habitats.length > 0 || roleConfig?.accessories?.length) {
       const randomHabitat = habitats[Math.floor(Math.random() * habitats.length)];
-      setCustomIdentity(prev => ({ ...prev, baseModelUrl: null, accessories: [], decor: [], habitatId: randomHabitat.id, color: agentTypeInfo[roleKey]?.robeColor }));
+      setCustomIdentity(prev => ({
+        ...prev,
+        baseModelUrl: null,
+        accessories: roleConfig?.accessories || [],
+        decor: [],
+        habitatId: roleConfig?.habitatId || roleConfig?.visual_identity?.habitatId || randomHabitat?.id,
+        color: roleConfig?.robeColor || prev.color,
+      }));
     }
   };
+
+  const renderDiscoveryStep = (isAddAgentFlow: boolean) => (
+    <div style={{ maxWidth: 1080, width: "92%", minHeight: "78vh", display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 24, alignItems: "stretch" }}>
+      <div style={{ background: "var(--surface-card)", borderRadius: 28, padding: 28, boxShadow: "0 20px 48px rgba(0,0,0,0.06)", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 24 }}>
+          <div style={{ width: 68, height: 68, borderRadius: 22, background: "rgba(242,140,99,0.14)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <LobsterIcon size={54} shellColor="#F28C63" accentColor="#F7C5A8" />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "#C76A42", marginBottom: 4 }}>
+              Eddie
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-main)", marginBottom: 6 }}>
+              Canopy Lifeguard
+            </div>
+            <div style={{ fontSize: 14, color: "var(--text-sub)", lineHeight: 1.6 }}>
+              {isAddAgentFlow
+                ? "Tell me what kind of work this new agent should take on, or click a likely fit below. I’ll draft the role, voice, accessories, permissions, and setup path."
+                : "Tell me what slows you down every day, or click a likely fit below. I’ll help draft the first agent, wire up its tools, and patch things up when it needs mending."}
+            </div>
+          </div>
+        </div>
+
+        {!isAddAgentFlow && (
+          <div style={{ marginBottom: 18 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
+              What should Eddie call you?
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Scottie"
+              value={userName}
+              onChange={e => setUserName(e.target.value)}
+              style={{ width: "100%", boxSizing: "border-box", padding: "14px 16px", borderRadius: 14, border: "1px solid rgba(0,0,0,0.1)", fontSize: 15, outline: "none", background: "#F8FAFC" }}
+            />
+          </div>
+        )}
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
+            {isAddAgentFlow ? "What should this new agent take off your plate?" : "What do you want off your plate?"}
+          </div>
+          <textarea
+            value={discoveryInput}
+            onChange={e => {
+              setDiscoveryInput(e.target.value);
+              if (selectedRole && e.target.value.trim()) setSelectedRole(null);
+            }}
+            placeholder={isAddAgentFlow
+              ? "Describe what this new agent should own, automate, or keep watch on."
+              : "Describe what you struggle with daily, what you repeat over and over, or what you wish someone would quietly handle for you."}
+            rows={5}
+            style={{ width: "100%", boxSizing: "border-box", padding: "16px 18px", borderRadius: 18, border: "1px solid rgba(0,0,0,0.1)", fontSize: 15, lineHeight: 1.6, resize: "vertical", outline: "none", background: "var(--surface-base)", color: "var(--text-main)", fontFamily: "inherit" }}
+          />
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 20 }}>
+          {discoveryExamples.map(example => (
+            <button
+              key={example.label}
+              type="button"
+              onClick={() => handleRoleSelect(example.role, example.prompt)}
+              style={{ padding: "10px 14px", borderRadius: 14, border: "1px solid rgba(60,102,99,0.16)", background: "rgba(60,102,99,0.05)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+            >
+              {example.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 18 }}>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>
+            {draftRole ? `Eddie would start with a ${draftRole}.` : "Pick an example or describe the work and Eddie will draft a fit."}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => handleRoleSelect("Custom", discoveryInput)}
+              style={{ padding: "9px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "transparent", color: "var(--text-main)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+            >
+              Start Custom
+            </button>
+            <button
+              type="button"
+              onClick={startImportFlow}
+              style={{ padding: "9px 12px", borderRadius: 10, border: "1px dashed rgba(0,0,0,0.16)", background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+            >
+              Import Agent
+            </button>
+          </div>
+        </div>
+
+        <div style={{ padding: 16, borderRadius: 18, border: "1px solid rgba(0,0,0,0.06)", background: "rgba(255,255,255,0.55)", marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>Suggested archetypes</div>
+              <div style={{ fontSize: 11, color: "var(--text-sub)" }}>Click one to draft immediately, or browse more below.</div>
+            </div>
+            {!showAllRoles && (
+              <button
+                type="button"
+                onClick={() => setShowAllRoles(true)}
+                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)", background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                See more roles
+              </button>
+            )}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+            {(showAllRoles ? roleTypes : roleTypes.slice(0, 6)).map(role => {
+              const active = draftRole === role.key;
+              return (
+                <button
+                  key={role.key}
+                  type="button"
+                  onClick={() => handleRoleSelect(role.key, discoveryInput)}
+                  style={{ textAlign: "left", padding: 14, borderRadius: 14, border: active ? `1px solid ${role.color}` : "1px solid rgba(0,0,0,0.08)", background: active ? `${role.color}10` : "var(--surface-card)", cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>{role.key}</div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.45 }}>{role.description}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center", marginTop: "auto" }}>
+          <button
+            type="button"
+            onClick={handleBackFromRoleStep}
+            style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)", background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+          >
+            {isAddAgentFlow ? "Cancel" : "Back"}
+          </button>
+          <button
+            type="button"
+            disabled={(!selectedRole && !discoveryInput.trim()) || (!isAddAgentFlow && !userName.trim())}
+            onClick={() => { void continueFromDiscovery(); }}
+            style={{ padding: "14px 24px", borderRadius: 14, border: "none", background: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "linear-gradient(135deg, #3c6663, #609995)" : "var(--border-subtle)", color: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "var(--surface-card)" : "var(--text-muted)", fontSize: 14, fontWeight: 800, cursor: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "pointer" : "default", fontFamily: "inherit", minWidth: 190 }}
+          >
+            {isAddAgentFlow ? "Draft this agent" : "Draft my first agent"}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ background: "linear-gradient(180deg, rgba(244,240,233,0.92) 0%, rgba(255,255,255,0.92) 100%)", borderRadius: 28, padding: 24, boxShadow: "0 20px 48px rgba(0,0,0,0.05)", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}>
+        <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "#3c6663", marginBottom: 8 }}>
+          Eddie&apos;s Draft
+        </div>
+        {draftRole && draftRoleInfo ? (
+          <>
+            <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
+              {draftRoleInfo.image ? (
+                <img src={getAssetUrl(draftRoleInfo.image)} alt={draftRole} style={{ width: 76, height: 76, borderRadius: 20, objectFit: "cover", flexShrink: 0 }} />
+              ) : (
+                <div style={{ width: 76, height: 76, borderRadius: 20, background: `${draftRoleInfo.robeColor || "#3c6663"}20`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <LobsterIcon size={62} shellColor={draftRoleInfo.robeColor || "#3c6663"} accentColor={draftRoleInfo.accentColor || "#4A9E96"} />
+                </div>
+              )}
+              <div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+                  {agentName || getRoleDefaultName(draftRole)}
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#3c6663", marginBottom: 6 }}>
+                  {draftRole}
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.55 }}>
+                  {draftRoleInfo.description}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
+              <div style={{ padding: 14, borderRadius: 16, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)" }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 6 }}>Model</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", lineHeight: 1.45 }}>
+                  {getDynamicRecommendedModel(draftRole).provider}
+                </div>
+              </div>
+              <div style={{ padding: 14, borderRadius: 16, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)" }}>
+                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 6 }}>Security</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>
+                  {draftRoleInfo.recommended_isolated ? "Isolated sandbox" : "Shared workspace"}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ padding: 16, borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)", marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>Voice & Identity</div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+                <select
+                  value={selectedVoice}
+                  onChange={e => setSelectedVoice(e.target.value)}
+                  style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
+                >
+                  {["alloy", "echo", "fable", "nova", "onyx", "shimmer"].map(voice => (
+                    <option key={voice} value={voice}>{voice}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={previewVoice}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.2)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", minWidth: 108 }}
+                >
+                  {isPreviewingVoice ? "Playing..." : "Preview voice"}
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 10 }}>
+                {draftVoice.sample}
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {(customIdentity?.accessories?.length ? customIdentity.accessories : draftRoleInfo.accessories || []).slice(0, 4).map((accessory: string) => (
+                  <span key={accessory} style={{ padding: "5px 8px", borderRadius: 999, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 700 }}>
+                    {accessory.split("/").pop()?.replace(".png", "").replace(/[-_]/g, " ")}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ padding: 16, borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)", marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>First useful upgrades</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                {draftConnections.map(label => (
+                  <span key={label} style={{ padding: "6px 9px", borderRadius: 999, background: "rgba(33,131,128,0.08)", color: "#218380", fontSize: 11, fontWeight: 700 }}>
+                    {label}
+                  </span>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                Eddie will prefill the role, permissions, and setup suggestions so this agent can get useful quickly instead of starting from a blank slate.
+              </div>
+            </div>
+
+            <div style={{ padding: 16, borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)" }}>
+              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>Suggested starting routines</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {discoveryHeartbeats.map(task => (
+                  <div key={task.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
+                    <span style={{ color: "var(--text-main)", fontWeight: 700 }}>{task.title}</span>
+                    <span style={{ color: "var(--text-sub)" }}>{task.scheduleLabel}</span>
+                  </div>
+                ))}
+              </div>
+              {discoveryDraft.alternatives.length > 0 && (
+                <div style={{ marginTop: 12, fontSize: 11, color: "var(--text-sub)" }}>
+                  Also considered: {discoveryDraft.alternatives.join(", ")}
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <div style={{ margin: "auto 0", padding: 24, borderRadius: 20, background: "rgba(255,255,255,0.72)", border: "1px dashed rgba(0,0,0,0.1)", textAlign: "center", color: "var(--text-sub)", fontSize: 14, lineHeight: 1.6 }}>
+            Describe the work you want handled or click an example card. Eddie will turn that into a drafted agent with a role, voice, accessories, and setup plan.
+          </div>
+        )}
+      </div>
+    </div>
+  );
 
   const handleCreateAgent = async (opts?: { starterTask?: string }) => {
     if (!selectedRole || !agentName.trim()) return;
@@ -815,27 +1224,48 @@ export function OnboardingWizard() {
           capabilities: agentPermissions.reduce((acc, p) => ({ ...acc, [p.id]: p.enabled }), {}),
         }) as Agent;
 
-        let defaultAccessories: string[] = [];
-        try {
-          const accRes = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/accessories`);
-          if (accRes.ok) {
-            const catalog = await accRes.json();
-            defaultAccessories = catalog.defaults?.[selectedRole as string] || [];
-          }
-        } catch (e) {
-          console.warn("Could not fetch accessory defaults", e);
-        }
+        const resolvedVisualIdentity = {
+          baseModelUrl: customIdentity?.baseModelUrl || null,
+          accessories: customIdentity?.accessories?.length
+            ? customIdentity.accessories
+            : ((roleInfo as any)?.accessories || []),
+          decor: customIdentity?.decor || [],
+          decorTransforms: customIdentity?.decorTransforms,
+          habitatId: customIdentity?.habitatId || (roleInfo as any)?.habitatId || (roleInfo as any)?.visual_identity?.habitatId,
+          color: customIdentity?.color || customIdentity?.dynamicColors?.color || roleInfo?.robeColor,
+        };
 
-        if (defaultAccessories.length > 0) {
+        if (
+          resolvedVisualIdentity.accessories.length > 0 ||
+          resolvedVisualIdentity.habitatId ||
+          resolvedVisualIdentity.color
+        ) {
           try {
             await invoke("update_agent_visuals", {
               agentId: newAgentData.id,
-              visualIdentity: { accessories: defaultAccessories }
+              visualIdentity: resolvedVisualIdentity,
             });
-            newAgentData.visual_identity = { accessories: defaultAccessories };
+            newAgentData.visual_identity = resolvedVisualIdentity as any;
           } catch (e) {
-            console.error("Failed to seed default visual identity", e);
+            console.error("Failed to seed draft visual identity", e);
           }
+        }
+
+        try {
+          await invoke("update_voice_config", {
+            agentId: newAgentData.id,
+            config: {
+              agent_id: newAgentData.id,
+              stt_provider: "web_speech",
+              tts_provider: "web_speech",
+              tts_voice: selectedVoice,
+              speaking_rate: selectedVoiceRate,
+              auto_play: false,
+              enabled: false,
+            },
+          });
+        } catch (e) {
+          console.warn("Failed to seed voice config", e);
         }
 
         if (autoProvisionProvider) {
@@ -943,6 +1373,21 @@ export function OnboardingWizard() {
             await invoke("update_agent_integrations", { agentId: newAgentData.id, integrations: initialIntegrations });
             newAgentData.integrations = initialIntegrations;
           } catch (e) { console.warn("Failed to set integrations", e); }
+        }
+
+        if (selectedHeartbeatTasks.length > 0) {
+          try {
+            await invoke("write_workspace_file", {
+              agentId: newAgentData.id,
+              filename: "HEARTBEAT.md",
+              content: serializeHeartbeatFile({
+                tasks: selectedHeartbeatTasks,
+                additionalInstructions: "",
+              }),
+            });
+          } catch (e) {
+            console.warn("Failed to seed heartbeat suggestions", e);
+          }
         }
 
         useWorldStore.setState(state => ({
@@ -1194,86 +1639,7 @@ export function OnboardingWizard() {
 
       {/* Step 1: Welcome */}
       {step === 0 && (
-        <>
-          {/* Fullscreen Interactive 3D Background */}
-          <div style={{ position: "absolute", inset: 0, zIndex: 0 }}>
-            <Canvas
-              orthographic
-              style={{ position: "absolute", inset: 0, pointerEvents: "auto", cursor: "grab" }}
-              gl={{ antialias: true, alpha: true }}
-              camera={{ position: [20, 20, 20], zoom: 150 }}
-            >
-              <Environment preset="city" />
-              <ambientLight intensity={0.5} />
-              <directionalLight position={[5, 5, 5]} intensity={1} castShadow />
-              <OrbitControls enableZoom={true} enablePan={true} autoRotate autoRotateSpeed={0.8} />
-              <WorldScene agents={[
-                {
-                  id: "demo-sloane",
-                  role: "Assistant",
-                  name: "Sloane",
-                  visual_identity: null
-                },
-                {
-                  id: "demo-boots",
-                  role: "Accountant",
-                  name: "Boots",
-                  visual_identity: {
-                    habitatId: 7,
-                    habitatTransform: { rotationY: 0, x: -0.25, y: 1.75, z: -1.75 }
-                  }
-                },
-                {
-                  id: "demo-dev",
-                  role: "Coder",
-                  name: "Dev",
-                  visual_identity: {
-                    habitatId: 5,
-                    habitatTransform: { rotationY: -0.39269908169872414, x: 1.5, y: 0.5, z: -1.25 }
-                  }
-                }
-              ]} />
-            </Canvas>
-          </div>
-
-          <div style={{ textAlign: "center", maxWidth: 640, zIndex: 1, position: "relative", pointerEvents: "none", display: "flex", flexDirection: "column", alignItems: "center" }}>
-            <div style={{
-              background: "var(--surface-card)", padding: "8px 16px", borderRadius: 20,
-              fontSize: 12, fontWeight: 700, color: "#3c6663", backdropFilter: "blur(8px)",
-              display: "flex", alignItems: "center", gap: 8, marginBottom: 40,
-              boxShadow: "0 4px 12px rgba(0,0,0,0.05)"
-            }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#3c6663", display: "inline-block", animation: "pulse 2s infinite" }} />
-              Interactive Habitat (Drag to rotate)
-            </div>
-
-            <div style={{
-              background: "radial-gradient(ellipse at center, rgba(237,228,219,0.9) 0%, rgba(237,228,219,0) 70%)",
-              padding: "40px", borderRadius: "50%"
-            }}>
-              <h1 style={{ fontSize: 56, fontWeight: 700, color: "var(--text-main)", marginBottom: 16, letterSpacing: "-0.02em", fontFamily: "'Noto Serif', Georgia, serif", textShadow: "0 4px 32px rgba(48,51,48,0.06)" }}>
-                Welcome to The Canopy
-              </h1>
-              <p style={{ fontSize: 20, color: "#4A5568", marginBottom: 40, lineHeight: 1.6, maxWidth: 400, margin: "0 auto 40px", textShadow: "0 2px 8px rgba(255,255,255,0.8)" }}>
-                Your agents live here. Let's set up your first one!
-              </p>
-              <button
-                onClick={() => setStep(0.5)}
-                style={{
-                  pointerEvents: "auto",
-                  padding: "18px 48px", borderRadius: 16, border: "none",
-                  background: "linear-gradient(135deg, #3c6663, #609995)",
-                  color: "var(--surface-card)", fontSize: 18, fontWeight: 700, cursor: "pointer",
-                  boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
-                  transition: "all 0.3s ease",
-                  animation: "pulse 2s ease-in-out infinite",
-                }}
-              >
-                Let's Go!
-              </button>
-            </div>
-          </div>
-        </>
+        renderDiscoveryStep(false)
       )}
 
       {/* Step 0.5: User Info */}
@@ -1332,146 +1698,7 @@ export function OnboardingWizard() {
 
       {/* Step 2: Choose Role */}
       {step === 1 && (
-        <div style={{ maxWidth: 900, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
-          <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
-            <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, textAlign: "center", fontFamily: "'Noto Serif', Georgia, serif" }}>
-              {agents.length > 0 ? "Add another agent" : "Create your first agent"}
-            </h1>
-            <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, textAlign: "center" }}>
-              {agents.length > 0 ? "How should we grow the team?" : "You can create additional agents later"}
-            </p>
-
-            <div style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 32 }}>
-              <button onClick={() => handleRoleSelect("Custom")} style={{
-                padding: "12px 24px", borderRadius: 12, background: "var(--glass-heavy)", border: selectedRole === "Custom" ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.1)", color: "var(--text-main)", fontSize: 14, fontWeight: 600, cursor: "pointer"
-              }}>+ Create Custom Agent</button>
-              <button onClick={startImportFlow} style={{
-                padding: "12px 24px", borderRadius: 12, background: "transparent", border: "1px dashed rgba(0,0,0,0.2)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600, cursor: "pointer"
-              }}>↓ Import Agent</button>
-            </div>
-
-            <div style={{
-              display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 16,
-              padding: "16px 8px", marginBottom: 24,
-            }}>
-              {roleTypes.map(role => (
-                <div key={role.key} style={{ display: "flex", flexDirection: "column" }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", textAlign: "center", marginBottom: 8 }}>
-                    {role.key}
-                  </div>
-                  <div
-                    onClick={() => handleRoleSelect(role.key)}
-                    style={{
-                      borderRadius: 10,
-                      cursor: "pointer",
-                      overflow: "hidden",
-                      border: selectedRole === role.key
-                        ? `2px solid ${role.color}`
-                        : "1px solid rgba(177,178,175,0.10)",
-                      transition: "all 0.25s ease",
-                      transform: selectedRole === role.key
-                        ? "scale(1.05) translateY(-4px)"
-                        : "scale(1)",
-                      boxShadow: selectedRole === role.key
-                        ? `5px 5px 0 ${role.color}45, 0 14px 32px rgba(0,0,0,0.13)`
-                        : "0 4px 24px rgba(48,51,48,0.06)",
-                    }}
-                  >
-                    {/* ── Habitat stage (isometric diorama area) ── */}
-                    <div style={{
-                      background: role.image ? "transparent" : `linear-gradient(160deg, ${role.habitatColor} 0%, ${role.habitatColor}CC 100%)`,
-                      padding: role.image ? 0 : "22px 10px 14px",
-                      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end",
-                      minHeight: 120, position: "relative",
-                      width: "100%", aspectRatio: role.image ? "auto" : "auto",
-                    }}>
-                      {role.image ? (
-                        <img src={getAssetUrl(role.image)} alt={role.key} style={{ width: "100%", height: "auto", display: "block", objectFit: "cover" }} />
-                      ) : (
-                        <>
-                          {/* Isometric ground shadow beneath lobster */}
-                          <div style={{
-                            position: "absolute", bottom: 10, width: 48, height: 12,
-                            borderRadius: "50%",
-                            background: `radial-gradient(ellipse at center, ${role.robeColor}30 0%, transparent 70%)`,
-                          }} />
-                          <LobsterIcon size={72} shellColor={role.robeColor} accentColor={role.accentColor} />
-                        </>
-                      )}
-                    </div>
-                    {/* ── Label strip ── */}
-                    {!role.image && (
-                      <div style={{
-                        background: selectedRole === role.key
-                          ? `${role.color}18`
-                          : "var(--glass-heavy)",
-                        padding: "9px 12px 10px",
-                        borderTop: selectedRole === role.key
-                          ? `1px solid ${role.color}40`
-                          : "1px solid rgba(177,178,175,0.10)",
-                      }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
-                          {role.key}
-                        </div>
-                        <div style={{ fontSize: 10, color: "var(--text-sub)", lineHeight: 1.4, textAlign: "center" }}>
-                          {role.description}
-                        </div>
-                      </div>
-                    )}
-                    {role.image && (
-                      <div style={{
-                        background: selectedRole === role.key
-                          ? `${role.color}18`
-                          : "var(--glass-heavy)",
-                        padding: "8px 10px",
-                        borderTop: selectedRole === role.key
-                          ? `1px solid ${role.color}40`
-                          : "1px solid rgba(177,178,175,0.10)",
-                        borderBottomLeftRadius: 10, borderBottomRightRadius: 10
-                      }}>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", letterSpacing: "0.01em", marginBottom: 3, textAlign: "center" }}>
-                          {role.key}
-                        </div>
-                        <div style={{ fontSize: 10, color: "var(--text-sub)", lineHeight: 1.3, textAlign: "center" }}>
-                          {role.description}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {!showAllRoles && (
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: 24 }}>
-                <button
-                  onClick={() => setShowAllRoles(true)}
-                  style={{
-                    padding: "8px 16px", borderRadius: 12, background: "transparent",
-                    border: "1px solid rgba(0,0,0,0.1)", color: "var(--text-sub)",
-                    fontSize: 13, fontWeight: 600, cursor: "pointer", transition: "all 0.2s"
-                  }}
-                >
-                  See more roles
-                </button>
-              </div>
-            )}
-
-          </div>
-          <div style={{ display: "flex", gap: 12, justifyContent: "center", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
-            <button onClick={handleBackFromRoleStep} style={{
-              padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
-              cursor: "pointer", fontFamily: "inherit",
-            }}>Back</button>
-            <button onClick={() => setStep(2)} disabled={!selectedRole} style={{
-              padding: "12px 28px", borderRadius: 12, border: "none",
-              background: selectedRole ? "#3c6663" : "var(--border-subtle)",
-              color: selectedRole ? "var(--surface-card)" : "var(--text-muted)",
-              fontSize: 14, fontWeight: 600, cursor: selectedRole ? "pointer" : "default",
-              fontFamily: "inherit",
-            }}>Next</button>
-          </div>
-        </div>
+        renderDiscoveryStep(true)
       )}
 
       {/* Step 1.5: (Removed Nano Banana step - functionality moved to 2.5) */}
@@ -1519,10 +1746,10 @@ export function OnboardingWizard() {
         <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
             <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
-              Name Your Agent
+              Meet Your Draft
             </h1>
             <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32 }}>
-              Give them an identity
+              Tighten the identity Eddie drafted for you. You can keep moving fast here and fine-tune the rest later.
             </p>
 
             <div style={{ marginBottom: 32 }}>
@@ -1570,6 +1797,41 @@ export function OnboardingWizard() {
                 </div>
               </div>
             )}
+
+            <div style={{ background: "var(--surface-base)", backdropFilter: "blur(4px)", padding: 20, borderRadius: 16, marginBottom: 24 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Voice & visual identity</div>
+              <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 14 }}>
+                Eddie already picked a starting voice and accessories so this agent feels distinct right away.
+              </div>
+              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+                <select
+                  value={selectedVoice}
+                  onChange={e => setSelectedVoice(e.target.value)}
+                  style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
+                >
+                  {["alloy", "echo", "fable", "nova", "onyx", "shimmer"].map(voice => (
+                    <option key={voice} value={voice}>{voice}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={previewVoice}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.18)", background: "rgba(60,102,99,0.06)", color: "#3c6663", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", minWidth: 112 }}
+                >
+                  {isPreviewingVoice ? "Playing..." : "Preview voice"}
+                </button>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {(customIdentity?.accessories || []).map(accessory => (
+                  <span key={accessory} style={{ padding: "5px 8px", borderRadius: 999, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 700 }}>
+                    {accessory.split("/").pop()?.replace(".png", "").replace(/[-_]/g, " ")}
+                  </span>
+                ))}
+                {(customIdentity?.accessories || []).length === 0 && (
+                  <span style={{ fontSize: 12, color: "var(--text-sub)" }}>No starter accessories yet. You can add them on the next screen.</span>
+                )}
+              </div>
+            </div>
 
             <div style={{ background: "var(--surface-base)", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
               <div>
@@ -1652,7 +1914,7 @@ export function OnboardingWizard() {
 
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
-            <button onClick={() => setStep(1)} style={{
+            <button onClick={() => setStep(agents.length > 0 ? 1 : 0)} style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
@@ -1674,6 +1936,20 @@ export function OnboardingWizard() {
             <div>
               <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", margin: 0 }}>Design {agentName || "Agent"}</h1>
               <p style={{ fontSize: 14, color: "var(--text-sub)", margin: "4px 0 0 0" }}>Choose their appearance, accessories, and habitat.</p>
+            </div>
+          </div>
+
+          <div style={{ padding: "14px 16px", borderRadius: 16, background: "rgba(60,102,99,0.06)", border: "1px solid rgba(60,102,99,0.14)", marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 6 }}>Starter accessories already included</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {(customIdentity?.accessories || []).map(accessory => (
+                <span key={accessory} style={{ padding: "5px 8px", borderRadius: 999, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 700 }}>
+                  {accessory.split("/").pop()?.replace(".png", "").replace(/[-_]/g, " ")}
+                </span>
+              ))}
+              {(customIdentity?.accessories || []).length === 0 && (
+                <span style={{ fontSize: 12, color: "var(--text-sub)" }}>No accessories have been picked yet.</span>
+              )}
             </div>
           </div>
           
@@ -2218,6 +2494,94 @@ export function OnboardingWizard() {
                 </div>
               );
             })()}
+
+            <div style={{ marginBottom: 32 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
+                Suggested Heartbeats
+              </div>
+              <div style={{ padding: "16px 18px", borderRadius: 14, background: "rgba(33,131,128,0.04)", border: "1px solid rgba(33,131,128,0.14)", marginBottom: 12 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 6 }}>
+                  Start {agentName || "this agent"} with proactive routines
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                  These selected routines will be written into `HEARTBEAT.md` when you deploy. They stay editable later under Skills & Access.
+                </div>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {readyHeartbeatSuggestions.slice(0, 4).map(task => {
+                  const selected = selectedHeartbeatNames.includes(task.name);
+                  return (
+                    <button
+                      key={task.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedHeartbeatNames(previous =>
+                          previous.includes(task.name)
+                            ? previous.filter(name => name !== task.name)
+                            : [...previous, task.name]
+                        );
+                      }}
+                      style={{
+                        width: "100%",
+                        textAlign: "left",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        gap: 16,
+                        background: "var(--surface-card)",
+                        padding: "14px 18px",
+                        borderRadius: 12,
+                        border: selected ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{task.title}</span>
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "rgba(33,131,128,0.12)", color: "#3c6663", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                            {task.scheduleLabel}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>{task.prompt}</div>
+                      </div>
+                      <div style={{ alignSelf: "center", minWidth: 88, textAlign: "right", fontSize: 12, fontWeight: 700, color: selected ? "#3c6663" : "var(--text-muted)" }}>
+                        {selected ? "Included" : "Optional"}
+                      </div>
+                    </button>
+                  );
+                })}
+                {lockedHeartbeatSuggestions.slice(0, 2).map(task => (
+                  <div
+                    key={task.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: 16,
+                      background: "rgba(212,160,74,0.08)",
+                      padding: "14px 18px",
+                      borderRadius: 12,
+                      border: "1px solid rgba(212,160,74,0.22)",
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>{task.title}</span>
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 7px", borderRadius: 20, background: "rgba(212,160,74,0.14)", color: "#A87212", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                          {task.scheduleLabel}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 6 }}>{task.prompt}</div>
+                      <div style={{ fontSize: 11, color: "#A87212", lineHeight: 1.4 }}>
+                        Unlock by connecting or enabling {formatHeartbeatRequirements(task)}.
+                      </div>
+                    </div>
+                    <div style={{ alignSelf: "center", minWidth: 88, textAlign: "right", fontSize: 12, fontWeight: 700, color: "#A87212" }}>
+                      Needs setup
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
 
             {/* ── OpenClaw Capabilities (Agent Sandbox) ── */}
             <div style={{ marginBottom: 32 }}>
@@ -2957,6 +3321,34 @@ export function OnboardingWizard() {
                   Set up in Integrations →
                 </span>
               </div>
+            </div>
+          )}
+
+          {(selectedHeartbeatTasks.length > 0 || lockedHeartbeatSuggestions.length > 0) && (
+            <div style={{
+              background: "rgba(60,102,99,0.06)", border: "1px solid rgba(60,102,99,0.15)",
+              borderRadius: 12, padding: "16px 18px", marginBottom: 24, maxWidth: 460, margin: "0 auto 24px", textAlign: "left",
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
+                Starting routines
+              </div>
+              {selectedHeartbeatTasks.length > 0 ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {selectedHeartbeatTasks.slice(0, 3).map(task => (
+                    <div key={task.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, color: "var(--text-sub)" }}>
+                      <span style={{ color: "var(--text-main)", fontWeight: 600 }}>{task.title}</span>
+                      <span>{task.scheduleLabel}</span>
+                    </div>
+                  ))}
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginTop: 4 }}>
+                    These will be seeded into `HEARTBEAT.md` and can evolve later as {agentName || "your agent"} learns your workflow.
+                  </div>
+                </div>
+              ) : (
+                <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                  {agentName || "Your agent"} will start on-demand only. Connect {formatHeartbeatRequirements(lockedHeartbeatSuggestions[0])} later to unlock the first proactive routine.
+                </div>
+              )}
             </div>
           )}
 

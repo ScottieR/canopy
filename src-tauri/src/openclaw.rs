@@ -917,6 +917,14 @@ fn get_legacy_agent_workspace_dir_for_root(
         .flatten()
         .map(|a| a.isolated)
         .unwrap_or(false);
+    legacy_agent_workspace_dir_for_layout(canopy_root, agent_id, is_isolated)
+}
+
+fn legacy_agent_workspace_dir_for_layout(
+    canopy_root: &std::path::Path,
+    agent_id: &str,
+    is_isolated: bool,
+) -> Option<std::path::PathBuf> {
     if is_isolated {
         None
     } else {
@@ -928,14 +936,89 @@ fn get_legacy_agent_workspace_dir_for_root(
     }
 }
 
+fn ensure_legacy_agent_workspace_alias_for_root(
+    canopy_root: &std::path::Path,
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Result<bool, String> {
+    let is_isolated = db
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.isolated)
+        .unwrap_or(false);
+    ensure_legacy_agent_workspace_alias_for_layout(canopy_root, agent_id, is_isolated)
+}
+
+fn ensure_legacy_agent_workspace_alias_for_layout(
+    canopy_root: &std::path::Path,
+    agent_id: &str,
+    is_isolated: bool,
+) -> Result<bool, String> {
+    let Some(legacy_path) =
+        legacy_agent_workspace_dir_for_layout(canopy_root, agent_id, is_isolated)
+    else {
+        return Ok(false);
+    };
+
+    let canonical_path = if is_isolated {
+        canopy_root
+            .join("isolated")
+            .join(agent_id)
+            .join("workspace")
+            .join(agent_id)
+    } else {
+        canopy_root.join("openclaw-state").join("workspace").join(agent_id)
+    };
+    std::fs::create_dir_all(&canonical_path).map_err(|e| e.to_string())?;
+
+    match std::fs::symlink_metadata(&legacy_path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                let desired_target = std::path::Path::new("workspace").join(agent_id);
+                let current_target =
+                    std::fs::read_link(&legacy_path).map_err(|e| e.to_string())?;
+                if current_target != desired_target {
+                    std::fs::remove_file(&legacy_path).map_err(|e| e.to_string())?;
+                } else {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
+            }
+        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            return Err(error.to_string())
+        }
+        Err(_) => {}
+    }
+
+    #[cfg(unix)]
+    {
+        let desired_target = std::path::Path::new("workspace").join(agent_id);
+        std::os::unix::fs::symlink(&desired_target, &legacy_path).map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(&legacy_path).map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+}
+
 fn agent_workspace_sync_targets_for_root(
     canopy_root: &std::path::Path,
     db: &crate::db::Database,
     agent_id: &str,
 ) -> Vec<std::path::PathBuf> {
-    let mut targets = vec![get_agent_workspace_dir_for_root(canopy_root, db, agent_id)];
+    let canonical = get_agent_workspace_dir_for_root(canopy_root, db, agent_id);
+    let mut targets = vec![canonical];
+    let _ = ensure_legacy_agent_workspace_alias_for_root(canopy_root, db, agent_id);
     if let Some(legacy) = get_legacy_agent_workspace_dir_for_root(canopy_root, db, agent_id) {
-        targets.push(legacy);
+        if std::fs::symlink_metadata(&legacy).is_ok() {
+            targets.push(legacy);
+        }
     }
     targets
 }
@@ -945,6 +1028,54 @@ fn remove_stale_bootstrap_file(workspace_root: &std::path::Path) {
     if bootstrap_path.exists() {
         let _ = std::fs::remove_file(bootstrap_path);
     }
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+struct WorkspaceHardeningSummary {
+    aliases_created: usize,
+    legacy_dirs_repaired: usize,
+    bootstrap_files_removed: usize,
+}
+
+fn harden_agent_workspace_layouts_for_root(
+    canopy_root: &std::path::Path,
+    db: &crate::db::Database,
+) -> Result<WorkspaceHardeningSummary, String> {
+    let agents = db.list_agents().map_err(|e| e.to_string())?;
+    let mut summary = WorkspaceHardeningSummary::default();
+
+    for agent in &agents {
+        if ensure_legacy_agent_workspace_alias_for_root(canopy_root, db, &agent.id)? {
+            summary.aliases_created += 1;
+        }
+
+        if let Some(legacy) = get_legacy_agent_workspace_dir_for_root(canopy_root, db, &agent.id) {
+            if let Ok(metadata) = std::fs::symlink_metadata(&legacy) {
+                if !metadata.file_type().is_symlink() {
+                    summary.legacy_dirs_repaired += 1;
+                }
+            }
+        }
+
+        for workspace in agent_workspace_sync_targets_for_root(canopy_root, db, &agent.id) {
+            if workspace.join("BOOTSTRAP.md").exists() {
+                summary.bootstrap_files_removed += 1;
+            }
+        }
+
+        ensure_visible_workspace_files(agent, db, true);
+        write_app_managed_instruction_files(agent, db);
+        write_permissions_md(agent);
+        sync_user_md_for_agent(db, &agent.id)?;
+
+        for workspace in agent_workspace_sync_targets_for_root(canopy_root, db, &agent.id) {
+            ensure_empty_file(&workspace.join("HEARTBEAT.md"));
+            ensure_empty_file(&workspace.join("MEMORY.md"));
+            remove_stale_bootstrap_file(&workspace);
+        }
+    }
+
+    Ok(summary)
 }
 
 pub(crate) fn canopy_data_root() -> Result<std::path::PathBuf, String> {
@@ -5780,22 +5911,8 @@ fn backfill_agent_workspace_files_internal(db: &crate::db::Database) -> Result<u
     let canopy_root = canopy_data_root()?;
     let shared_content = ensure_shared_user_md_for_root(&canopy_root, db)?;
     sync_shared_user_md_to_all_agents_for_root(&canopy_root, db, &shared_content)?;
-
-    let agents = db.list_agents().map_err(|e| e.to_string())?;
-    let count = agents.len();
-    for agent in &agents {
-        ensure_visible_workspace_files(agent, db, true);
-        write_app_managed_instruction_files(agent, db);
-        write_permissions_md(agent);
-
-        if let Ok(canopy_root) = canopy_data_root() {
-            for workspace in agent_workspace_sync_targets_for_root(&canopy_root, db, &agent.id) {
-                ensure_empty_file(&workspace.join("HEARTBEAT.md"));
-                ensure_empty_file(&workspace.join("MEMORY.md"));
-                remove_stale_bootstrap_file(&workspace);
-            }
-        }
-    }
+    let count = db.list_agents().map_err(|e| e.to_string())?.len();
+    let _ = harden_agent_workspace_layouts_for_root(&canopy_root, db)?;
     Ok(count)
 }
 
@@ -6273,6 +6390,28 @@ async fn boot_sync_agents_internal(
         }
     }
     let _guard = Guard;
+
+    if let Ok(canopy_root) = canopy_data_root() {
+        match harden_agent_workspace_layouts_for_root(&canopy_root, db) {
+            Ok(summary) => {
+                if summary.aliases_created > 0
+                    || summary.legacy_dirs_repaired > 0
+                    || summary.bootstrap_files_removed > 0
+                {
+                    tracing::info!(
+                        "boot_sync_agents: hardened workspace layout before registration: {:?}",
+                        summary
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "boot_sync_agents: workspace hardening skipped because it failed: {}",
+                    error
+                );
+            }
+        }
+    }
 
     // Wait up to 150s for the gateway container + openclaw process to be ready.
     // docker-compose up -d returns as soon as the start is accepted, but the
@@ -7940,6 +8079,107 @@ mod tests {
             std::fs::read_to_string(workspace_root.join("agent-two").join("USER.md")).unwrap(),
             content
         );
+        assert_eq!(
+            std::fs::read_to_string(canopy_root.join("openclaw-state").join("workspace-agent-one").join("USER.md")).unwrap(),
+            content
+        );
+        assert_eq!(
+            std::fs::read_to_string(canopy_root.join("openclaw-state").join("workspace-agent-two").join("USER.md")).unwrap(),
+            content
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_alias_is_created_for_shared_agents() {
+        let db = create_test_db();
+        let agent = test_agent("agent-sloane", "Sloane", "Executive Assistant");
+        db.insert_agent(&agent).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let canopy_root = tmp.path().join("Canopy");
+        let created =
+            ensure_legacy_agent_workspace_alias_for_root(&canopy_root, &db, &agent.id).unwrap();
+        assert!(created);
+
+        let legacy = canopy_root.join("openclaw-state").join("workspace-agent-sloane");
+        #[cfg(unix)]
+        {
+            let metadata = std::fs::symlink_metadata(&legacy).unwrap();
+            assert!(metadata.file_type().is_symlink());
+            assert_eq!(
+                std::fs::read_link(&legacy).unwrap(),
+                std::path::Path::new("workspace").join("agent-sloane")
+            );
+        }
+
+        #[cfg(not(unix))]
+        {
+            assert!(legacy.exists());
+        }
+    }
+
+    #[test]
+    fn permissions_workspace_roots_preserve_legacy_alias_layout() {
+        let agent = test_agent("agent-sloane", "Sloane", "Executive Assistant");
+        let tmp = tempfile::tempdir().unwrap();
+        let canopy_root = tmp.path().join("Canopy");
+
+        let roots = permissions_workspace_roots(&canopy_root, &agent);
+        assert_eq!(roots.len(), 2);
+
+        let canonical = canopy_root
+            .join("openclaw-state")
+            .join("workspace")
+            .join("agent-sloane");
+        let legacy = canopy_root.join("openclaw-state").join("workspace-agent-sloane");
+        assert!(roots.contains(&canonical));
+        assert!(roots.contains(&legacy));
+
+        #[cfg(unix)]
+        {
+            let metadata = std::fs::symlink_metadata(&legacy).unwrap();
+            assert!(metadata.file_type().is_symlink());
+            assert_eq!(
+                std::fs::read_link(&legacy).unwrap(),
+                std::path::Path::new("workspace").join("agent-sloane")
+            );
+        }
+    }
+
+    #[test]
+    fn hardening_removes_bootstrap_from_existing_legacy_workspace_dirs() {
+        let _env_guard = CANOPY_DATA_DIR_ENV_LOCK.blocking_lock();
+        let previous_canopy_data_dir = std::env::var_os("CANOPY_DATA_DIR");
+        let db = create_test_db();
+        let agent = test_agent("agent-boots", "Boots", "STR Manager");
+        db.insert_agent(&agent).unwrap();
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("CANOPY_DATA_DIR", tmp.path());
+        let canopy_root = tmp.path().join("Canopy");
+        let canonical = canopy_root
+            .join("openclaw-state")
+            .join("workspace")
+            .join("agent-boots");
+        let legacy = canopy_root.join("openclaw-state").join("workspace-agent-boots");
+        std::fs::create_dir_all(&canonical).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("BOOTSTRAP.md"), "wake up").unwrap();
+        std::fs::write(legacy.join("notes.txt"), "keep me").unwrap();
+
+        let summary = harden_agent_workspace_layouts_for_root(&canopy_root, &db).unwrap();
+        assert_eq!(summary.legacy_dirs_repaired, 1);
+        assert_eq!(summary.bootstrap_files_removed, 1);
+        assert!(!legacy.join("BOOTSTRAP.md").exists());
+        assert_eq!(std::fs::read_to_string(legacy.join("notes.txt")).unwrap(), "keep me");
+        assert!(legacy.join("APP_OPERATING_MODEL.md").exists());
+        assert!(legacy.join("MEMORY.md").exists());
+
+        if let Some(previous) = previous_canopy_data_dir {
+            std::env::set_var("CANOPY_DATA_DIR", previous);
+        } else {
+            std::env::remove_var("CANOPY_DATA_DIR");
+        }
     }
 
     #[test]
@@ -8209,25 +8449,27 @@ fn permissions_workspace_roots(
     canopy_root: &std::path::Path,
     agent: &crate::models::Agent,
 ) -> Vec<std::path::PathBuf> {
-    let mut roots = if agent.isolated {
-        vec![
-            canopy_root
-                .join("isolated")
-                .join(&agent.id)
-                .join("workspace")
-                .join(&agent.id),
-        ]
+    let canonical = if agent.isolated {
+        canopy_root
+            .join("isolated")
+            .join(&agent.id)
+            .join("workspace")
+            .join(&agent.id)
     } else {
-        vec![
-            canopy_root
-                .join("openclaw-state")
-                .join("workspace")
-                .join(&agent.id),
-            canopy_root
-                .join("openclaw-state")
-                .join(format!("workspace-{}", agent.id)),
-        ]
+        canopy_root
+            .join("openclaw-state")
+            .join("workspace")
+            .join(&agent.id)
     };
+    let mut roots = vec![canonical];
+    let _ = ensure_legacy_agent_workspace_alias_for_layout(canopy_root, &agent.id, agent.isolated);
+    if let Some(legacy) =
+        legacy_agent_workspace_dir_for_layout(canopy_root, &agent.id, agent.isolated)
+    {
+        if std::fs::symlink_metadata(&legacy).is_ok() {
+            roots.push(legacy);
+        }
+    }
     roots.dedup();
     roots
 }
