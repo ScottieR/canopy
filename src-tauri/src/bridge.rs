@@ -234,6 +234,654 @@ fn remove_files_broker_runtime(agent_id: &str) {
     let _ = crate::keychain::delete_secret_internal(&files_bridge_secret_key(agent_id));
 }
 
+fn bridge_type_slug(bridge_type: &BridgeType) -> &'static str {
+    match bridge_type {
+        BridgeType::Imessage => "imessage",
+        BridgeType::Calendar => "calendar",
+        BridgeType::Files => "files",
+        BridgeType::Gmail => "gmail",
+        BridgeType::Slack => "slack",
+        BridgeType::Telegram => "telegram",
+        BridgeType::Discord => "discord",
+        BridgeType::Website => "website",
+        BridgeType::Custom => "custom",
+    }
+}
+
+fn bridge_runtime_mode(bridge_type: &BridgeType) -> &'static str {
+    match bridge_type {
+        BridgeType::Imessage => "local_bridge",
+        BridgeType::Slack => "openclaw_channel",
+        BridgeType::Gmail => "openclaw_plugin",
+        BridgeType::Telegram => "openclaw_channel",
+        BridgeType::Discord => "openclaw_channel",
+        BridgeType::Files => "files_broker",
+        BridgeType::Calendar => "openclaw_plugin",
+        BridgeType::Website => "browser_runtime",
+        BridgeType::Custom => "custom",
+    }
+}
+
+fn bridge_transport(bridge_type: &BridgeType) -> &'static str {
+    match bridge_type {
+        BridgeType::Imessage => "canopy-local",
+        BridgeType::Slack | BridgeType::Gmail | BridgeType::Telegram | BridgeType::Discord => {
+            "canopy-bridge"
+        }
+        BridgeType::Files => "canopy-http-broker",
+        BridgeType::Calendar | BridgeType::Website | BridgeType::Custom => "canopy-bridge",
+    }
+}
+
+fn make_tool(
+    name: &str,
+    title: &str,
+    description: &str,
+    input_schema: serde_json::Value,
+) -> crate::models::McpToolDescriptor {
+    crate::models::McpToolDescriptor {
+        name: name.to_string(),
+        title: title.to_string(),
+        description: description.to_string(),
+        input_schema,
+    }
+}
+
+fn make_resource(
+    uri: String,
+    name: &str,
+    description: &str,
+    mime_type: Option<&str>,
+) -> crate::models::McpResourceDescriptor {
+    crate::models::McpResourceDescriptor {
+        uri,
+        name: name.to_string(),
+        description: description.to_string(),
+        mime_type: mime_type.map(str::to_string),
+    }
+}
+
+fn make_prompt(
+    name: &str,
+    description: &str,
+    arguments: Vec<crate::models::McpPromptArgumentDescriptor>,
+) -> crate::models::McpPromptDescriptor {
+    crate::models::McpPromptDescriptor {
+        name: name.to_string(),
+        description: description.to_string(),
+        arguments,
+    }
+}
+
+fn make_prompt_arg(
+    name: &str,
+    description: &str,
+    required: bool,
+) -> crate::models::McpPromptArgumentDescriptor {
+    crate::models::McpPromptArgumentDescriptor {
+        name: name.to_string(),
+        description: description.to_string(),
+        required,
+    }
+}
+
+fn communication_bridge_tools(bridge: &Bridge) -> Vec<crate::models::McpToolDescriptor> {
+    match bridge.bridge_type {
+        BridgeType::Slack => vec![
+            make_tool(
+                "slack.list_channels",
+                "List Slack Channels",
+                "List Slack channels the agent can access.",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ),
+            make_tool(
+                "slack.read_messages",
+                "Read Slack Messages",
+                "Read recent Slack messages from an allowed channel.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "channel_id": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    },
+                    "required": ["channel_id"],
+                    "additionalProperties": false
+                }),
+            ),
+            make_tool(
+                "slack.send_message",
+                "Send Slack Message",
+                "Send a Slack message to an allowed channel.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "channel_id": { "type": "string" },
+                        "text": { "type": "string" }
+                    },
+                    "required": ["channel_id", "text"],
+                    "additionalProperties": false
+                }),
+            ),
+        ],
+        BridgeType::Gmail => vec![
+            make_tool(
+                "gmail.search_threads",
+                "Search Gmail Threads",
+                "Search Gmail threads/messages available to the agent.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }),
+            ),
+            make_tool(
+                "gmail.read_thread",
+                "Read Gmail Thread",
+                "Read a Gmail thread by thread id.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "thread_id": { "type": "string" }
+                    },
+                    "required": ["thread_id"],
+                    "additionalProperties": false
+                }),
+            ),
+            make_tool(
+                "gmail.send_email",
+                "Send Email",
+                "Send an email when write access is enabled.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "to": { "type": "array", "items": { "type": "string" } },
+                        "subject": { "type": "string" },
+                        "body": { "type": "string" }
+                    },
+                    "required": ["to", "subject", "body"],
+                    "additionalProperties": false
+                }),
+            ),
+        ],
+        BridgeType::Imessage => vec![
+            make_tool(
+                "imessage.list_threads",
+                "List iMessage Threads",
+                "List iMessage threads available to the agent.",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ),
+            make_tool(
+                "imessage.read_messages",
+                "Read iMessage Messages",
+                "Read messages from an allowed iMessage thread.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_identifier": { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+                    },
+                    "required": ["chat_identifier"],
+                    "additionalProperties": false
+                }),
+            ),
+        ],
+        BridgeType::Telegram => vec![
+            make_tool(
+                "telegram.send_message",
+                "Send Telegram Message",
+                "Send a Telegram bot message through the configured connector.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "chat_id": { "type": "string" },
+                        "text": { "type": "string" }
+                    },
+                    "required": ["chat_id", "text"],
+                    "additionalProperties": false
+                }),
+            ),
+        ],
+        BridgeType::Discord => vec![
+            make_tool(
+                "discord.send_message",
+                "Send Discord Message",
+                "Send a Discord bot message through the configured connector.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "channel_id": { "type": "string" },
+                        "text": { "type": "string" }
+                    },
+                    "required": ["channel_id", "text"],
+                    "additionalProperties": false
+                }),
+            ),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+fn communication_bridge_resources(bridge: &Bridge) -> Vec<crate::models::McpResourceDescriptor> {
+    let prefix = format!("canopy://agents/{}/bridges/{}", bridge.agent_id, bridge.id);
+    match bridge.bridge_type {
+        BridgeType::Slack => vec![
+            make_resource(
+                format!("{}/allowlist", prefix),
+                "Slack Allowlist",
+                "Allowed Slack channels for this agent.",
+                Some("application/json"),
+            ),
+            make_resource(
+                format!("{}/status", prefix),
+                "Slack Bridge Status",
+                "Connector state and runtime metadata for Slack.",
+                Some("application/json"),
+            ),
+        ],
+        BridgeType::Gmail => vec![
+            make_resource(
+                format!("{}/mailbox", prefix),
+                "Gmail Mailbox Scope",
+                "Mailbox mode and scope metadata for this Gmail bridge.",
+                Some("application/json"),
+            ),
+        ],
+        BridgeType::Imessage => vec![
+            make_resource(
+                format!("{}/allowlist", prefix),
+                "iMessage Allowlist",
+                "Allowed iMessage threads for this agent.",
+                Some("application/json"),
+            ),
+        ],
+        BridgeType::Telegram => vec![make_resource(
+            format!("{}/scope", prefix),
+            "Telegram Scope",
+            "Allowed Telegram routing metadata for this agent.",
+            Some("application/json"),
+        )],
+        BridgeType::Discord => vec![make_resource(
+            format!("{}/scope", prefix),
+            "Discord Scope",
+            "Allowed Discord routing metadata for this agent.",
+            Some("application/json"),
+        )],
+        _ => Vec::new(),
+    }
+}
+
+fn communication_bridge_prompts(bridge: &Bridge) -> Vec<crate::models::McpPromptDescriptor> {
+    match bridge.bridge_type {
+        BridgeType::Slack => vec![make_prompt(
+            "slack.compose_update",
+            "Compose a Slack update for an allowed channel.",
+            vec![
+                make_prompt_arg("audience", "Who the update is for.", true),
+                make_prompt_arg("goal", "What the update should accomplish.", true),
+            ],
+        )],
+        BridgeType::Gmail => vec![make_prompt(
+            "gmail.compose_reply",
+            "Draft an email reply using the agent's Gmail context.",
+            vec![
+                make_prompt_arg("recipient_context", "Who the recipient is.", true),
+                make_prompt_arg("goal", "What the email should accomplish.", true),
+            ],
+        )],
+        BridgeType::Imessage => vec![make_prompt(
+            "imessage.compose_reply",
+            "Draft a concise iMessage response.",
+            vec![make_prompt_arg("thread_context", "Context from the active thread.", true)],
+        )],
+        BridgeType::Telegram => vec![make_prompt(
+            "telegram.compose_message",
+            "Draft a Telegram message for a bot conversation.",
+            vec![make_prompt_arg("goal", "What the message should achieve.", true)],
+        )],
+        BridgeType::Discord => vec![make_prompt(
+            "discord.compose_message",
+            "Draft a Discord bot response.",
+            vec![make_prompt_arg("goal", "What the message should achieve.", true)],
+        )],
+        _ => Vec::new(),
+    }
+}
+
+pub(crate) fn bridge_to_mcp_server_descriptor(
+    bridge: &Bridge,
+) -> Option<crate::models::McpServerDescriptor> {
+    match bridge.bridge_type {
+        BridgeType::Slack
+        | BridgeType::Gmail
+        | BridgeType::Imessage
+        | BridgeType::Telegram
+        | BridgeType::Discord => Some(crate::models::McpServerDescriptor {
+            id: format!("{}-mcp", bridge.id),
+            agent_id: bridge.agent_id.clone(),
+            bridge_id: bridge.id.clone(),
+            name: bridge.name.clone(),
+            bridge_type: bridge_type_slug(&bridge.bridge_type).to_string(),
+            transport: bridge_transport(&bridge.bridge_type).to_string(),
+            runtime_mode: bridge_runtime_mode(&bridge.bridge_type).to_string(),
+            enabled: bridge.enabled,
+            permissions: bridge.permissions.clone(),
+            scope: bridge.config.scope.clone(),
+            tools: communication_bridge_tools(bridge),
+            resources: communication_bridge_resources(bridge),
+            prompts: communication_bridge_prompts(bridge),
+        }),
+        _ => None,
+    }
+}
+
+pub fn list_agent_mcp_server_descriptors_internal(
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Result<Vec<crate::models::McpServerDescriptor>, String> {
+    let bridges = db
+        .list_bridges(agent_id)
+        .map_err(|e| format!("Failed to list bridges: {}", e))?;
+    Ok(bridges
+        .into_iter()
+        .filter(|bridge| bridge.enabled)
+        .filter_map(|bridge| bridge_to_mcp_server_descriptor(&bridge))
+        .collect())
+}
+
+fn communication_bridge_name(bridge_type: &BridgeType) -> &'static str {
+    match bridge_type {
+        BridgeType::Imessage => "iMessage Bridge",
+        BridgeType::Gmail => "Gmail Bridge",
+        BridgeType::Slack => "Slack Bridge",
+        BridgeType::Telegram => "Telegram Bridge",
+        BridgeType::Discord => "Discord Bridge",
+        _ => "Bridge",
+    }
+}
+
+fn communication_bridge_enabled(agent: &crate::models::Agent, bridge_type: &BridgeType) -> bool {
+    match bridge_type {
+        BridgeType::Slack => agent.integrations.iter().any(|integration| integration == "slack"),
+        BridgeType::Gmail => agent.integrations.iter().any(|integration| {
+            integration == "gmail"
+                || integration == "email"
+                || integration == "email_read"
+                || integration == "email_write"
+        }),
+        BridgeType::Imessage => agent
+            .integrations
+            .iter()
+            .any(|integration| integration == "imessage"),
+        BridgeType::Telegram => agent
+            .integrations
+            .iter()
+            .any(|integration| integration == "telegram"),
+        BridgeType::Discord => agent
+            .integrations
+            .iter()
+            .any(|integration| integration == "discord"),
+        _ => false,
+    }
+}
+
+fn merge_bridge_scope(existing_scope: Option<&serde_json::Value>, default_scope: serde_json::Value) -> serde_json::Value {
+    match (existing_scope, default_scope) {
+        (Some(serde_json::Value::Object(existing)), serde_json::Value::Object(mut defaults)) => {
+            for (key, value) in existing {
+                defaults.insert(key.clone(), value.clone());
+            }
+            serde_json::Value::Object(defaults)
+        }
+        (Some(existing), _) if !existing.is_null() => existing.clone(),
+        (_, defaults) => defaults,
+    }
+}
+
+fn overwrite_scope_key(
+    scope: &mut serde_json::Value,
+    key: &str,
+    value: serde_json::Value,
+) {
+    if let Some(map) = scope.as_object_mut() {
+        map.insert(key.to_string(), value);
+    }
+}
+
+fn communication_bridge_blueprint(
+    agent: &crate::models::Agent,
+    bridge_type: &BridgeType,
+) -> Option<(BridgeConfig, BridgePermissions)> {
+    match bridge_type {
+        BridgeType::Slack => Some((
+            BridgeConfig {
+                scope: json!({
+                    "allowed_channels": [],
+                    "delivery": "socket_mode"
+                }),
+                expires_at: None,
+                push_enabled: true,
+            },
+            BridgePermissions {
+                read: true,
+                write: true,
+                delete: false,
+            },
+        )),
+        BridgeType::Gmail => {
+            let write_enabled = agent
+                .integrations
+                .iter()
+                .any(|integration| integration == "email_write");
+            Some((
+                BridgeConfig {
+                    scope: json!({
+                        "mode": if write_enabled { "write" } else { "read" },
+                        "labels": []
+                    }),
+                    expires_at: None,
+                    push_enabled: false,
+                },
+                BridgePermissions {
+                    read: true,
+                    write: write_enabled,
+                    delete: false,
+                },
+            ))
+        }
+        BridgeType::Imessage => Some((
+            BridgeConfig {
+                scope: json!({
+                    "allowed_threads": [],
+                    "delivery": "local_watcher"
+                }),
+                expires_at: None,
+                push_enabled: true,
+            },
+            BridgePermissions {
+                read: true,
+                write: false,
+                delete: false,
+            },
+        )),
+        BridgeType::Telegram => Some((
+            BridgeConfig {
+                scope: json!({
+                    "allowed_chat_ids": [],
+                    "delivery": "bot"
+                }),
+                expires_at: None,
+                push_enabled: true,
+            },
+            BridgePermissions {
+                read: true,
+                write: true,
+                delete: false,
+            },
+        )),
+        BridgeType::Discord => Some((
+            BridgeConfig {
+                scope: json!({
+                    "allowed_channel_ids": [],
+                    "guild_id": crate::keychain::get_secret(&format!("agent_{}_discord_guild_id", agent.id)).unwrap_or_default(),
+                    "delivery": "bot"
+                }),
+                expires_at: None,
+                push_enabled: true,
+            },
+            BridgePermissions {
+                read: true,
+                write: true,
+                delete: false,
+            },
+        )),
+        _ => None,
+    }
+}
+
+fn upsert_communication_bridge(
+    db: &crate::db::Database,
+    agent: &crate::models::Agent,
+    bridge_type: BridgeType,
+) -> Result<(), String> {
+    let enabled = communication_bridge_enabled(agent, &bridge_type);
+    let bridge_id = format!("{}-{}", agent.id, bridge_type_slug(&bridge_type));
+    let existing = db
+        .get_bridge(&bridge_id)
+        .map_err(|e| format!("Failed to load bridge {}: {}", bridge_id, e))?;
+
+    if !enabled {
+        if let Some(mut bridge) = existing {
+            if bridge.enabled {
+                bridge.enabled = false;
+                db.update_bridge(&bridge)
+                    .map_err(|e| format!("Failed to disable bridge {}: {}", bridge_id, e))?;
+                let bridge_type_str = bridge_type_slug(&bridge_type);
+                let _ = db.log_audit(
+                    &agent.id,
+                    "bridge_disabled",
+                    Some(bridge_type_str),
+                    &format!("Disabled bridge: {}", bridge_id),
+                    None,
+                );
+                let _ = db.log_audit(
+                    &agent.id,
+                    "bridge_tools_unregistered",
+                    Some(bridge_type_str),
+                    "Successfully unregistered MCP tools for bridge",
+                    None,
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let Some((default_config, permissions)) = communication_bridge_blueprint(agent, &bridge_type) else {
+        return Ok(());
+    };
+
+    let bridge_type_str = bridge_type_slug(&bridge_type);
+    let existing_scope = existing.as_ref().map(|bridge| &bridge.config.scope);
+    let mut scope = merge_bridge_scope(existing_scope, default_config.scope.clone());
+    if let Some(default_scope) = default_config.scope.as_object() {
+        match bridge_type {
+            BridgeType::Slack | BridgeType::Telegram | BridgeType::Imessage => {
+                if let Some(delivery) = default_scope.get("delivery") {
+                    overwrite_scope_key(&mut scope, "delivery", delivery.clone());
+                }
+            }
+            BridgeType::Gmail => {
+                if let Some(mode) = default_scope.get("mode") {
+                    overwrite_scope_key(&mut scope, "mode", mode.clone());
+                }
+            }
+            BridgeType::Discord => {
+                if let Some(delivery) = default_scope.get("delivery") {
+                    overwrite_scope_key(&mut scope, "delivery", delivery.clone());
+                }
+                if let Some(guild_id) = default_scope.get("guild_id") {
+                    overwrite_scope_key(&mut scope, "guild_id", guild_id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let bridge = Bridge {
+        id: bridge_id.clone(),
+        name: communication_bridge_name(&bridge_type).to_string(),
+        bridge_type: bridge_type.clone(),
+        enabled: true,
+        agent_id: agent.id.clone(),
+        config: BridgeConfig {
+            scope,
+            expires_at: existing
+                .as_ref()
+                .and_then(|bridge| bridge.config.expires_at.clone()),
+            push_enabled: default_config.push_enabled,
+        },
+        permissions,
+    };
+
+    let was_enabled = existing.as_ref().map(|bridge| bridge.enabled).unwrap_or(false);
+    if existing.is_some() {
+        db.update_bridge(&bridge)
+            .map_err(|e| format!("Failed to update bridge {}: {}", bridge_id, e))?;
+    } else {
+        db.insert_bridge(&bridge)
+            .map_err(|e| format!("Failed to insert bridge {}: {}", bridge_id, e))?;
+    }
+
+    if !was_enabled {
+        let _ = db.log_audit(
+            &agent.id,
+            "bridge_enabled",
+            Some(bridge_type_str),
+            &format!("Enabled bridge: {}", bridge_id),
+            None,
+        );
+        let _ = db.log_audit(
+            &agent.id,
+            "bridge_tools_registered",
+            Some(bridge_type_str),
+            "Successfully registered MCP tools for bridge",
+            None,
+        );
+    }
+
+    Ok(())
+}
+
+pub(crate) fn sync_agent_communication_bridges(
+    db: &crate::db::Database,
+    agent: &crate::models::Agent,
+) -> Result<(), String> {
+    for bridge_type in [
+        BridgeType::Slack,
+        BridgeType::Gmail,
+        BridgeType::Imessage,
+        BridgeType::Telegram,
+        BridgeType::Discord,
+    ] {
+        upsert_communication_bridge(db, agent, bridge_type)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn sync_agent_communication_bridges_by_id(
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Result<(), String> {
+    let agent = db
+        .get_agent(agent_id)
+        .map_err(|e| format!("Failed to load agent {}: {}", agent_id, e))?
+        .ok_or_else(|| format!("Agent not found for bridge sync: {}", agent_id))?;
+    sync_agent_communication_bridges(db, &agent)
+}
+
 pub(crate) fn sync_files_bridge(
     db: &crate::db::Database,
     agent: &crate::models::Agent,
@@ -862,6 +1510,27 @@ pub async fn get_bridge_status(
     })
 }
 
+#[tauri::command]
+pub async fn list_agent_mcp_servers(
+    agent_id: String,
+    db: tauri::State<'_, crate::db::Database>,
+) -> Result<Vec<crate::models::McpServerDescriptor>, String> {
+    list_agent_mcp_server_descriptors_internal(&db, &agent_id)
+}
+
+#[tauri::command]
+pub async fn get_bridge_mcp_server(
+    bridge_id: String,
+    db: tauri::State<'_, crate::db::Database>,
+) -> Result<Option<crate::models::McpServerDescriptor>, String> {
+    let bridge = db
+        .get_bridge(&bridge_id)
+        .map_err(|e| format!("Failed to load bridge: {}", e))?;
+    Ok(bridge
+        .filter(|bridge| bridge.enabled)
+        .and_then(|bridge| bridge_to_mcp_server_descriptor(&bridge)))
+}
+
 /// List all available bridge types with descriptions
 #[tauri::command]
 pub async fn list_available_bridge_types() -> Result<Vec<BridgeTypeInfo>, String> {
@@ -892,6 +1561,16 @@ pub async fn list_available_bridge_types() -> Result<Vec<BridgeTypeInfo>, String
             description: "Send and receive messages via Slack".to_string(),
         },
         BridgeTypeInfo {
+            bridge_type: "telegram".to_string(),
+            display_name: "Telegram".to_string(),
+            description: "Send and receive messages via Telegram bots".to_string(),
+        },
+        BridgeTypeInfo {
+            bridge_type: "discord".to_string(),
+            display_name: "Discord".to_string(),
+            description: "Send and receive messages via Discord bots".to_string(),
+        },
+        BridgeTypeInfo {
             bridge_type: "website".to_string(),
             display_name: "Website".to_string(),
             description: "Browse and interact with websites".to_string(),
@@ -912,7 +1591,41 @@ pub async fn list_available_bridge_types() -> Result<Vec<BridgeTypeInfo>, String
 mod tests {
     use super::*;
     use chrono::{Duration, Utc};
+    use crate::db::Database;
+    use crate::models::{Agent, AgentCapabilities, AgentPersonality, AgentStats, AgentStatus};
     use serde_json::json;
+
+    fn insert_test_agent(db: &Database, integrations: Vec<&str>) -> Agent {
+        let agent = Agent {
+            id: "agent-bridge".to_string(),
+            name: "Bridge Agent".to_string(),
+            role: "operator".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#3355FF".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Bridge Agent".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: integrations.into_iter().map(str::to_string).collect(),
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
+        agent
+    }
 
     fn test_bridge() -> Bridge {
         Bridge {
@@ -932,6 +1645,82 @@ mod tests {
                 delete: false,
             },
         }
+    }
+
+    #[test]
+    fn sync_agent_communication_bridges_creates_enabled_connector_bridges() {
+        let db = Database::init_in_memory().unwrap();
+        let agent = insert_test_agent(
+            &db,
+            vec!["slack", "email_write", "imessage", "telegram", "discord"],
+        );
+
+        sync_agent_communication_bridges(&db, &agent).unwrap();
+
+        let bridges = db.list_bridges(&agent.id).unwrap();
+        assert_eq!(bridges.len(), 5);
+        assert!(bridges.iter().any(|bridge| bridge.bridge_type == BridgeType::Slack && bridge.enabled));
+        assert!(bridges.iter().any(|bridge| bridge.bridge_type == BridgeType::Gmail && bridge.permissions.write));
+        assert!(bridges.iter().any(|bridge| bridge.bridge_type == BridgeType::Imessage && bridge.config.push_enabled));
+        assert!(bridges.iter().any(|bridge| bridge.bridge_type == BridgeType::Telegram && bridge.enabled));
+        assert!(bridges.iter().any(|bridge| bridge.bridge_type == BridgeType::Discord && bridge.enabled));
+    }
+
+    #[test]
+    fn sync_agent_communication_bridges_preserves_scope_and_disables_removed_integrations() {
+        let db = Database::init_in_memory().unwrap();
+        let mut agent = insert_test_agent(&db, vec!["slack"]);
+
+        sync_agent_communication_bridges(&db, &agent).unwrap();
+
+        let mut slack_bridge = db.get_bridge("agent-bridge-slack").unwrap().unwrap();
+        slack_bridge.config.scope = json!({
+            "allowed_channels": ["C1234567890"],
+            "delivery": "socket_mode"
+        });
+        db.update_bridge(&slack_bridge).unwrap();
+
+        sync_agent_communication_bridges(&db, &agent).unwrap();
+        let preserved_bridge = db.get_bridge("agent-bridge-slack").unwrap().unwrap();
+        assert_eq!(
+            preserved_bridge.config.scope["allowed_channels"],
+            json!(["C1234567890"])
+        );
+        assert!(preserved_bridge.enabled);
+
+        agent.integrations.clear();
+        db.update_agent(&agent).unwrap();
+        sync_agent_communication_bridges(&db, &agent).unwrap();
+
+        let disabled_bridge = db.get_bridge("agent-bridge-slack").unwrap().unwrap();
+        assert!(!disabled_bridge.enabled);
+    }
+
+    #[test]
+    fn list_agent_mcp_server_descriptors_includes_slack_and_gmail_shapes() {
+        let db = Database::init_in_memory().unwrap();
+        let agent = insert_test_agent(&db, vec!["slack", "email_write"]);
+
+        sync_agent_communication_bridges(&db, &agent).unwrap();
+        let servers = list_agent_mcp_server_descriptors_internal(&db, &agent.id).unwrap();
+
+        assert_eq!(servers.len(), 2);
+
+        let slack = servers
+            .iter()
+            .find(|server| server.bridge_type == "slack")
+            .expect("expected slack MCP server descriptor");
+        assert_eq!(slack.transport, "canopy-bridge");
+        assert!(slack.tools.iter().any(|tool| tool.name == "slack.read_messages"));
+        assert!(slack.resources.iter().any(|resource| resource.name == "Slack Allowlist"));
+
+        let gmail = servers
+            .iter()
+            .find(|server| server.bridge_type == "gmail")
+            .expect("expected gmail MCP server descriptor");
+        assert!(gmail.permissions.write);
+        assert!(gmail.tools.iter().any(|tool| tool.name == "gmail.send_email"));
+        assert!(gmail.prompts.iter().any(|prompt| prompt.name == "gmail.compose_reply"));
     }
 
     // ──────────────────────────────────────────────────────────────

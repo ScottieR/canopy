@@ -34,8 +34,8 @@ export function buildForumMiniAppPinTarget({
     return {
       agentId,
       app: {
-        name: selectedArtifact.title || `Project app — ${forum.title}`,
-        description: `Pinned from project "${forum.title}"`,
+        name: selectedArtifact.title || `Forum app — ${forum.title}`,
+        description: `Pinned from forum "${forum.title}"`,
         htmlContent,
         sourceMessageId: `forum_artifact:${forum.id}:${selectedArtifact.id}`,
       },
@@ -50,8 +50,8 @@ export function buildForumMiniAppPinTarget({
     return {
       agentId,
       app: {
-        name: `Project app — ${forum.title}`,
-        description: `Pinned from the live project deliverable in "${forum.title}"`,
+        name: `Forum app — ${forum.title}`,
+        description: `Pinned from the live forum deliverable in "${forum.title}"`,
         htmlContent,
         sourceMessageId: `forum_blackboard:${forum.id}:${blackboardBlock.generatedAt}`,
       },

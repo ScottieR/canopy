@@ -8,6 +8,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useWorldStore, AgentData, Conversation } from "../../store/worldStore";
+import { useForumStore } from "../../store/forumStore";
 
 function threadStatusMeta(status?: Conversation["threadStatus"]): { label: string; color: string } | null {
   switch (status) {
@@ -77,11 +78,22 @@ export function ThreadSwitcher({ agent }: { agent: AgentData }) {
   const switchConversation = useWorldStore(s => s.switchConversation);
   const renameConversation = useWorldStore(s => s.renameConversation);
   const deleteConversation = useWorldStore(s => s.deleteConversation);
+  const forumIdPrefixes = useForumStore(s =>
+    s.forums
+      .filter(f => f.status !== "archived" && f.agents.some(a => a.agentId === agent.id))
+      .map(f => `${f.id}_`)
+  );
+
+  const isForumScopedConversation = (conv: Conversation) =>
+    conv.type === "forum" ||
+    forumIdPrefixes.some(prefix => conv.id.startsWith(prefix)) ||
+    conv.id.startsWith("proj_");
 
   // Build the sorted list — newest activity first, plus an "Active draft"
   // marker for the in-progress chat that hasn't been saved yet.
   const sortedConversations: Conversation[] = [...(agent.conversations || [])]
     .filter(c => !c.id?.startsWith("_sys_")) // hide internal system sessions
+    .filter(c => !isForumScopedConversation(c))
     .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
 
   // Filter by search query. We match on title AND message text — users often

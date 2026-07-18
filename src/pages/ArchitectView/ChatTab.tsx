@@ -151,6 +151,19 @@ function deriveConversationTitle(rawTitle?: string | null, firstUserMessage?: st
   return titleSource.length > 40 ? titleSource.slice(0, 40).trimEnd() + "…" : titleSource;
 }
 
+function inferConversationType(conversationId: string, existingType?: "dm" | "forum"): "dm" | "forum" {
+  if (existingType) return existingType;
+  return conversationId.startsWith("forum_") || conversationId.startsWith("proj_") ? "forum" : "dm";
+}
+
+function resolveForumIdFromConversationId(conversationId?: string | null): string | null {
+  if (!conversationId) return null;
+  const forum = useForumStore.getState().forums.find(
+    f => f.id === conversationId || conversationId.startsWith(`${f.id}_`)
+  );
+  return forum?.id || null;
+}
+
 function sameMessages(a: ChatMessage[] = [], b: ChatMessage[] = []): boolean {
   if (a === b) return true;
   if (a.length !== b.length) return false;
@@ -658,7 +671,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           messages: existingConversation?.messages || [],
           createdAt: existingConversation?.createdAt || createdAt,
           lastActiveAt: Math.max(existingConversation?.lastActiveAt || 0, lastActiveAt),
-          type: existingConversation?.type || "dm",
+          type: inferConversationType(summary.id, existingConversation?.type),
           status: existingConversation?.status || "active",
           threadStatus: summary.thread_status,
           backgroundAllowed: summary.background_allowed,
@@ -880,7 +893,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 messages: [],
                 createdAt,
                 lastActiveAt,
-                type: "dm" as const,
+                type: inferConversationType(summary.id) as const,
                 status: "active" as const,
                 threadStatus: summary.thread_status,
                 backgroundAllowed: summary.background_allowed,
@@ -1500,6 +1513,9 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   };
 
   const activeConv = agent.conversations?.find(c => c.id === agent.activeConversationId);
+  const activeForumTargetId = activeConv?.type === "forum"
+    ? resolveForumIdFromConversationId(activeConv.id)
+    : null;
   const firstUserMsg = chatLog.find(m => m.sender === "user");
 
   let topic = activeConv?.title;
@@ -1533,10 +1549,10 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               <>Chat with <strong>{agent.name}</strong></>
             )}
           </div>
-          {activeConv?.type === "forum" && (
+          {activeConv?.type === "forum" && activeForumTargetId && (
             <button 
                onClick={() => {
-                 useForumStore.getState().setActiveForumId(activeConv.id);
+                 useForumStore.getState().setActiveForumId(activeForumTargetId);
                  useWorldStore.getState().setActiveView("forum");
                }}
                style={{ 
@@ -1545,7 +1561,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                  fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 4
                }}
             >
-               <Users size={12} /> Open Full Project
+               <Users size={12} /> Open Forum
             </button>
           )}
         </div>

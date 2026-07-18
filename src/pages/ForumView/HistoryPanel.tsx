@@ -330,7 +330,7 @@ export function HistoryPanel({
         {connectedFolderPath && (
           <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 9, color: "var(--text-sub, #636E72)", opacity: 0.65 }}>
             <div style={{ width: 8, height: 8, borderRadius: "50%", background: "rgba(129,140,248,0.3)" }} />
-            Project files
+            Forum files
           </div>
         )}
       </div>

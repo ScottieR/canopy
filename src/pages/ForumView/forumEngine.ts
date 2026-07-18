@@ -794,7 +794,7 @@ Once you've made your selections from the Pinterest board, note which need print
     case "home":
       return previous + `---
 
-## Project Plan — ${forum.title}
+## Forum Plan — ${forum.title}
 
 **Deliverable:** A concrete, sequenced action plan for this project.
 

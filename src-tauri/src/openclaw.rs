@@ -906,6 +906,47 @@ fn get_agent_workspace_dir_for_root(
     path
 }
 
+fn get_legacy_agent_workspace_dir_for_root(
+    canopy_root: &std::path::Path,
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Option<std::path::PathBuf> {
+    let is_isolated = db
+        .get_agent(agent_id)
+        .ok()
+        .flatten()
+        .map(|a| a.isolated)
+        .unwrap_or(false);
+    if is_isolated {
+        None
+    } else {
+        Some(
+            canopy_root
+                .join("openclaw-state")
+                .join(format!("workspace-{}", agent_id)),
+        )
+    }
+}
+
+fn agent_workspace_sync_targets_for_root(
+    canopy_root: &std::path::Path,
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Vec<std::path::PathBuf> {
+    let mut targets = vec![get_agent_workspace_dir_for_root(canopy_root, db, agent_id)];
+    if let Some(legacy) = get_legacy_agent_workspace_dir_for_root(canopy_root, db, agent_id) {
+        targets.push(legacy);
+    }
+    targets
+}
+
+fn remove_stale_bootstrap_file(workspace_root: &std::path::Path) {
+    let bootstrap_path = workspace_root.join("BOOTSTRAP.md");
+    if bootstrap_path.exists() {
+        let _ = std::fs::remove_file(bootstrap_path);
+    }
+}
+
 pub(crate) fn canopy_data_root() -> Result<std::path::PathBuf, String> {
     let data_dir = std::env::var_os("CANOPY_DATA_DIR")
         .map(std::path::PathBuf::from)
@@ -1435,9 +1476,11 @@ fn sync_shared_user_md_to_all_agents_for_root(
 
     let agents = db.list_agents().map_err(|e| e.to_string())?;
     for agent in agents {
-        let workspace = get_agent_workspace_dir_for_root(canopy_root, db, &agent.id);
-        std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
-        std::fs::write(workspace.join("USER.md"), content).map_err(|e| e.to_string())?;
+        for workspace in agent_workspace_sync_targets_for_root(canopy_root, db, &agent.id) {
+            std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+            std::fs::write(workspace.join("USER.md"), content).map_err(|e| e.to_string())?;
+            remove_stale_bootstrap_file(&workspace);
+        }
     }
     Ok(())
 }
@@ -1453,9 +1496,12 @@ pub(crate) fn sync_shared_user_md_to_all_agents(
 fn sync_user_md_for_agent(db: &crate::db::Database, agent_id: &str) -> Result<(), String> {
     let canopy_root = canopy_data_root()?;
     let content = ensure_shared_user_md_for_root(&canopy_root, db)?;
-    let workspace = get_agent_workspace_dir_for_root(&canopy_root, db, agent_id);
-    std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
-    std::fs::write(workspace.join("USER.md"), content).map_err(|e| e.to_string())
+    for workspace in agent_workspace_sync_targets_for_root(&canopy_root, db, agent_id) {
+        std::fs::create_dir_all(&workspace).map_err(|e| e.to_string())?;
+        std::fs::write(workspace.join("USER.md"), &content).map_err(|e| e.to_string())?;
+        remove_stale_bootstrap_file(&workspace);
+    }
+    Ok(())
 }
 
 // Helper to resolve container name
@@ -1879,6 +1925,13 @@ pub async fn update_agent_integrations(
         );
 
         sync_agent_skills(app_handle, &agent).await;
+        if let Err(error) = crate::bridge::sync_agent_communication_bridges(&db, &agent) {
+            tracing::warn!(
+                "Failed to sync communication bridges for agent {} after integration update: {}",
+                agent_id,
+                error
+            );
+        }
         // Refresh PERMISSIONS.md so the agent immediately knows about the new access
         // (or its loss) at its next inference.
         write_permissions_md(&agent);
@@ -4552,15 +4605,13 @@ fn ensure_visible_workspace_files(
     db: &crate::db::Database,
     merge_identity: bool,
 ) {
-    let Ok(workspace) = get_agent_workspace_dir(db, &agent.id) else {
+    let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
-    let _ = std::fs::create_dir_all(&workspace);
+    let canonical_workspace = get_agent_workspace_dir_for_root(&canopy_root, db, &agent.id);
+    let _ = std::fs::create_dir_all(&canonical_workspace);
 
-    let identity_path = workspace.join("IDENTITY.md");
-    let soul_path = workspace.join("SOUL.md");
-    let tools_path = workspace.join("TOOLS.md");
-    let library_path = workspace.join("LIBRARY.md");
+    let identity_path = canonical_workspace.join("IDENTITY.md");
 
     let identity_content = if merge_identity {
         let existing = std::fs::read_to_string(&identity_path).unwrap_or_default();
@@ -4568,11 +4619,21 @@ fn ensure_visible_workspace_files(
     } else {
         generate_identity_md(&agent.personality, &agent.role, &agent.emoji)
     };
-    let _ = std::fs::write(identity_path, identity_content);
+    let soul_content = generate_soul_md(&agent.personality);
 
-    ensure_file_with_default(&soul_path, &generate_soul_md(&agent.personality));
-    ensure_empty_file(&tools_path);
-    ensure_file_with_default(&library_path, LIBRARY_MD_TEMPLATE);
+    for workspace in agent_workspace_sync_targets_for_root(&canopy_root, db, &agent.id) {
+        let _ = std::fs::create_dir_all(&workspace);
+        let identity_path = workspace.join("IDENTITY.md");
+        let soul_path = workspace.join("SOUL.md");
+        let tools_path = workspace.join("TOOLS.md");
+        let library_path = workspace.join("LIBRARY.md");
+
+        let _ = std::fs::write(identity_path, &identity_content);
+        ensure_file_with_default(&soul_path, &soul_content);
+        ensure_empty_file(&tools_path);
+        ensure_file_with_default(&library_path, LIBRARY_MD_TEMPLATE);
+        remove_stale_bootstrap_file(&workspace);
+    }
 }
 
 /// Generate a SOUL.md file from a structured personality.
@@ -4821,10 +4882,9 @@ pub(crate) fn write_app_managed_instruction_files(
             );
         }
     }
-    let Ok(workspace) = get_agent_workspace_dir(db, &agent.id) else {
+    let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
-    let _ = std::fs::create_dir_all(&workspace);
     let files = [
         ("APP_PROTOCOLS.md", build_app_protocols_md()),
         ("APP_CAPABILITIES.md", build_app_capabilities_md(agent)),
@@ -4833,8 +4893,12 @@ pub(crate) fn write_app_managed_instruction_files(
             build_app_operating_model_md(agent),
         ),
     ];
-    for (name, content) in files {
-        let _ = std::fs::write(workspace.join(name), content);
+    for workspace in agent_workspace_sync_targets_for_root(&canopy_root, db, &agent.id) {
+        let _ = std::fs::create_dir_all(&workspace);
+        for (name, content) in &files {
+            let _ = std::fs::write(workspace.join(name), content);
+        }
+        remove_stale_bootstrap_file(&workspace);
     }
 }
 
@@ -5724,9 +5788,12 @@ fn backfill_agent_workspace_files_internal(db: &crate::db::Database) -> Result<u
         write_app_managed_instruction_files(agent, db);
         write_permissions_md(agent);
 
-        if let Ok(workspace) = get_agent_workspace_dir(db, &agent.id) {
-            ensure_empty_file(&workspace.join("HEARTBEAT.md"));
-            ensure_empty_file(&workspace.join("MEMORY.md"));
+        if let Ok(canopy_root) = canopy_data_root() {
+            for workspace in agent_workspace_sync_targets_for_root(&canopy_root, db, &agent.id) {
+                ensure_empty_file(&workspace.join("HEARTBEAT.md"));
+                ensure_empty_file(&workspace.join("MEMORY.md"));
+                remove_stale_bootstrap_file(&workspace);
+            }
         }
     }
     Ok(count)
@@ -8138,22 +8205,31 @@ mod tests {
 /// Path: `~/Library/Application Support/Canopy/openclaw-state/workspace/{agent_id}/PERMISSIONS.md`
 /// Inside the container the workspace mount surfaces it at
 /// `/home/node/.openclaw/workspace/{agent_id}/PERMISSIONS.md`.
-fn permissions_workspace_root(
+fn permissions_workspace_roots(
     canopy_root: &std::path::Path,
     agent: &crate::models::Agent,
-) -> std::path::PathBuf {
-    if agent.isolated {
-        canopy_root
-            .join("isolated")
-            .join(&agent.id)
-            .join("workspace")
-            .join(&agent.id)
+) -> Vec<std::path::PathBuf> {
+    let mut roots = if agent.isolated {
+        vec![
+            canopy_root
+                .join("isolated")
+                .join(&agent.id)
+                .join("workspace")
+                .join(&agent.id),
+        ]
     } else {
-        canopy_root
-            .join("openclaw-state")
-            .join("workspace")
-            .join(&agent.id)
-    }
+        vec![
+            canopy_root
+                .join("openclaw-state")
+                .join("workspace")
+                .join(&agent.id),
+            canopy_root
+                .join("openclaw-state")
+                .join(format!("workspace-{}", agent.id)),
+        ]
+    };
+    roots.dedup();
+    roots
 }
 
 fn install_agent_private_file(
@@ -8190,16 +8266,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
     let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
-    let workspace_root = permissions_workspace_root(&canopy_root, agent);
-    let _ = std::fs::create_dir_all(&workspace_root);
-    if let Err(error) = install_jit_capability_file(&workspace_root, &agent.id) {
-        tracing::error!(
-            "write_permissions_md: could not install JIT bridge capability for {}: {}",
-            agent.id,
-            error
-        );
-    }
-    let path = workspace_root.join("PERMISSIONS.md");
+    let workspace_roots = permissions_workspace_roots(&canopy_root, agent);
 
     // Capability skills the agent currently has.
     let caps = &agent.capabilities;
@@ -8358,14 +8425,16 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         if let Ok(token) =
             crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id))
         {
-            if let Err(error) =
-                install_agent_private_file(&workspace_root, "google-photos-token", token.trim())
-            {
-                tracing::error!(
-                    "write_permissions_md: could not install Google Photos capability for {}: {}",
-                    agent.id,
-                    error
-                );
+            for workspace_root in &workspace_roots {
+                if let Err(error) =
+                    install_agent_private_file(workspace_root, "google-photos-token", token.trim())
+                {
+                    tracing::error!(
+                        "write_permissions_md: could not install Google Photos capability for {}: {}",
+                        agent.id,
+                        error
+                    );
+                }
             }
             custom_instructions.push_str(
                 "**Google Photos**: You have read-only API access to the user's Google Photos. \n\
@@ -8500,7 +8569,18 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         isolation   = isolation_note,
     );
 
-    let _ = std::fs::write(&path, content);
+    for workspace_root in workspace_roots {
+        let _ = std::fs::create_dir_all(&workspace_root);
+        if let Err(error) = install_jit_capability_file(&workspace_root, &agent.id) {
+            tracing::error!(
+                "write_permissions_md: could not install JIT bridge capability for {}: {}",
+                agent.id,
+                error
+            );
+        }
+        let _ = std::fs::write(workspace_root.join("PERMISSIONS.md"), &content);
+        remove_stale_bootstrap_file(&workspace_root);
+    }
     tracing::debug!(
         "write_permissions_md: wrote PERMISSIONS.md for agent {}",
         agent.id

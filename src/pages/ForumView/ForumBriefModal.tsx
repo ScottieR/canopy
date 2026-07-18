@@ -640,7 +640,7 @@ export function ForumBriefModal({ onClose, preSelectedAgentId }: Props) {
                     boxShadow: canLaunch ? "0 4px 16px rgba(74,158,150,0.35)" : "none",
                   }}
                 >
-                  Open Project →
+                  Open Forum →
                 </button>
               </div>
             </div>

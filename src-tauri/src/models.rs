@@ -349,6 +349,8 @@ pub enum BridgeType {
     Files,
     Gmail,
     Slack,
+    Telegram,
+    Discord,
     Website,
     Custom,
 }
@@ -388,6 +390,53 @@ impl Default for BridgePermissions {
             delete: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpToolDescriptor {
+    pub name: String,
+    pub title: String,
+    pub description: String,
+    pub input_schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpResourceDescriptor {
+    pub uri: String,
+    pub name: String,
+    pub description: String,
+    pub mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPromptArgumentDescriptor {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpPromptDescriptor {
+    pub name: String,
+    pub description: String,
+    pub arguments: Vec<McpPromptArgumentDescriptor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerDescriptor {
+    pub id: String,
+    pub agent_id: String,
+    pub bridge_id: String,
+    pub name: String,
+    pub bridge_type: String,
+    pub transport: String,
+    pub runtime_mode: String,
+    pub enabled: bool,
+    pub permissions: BridgePermissions,
+    pub scope: serde_json::Value,
+    pub tools: Vec<McpToolDescriptor>,
+    pub resources: Vec<McpResourceDescriptor>,
+    pub prompts: Vec<McpPromptDescriptor>,
 }
 
 // ─── Payment Models (Deterministic) ──────────────────────────────────────────

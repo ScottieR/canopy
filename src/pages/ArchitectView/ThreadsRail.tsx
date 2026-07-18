@@ -1,5 +1,5 @@
-// ThreadsRail — left rail on the agent view showing this agent's conversation history.
-// Two sections: Forums (multi-agent projects) and Messages (direct 1:1 chats).
+// ThreadsRail — left rail on the agent view showing this agent's history.
+// Two sections: Forums (multi-agent spaces) and Messages (direct 1:1 chats).
 
 import React, { useEffect, useRef, useState } from "react";
 import { useWorldStore, AgentData, Conversation } from "../../store/worldStore";
@@ -46,12 +46,15 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
   const [query, setQuery] = useState("");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [activeTab, setActiveTab] = useState<"messages" | "projects">("messages");
-  const [showProjectModal, setShowProjectModal] = useState(false);
+  const [activeTab, setActiveTab] = useState<"messages" | "forums">("messages");
+  const [showForumModal, setShowForumModal] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const saveCurrentThread = useWorldStore(s => s.saveCurrentThread);
   const setActiveView = useWorldStore(s => s.setActiveView);
+  const activeView = useWorldStore(s => s.activeView);
+  const activeForumId = useWorldStore(s => s.activeForumId);
+  const setActiveForumId = useWorldStore(s => s.setActiveForumId);
   const switchConversation = useWorldStore(s => s.switchConversation);
   const renameConversation = useWorldStore(s => s.renameConversation);
   const deleteConversation = useWorldStore(s => s.deleteConversation);
@@ -63,11 +66,22 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
     .filter(c => !c.id?.startsWith("_sys_"))
     .sort((a, b) => b.lastActiveAt - a.lastActiveAt);
 
+  const allForums = useForumStore(s => s.forums);
+  const agentForums = allForums.filter(f => f.status !== "archived" && f.agents.some(a => a.agentId === agent.id));
+  const forumSessionPrefixes = agentForums.map(f => `${f.id}_`);
+  const isForumScopedConversation = (conv: Conversation) =>
+    conv.type === "forum" ||
+    agentForums.some(f => f.id === conv.id) ||
+    forumSessionPrefixes.some(prefix => conv.id.startsWith(prefix)) ||
+    conv.id.startsWith("proj_");
+
+  const messageConversations = sortedConversations.filter(c => !isForumScopedConversation(c));
+
   const q = query.trim().toLowerCase();
   type FilteredConv = { conv: Conversation; matchedMessage?: string };
-  const filteredConversations: FilteredConv[] = !q
-    ? sortedConversations.map(c => ({ conv: c }))
-    : sortedConversations.flatMap(c => {
+  const messages: FilteredConv[] = !q
+    ? messageConversations.map(c => ({ conv: c }))
+    : messageConversations.flatMap(c => {
       const titleMatch = c.title.toLowerCase().includes(q);
       const matchedMsg = c.messages.find(m => m.text.toLowerCase().includes(q));
       if (!titleMatch && !matchedMsg) return [];
@@ -81,16 +95,14 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
       return [{ conv: c, matchedMessage: snippet }];
     });
 
-  const allForums = useForumStore(s => s.forums);
-  const agentForumsList: FilteredConv[] = allForums
-    .filter(f => f.status !== "archived" && f.agents.some(a => a.agentId === agent.id))
+  const agentForumsList: FilteredConv[] = agentForums
     .map(f => {
       const lastActiveAt = f.messages.length > 0 ? f.messages[f.messages.length - 1].timestamp : (f as any).createdAt || Date.now();
       return {
         conv: {
           id: f.id,
           type: "forum" as const,
-          title: f.title || f.brief || "Untitled Project",
+          title: f.title || f.brief || "Untitled Forum",
           status: (f.status === "archived" ? "archived" : "active") as "archived" | "active",
           createdAt: (f as any).createdAt || Date.now(),
           lastActiveAt: lastActiveAt,
@@ -101,7 +113,14 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
     .sort((a, b) => b.conv.lastActiveAt - a.conv.lastActiveAt);
 
   const forums = !q ? agentForumsList : agentForumsList.filter(c => c.conv.title.toLowerCase().includes(q));
-  const messages = filteredConversations.filter(c => !c.conv.type || c.conv.type === "dm");
+
+  useEffect(() => {
+    const activeConvId = agent.activeConversationId || "";
+    const onForumSession =
+      activeView === "forum" ||
+      agentForums.some(f => f.id === activeConvId || activeConvId.startsWith(`${f.id}_`));
+    if (onForumSession) setActiveTab("forums");
+  }, [activeView, agent.activeConversationId, agentForums]);
 
   const startRename = (conv: Conversation, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -122,15 +141,25 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
   };
 
   const renderRow = ({ conv, matchedMessage }: FilteredConv) => {
-    const isActive = conv.id === agent.activeConversationId;
     const isRenaming = renaming === conv.id;
     const isForum = conv.type === "forum";
+    const isActive = isForum
+      ? activeForumId === conv.id || (agent.activeConversationId || "").startsWith(`${conv.id}_`) || (activeView === "forum" && activeForumId === conv.id)
+      : conv.id === agent.activeConversationId;
     const statusMeta = threadStatusMeta(conv.threadStatus);
 
     return (
       <div
         key={conv.id}
-        onClick={() => !isRenaming && switchConversation(agent.id, conv.id)}
+        onClick={() => {
+          if (isRenaming) return;
+          if (isForum) {
+            setActiveForumId(conv.id);
+            setActiveView("forum");
+            return;
+          }
+          switchConversation(agent.id, conv.id);
+        }}
         style={{
           display: "flex", alignItems: "flex-start", gap: 8,
           padding: "7px 12px", cursor: isRenaming ? "default" : "pointer",
@@ -209,7 +238,7 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
             </>
           )}
         </div>
-        {!isRenaming && (
+        {!isRenaming && !isForum && (
           <div className="row-actions" style={{ display: "flex", gap: 2, opacity: 0, flexShrink: 0, transition: "opacity 0.1s" }}>
             <button
               onClick={(e) => startRename(conv, e)}
@@ -249,9 +278,9 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
       >
         <ChevronRight size={16} />
         <MessageSquare size={14} />
-        {sortedConversations.length > 0 && (
+        {(messageConversations.length + agentForumsList.length) > 0 && (
           <div style={{ fontSize: 9, fontWeight: 700, color: "var(--text-sub)", writingMode: "vertical-rl", transform: "rotate(180deg)" }}>
-            {sortedConversations.length}
+            {messageConversations.length + agentForumsList.length}
           </div>
         )}
       </button>
@@ -295,16 +324,16 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
           Messages
         </button>
         <button
-          onClick={() => setActiveTab("projects")}
+          onClick={() => setActiveTab("forums")}
           style={{
             flex: 1, padding: "10px 0", background: "transparent", border: "none", cursor: "pointer",
             fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
-            color: activeTab === "projects" ? "var(--text-main)" : "var(--text-muted)",
-            borderBottom: activeTab === "projects" ? "2px solid #4A9E96" : "2px solid transparent",
+            color: activeTab === "forums" ? "var(--text-main)" : "var(--text-muted)",
+            borderBottom: activeTab === "forums" ? "2px solid #4A9E96" : "2px solid transparent",
             transition: "all 0.2s"
           }}
         >
-          Projects
+          Forums
         </button>
       </div>
 
@@ -323,7 +352,7 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
           </button>
         ) : (
           <button
-            onClick={() => setShowProjectModal(true)}
+            onClick={() => setShowForumModal(true)}
             style={{
               width: "100%", padding: "8px", borderRadius: 8, border: "1px solid var(--border-subtle)",
               background: "var(--surface-sunken)", color: "var(--text-sub)", fontSize: 12, fontWeight: 600,
@@ -336,13 +365,13 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
       </div>
 
       {/* Search */}
-      {sortedConversations.length > 2 && (
+      {(activeTab === "forums" ? agentForumsList.length : messageConversations.length) > 2 && (
         <div style={{ padding: "6px 10px", borderBottom: "1px solid var(--border-subtle)", display: "flex", alignItems: "center", gap: 6 }}>
           <Search size={12} color="var(--text-sub)" />
           <input
             ref={searchInputRef} value={query} onChange={e => setQuery(e.target.value)}
             onKeyDown={e => { if (e.key === "Escape" && query) setQuery(""); }}
-            placeholder="Search…"
+            placeholder={activeTab === "forums" ? "Search forums…" : "Search messages…"}
             style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontSize: 11, color: "var(--text-main)", fontFamily: "inherit", padding: "2px 0" }}
           />
           {query && (
@@ -355,20 +384,25 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
 
       {/* Lists */}
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
-        {sortedConversations.length === 0 ? (
+        {activeTab === "forums" && agentForumsList.length === 0 ? (
+          <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
+            <div style={{ opacity: 0.5, marginBottom: 8 }}><Users size={24} /></div>
+            <span style={{ opacity: 0.7 }}>Start a forum above.</span>
+          </div>
+        ) : activeTab === "messages" && messageConversations.length === 0 ? (
           <div style={{ padding: "32px 16px", textAlign: "center", color: "var(--text-muted)", fontSize: 12 }}>
             <div style={{ opacity: 0.5, marginBottom: 8 }}><MessageSquare size={24} /></div>
-            <span style={{ opacity: 0.7 }}>Start a message or project above.</span>
+            <span style={{ opacity: 0.7 }}>Start a message above.</span>
           </div>
-        ) : filteredConversations.length === 0 ? (
+        ) : (activeTab === "forums" ? forums.length : messages.length) === 0 ? (
           <div style={{ padding: 16, fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
             Nothing matches "{query}".
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column" }}>
 
-            {/* Projects section */}
-            {activeTab === "projects" && forums.length > 0 && (
+            {/* Forums section */}
+            {activeTab === "forums" && forums.length > 0 && (
               <div style={{ padding: "0 8px 16px" }}>
                 {forums.map(renderRow)}
               </div>
@@ -384,7 +418,7 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
           </div>
         )}
       </div>
-      {showProjectModal && <ForumBriefModal onClose={() => setShowProjectModal(false)} preSelectedAgentId={agent.id} />}
+      {showForumModal && <ForumBriefModal onClose={() => setShowForumModal(false)} preSelectedAgentId={agent.id} />}
     </div>
   );
 }

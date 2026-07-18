@@ -49,7 +49,7 @@ describe("buildForumMiniAppPinTarget", () => {
       agentId: "agent_writer",
       app: {
         name: "ROI calculator",
-        description: 'Pinned from project "Launch microsite"',
+        description: 'Pinned from forum "Launch microsite"',
         htmlContent: "<html><body>ROI</body></html>",
         sourceMessageId: "forum_artifact:forum_launch:artifact_1",
       },
@@ -72,8 +72,8 @@ describe("buildForumMiniAppPinTarget", () => {
     expect(target).toEqual({
       agentId: "agent_writer",
       app: {
-        name: "Project app — Launch microsite",
-        description: 'Pinned from the live project deliverable in "Launch microsite"',
+        name: "Forum app — Launch microsite",
+        description: 'Pinned from the live forum deliverable in "Launch microsite"',
         htmlContent: "<html><body>Live app</body></html>",
         sourceMessageId: "forum_blackboard:forum_launch:42",
       },

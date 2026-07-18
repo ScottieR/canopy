@@ -160,7 +160,11 @@ async fn restart_gateway_soft() {
 // OpenClaw channel key: channels.telegram.*
 
 #[tauri::command]
-pub async fn configure_telegram(agent_id: String, bot_token: String) -> Result<String, String> {
+pub async fn configure_telegram(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    bot_token: String,
+) -> Result<String, String> {
     validate_agent_id(&agent_id)?;
     let token = bot_token.trim().to_string();
 
@@ -200,6 +204,14 @@ pub async fn configure_telegram(agent_id: String, bot_token: String) -> Result<S
     )
     .await?;
 
+    if let Err(error) = crate::bridge::sync_agent_communication_bridges_by_id(&db, &agent_id) {
+        tracing::warn!(
+            "Failed to sync Telegram bridge state for agent {}: {}",
+            agent_id,
+            error
+        );
+    }
+
     restart_gateway_soft().await;
 
     Ok(format!(
@@ -215,10 +227,20 @@ pub async fn configure_telegram(agent_id: String, bot_token: String) -> Result<S
 /// noted above — if this agent was the currently-active gateway bot, Telegram will
 /// stop routing until another agent (re)configures Telegram).
 #[tauri::command]
-pub async fn disconnect_telegram_for_agent(agent_id: String) -> Result<String, String> {
+pub async fn disconnect_telegram_for_agent(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<String, String> {
     validate_agent_id(&agent_id)?;
     let _ =
         crate::keychain::delete_secret_internal(&format!("agent_{}_telegram_bot_token", agent_id));
+    if let Err(error) = crate::bridge::sync_agent_communication_bridges_by_id(&db, &agent_id) {
+        tracing::warn!(
+            "Failed to sync Telegram bridge state after disconnect for agent {}: {}",
+            agent_id,
+            error
+        );
+    }
     Ok(format!("Telegram token removed for agent '{}'.", agent_id))
 }
 
@@ -420,6 +442,7 @@ pub async fn disconnect_twilio_for_agent(agent_id: String) -> Result<String, Str
 
 #[tauri::command]
 pub async fn configure_discord(
+    db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     bot_token: String,
     guild_id: Option<String>,
@@ -461,6 +484,14 @@ pub async fn configure_discord(
     // reads a single `channels.discord.botToken`.
     patch_channel_config("discord", fields).await?;
 
+    if let Err(error) = crate::bridge::sync_agent_communication_bridges_by_id(&db, &agent_id) {
+        tracing::warn!(
+            "Failed to sync Discord bridge state for agent {}: {}",
+            agent_id,
+            error
+        );
+    }
+
     restart_gateway_soft().await;
 
     Ok(format!(
@@ -471,12 +502,22 @@ pub async fn configure_discord(
 
 /// Per-agent Discord disconnect: wipes only this agent's bot token + guild id.
 #[tauri::command]
-pub async fn disconnect_discord_for_agent(agent_id: String) -> Result<String, String> {
+pub async fn disconnect_discord_for_agent(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<String, String> {
     validate_agent_id(&agent_id)?;
     let _ =
         crate::keychain::delete_secret_internal(&format!("agent_{}_discord_bot_token", agent_id));
     let _ =
         crate::keychain::delete_secret_internal(&format!("agent_{}_discord_guild_id", agent_id));
+    if let Err(error) = crate::bridge::sync_agent_communication_bridges_by_id(&db, &agent_id) {
+        tracing::warn!(
+            "Failed to sync Discord bridge state after disconnect for agent {}: {}",
+            agent_id,
+            error
+        );
+    }
     Ok(format!(
         "Discord credentials removed for agent '{}'.",
         agent_id

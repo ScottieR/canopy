@@ -4,7 +4,7 @@ export function ExportForumModal({ onClose, forum }: { onClose: () => void, foru
   const [target, setTarget] = useState<'local' | 'drive'>('local');
   
   // A mock of what it might look like: mapping the forum content
-  const preview = `Title: ${forum.brief || "Untitled Project"}\nStatus: ${forum.status}\nAgents: ${(forum.agents || []).map((a: any) => a.name).join(", ")}\n\nFormat mapping:\n- Messages -> HTML/Markdown log\n- Artifacts -> Extracted files\n- Canvas -> ${target === 'local' ? 'index.html' : 'Google Doc'}`;
+  const preview = `Title: ${forum.brief || "Untitled Forum"}\nStatus: ${forum.status}\nAgents: ${(forum.agents || []).map((a: any) => a.name).join(", ")}\n\nFormat mapping:\n- Messages -> HTML/Markdown log\n- Artifacts -> Extracted files\n- Canvas -> ${target === 'local' ? 'index.html' : 'Google Doc'}`;
 
   return (
     <div style={{
@@ -58,7 +58,7 @@ export function ExportForumModal({ onClose, forum }: { onClose: () => void, foru
           }}>Cancel</button>
           <button onClick={() => {
             if (target === 'local') {
-              const exportContent = `# ${forum.title || forum.brief || "Untitled Project"}
+              const exportContent = `# ${forum.title || forum.brief || "Untitled Forum"}
 Status: ${forum.status}
 
 ## Blackboard
@@ -71,7 +71,7 @@ ${(forum.messages || []).map((m: any) => `**${m.sender === 'user' ? 'User' : (m.
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
               a.href = url;
-              a.download = `${(forum.title || 'project').replace(/\s+/g, '_').toLowerCase()}.md`;
+              a.download = `${(forum.title || 'forum').replace(/\s+/g, '_').toLowerCase()}.md`;
               document.body.appendChild(a);
               a.click();
               document.body.removeChild(a);

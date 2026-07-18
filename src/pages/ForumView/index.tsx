@@ -595,7 +595,7 @@ function ConnectFolderModal({
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main, #303330)", marginBottom: 4 }}>
-              Connect to Project Folder
+              Connect to Forum Folder
             </div>
             <div style={{ fontSize: 12, color: "var(--text-sub, #636E72)", lineHeight: 1.5 }}>
               Forum outputs will sync here. The folder also becomes a shared context source — any files you drop in are available to your agents.
@@ -1001,7 +1001,7 @@ function ProjectFileTree({
           fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
           color: "var(--text-sub, #636E72)", flex: 1,
         }}>
-          Project Files
+          Forum Files
         </span>
         {/* Upload file to project */}
         <input
@@ -1515,7 +1515,7 @@ function AgentCard({ agent, forumStatus, onRemove }: {
         <button
           onClick={(e) => {
             e.stopPropagation();
-            if (confirm(`Remove ${agent.name} from this project? They will no longer actively contribute.`)) {
+            if (confirm(`Remove ${agent.name} from this forum? They will no longer actively contribute.`)) {
               onRemove();
             }
           }}
@@ -1526,7 +1526,7 @@ function AgentCard({ agent, forumStatus, onRemove }: {
             width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center",
             cursor: "pointer", boxShadow: "0 2px 4px rgba(0,0,0,0.1)", zIndex: 10
           }}
-          title="Remove from project"
+          title="Remove from forum"
         >
           <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
         </button>
@@ -1652,7 +1652,7 @@ function ForumActions({
     <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
       <button
         onClick={() => { setOpen(o => !o); setConfirmDelete(false); }}
-        title="Project options"
+        title="Forum options"
         style={{
           width: 28, height: 28, borderRadius: 8, border: "1px solid var(--border-subtle, rgba(0,0,0,0.09))",
           background: open ? "var(--border-subtle, rgba(0,0,0,0.06))" : "transparent",
@@ -1709,7 +1709,7 @@ function ForumActions({
                 <polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/>
                 <line x1="10" y1="12" x2="14" y2="12"/>
               </svg>
-              Archive project
+              Archive forum
             </button>
           )}
 
@@ -1733,7 +1733,7 @@ function ForumActions({
                 <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/>
                 <path d="M9 6V4h6v2"/>
               </svg>
-              Delete project
+              Delete forum
             </button>
           ) : (
             <div style={{ padding: "8px 14px" }}>
@@ -1907,7 +1907,7 @@ function AddAgentPicker({
             fontSize: 10, fontWeight: 700, textTransform: "uppercase",
             letterSpacing: "0.07em", color: "var(--text-sub, #636E72)", opacity: 0.5,
           }}>
-            Add to project
+            Add to forum
           </div>
           {available.map(agent => {
             const color = agent.robeColor || "#4A9E96";
@@ -1923,8 +1923,8 @@ function AddAgentPicker({
                     accentColor: agent.accentColor,
                     image: agent.image ?? null,
                     confidence: 50,
-                    forumRole: "Added to project",
-                    currentAction: "Joining project…",
+                    forumRole: "Added to forum",
+                    currentAction: "Joining forum…",
                   });
                   onClose();
                 }}
@@ -1966,7 +1966,7 @@ function AddAgentPicker({
             fontSize: 10, fontWeight: 700, textTransform: "uppercase",
             letterSpacing: "0.07em", color: "var(--text-sub, #636E72)", opacity: 0.5,
           }}>
-            Active in Project
+            Active in Forum
           </div>
           {forum.agents.map(agent => {
             const color = agent.robeColor || "#4A9E96";
@@ -1996,7 +1996,7 @@ function AddAgentPicker({
                 </div>
                 <button
                   onClick={() => {
-                    if (confirm(`Remove ${agent.name} from this project?`)) {
+                    if (confirm(`Remove ${agent.name} from this forum?`)) {
                       useForumStore.getState().removeAgentFromForum(forum.id, agent.agentId);
                     }
                   }}
@@ -2005,7 +2005,7 @@ function AddAgentPicker({
                     cursor: "pointer", padding: 4, display: "flex", alignItems: "center", justifyContent: "center",
                     opacity: 0.7,
                   }}
-                  title="Remove from project"
+                  title="Remove from forum"
                   onMouseEnter={e => (e.currentTarget.style.opacity = "1")}
                   onMouseLeave={e => (e.currentTarget.style.opacity = "0.7")}
                 >
@@ -2173,7 +2173,7 @@ function parseBoardCards(content: string, agents: any[]): BoardCard[] {
     } else {
       const mainTitleMatch = trimmed.match(/^#\s+(.*)/m);
       if (mainTitleMatch) {
-        title = "Project Brief";
+        title = "Forum Brief";
       }
     }
 
@@ -3679,7 +3679,7 @@ export function ForumView() {
           {/* Add agent button */}
           <button
             onClick={() => setAddAgentOpen(o => !o)}
-            title="Add agent to project"
+            title="Add agent to forum"
             style={{
               width: 22, height: 22, borderRadius: "50%", flexShrink: 0,
               border: "1.5px dashed rgba(74,158,150,0.5)",
@@ -3707,7 +3707,7 @@ export function ForumView() {
                 animation: "milestone-pulse 2.5s ease-in-out infinite", flexShrink: 0,
               }} />
               <span style={{ fontSize: 10.5, color: "#4A9E96", fontWeight: 600, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {(forum as any).connectedFolderName ?? "Project folder"}
+                {(forum as any).connectedFolderName ?? "Forum folder"}
               </span>
               <button
                 onClick={() => disconnectFolder(forum.id)}
@@ -3731,7 +3731,7 @@ export function ForumView() {
                 <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
                 <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
               </svg>
-              Connect to Project
+              Connect to Forum
             </button>
           )}
         </div>

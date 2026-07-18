@@ -951,6 +951,8 @@ pub fn run() {
             bridge::get_bridge_config,
             bridge::update_bridge_config,
             bridge::get_bridge_status,
+            bridge::list_agent_mcp_servers,
+            bridge::get_bridge_mcp_server,
             bridge::list_available_bridge_types,
             // iMessage bridge
             imessage::check_full_disk_access,
