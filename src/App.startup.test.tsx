@@ -147,4 +147,42 @@ describe("established installation startup", () => {
     expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "list_agents")).toHaveLength(1);
     expect(useWorldStore.getState().agents).toHaveLength(1);
   });
+
+  it("preserves dashboard hash routes during startup hydration", async () => {
+    const neverFinishes = new Promise<never>(() => {});
+    window.location.hash = "#/dashboard";
+
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "list_agents") return [establishedAgent];
+      if (command === "get_token_usage_history") return [];
+      if (command === "get_agent_activity_heatmap") return [];
+      if (command === "get_global_audit_log") return [];
+      if (command === "get_payment_dashboard") {
+        return {
+          agent_id: "agent-test",
+          budget: {
+            payments_enabled: false,
+            monthly_spent_cents: 0,
+            monthly_limit_cents: 0,
+          },
+          pending_approvals: [],
+          recent_purchases: [],
+          active_virtual_cards: [],
+        };
+      }
+      if (command === "preflight_cleanup") return neverFinishes;
+      if (command === "check_agent_status") return "initializing";
+      return null;
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      json: vi.fn().mockResolvedValue({}),
+    }));
+
+    render(<React.StrictMode><App /></React.StrictMode>);
+
+    await waitFor(() => {
+      expect(screen.getByText("My Usage")).toBeInTheDocument();
+    });
+    expect(useWorldStore.getState().activeView).toBe("dashboard");
+  });
 });

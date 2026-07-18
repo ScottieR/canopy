@@ -71,6 +71,21 @@ function normalizeSecretValue(value: unknown): string {
   return String(value);
 }
 
+type PaymentProviderKind = "mock" | "privacy" | "lithic_sandbox";
+
+type PaymentProviderConfig = {
+  provider: PaymentProviderKind;
+  privacy_configured: boolean;
+  lithic_sandbox_configured: boolean;
+  lithic_webhook_secret_configured: boolean;
+  active_provider_ready: boolean;
+  using_env_fallback: boolean;
+  webhook_listener_listening: boolean;
+  privacy_webhook_url?: string | null;
+  lithic_webhook_url?: string | null;
+  webhook_listener_error?: string | null;
+};
+
 export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: AgentData, onOpenTerminal?: (cmd: string) => void }) {
   const fallbackIntegrations = useMemo(() => [], []);
   const fallbackPermissions = useMemo(() => [], []);
@@ -309,6 +324,21 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   const [budget, setBudget] = useState<any>(null);
   const [budgetLoading, setBudgetLoading] = useState(true);
   const [budgetSaving, setBudgetSaving] = useState(false);
+  const [paymentProvider, setPaymentProvider] = useState<PaymentProviderConfig | null>(null);
+  const [paymentProviderLoading, setPaymentProviderLoading] = useState(true);
+  const [paymentProviderSaving, setPaymentProviderSaving] = useState(false);
+  const [paymentProviderStatus, setPaymentProviderStatus] = useState("");
+  const [paymentProviderForm, setPaymentProviderForm] = useState<{
+    provider: PaymentProviderKind;
+    privacyApiKey: string;
+    lithicSandboxApiKey: string;
+    lithicWebhookSecret: string;
+  }>({
+    provider: "mock",
+    privacyApiKey: "",
+    lithicSandboxApiKey: "",
+    lithicWebhookSecret: "",
+  });
 
   useEffect(() => {
     const fetchBudget = async () => {
@@ -325,9 +355,42 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     fetchBudget();
   }, [agent.id]);
 
+  const fetchPaymentProviderConfig = useCallback(async () => {
+    setPaymentProviderLoading(true);
+    try {
+      const providerRes = await invoke<PaymentProviderConfig>("get_payment_provider_config");
+      if (providerRes) {
+        setPaymentProvider(providerRes);
+        setPaymentProviderForm(current => ({
+          ...current,
+          provider: providerRes.provider || "mock",
+          lithicWebhookSecret: "",
+        }));
+      }
+    } catch (e) {
+      console.error("Failed to load payment provider config", e);
+      setPaymentProvider(null);
+    } finally {
+      setPaymentProviderLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchPaymentProviderConfig();
+  }, [fetchPaymentProviderConfig]);
+
   const updateBudgetProp = (key: string, val: any) => {
     if (!budget) return;
     setBudget({ ...budget, [key]: val });
+  };
+
+  const updateBudgetListProp = (key: string, raw: string) => {
+    if (!budget) return;
+    const values = raw
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    setBudget({ ...budget, [key]: values });
   };
 
   const handleSaveBudget = async () => {
@@ -341,6 +404,64 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       console.error("Failed to save budget", e);
       setBudgetSaving(false);
     }
+  };
+
+  const paymentProviderLabel = (provider: PaymentProviderKind) => (
+    provider === "mock"
+      ? "Mock"
+      : provider === "privacy"
+        ? "Privacy.com"
+        : "Lithic Sandbox"
+  );
+
+  const savePaymentProvider = async (options?: {
+    clearPrivacy?: boolean;
+    clearLithicSandbox?: boolean;
+    clearLithicWebhookSecret?: boolean;
+  }) => {
+    setPaymentProviderSaving(true);
+    setPaymentProviderStatus("");
+    try {
+      const result = await invoke<PaymentProviderConfig>("configure_payment_provider", {
+        update: {
+          provider: paymentProviderForm.provider,
+          privacy_api_key: paymentProviderForm.privacyApiKey.trim() || null,
+          lithic_sandbox_api_key: paymentProviderForm.lithicSandboxApiKey.trim() || null,
+          lithic_webhook_secret: paymentProviderForm.lithicWebhookSecret.trim() || null,
+          clear_privacy_api_key: !!options?.clearPrivacy,
+          clear_lithic_sandbox_api_key: !!options?.clearLithicSandbox,
+          clear_lithic_webhook_secret: !!options?.clearLithicWebhookSecret,
+        },
+      });
+      setPaymentProvider(result);
+      setPaymentProviderForm(current => ({
+        ...current,
+        provider: result.provider,
+        privacyApiKey: "",
+        lithicSandboxApiKey: "",
+        lithicWebhookSecret: "",
+      }));
+      setPaymentProviderStatus(
+        result.active_provider_ready
+          ? `${paymentProviderLabel(result.provider)} is ready for purchase testing.`
+          : `${paymentProviderLabel(result.provider)} selected. Add the required API key before issuing real sandbox or live cards.`,
+      );
+    } catch (e) {
+      console.error("Failed to save payment provider", e);
+      setPaymentProviderStatus(String(e));
+    } finally {
+      setPaymentProviderSaving(false);
+    }
+  };
+
+  const handleClearPaymentProviderKey = async (
+    kind: "privacy" | "lithic_sandbox" | "lithic_webhook_secret",
+  ) => {
+    await savePaymentProvider({
+      clearPrivacy: kind === "privacy",
+      clearLithicSandbox: kind === "lithic_sandbox",
+      clearLithicWebhookSecret: kind === "lithic_webhook_secret",
+    });
   };
 
   // ── Cognitive Engines (LLM) ──
@@ -2126,6 +2247,169 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           ) : (
             <>
               <div style={{ padding: 16, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>Provider & Sandbox</div>
+                <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 16 }}>
+                  Choose how approved purchases issue cards. Use Mock for safe local testing, Lithic Sandbox for end-to-end card API testing without real charges, and Privacy.com only when you are ready to exercise a live provider path.
+                </div>
+
+                {paymentProviderLoading ? (
+                  <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Loading payment provider configuration...</div>
+                ) : !paymentProvider ? (
+                  <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Failed to load payment provider configuration.</div>
+                ) : (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 16, marginBottom: 16 }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Execution Provider</div>
+                        <select
+                          value={paymentProviderForm.provider}
+                          onChange={e => setPaymentProviderForm(current => ({ ...current, provider: e.target.value as PaymentProviderKind }))}
+                          style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 12 }}
+                        >
+                          <option value="mock">Mock Provider</option>
+                          <option value="lithic_sandbox">Lithic Sandbox</option>
+                          <option value="privacy">Privacy.com</option>
+                        </select>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 6 }}>
+                        <div style={{ fontSize: 12, color: paymentProvider.active_provider_ready ? "#166534" : "#92400e", fontWeight: 700 }}>
+                          {paymentProvider.active_provider_ready ? "Provider ready" : "Provider needs setup"}
+                        </div>
+                        <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+                          {paymentProvider.using_env_fallback
+                            ? "Currently inherited from CANOPY_PAYMENT_PROVIDER until you save an in-app choice."
+                            : `Current selection: ${paymentProviderLabel(paymentProvider.provider)}.`}
+                        </div>
+                        <div style={{ fontSize: 11, color: paymentProvider.webhook_listener_listening ? "#166534" : "#92400e" }}>
+                          {paymentProvider.webhook_listener_listening ? "Webhook listener running" : "Webhook listener unavailable"}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 14, marginBottom: 16 }}>
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Privacy.com API Key</div>
+                          <div style={{ fontSize: 11, color: paymentProvider.privacy_configured ? "#166534" : "var(--text-sub)" }}>
+                            {paymentProvider.privacy_configured ? "Configured" : "Not configured"}
+                          </div>
+                        </div>
+                        <PasswordInput
+                          value={paymentProviderForm.privacyApiKey}
+                          onChange={e => setPaymentProviderForm(current => ({ ...current, privacyApiKey: e.target.value }))}
+                          placeholder={paymentProvider.privacy_configured ? "Saved in Keychain. Paste a new key to replace it." : "Paste Privacy.com API key"}
+                          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 12 }}
+                          rightAction={
+                            paymentProvider.privacy_configured ? (
+                              <button
+                                type="button"
+                                onClick={() => handleClearPaymentProviderKey("privacy")}
+                                style={{ border: "none", background: "transparent", color: "#b45309", cursor: "pointer", fontSize: 11, fontWeight: 700, padding: "0 6px" }}
+                              >
+                                Clear
+                              </button>
+                            ) : undefined
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Lithic Sandbox API Key</div>
+                          <div style={{ fontSize: 11, color: paymentProvider.lithic_sandbox_configured ? "#166534" : "var(--text-sub)" }}>
+                            {paymentProvider.lithic_sandbox_configured ? "Configured" : "Not configured"}
+                          </div>
+                        </div>
+                        <PasswordInput
+                          value={paymentProviderForm.lithicSandboxApiKey}
+                          onChange={e => setPaymentProviderForm(current => ({ ...current, lithicSandboxApiKey: e.target.value }))}
+                          placeholder={paymentProvider.lithic_sandbox_configured ? "Saved in Keychain. Paste a new key to replace it." : "Paste Lithic sandbox API key"}
+                          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 12 }}
+                          rightAction={
+                            paymentProvider.lithic_sandbox_configured ? (
+                              <button
+                                type="button"
+                                onClick={() => handleClearPaymentProviderKey("lithic_sandbox")}
+                                style={{ border: "none", background: "transparent", color: "#b45309", cursor: "pointer", fontSize: 11, fontWeight: 700, padding: "0 6px" }}
+                              >
+                                Clear
+                              </button>
+                            ) : undefined
+                          }
+                        />
+                      </div>
+
+                      <div>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Lithic Webhook Secret</div>
+                          <div style={{ fontSize: 11, color: paymentProvider.lithic_webhook_secret_configured ? "#166534" : "var(--text-sub)" }}>
+                            {paymentProvider.lithic_webhook_secret_configured ? "Configured" : "Not configured"}
+                          </div>
+                        </div>
+                        <PasswordInput
+                          value={paymentProviderForm.lithicWebhookSecret}
+                          onChange={e => setPaymentProviderForm(current => ({ ...current, lithicWebhookSecret: e.target.value }))}
+                          placeholder={paymentProvider.lithic_webhook_secret_configured ? "Saved in Keychain. Paste a new webhook secret to replace it." : "Paste Lithic webhook secret (whsec_...)"}
+                          style={{ padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 12 }}
+                          rightAction={
+                            paymentProvider.lithic_webhook_secret_configured ? (
+                              <button
+                                type="button"
+                                onClick={() => handleClearPaymentProviderKey("lithic_webhook_secret")}
+                                style={{ border: "none", background: "transparent", color: "#b45309", cursor: "pointer", fontSize: 11, fontWeight: 700, padding: "0 6px" }}
+                              >
+                                Clear
+                              </button>
+                            ) : undefined
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gap: 8, marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Webhook Endpoints</div>
+                      <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+                        Privacy verifies webhook HMACs with the same API key used for issuance. Lithic requires the webhook secret above and an HTTPS tunnel to the local listener.
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-main)", wordBreak: "break-all" }}>
+                        Privacy: {paymentProvider.privacy_webhook_url || "Listener unavailable"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-main)", wordBreak: "break-all" }}>
+                        Lithic: {paymentProvider.lithic_webhook_url || "Listener unavailable"}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+                        Lithic event subscriptions only accept HTTPS URLs, so use ngrok, cloudflared, or a similar tunnel and point it at the local `/payment-webhooks/lithic` route.
+                      </div>
+                      {paymentProvider.webhook_listener_error && (
+                        <div style={{ fontSize: 11, color: "#92400e" }}>
+                          {paymentProvider.webhook_listener_error}
+                        </div>
+                      )}
+                    </div>
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                      <div style={{ fontSize: 11, color: "var(--text-sub)", maxWidth: 520 }}>
+                        The dev purchase simulator on the Spending tab is the fastest safe way to validate the full flow. Use Mock for deterministic local tests, then switch to Lithic Sandbox for external API smoke tests.
+                      </div>
+                      <button
+                        onClick={() => savePaymentProvider()}
+                        disabled={paymentProviderSaving}
+                        style={{ padding: "8px 16px", borderRadius: 8, background: paymentProviderSaving ? "#4A9E96" : "#3c6663", color: "var(--surface-card)", fontSize: 12, fontWeight: 600, border: "none", cursor: paymentProviderSaving ? "default" : "pointer", minWidth: 124 }}
+                      >
+                        {paymentProviderSaving ? "Saving..." : "Save Provider"}
+                      </button>
+                    </div>
+
+                    {paymentProviderStatus && (
+                      <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 10 }}>
+                        {paymentProviderStatus}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              <div style={{ padding: 16, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Virtual Card Access</div>
                   <Toggle enabled={budget.payments_enabled} onChange={() => updateBudgetProp("payments_enabled", !budget.payments_enabled)} />
@@ -2159,6 +2443,19 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Daily Budget Total ($)</div>
                   <input type="number" value={budget.daily_limit_cents / 100} onChange={e => updateBudgetProp("daily_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 90, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right", fontSize: 12 }} />
                 </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Monthly Budget Total ($)</div>
+                  <input type="number" value={budget.monthly_limit_cents / 100} onChange={e => updateBudgetProp("monthly_limit_cents", Math.max(0, parseInt(e.target.value) || 0) * 100)} style={{ width: 90, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right", fontSize: 12 }} />
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)" }}>Hourly Velocity Limit</div>
+                  <input type="number" value={budget.hourly_velocity_limit || 0} onChange={e => updateBudgetProp("hourly_velocity_limit", Math.max(0, parseInt(e.target.value) || 0))} style={{ width: 90, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", textAlign: "right", fontSize: 12 }} />
+                </div>
+                <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 16 }}>
+                  Maximum approved purchases allowed in a rolling hour before new requests are denied.
+                </div>
                 
                 <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
                   <button onClick={handleSaveBudget} disabled={budgetSaving} style={{
@@ -2166,6 +2463,46 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   }}>
                     {budgetSaving ? "Saved ✓" : "Commit Limits"}
                   </button>
+                </div>
+              </div>
+
+              <div style={{ padding: 16, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 20 }}>Policy Lists</div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Allowed Categories</div>
+                  <input
+                    type="text"
+                    value={(budget.allowed_categories || []).join(", ")}
+                    onChange={e => updateBudgetListProp("allowed_categories", e.target.value)}
+                    placeholder="software, office_supplies, cleaning_supplies"
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 12, boxSizing: "border-box" }}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>Comma-separated categories the agent is allowed to buy from.</div>
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Allowed Merchants</div>
+                  <input
+                    type="text"
+                    value={(budget.allowed_merchants || []).join(", ")}
+                    onChange={e => updateBudgetListProp("allowed_merchants", e.target.value)}
+                    placeholder="amazon*, apple, github"
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 12, boxSizing: "border-box" }}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>Optional merchant allowlist. Supports `*` suffix wildcards like `amazon*`.</div>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Blocked Merchants</div>
+                  <input
+                    type="text"
+                    value={(budget.blocked_merchants || []).join(", ")}
+                    onChange={e => updateBudgetListProp("blocked_merchants", e.target.value)}
+                    placeholder="temu, wish, random-shop*"
+                    style={{ width: "100%", padding: "8px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", fontSize: 12, boxSizing: "border-box" }}
+                  />
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>Optional merchant denylist. Blocked merchants always lose to allow rules.</div>
                 </div>
               </div>
             </>

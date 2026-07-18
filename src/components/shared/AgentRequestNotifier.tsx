@@ -597,7 +597,7 @@ function ConnectionModal({
     );
 }
 
-function PaymentApprovalModal({
+export function PaymentApprovalModal({
     prompt,
     onDecide,
 }: {

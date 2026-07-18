@@ -19,6 +19,8 @@ function threadStatusMeta(status?: Conversation["threadStatus"]): { label: strin
       return { label: "Needs input", color: "#B25426" };
     case "paused":
       return { label: "Paused", color: "#6B7280" };
+    case "cancelled":
+      return { label: "Cancelled", color: "#7C3AED" };
     case "failed":
       return { label: "Failed", color: "#C0392B" };
     default:

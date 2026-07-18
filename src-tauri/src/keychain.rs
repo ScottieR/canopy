@@ -148,6 +148,8 @@ fn validate_secret_key_for_ipc(key: &str) -> Result<()> {
             | "XAI_API_KEY"
             | "GROK_API_KEY"
             | "PRIVACY_API_KEY"
+            | "LITHIC_SANDBOX_API_KEY"
+            | "LITHIC_API_KEY"
             | "SLACK_CLIENT_ID"
             | "SLACK_CLIENT_SECRET"
             | "GOOGLE_CLIENT_ID"
@@ -267,6 +269,8 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
         "SLACK_CLIENT_ID",
         "SLACK_CLIENT_SECRET",
         "PRIVACY_API_KEY",
+        "LITHIC_SANDBOX_API_KEY",
+        "LITHIC_API_KEY",
     ];
 
     for path in paths_to_check {

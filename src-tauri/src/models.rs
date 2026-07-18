@@ -464,6 +464,37 @@ pub enum VirtualCardProviderKind {
     LithicSandbox,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentProviderConfig {
+    pub provider: VirtualCardProviderKind,
+    pub privacy_configured: bool,
+    pub lithic_sandbox_configured: bool,
+    pub lithic_webhook_secret_configured: bool,
+    pub active_provider_ready: bool,
+    pub using_env_fallback: bool,
+    pub webhook_listener_listening: bool,
+    pub privacy_webhook_url: Option<String>,
+    pub lithic_webhook_url: Option<String>,
+    pub webhook_listener_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentProviderUpdate {
+    pub provider: VirtualCardProviderKind,
+    #[serde(default)]
+    pub privacy_api_key: Option<String>,
+    #[serde(default)]
+    pub lithic_sandbox_api_key: Option<String>,
+    #[serde(default)]
+    pub lithic_webhook_secret: Option<String>,
+    #[serde(default)]
+    pub clear_privacy_api_key: bool,
+    #[serde(default)]
+    pub clear_lithic_sandbox_api_key: bool,
+    #[serde(default)]
+    pub clear_lithic_webhook_secret: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum VirtualCardStatus {
@@ -471,6 +502,15 @@ pub enum VirtualCardStatus {
     Consumed,
     Cancelled,
     Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentTransactionStatus {
+    Authorized,
+    Captured,
+    Declined,
+    Refunded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -518,6 +558,23 @@ pub struct VirtualCardRecord {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentTransactionRecord {
+    pub id: String,
+    pub agent_id: String,
+    pub purchase_record_id: Option<String>,
+    pub virtual_card_id: Option<String>,
+    pub provider: VirtualCardProviderKind,
+    pub provider_transaction_ref: String,
+    pub merchant: String,
+    pub amount_cents: u64,
+    pub status: PaymentTransactionStatus,
+    pub source: String,
+    pub decline_reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub settled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaymentAuditEntry {
     pub id: String,
     pub agent_id: String,
@@ -543,6 +600,8 @@ pub struct PaymentDashboard {
     pub pending_approvals: Vec<PurchaseApprovalRequest>,
     pub recent_purchases: Vec<PurchaseRecord>,
     pub active_virtual_cards: Vec<VirtualCardRecord>,
+    pub recent_transactions: Vec<PaymentTransactionRecord>,
+    pub recent_audit_entries: Vec<PaymentAuditEntry>,
 }
 
 // ─── Data Flow / Handoff Models ──────────────────────────────────────────────

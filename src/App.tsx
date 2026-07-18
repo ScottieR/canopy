@@ -49,6 +49,8 @@ import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumO
 import { initializeForumDurablePersistence, useForumStore } from './store/forumStore';
 import { syncAgentProviderCredentials } from './security/providerCredentials';
 let gatewayBootPromise: Promise<any> | null = null;
+const AGENT_REGISTRATION_TIMEOUT_MS = 180_000;
+const AGENT_READY_TIMEOUT_MS = 60_000;
 const withStartupTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
   Promise.race([
     promise,
@@ -1726,7 +1728,20 @@ export default function App() {
   useEffect(() => {
     const handleHash = () => {
       const hash = window.location.hash.replace('#/', '').replace('#', '');
-      const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
+      const validViews = [
+        "loading",
+        "onboarding",
+        "canopy",
+        "architect",
+        "archive",
+        "library",
+        "vault",
+        "integrations",
+        "forum",
+        "profile",
+        "dashboard",
+        "diagnostics",
+      ];
       if (validViews.includes(hash)) {
         setActiveView(hash as any);
       }
@@ -1893,7 +1908,20 @@ export default function App() {
           localAgentsHydrated = true;
 
           const hash = window.location.hash.replace('#/', '').replace('#', '');
-          const validViews = ["loading", "onboarding", "canopy", "architect", "archive", "library", "vault", "forum"];
+          const validViews = [
+            "loading",
+            "onboarding",
+            "canopy",
+            "architect",
+            "archive",
+            "library",
+            "vault",
+            "integrations",
+            "forum",
+            "profile",
+            "dashboard",
+            "diagnostics",
+          ];
           if (hash && validViews.includes(hash) && hash !== "loading" && hash !== "onboarding") {
             setActiveView(hash as any);
           } else {
@@ -1921,7 +1949,11 @@ export default function App() {
           await safeStartGateway().catch((e) => console.error("Gateway boot failed during loadAgents:", e));
 
           setLoadStatus("Registering agents with gateway...");
-          await withStartupTimeout(invoke("boot_sync_agents"), 15_000, "Agent registration")
+          await withStartupTimeout(
+            invoke("boot_sync_agents"),
+            AGENT_REGISTRATION_TIMEOUT_MS,
+            "Agent registration",
+          )
             .catch((e) => console.warn("boot_sync_agents failed (non-fatal):", e));
           unlisten();
 
@@ -1943,12 +1975,11 @@ export default function App() {
           // spends a further 30-60s initialising channels and ACPX sidecars for
           // each agent. During that window any agent call returns "Unknown agent id".
           // We hold the loading screen here until at least one agent confirms "active"
-          // (or 60 s elapses, in which case we proceed with a warning banner).
+          // (or 60 s elapses, in which case we proceed without blocking forever).
           {
             const agentIds = loadedAgents.map(a => a.id);
-            const READY_TIMEOUT_MS = 15_000;
             const POLL_INTERVAL_MS = 2_500;
-            const deadline = Date.now() + READY_TIMEOUT_MS;
+            const deadline = Date.now() + AGENT_READY_TIMEOUT_MS;
             let agentsReady = false;
 
             setLoadStatus("Waiting for agents to come online…");
@@ -1962,7 +1993,7 @@ export default function App() {
                 } catch { /* non-fatal — keep polling */ }
               }
               if (!agentsReady) {
-                const elapsed = Math.round((Date.now() - (deadline - READY_TIMEOUT_MS)) / 1000);
+                const elapsed = Math.round((Date.now() - (deadline - AGENT_READY_TIMEOUT_MS)) / 1000);
                 setLoadStatus(`Agents warming up… ${elapsed}s`);
               }
             }

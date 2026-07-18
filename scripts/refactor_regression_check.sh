@@ -14,7 +14,16 @@ npm run build
 echo "== Canopy Rust backend checks =="
 cd "${ROOT_DIR}/src-tauri"
 cargo check
-cargo test
+
+echo "== Canopy Rust lib tests (serialized to avoid unit-binary SIGKILLs) =="
+cargo test --lib -- --test-threads=1
+
+echo "== Canopy Rust integration tests =="
+for test_file in tests/*.rs; do
+  test_name="$(basename "${test_file}" .rs)"
+  echo "-- cargo test --test ${test_name} -- --test-threads=1"
+  cargo test --test "${test_name}" -- --test-threads=1
+done
 
 echo "== Canopy mobile TypeScript check =="
 cd "${REPO_DIR}/canopy-mobile"

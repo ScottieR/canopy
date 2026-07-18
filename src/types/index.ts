@@ -158,6 +158,30 @@ export interface PurchaseApprovalRequest {
 
 export type VirtualCardProviderKind = 'mock' | 'privacy' | 'lithic_sandbox';
 export type VirtualCardStatus = 'active' | 'consumed' | 'cancelled' | 'expired';
+export type PaymentTransactionStatus = 'authorized' | 'captured' | 'declined' | 'refunded';
+
+export interface PaymentProviderConfig {
+  provider: VirtualCardProviderKind;
+  privacy_configured: boolean;
+  lithic_sandbox_configured: boolean;
+  lithic_webhook_secret_configured: boolean;
+  active_provider_ready: boolean;
+  using_env_fallback: boolean;
+  webhook_listener_listening: boolean;
+  privacy_webhook_url?: string | null;
+  lithic_webhook_url?: string | null;
+  webhook_listener_error?: string | null;
+}
+
+export interface PaymentProviderUpdate {
+  provider: VirtualCardProviderKind;
+  privacy_api_key?: string | null;
+  lithic_sandbox_api_key?: string | null;
+  lithic_webhook_secret?: string | null;
+  clear_privacy_api_key?: boolean;
+  clear_lithic_sandbox_api_key?: boolean;
+  clear_lithic_webhook_secret?: boolean;
+}
 
 export interface VirtualCardRecord {
   id: string;
@@ -172,6 +196,30 @@ export interface VirtualCardRecord {
   status: VirtualCardStatus;
   created_at: string;
   expires_at?: string | null;
+}
+
+export interface PaymentTransactionRecord {
+  id: string;
+  agent_id: string;
+  purchase_record_id?: string | null;
+  virtual_card_id?: string | null;
+  provider: VirtualCardProviderKind;
+  provider_transaction_ref: string;
+  merchant: string;
+  amount_cents: number;
+  status: PaymentTransactionStatus;
+  source: string;
+  decline_reason?: string | null;
+  created_at: string;
+  settled_at?: string | null;
+}
+
+export interface PaymentAuditEntry {
+  id: string;
+  agent_id: string;
+  event_type: string;
+  detail_json: Record<string, unknown>;
+  created_at: string;
 }
 
 export interface PurchaseExecutionResult {
@@ -189,4 +237,6 @@ export interface PaymentDashboard {
   pending_approvals: PurchaseApprovalRequest[];
   recent_purchases: PurchaseRecord[];
   active_virtual_cards: VirtualCardRecord[];
+  recent_transactions: PaymentTransactionRecord[];
+  recent_audit_entries: PaymentAuditEntry[];
 }

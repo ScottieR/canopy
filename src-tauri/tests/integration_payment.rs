@@ -3,12 +3,24 @@
 
 mod common;
 
-use canopy_lib::models::{AgentBudget, PurchaseRequest};
+use canopy_lib::app_state::AppState;
+use canopy_lib::db::Database;
+use canopy_lib::models::{
+    AgentBudget, PaymentAuditEntry, PaymentTransactionRecord, PaymentTransactionStatus,
+    PurchaseApprovalRequest, PurchaseApprovalStatus, PurchaseDecision, PurchaseRecord,
+    PurchaseRequest, VirtualCardProviderKind, VirtualCardRecord, VirtualCardStatus,
+};
+use canopy_lib::{
+    evaluate_purchase, get_agent_budget, get_payment_dashboard, get_purchase_history,
+    get_virtual_cards_for_agent, list_pending_purchase_approvals, update_agent_budget,
+};
+use chrono::{Duration, Utc};
 use common::{
-    default_purchase_request, default_test_budget, test_budget_payments_disabled,
-    test_budget_with_categories, test_budget_with_daily_limit, test_budget_with_spending,
+    default_purchase_request, default_test_agent, default_test_budget,
+    test_budget_payments_disabled, test_budget_with_categories, test_budget_with_spending,
     test_purchase_request, test_purchase_request_with_category,
 };
+use tauri::Manager;
 
 // ────────────────────────────────────────────────────────────────────────────
 // TEST SETUP
@@ -396,3 +408,202 @@ fn test_budget_requires_approval_for_recurring() {
 // ✅ test_budget_requires_approval_for_recurring
 //
 // TOTAL: 18 integration tests covering payment flow
+
+#[test]
+fn test_update_agent_budget_round_trips_through_public_commands() {
+    let app = tauri::test::mock_app();
+    app.manage(Database::init_in_memory().unwrap());
+    app.manage(AppState::new());
+
+    let db_state = app.state::<Database>();
+    let app_state = app.state::<AppState>();
+    let mut agent = default_test_agent();
+    agent.id = "agent-budget-1".to_string();
+    agent.name = "Agent agent-budget-1".to_string();
+    db_state.insert_agent(&agent).unwrap();
+    db_state.upsert_budget(&default_test_budget("agent-budget-1")).unwrap();
+
+    let mut budget = get_agent_budget("agent-budget-1".to_string(), db_state.clone(), app_state.clone())
+        .expect("seeded budget should be readable");
+    budget.auto_approve_threshold_cents = 7_500;
+    budget.allowed_merchants = vec!["Staples".to_string()];
+    budget.blocked_merchants = vec!["Evil Corp".to_string()];
+
+    let updated =
+        update_agent_budget(budget.clone(), db_state.clone(), app_state.clone()).unwrap();
+    let fetched = get_agent_budget("agent-budget-1".to_string(), db_state, app_state).unwrap();
+
+    assert_eq!(updated.auto_approve_threshold_cents, 7_500);
+    assert_eq!(fetched.auto_approve_threshold_cents, 7_500);
+    assert_eq!(fetched.allowed_merchants, vec!["Staples".to_string()]);
+    assert_eq!(fetched.blocked_merchants, vec!["Evil Corp".to_string()]);
+}
+
+#[test]
+fn test_public_evaluate_purchase_returns_denial_for_blocked_category() {
+    let request = PurchaseRequest {
+        agent_id: "agent-1".to_string(),
+        description: "Attempted furniture buy".to_string(),
+        merchant: "Office Depot".to_string(),
+        amount_cents: 2_500,
+        category: "furniture".to_string(),
+        is_recurring: false,
+    };
+    let budget = test_budget_with_categories("agent-1", vec!["software", "cleaning_supplies"]);
+
+    let result = evaluate_purchase(request, budget).unwrap();
+    assert!(matches!(result, PurchaseDecision::Denied { .. }));
+}
+
+#[test]
+fn test_dashboard_commands_reflect_seeded_purchase_card_and_approval_state() {
+    let app = tauri::test::mock_app();
+    app.manage(Database::init_in_memory().unwrap());
+    app.manage(AppState::new());
+
+    let db_state = app.state::<Database>();
+    let app_state = app.state::<AppState>();
+    let mut agent = default_test_agent();
+    agent.id = "agent-dashboard-1".to_string();
+    agent.name = "Agent agent-dashboard-1".to_string();
+    db_state.insert_agent(&agent).unwrap();
+    db_state
+        .upsert_budget(&default_test_budget("agent-dashboard-1"))
+        .unwrap();
+
+    let approved_purchase = PurchaseRecord {
+        id: "purchase-approved-1".to_string(),
+        agent_id: "agent-dashboard-1".to_string(),
+        description: "Approved software".to_string(),
+        merchant: "Figma".to_string(),
+        amount_cents: 4_900,
+        category: "software".to_string(),
+        decision: PurchaseDecision::Approved,
+        virtual_card_id: Some("card-1".to_string()),
+        timestamp: Utc::now() - Duration::minutes(10),
+    };
+    db_state.record_purchase(&approved_purchase).unwrap();
+    db_state
+        .record_virtual_card(&VirtualCardRecord {
+            id: "card-1".to_string(),
+            agent_id: "agent-dashboard-1".to_string(),
+            purchase_record_id: approved_purchase.id.clone(),
+            provider: VirtualCardProviderKind::Mock,
+            provider_card_ref: "mock-card-ref".to_string(),
+            last_four: "4242".to_string(),
+            amount_cents: 4_900,
+            merchant: "Figma".to_string(),
+            memo: "Design seats".to_string(),
+            status: VirtualCardStatus::Active,
+            created_at: Utc::now() - Duration::minutes(9),
+            expires_at: Some(Utc::now() + Duration::hours(2)),
+        })
+        .unwrap();
+    db_state
+        .update_agent_spending("agent-dashboard-1", 4_900, true, true)
+        .unwrap();
+    db_state
+        .record_payment_transaction(&PaymentTransactionRecord {
+            id: "txn-1".to_string(),
+            agent_id: "agent-dashboard-1".to_string(),
+            purchase_record_id: Some(approved_purchase.id.clone()),
+            virtual_card_id: Some("card-1".to_string()),
+            provider: VirtualCardProviderKind::Mock,
+            provider_transaction_ref: "txn-ref-1".to_string(),
+            merchant: "Figma".to_string(),
+            amount_cents: 4_900,
+            status: PaymentTransactionStatus::Captured,
+            source: "test_seed".to_string(),
+            decline_reason: None,
+            created_at: Utc::now() - Duration::minutes(8),
+            settled_at: Some(Utc::now() - Duration::minutes(8)),
+        })
+        .unwrap();
+
+    let pending_purchase = PurchaseRecord {
+        id: "purchase-pending-1".to_string(),
+        agent_id: "agent-dashboard-1".to_string(),
+        description: "Pending travel".to_string(),
+        merchant: "Delta".to_string(),
+        amount_cents: 12_500,
+        category: "travel".to_string(),
+        decision: PurchaseDecision::RequiresUserApproval {
+            reason: "Amount exceeds threshold".to_string(),
+            flags: vec!["exceeds_auto_approve_threshold".to_string()],
+            approval_id: Some("approval-1".to_string()),
+        },
+        virtual_card_id: None,
+        timestamp: Utc::now() - Duration::minutes(5),
+    };
+    db_state.record_purchase(&pending_purchase).unwrap();
+    db_state
+        .create_payment_approval_request(&PurchaseApprovalRequest {
+            id: "approval-1".to_string(),
+            agent_id: "agent-dashboard-1".to_string(),
+            purchase_record_id: pending_purchase.id.clone(),
+            purchase_request: PurchaseRequest {
+                agent_id: "agent-dashboard-1".to_string(),
+                description: "Pending travel".to_string(),
+                merchant: "Delta".to_string(),
+                amount_cents: 12_500,
+                category: "travel".to_string(),
+                is_recurring: false,
+            },
+            reason: "Amount exceeds threshold".to_string(),
+            flags: vec!["exceeds_auto_approve_threshold".to_string()],
+            status: PurchaseApprovalStatus::Pending,
+            created_at: Utc::now() - Duration::minutes(4),
+            resolved_at: None,
+            expires_at: Some(Utc::now() + Duration::days(1)),
+        })
+        .unwrap();
+    db_state
+        .record_payment_audit_entry(&PaymentAuditEntry {
+            id: "audit-1".to_string(),
+            agent_id: "agent-dashboard-1".to_string(),
+            event_type: "purchase_requires_approval".to_string(),
+            detail_json: serde_json::json!({
+                "purchaseRecordId": pending_purchase.id,
+                "approvalId": "approval-1",
+                "merchant": "Delta",
+                "amountCents": 12_500
+            }),
+            created_at: Utc::now() - Duration::minutes(3),
+        })
+        .unwrap();
+
+    let dashboard =
+        get_payment_dashboard("agent-dashboard-1".to_string(), db_state.clone(), app_state.clone())
+            .unwrap();
+    let history =
+        get_purchase_history("agent-dashboard-1".to_string(), db_state.clone(), app_state.clone())
+            .unwrap();
+    let pending = list_pending_purchase_approvals(
+        Some("agent-dashboard-1".to_string()),
+        db_state.clone(),
+        app_state.clone(),
+    )
+    .unwrap();
+    let cards = get_virtual_cards_for_agent(
+        "agent-dashboard-1".to_string(),
+        Some(true),
+        db_state,
+        app_state,
+    )
+    .unwrap();
+
+    assert_eq!(dashboard.active_virtual_cards.len(), 1);
+    assert_eq!(dashboard.pending_approvals.len(), 1);
+    assert_eq!(dashboard.recent_purchases.len(), 2);
+    assert_eq!(dashboard.recent_transactions.len(), 1);
+    assert_eq!(dashboard.recent_audit_entries.len(), 1);
+    assert_eq!(
+        dashboard.recent_audit_entries[0].event_type,
+        "purchase_requires_approval"
+    );
+    assert_eq!(dashboard.budget.daily_spent_cents, 4_900);
+    assert_eq!(history.len(), 2);
+    assert_eq!(pending.len(), 1);
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].last_four, "4242");
+}

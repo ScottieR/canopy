@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useWorldStore } from "../store/worldStore";
 import { TokenSpendChart } from "../components/agents/TokenSpendChart";
 import { LobsterIcon } from "../components/World/LobsterIcon";
+import { PaymentSummary } from "../components/payments/PaymentSummary";
 
 // glass()/ProgressBar are copied locally (rather than imported from ../App,
 // which also exports them) so this page doesn't pull in App.tsx's whole
@@ -452,6 +453,8 @@ export function Dashboard() {
           <ProgressBar value={totals.costUsd} max={totals.spendLimit || 1} color={totals.spendLimit && totals.costUsd > totals.spendLimit * 0.8 ? "#D4A04A" : "#4A9E96"} />
         </div>
       </div>
+
+      <PaymentSummary />
 
       {/* ── Per-agent breakdown — real avatar, given name, role beneath it ── */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>

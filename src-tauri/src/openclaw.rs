@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use lazy_static::lazy_static;
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, State};
@@ -31,6 +32,7 @@ pub use workspace_files::{
 // are no-ops.
 lazy_static! {
     static ref LAST_GATEWAY_CHANNELS_HASH: Mutex<Option<u64>> = Mutex::new(None);
+    static ref THREAD_CANCELLATION_REQUESTS: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
 }
 
 /// Returns the current list of available models for the frontend model picker.
@@ -940,6 +942,55 @@ fn get_thread_context_dir(
         .join(sanitize_thread_segment(session_id)))
 }
 
+fn validate_thread_session_id(session_id: &str) -> CanopyResult<()> {
+    if session_id.is_empty() {
+        return Err(CanopyError::Validation(
+            "Conversation session id must not be empty".into(),
+        ));
+    }
+    if session_id.len() > 128 {
+        return Err(CanopyError::Validation(
+            "Conversation session id must be 128 chars or less".into(),
+        ));
+    }
+    if !session_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(CanopyError::Validation(
+            "Conversation session id can only contain letters, numbers, dash, and underscore"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+fn thread_cancellation_key(agent_id: &str, session_id: &str) -> String {
+    format!("{}:{}", agent_id, session_id)
+}
+
+fn mark_thread_cancellation_requested(agent_id: &str, session_id: &str) {
+    if let Ok(mut requests) = THREAD_CANCELLATION_REQUESTS.lock() {
+        requests.insert(thread_cancellation_key(agent_id, session_id));
+    }
+}
+
+fn take_thread_cancellation_requested(agent_id: &str, session_id: &str) -> bool {
+    if let Ok(mut requests) = THREAD_CANCELLATION_REQUESTS.lock() {
+        requests.remove(&thread_cancellation_key(agent_id, session_id))
+    } else {
+        false
+    }
+}
+
+fn clear_thread_cancellation_requested(agent_id: &str, session_id: &str) {
+    let _ = take_thread_cancellation_requested(agent_id, session_id);
+}
+
+fn thread_context_relative_dir(session_id: &str) -> String {
+    format!(".threads/{}", sanitize_thread_segment(session_id))
+}
+
 fn excerpt_for_thread_state(text: &str, max_chars: usize) -> String {
     let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if single_line.chars().count() <= max_chars {
@@ -956,6 +1007,7 @@ fn generate_thread_state_md(
     agent_id: &str,
     session_id: &str,
     messages: &[crate::db::Message],
+    summary: Option<&crate::db::ConversationSummary>,
 ) -> String {
     let latest_user = messages.iter().rev().find(|m| m.role == "user");
     let latest_assistant = messages
@@ -975,7 +1027,20 @@ _This file is app-managed and refreshed automatically to help you rejoin a speci
         "- **Last refreshed:** {}\n",
         chrono::Utc::now().to_rfc3339()
     ));
-    content.push_str(&format!("- **Message count:** {}\n\n", messages.len()));
+    content.push_str(&format!("- **Message count:** {}\n", messages.len()));
+    if let Some(summary) = summary {
+        content.push_str(&format!(
+            "- **Thread status:** {}\n- **Active runs:** {}\n- **Checkpoint count:** {}\n",
+            summary.thread_status, summary.active_run_count, summary.checkpoint_count
+        ));
+        if let Some(last_checkpoint_at) = &summary.last_checkpoint_at {
+            content.push_str(&format!(
+                "- **Last checkpoint:** {}\n",
+                last_checkpoint_at
+            ));
+        }
+    }
+    content.push('\n');
 
     content.push_str("## Current Objective\n");
     if let Some(msg) = latest_user {
@@ -1035,6 +1100,34 @@ _This file is app-managed and refreshed automatically to help you rejoin a speci
     content
 }
 
+fn generate_thread_protocol_md(session_id: &str) -> String {
+    let thread_dir = thread_context_relative_dir(session_id);
+    format!(
+        "# THREAD_PROTOCOL.md\n\n\
+_This file is app-managed and defines the operating contract for this specific conversation thread._\n\n\
+## Scope\n\
+- Session id: `{session_id}`\n\
+- Thread directory: `{thread_dir}`\n\
+- This thread may run concurrently with other threads for the same agent.\n\
+- Treat this thread's files as authoritative for thread-specific continuity.\n\n\
+## Read Order\n\
+1. `{thread_dir}/THREAD_STATE.md`\n\
+2. `{thread_dir}/RECENT_HISTORY.md`\n\
+3. `{thread_dir}/CHECKPOINTS.md`\n\
+4. `{thread_dir}/SESSION_MEMORY.md` when it contains thread-specific notes\n\
+5. `{thread_dir}/THREAD_TIMELINE.md` when older context matters\n\n\
+## Memory Boundaries\n\
+- Use agent-wide `MEMORY.md` only for durable role-level learnings that should generalize across many conversations.\n\
+- Use `{thread_dir}/SESSION_MEMORY.md` for thread-specific plans, unresolved questions, partial work, approvals, and resumability notes.\n\
+- Do not assume another concurrent thread shares this thread's working state.\n\n\
+## Checkpointing\n\
+- Before you stop with unresolved work, make sure `{thread_dir}/SESSION_MEMORY.md` contains enough context for a clean resume.\n\
+- Keep thread notes concise, factual, and easy to continue from.\n",
+        session_id = session_id,
+        thread_dir = thread_dir
+    )
+}
+
 fn generate_thread_timeline_md(session_id: &str, messages: &[crate::db::Message]) -> String {
     let mut content = String::from(
         "# THREAD_TIMELINE.md\n\n\
@@ -1072,6 +1165,53 @@ _This file is app-managed and preserves representative checkpoints across the fu
                 excerpt_for_thread_state(&last.content, 700)
             ));
         }
+    }
+
+    content
+}
+
+fn generate_thread_checkpoints_md(session_id: &str, runs: &[crate::db::ThreadRun]) -> String {
+    let mut content = String::from(
+        "# CHECKPOINTS.md\n\n\
+_This file is app-managed and summarizes durable execution checkpoints for this thread._\n\n",
+    );
+    content.push_str(&format!("**Session id:** {}\n\n", session_id));
+
+    if runs.is_empty() {
+        content.push_str("No checkpoints yet.\n");
+        return content;
+    }
+
+    for run in runs.iter().take(20) {
+        content.push_str(&format!(
+            "## {} — {} — {}\n",
+            run.trigger_type, run.status, run.updated_at
+        ));
+        if let Some(checkpoint_json) = &run.checkpoint_payload_json {
+            if let Ok(payload) = serde_json::from_str::<Value>(checkpoint_json) {
+                if let Some(summary) = payload.get("summary").and_then(|value| value.as_str()) {
+                    content.push_str(&format!("{}\n", summary));
+                }
+                if let Some(open_loops) = payload.get("open_loops").and_then(|value| value.as_array())
+                {
+                    if !open_loops.is_empty() {
+                        content.push_str("\nOpen loops:\n");
+                        for item in open_loops {
+                            if let Some(text) = item.as_str() {
+                                content.push_str(&format!("- {}\n", text));
+                            }
+                        }
+                    }
+                }
+            } else {
+                content.push_str(&format!("{}\n", checkpoint_json));
+            }
+        } else if let Some(error_payload_json) = &run.error_payload_json {
+            content.push_str(&format!("Error: {}\n", error_payload_json));
+        } else {
+            content.push_str("No structured checkpoint payload was captured for this run.\n");
+        }
+        content.push('\n');
     }
 
     content
@@ -1118,11 +1258,14 @@ fn generate_active_thread_md(
 
     format!(
         "# ACTIVE_THREAD.md\n\n\
-_This file is app-managed and points to the current conversation context._\n\n\
+_This file is app-managed and points to the most recently refreshed conversation context. It is convenient for humans, but concurrent agent runs should rely on their session-specific runtime context instead of treating this file as authoritative._\n\n\
 - **Session id:** {session_id}\n\
 - **Thread directory:** {thread_dir}\n\
-- **Read first:** `{thread_dir}/THREAD_STATE.md`\n\
+- **Read first:** `{thread_dir}/THREAD_PROTOCOL.md`\n\
+- **Then read:** `{thread_dir}/THREAD_STATE.md`\n\
 - **Then read:** `{thread_dir}/RECENT_HISTORY.md`\n\
+- **Also read:** `{thread_dir}/CHECKPOINTS.md`\n\
+- **Then inspect:** `{thread_dir}/SESSION_MEMORY.md` when it contains thread-specific notes\n\
 - **If you need older thread context:** `{thread_dir}/THREAD_TIMELINE.md`\n\n\
 ## Why this exists\n\
 Use the files above to recover the active thread's current goal, recent decisions, unresolved follow-ups, and older milestones before answering.\n\n\
@@ -1139,14 +1282,27 @@ fn refresh_thread_context_files(
     agent_id: &str,
     session_id: &str,
 ) -> Result<(), String> {
+    let conversation_summary = db
+        .list_agent_conversation_summaries(agent_id, 200)
+        .map_err(|e| format!("Failed to load thread summary: {}", e))?
+        .into_iter()
+        .find(|summary| summary.id == session_id);
     let messages = db
         .get_all_messages(session_id)
         .map_err(|e| format!("Failed to load thread messages: {}", e))?;
+    let runs = db
+        .list_thread_runs(session_id, 25)
+        .map_err(|e| format!("Failed to load thread runs: {}", e))?;
     let thread_dir = get_thread_context_dir(db, agent_id, session_id)?;
     std::fs::create_dir_all(&thread_dir).map_err(|e| e.to_string())?;
     std::fs::write(
+        thread_dir.join("THREAD_PROTOCOL.md"),
+        generate_thread_protocol_md(session_id),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
         thread_dir.join("THREAD_STATE.md"),
-        generate_thread_state_md(agent_id, session_id, &messages),
+        generate_thread_state_md(agent_id, session_id, &messages, conversation_summary.as_ref()),
     )
     .map_err(|e| e.to_string())?;
     std::fs::write(
@@ -1159,6 +1315,12 @@ fn refresh_thread_context_files(
         generate_thread_timeline_md(session_id, &messages),
     )
     .map_err(|e| e.to_string())?;
+    std::fs::write(
+        thread_dir.join("CHECKPOINTS.md"),
+        generate_thread_checkpoints_md(session_id, &runs),
+    )
+    .map_err(|e| e.to_string())?;
+    ensure_empty_file(&thread_dir.join("SESSION_MEMORY.md"));
     let workspace = get_agent_workspace_dir(db, agent_id)?;
     std::fs::write(
         workspace.join("ACTIVE_THREAD.md"),
@@ -1166,6 +1328,24 @@ fn refresh_thread_context_files(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn build_thread_runtime_context(session_id: &str) -> String {
+    let thread_dir = thread_context_relative_dir(session_id);
+    format!(
+        "This invocation belongs to conversation session `{session_id}`.\n\
+Read the following thread-scoped files before continuing work:\n\
+- `{thread_dir}/THREAD_PROTOCOL.md`\n\
+- `{thread_dir}/THREAD_STATE.md`\n\
+- `{thread_dir}/RECENT_HISTORY.md`\n\
+- `{thread_dir}/CHECKPOINTS.md`\n\
+- `{thread_dir}/SESSION_MEMORY.md` when it contains notes\n\
+- `{thread_dir}/THREAD_TIMELINE.md` when older context matters\n\
+Keep thread-specific working state in `{thread_dir}/SESSION_MEMORY.md` rather than in shared `MEMORY.md`.\n\
+Do not assume other concurrent threads share this thread's open loops or partial progress.",
+        session_id = session_id,
+        thread_dir = thread_dir
+    )
 }
 
 fn shared_user_md_path_for_root(canopy_root: &std::path::Path) -> std::path::PathBuf {
@@ -2296,6 +2476,76 @@ fn cleanup_agent_text(s: &str) -> String {
     s.to_string()
 }
 
+fn build_thread_checkpoint_payload(
+    status: &str,
+    summary: &str,
+    model: Option<&str>,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+) -> String {
+    json!({
+        "status": status,
+        "summary": excerpt_for_thread_state(summary, 420),
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "captured_at": chrono::Utc::now().to_rfc3339(),
+    })
+    .to_string()
+}
+
+fn finalize_thread_cancellation_if_requested(
+    db: &crate::db::Database,
+    agent_id: &str,
+    conversation_id: &str,
+    run_id: &str,
+    summary: &str,
+) -> Option<String> {
+    if !take_thread_cancellation_requested(agent_id, conversation_id) {
+        return None;
+    }
+
+    let cancelled_error = "Run cancelled by user.".to_string();
+    let error_json = json!({
+        "error": cancelled_error,
+        "cancelled": true,
+    })
+    .to_string();
+    finalize_thread_run(
+        db,
+        agent_id,
+        conversation_id,
+        run_id,
+        "cancelled",
+        Some(&error_json),
+        Some(&build_thread_checkpoint_payload(
+            "cancelled",
+            summary,
+            None,
+            None,
+            None,
+        )),
+    );
+    Some(cancelled_error)
+}
+
+fn finalize_thread_run(
+    db: &crate::db::Database,
+    agent_id: &str,
+    conversation_id: &str,
+    run_id: &str,
+    final_status: &str,
+    error_payload_json: Option<&str>,
+    checkpoint_payload_json: Option<&str>,
+) {
+    if let Some(checkpoint_payload_json) = checkpoint_payload_json {
+        let _ = db.checkpoint_thread_run(run_id, checkpoint_payload_json);
+    }
+    let _ = db.finish_thread_run(run_id, final_status, error_payload_json);
+    let _ = refresh_thread_context_files(db, agent_id, conversation_id);
+    clear_thread_cancellation_requested(agent_id, conversation_id);
+}
+
 pub async fn send_message_internal(
     db: &crate::db::Database,
     app: &tauri::AppHandle,
@@ -2320,6 +2570,17 @@ pub async fn send_message_internal_with_context(
     // Step 1: Get or create conversation
     let conv_id = match session_id {
         Some(id) => {
+            if let Some(existing_agent_id) = db
+                .get_conversation_agent_id(&id)
+                .map_err(|e| format!("Failed to inspect conversation owner: {}", e))?
+            {
+                if existing_agent_id != agent_id {
+                    return Err(format!(
+                        "Conversation {} belongs to agent {} and cannot be reused for agent {}",
+                        id, existing_agent_id, agent_id
+                    ));
+                }
+            }
             db.ensure_conversation(&id, agent_id)
                 .map_err(|e| format!("Failed to ensure conversation: {}", e))?;
             id
@@ -2336,6 +2597,13 @@ pub async fn send_message_internal_with_context(
     let _ = db.insert_message(&conv_id, "user", message);
 
     let _ = refresh_thread_context_files(db, agent_id, &conv_id);
+    let thread_runtime_context = build_thread_runtime_context(&conv_id);
+    let merged_runtime_context = match runtime_context {
+        Some(context) if !context.trim().is_empty() => {
+            format!("{}\n\n{}", thread_runtime_context, context)
+        }
+        _ => thread_runtime_context,
+    };
 
     // Step 2.5: Inject live DIAGNOSTICS.md into the agent's workspace
     if let Ok(diagnostics) = crate::channels::ping_agent_connections_internal(db, agent_id).await {
@@ -2385,14 +2653,10 @@ pub async fn send_message_internal_with_context(
     let proxy_port = crate::browser_manager::jit_proxy_port_for(agent_id);
     let ws_endpoint = crate::browser_manager::browser_bridge_url("ws", proxy_port, agent_id);
     let cdp_env = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
-    let runtime_message = runtime_context
-        .map(|context| {
-            format!(
-                "<canopy_companion_context>\n{}\n</canopy_companion_context>\n\n<user_message>\n{}\n</user_message>",
-                context, message
-            )
-        })
-        .unwrap_or_else(|| message.to_string());
+    let runtime_message = format!(
+        "<canopy_runtime_context>\n{}\n</canopy_runtime_context>\n\n<user_message>\n{}\n</user_message>",
+        merged_runtime_context, message
+    );
     // Timeouts are usually transient (Node event loop momentarily busy); a single retry
     // resolves the majority of "LLM request timeout" failures without user intervention.
     let max_attempts: u32 = 3;
@@ -2400,6 +2664,15 @@ pub async fn send_message_internal_with_context(
     let mut last_timeout_err = String::new();
 
     for attempt in 0..max_attempts {
+        if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+            db,
+            agent_id,
+            &conv_id,
+            &run_id,
+            "Cancellation was requested before the next execution attempt started.",
+        ) {
+            return Err(cancelled_error);
+        }
         if attempt > 0 {
             tracing::warn!(
                 "send_message_internal: agent={} timeout on attempt {}, retrying in 5s",
@@ -2407,6 +2680,15 @@ pub async fn send_message_internal_with_context(
                 attempt
             );
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+                db,
+                agent_id,
+                &conv_id,
+                &run_id,
+                "Cancellation was requested while waiting to retry the thread.",
+            ) {
+                return Err(cancelled_error);
+            }
         }
 
         let docker_args = vec![
@@ -2439,10 +2721,30 @@ pub async fn send_message_internal_with_context(
             }
             Ok(Err(e)) => {
                 // I/O error spawning docker — not a retry-able timeout, bail immediately.
-                let _ = db.finish_thread_run(
+                if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+                    db,
+                    agent_id,
+                    &conv_id,
+                    &run_id,
+                    "Cancellation was requested while the thread was starting.",
+                ) {
+                    return Err(cancelled_error);
+                }
+                let error_json = json!({ "error": e.to_string() }).to_string();
+                finalize_thread_run(
+                    db,
+                    agent_id,
+                    &conv_id,
                     &run_id,
                     "failed",
-                    Some(&json!({ "error": e.to_string() }).to_string()),
+                    Some(&error_json),
+                    Some(&build_thread_checkpoint_payload(
+                        "failed",
+                        &format!("Failed to spawn docker exec: {}", e),
+                        None,
+                        None,
+                        None,
+                    )),
                 );
                 return Err(format!("Failed to send message: {}", e));
             }
@@ -2461,10 +2763,30 @@ pub async fn send_message_internal_with_context(
     let output = match attempt_output {
         Some(o) => o,
         None => {
-            let _ = db.finish_thread_run(
+            if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+                db,
+                agent_id,
+                &conv_id,
+                &run_id,
+                "Cancellation was requested before the agent produced a reply.",
+            ) {
+                return Err(cancelled_error);
+            }
+            let error_json = json!({ "error": last_timeout_err.clone() }).to_string();
+            finalize_thread_run(
+                db,
+                agent_id,
+                &conv_id,
                 &run_id,
                 "failed",
-                Some(&json!({ "error": last_timeout_err.clone() }).to_string()),
+                Some(&error_json),
+                Some(&build_thread_checkpoint_payload(
+                    "failed",
+                    &last_timeout_err,
+                    None,
+                    None,
+                    None,
+                )),
             );
             return Err(last_timeout_err);
         }
@@ -2488,10 +2810,30 @@ pub async fn send_message_internal_with_context(
         if combined.contains("cannot exec in a stopped container")
             || combined.contains("OCI runtime exec failed")
         {
-            let _ = db.finish_thread_run(
+            if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+                db,
+                agent_id,
+                &conv_id,
+                &run_id,
+                "Thread cancelled while the container-side agent process was being terminated.",
+            ) {
+                return Err(cancelled_error);
+            }
+            let error_json = json!({ "error": combined.clone() }).to_string();
+            finalize_thread_run(
+                db,
+                agent_id,
+                &conv_id,
                 &run_id,
                 "failed",
-                Some(&json!({ "error": combined.clone() }).to_string()),
+                Some(&error_json),
+                Some(&build_thread_checkpoint_payload(
+                    "failed",
+                    &combined,
+                    None,
+                    None,
+                    None,
+                )),
             );
             return Err(
                 "Infrastructure gateway is offline or has crashed (Stopped Container).".to_string(),
@@ -2501,11 +2843,31 @@ pub async fn send_message_internal_with_context(
         if combined.is_empty() {
             // Exit code 137 usually means OOM in Docker
             if output.status.code() == Some(137) {
+                if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+                    db,
+                    agent_id,
+                    &conv_id,
+                    &run_id,
+                    "Thread cancelled while the gateway process was shutting down.",
+                ) {
+                    return Err(cancelled_error);
+                }
                 let oom_error = "Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string();
-                let _ = db.finish_thread_run(
+                let error_json = json!({ "error": oom_error.clone() }).to_string();
+                finalize_thread_run(
+                    db,
+                    agent_id,
+                    &conv_id,
                     &run_id,
                     "failed",
-                    Some(&json!({ "error": oom_error.clone() }).to_string()),
+                    Some(&error_json),
+                    Some(&build_thread_checkpoint_payload(
+                        "failed",
+                        &oom_error,
+                        None,
+                        None,
+                        None,
+                    )),
                 );
                 return Err("Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string());
             }
@@ -2525,10 +2887,30 @@ pub async fn send_message_internal_with_context(
         };
         let _ = db.insert_agent_bug_report(&bug);
 
-        let _ = db.finish_thread_run(
+        if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+            db,
+            agent_id,
+            &conv_id,
+            &run_id,
+            "Thread cancelled while the agent process was terminating.",
+        ) {
+            return Err(cancelled_error);
+        }
+        let error_json = json!({ "error": combined.clone() }).to_string();
+        finalize_thread_run(
+            db,
+            agent_id,
+            &conv_id,
             &run_id,
             "failed",
-            Some(&json!({ "error": combined.clone() }).to_string()),
+            Some(&error_json),
+            Some(&build_thread_checkpoint_payload(
+                "failed",
+                &combined,
+                None,
+                None,
+                None,
+            )),
         );
         return Err(combined);
     }
@@ -2640,10 +3022,30 @@ pub async fn send_message_internal_with_context(
             "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
             response_text.trim()
         );
-        let _ = db.finish_thread_run(
+        if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
+            db,
+            agent_id,
+            &conv_id,
+            &run_id,
+            "Thread cancelled before the agent could finish responding.",
+        ) {
+            return Err(cancelled_error);
+        }
+        let error_json = json!({ "error": final_error.clone() }).to_string();
+        finalize_thread_run(
+            db,
+            agent_id,
+            &conv_id,
             &run_id,
             "failed",
-            Some(&json!({ "error": final_error.clone() }).to_string()),
+            Some(&error_json),
+            Some(&build_thread_checkpoint_payload(
+                "failed",
+                &final_error,
+                None,
+                None,
+                None,
+            )),
         );
         return Err(format!(
             "{} — Open this agent's Overview tab and click \"Re-Initialize Setup\" to configure API keys.",
@@ -2652,7 +3054,6 @@ pub async fn send_message_internal_with_context(
     }
 
     let _ = db.insert_message(&conv_id, "assistant", &response_text);
-    let _ = refresh_thread_context_files(db, agent_id, &conv_id);
 
     // ── INTERCEPT TOOL: RequestIntegration ───────────────────────────────────────
     // If the LLM has emitted the `<RequestIntegration service="..." rationale="...">` tool format,
@@ -2798,7 +3199,52 @@ pub async fn send_message_internal_with_context(
         "Message sent to agent".to_string()
     };
     let _ = db.log_audit(agent_id, "chatted", Some("openclaw"), &detail, None);
-    let _ = db.finish_thread_run(&run_id, "completed", None);
+    let checkpoint_summary = format!(
+        "Reply delivered. {}",
+        excerpt_for_thread_state(&response_text, 420)
+    );
+    finalize_thread_run(
+        db,
+        agent_id,
+        &conv_id,
+        &run_id,
+        "completed",
+        None,
+        Some(&build_thread_checkpoint_payload(
+            "completed",
+            &checkpoint_summary,
+            Some(model),
+            Some(prompt_tokens),
+            Some(completion_tokens),
+        )),
+    );
+
+    let thread_summary = db
+        .get_conversation_summary(&conv_id)
+        .map_err(|e| format!("Failed to reload conversation summary: {}", e))?;
+    let thread_status = thread_summary
+        .as_ref()
+        .map(|summary| summary.thread_status.clone())
+        .unwrap_or_else(|| "idle".to_string());
+    let active_run_count = thread_summary
+        .as_ref()
+        .map(|summary| summary.active_run_count)
+        .unwrap_or(0);
+    let last_run_id = thread_summary
+        .as_ref()
+        .and_then(|summary| summary.last_run_id.clone())
+        .or_else(|| Some(run_id.clone()));
+    let last_run_status = thread_summary
+        .as_ref()
+        .and_then(|summary| summary.last_run_status.clone())
+        .unwrap_or_else(|| "completed".to_string());
+    let checkpoint_count = thread_summary
+        .as_ref()
+        .map(|summary| summary.checkpoint_count)
+        .unwrap_or(0);
+    let last_checkpoint_at = thread_summary
+        .as_ref()
+        .and_then(|summary| summary.last_checkpoint_at.clone());
 
     Ok(json!({
         "response": response_text,
@@ -2807,7 +3253,12 @@ pub async fn send_message_internal_with_context(
         "model": model,
         "conversation_id": conv_id,
         "run_id": run_id,
-        "thread_status": "idle"
+        "thread_status": thread_status,
+        "active_run_count": active_run_count,
+        "last_run_id": last_run_id,
+        "last_run_status": last_run_status,
+        "checkpoint_count": checkpoint_count,
+        "last_checkpoint_at": last_checkpoint_at,
     }))
 }
 
@@ -2899,6 +3350,102 @@ pub async fn send_message(
     );
 
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn cancel_thread_run(
+    agent_id: String,
+    session_id: String,
+    state: State<'_, AppState>,
+    db: State<'_, crate::db::Database>,
+) -> CanopyResult<Value> {
+    crate::validators::agent::validate_id(&agent_id)?;
+    validate_thread_session_id(&session_id)?;
+
+    if !db.is_agent_owner(&agent_id, &state.user_id)? {
+        return Err(CanopyError::Unauthorized(
+            "You don't have permission to cancel this agent run".into(),
+        ));
+    }
+    match db.get_conversation_agent_id(&session_id)? {
+        Some(existing_agent_id) if existing_agent_id == agent_id => {}
+        Some(_) => {
+            return Err(CanopyError::Unauthorized(
+                "This conversation belongs to a different agent".into(),
+            ));
+        }
+        None => {
+            return Err(CanopyError::NotFound(
+                "Conversation not found for cancellation".into(),
+            ));
+        }
+    }
+
+    let active_run_ids = db.list_active_thread_run_ids(&session_id)?;
+    if active_run_ids.is_empty() {
+        clear_thread_cancellation_requested(&agent_id, &session_id);
+        return Ok(json!({
+            "cancel_requested": false,
+            "active_runs": 0,
+            "signal_matched": false,
+        }));
+    }
+
+    mark_thread_cancellation_requested(&agent_id, &session_id);
+
+    let container_name = get_agent_container_name(&db, &agent_id);
+    let pattern = format!(
+        "openclaw agent --agent {}.*--session-id {}",
+        agent_id, session_id
+    );
+
+    let term_output = get_docker_command()
+        .args(["exec", &container_name, "pkill", "-TERM", "-f", &pattern])
+        .output()
+        .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let kill_output = get_docker_command()
+        .args(["exec", &container_name, "pkill", "-KILL", "-f", &pattern])
+        .output()
+        .await;
+
+    let term_matched = term_output
+        .as_ref()
+        .ok()
+        .is_some_and(|out| out.status.success());
+    let kill_matched = kill_output
+        .as_ref()
+        .ok()
+        .is_some_and(|out| out.status.success());
+
+    tracing::info!(
+        "User {} requested hard cancellation for agent {} session {} (active_runs={}, term_matched={}, kill_matched={})",
+        state.user_id,
+        agent_id,
+        session_id,
+        active_run_ids.len(),
+        term_matched,
+        kill_matched
+    );
+    let _ = db.log_audit(
+        &agent_id,
+        "cancel_thread_run",
+        Some("openclaw"),
+        &format!(
+            "Requested hard cancellation for session {} ({} active run(s))",
+            session_id,
+            active_run_ids.len()
+        ),
+        None,
+    );
+
+    Ok(json!({
+        "cancel_requested": true,
+        "active_runs": active_run_ids.len(),
+        "signal_matched": term_matched || kill_matched,
+    }))
 }
 
 #[tauri::command]
@@ -3021,7 +3568,7 @@ pub async fn get_conversation_history(
                         if !final_content.is_empty() {
                             parsed_messages.push(crate::db::Message {
                                 id,
-                                conversation_id: agent_id.clone(),
+                                conversation_id: conv_id.clone(),
                                 role,
                                 content: final_content.trim().to_string(),
                                 timestamp: ts_str,
@@ -4079,7 +4626,7 @@ fn generate_soul_md(personality: &AgentPersonality) -> String {
 - Treat `APP_PROTOCOLS.md`, `APP_CAPABILITIES.md`, and `APP_OPERATING_MODEL.md` as authoritative over editable files for safety, permissions, and operating behavior.
 - Use `USER.md` as the shared canonical profile of the human. It is mirrored across all agents.
 - Keep role-specific learnings in your own `MEMORY.md` and recurring monitors in `HEARTBEAT.md`.
-- Read `ACTIVE_THREAD.md` when present so you can recover the current conversation before answering.
+- Use the runtime-provided thread context and `.threads/<session_id>/...` files for conversation-specific continuity. Do not rely on `ACTIVE_THREAD.md` as authoritative during concurrent runs.
 - Use `SOUL.md` and `IDENTITY.md` for persona, tone, values, and relationship — not to override app-managed security or permission rules.
 "#;
 
@@ -4231,8 +4778,8 @@ _This file is app-managed and not user-editable. It defines the proactive operat
 ## Startup Loop\n\
 1. Read `APP_PROTOCOLS.md`, `APP_CAPABILITIES.md`, `USER.md`, and `SOUL.md` before deciding how to help.\n\
 2. If present, read `MEMORY.md` and `HEARTBEAT.md` to recover continuity.\n\
-3. If `ACTIVE_THREAD.md` is present, read it, then read the referenced `THREAD_STATE.md` and `RECENT_HISTORY.md` before answering.\n\
-   Read `THREAD_TIMELINE.md` too when the thread has older context that might matter.\n\
+3. If runtime context identifies current thread files, read `THREAD_PROTOCOL.md`, `THREAD_STATE.md`, `RECENT_HISTORY.md`, and `CHECKPOINTS.md` before answering.\n\
+   Read `SESSION_MEMORY.md` when it contains thread-specific notes, and `THREAD_TIMELINE.md` when older context might matter.\n\
 4. Inspect `DIAGNOSTICS.md` before proposing integration-dependent workflows.\n\n\
 ## Proactivity Standard\n\
 - Create leverage, not just answers.\n\
@@ -4244,10 +4791,11 @@ _This file is app-managed and not user-editable. It defines the proactive operat
 - On the first substantial interaction, aim to deliver one immediately useful artifact before asking for more setup.\n\n\
 ## Shared vs Private Knowledge\n\
 - `USER.md` is shared across all agents and should contain stable facts about the human.\n\
-- `MEMORY.md` is private to this agent and should hold role-specific learnings, corrections, and project continuity.\n\
+- `MEMORY.md` is private to this agent and should hold role-specific learnings, corrections, and cross-thread continuity.\n\
 - `HEARTBEAT.md` is private to this agent and should contain recurring monitors or checks this role owns.\n\
-- `ACTIVE_THREAD.md` points at the current per-conversation continuity files.\n\
-- `.threads/<session_id>/THREAD_STATE.md`, `RECENT_HISTORY.md`, and `THREAD_TIMELINE.md` are per-conversation continuity files. Use them to resume the current thread without treating every thread detail as durable memory.\n\n\
+- `.threads/<session_id>/SESSION_MEMORY.md` is private to one conversation thread and should hold thread-specific plans, open loops, and resumability notes.\n\
+- `.threads/<session_id>/THREAD_PROTOCOL.md`, `THREAD_STATE.md`, `RECENT_HISTORY.md`, `CHECKPOINTS.md`, and `THREAD_TIMELINE.md` are per-conversation continuity files.\n\
+- `ACTIVE_THREAD.md` is a convenience pointer for humans and debugging; it is not authoritative when multiple threads run concurrently.\n\n\
 ## Memory Hygiene\n\
 - Write only durable facts, decisions, constraints, and preferences.\n\
 - Avoid duplicate entries and transcript-like summaries.\n\
@@ -7254,9 +7802,12 @@ mod tests {
         refresh_thread_context_files(&db, &agent.id, &conv_id).unwrap();
 
         let thread_dir = get_thread_context_dir(&db, &agent.id, &conv_id).unwrap();
+        let protocol = std::fs::read_to_string(thread_dir.join("THREAD_PROTOCOL.md")).unwrap();
         let state = std::fs::read_to_string(thread_dir.join("THREAD_STATE.md")).unwrap();
         let history = std::fs::read_to_string(thread_dir.join("RECENT_HISTORY.md")).unwrap();
         let timeline = std::fs::read_to_string(thread_dir.join("THREAD_TIMELINE.md")).unwrap();
+        let checkpoints = std::fs::read_to_string(thread_dir.join("CHECKPOINTS.md")).unwrap();
+        let session_memory = std::fs::read_to_string(thread_dir.join("SESSION_MEMORY.md")).unwrap();
         let active = std::fs::read_to_string(
             get_agent_workspace_dir(&db, &agent.id)
                 .unwrap()
@@ -7264,12 +7815,18 @@ mod tests {
         )
         .unwrap();
 
+        assert!(protocol.contains("THREAD_PROTOCOL.md"));
+        assert!(protocol.contains("SESSION_MEMORY.md"));
         assert!(state.contains("material participation tracker"));
         assert!(history.contains("assistant"));
         assert!(history.contains("Thread turn 30"));
         assert!(timeline.contains("Thread turn 1"));
         assert!(timeline.contains("Thread turn 30"));
+        assert!(checkpoints.contains("No checkpoints yet."));
+        assert!(session_memory.is_empty());
         assert!(active.contains("ACTIVE_THREAD.md"));
+        assert!(active.contains("concurrent agent runs"));
+        assert!(active.contains("THREAD_PROTOCOL.md"));
         assert!(active.contains("THREAD_STATE.md"));
         assert!(active.contains("THREAD_TIMELINE.md"));
         assert!(active.contains(&conv_id));

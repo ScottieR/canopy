@@ -128,7 +128,7 @@ export interface Conversation {
   lastActiveAt: number;    // unix ms — for sort order
   type?: "dm" | "forum";
   status?: "active" | "archived";
-  threadStatus?: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed";
+  threadStatus?: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed" | "cancelled";
   backgroundAllowed?: boolean;
   activeRunCount?: number;
   lastRunId?: string | null;

@@ -47,6 +47,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "icons:prepare": "CLANG_MODULE_CACHE_PATH=/tmp/canopy-swift-module-cache swift scripts/generate_app_icons.swift",
+    "icons:generate": "npm run icons:prepare && npm run tauri icon app-icon.png",
     "tauri": "tauri",
     "test": "vitest",
     "test:ui": "vitest --ui",

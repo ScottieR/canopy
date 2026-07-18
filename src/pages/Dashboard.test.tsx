@@ -32,12 +32,55 @@ const mockInvoke = vi.fn((cmd: string, args?: any) => {
       { id: "u2", agent_id: "agent-2", conversation_id: null, timestamp: "2026-07-11T12:00:00Z", model: "claude-sonnet-4-6", provider: "anthropic", tokens_in: 200, tokens_out: 100, cost_usd: 0.12 },
     ]);
   }
+  if (cmd === "get_payment_dashboard") {
+    if (args?.agentId === "agent-1") {
+      return Promise.resolve({
+        agent_id: "agent-1",
+        budget: {
+          payments_enabled: true,
+          monthly_spent_cents: 6500,
+          monthly_limit_cents: 20000,
+        },
+        pending_approvals: [{ id: "approval-1" }],
+        recent_purchases: [],
+        active_virtual_cards: [{ id: "card-1" }],
+      });
+    }
+    if (args?.agentId === "agent-2") {
+      return Promise.resolve({
+        agent_id: "agent-2",
+        budget: {
+          payments_enabled: true,
+          monthly_spent_cents: 3000,
+          monthly_limit_cents: 10000,
+        },
+        pending_approvals: [{ id: "approval-2" }],
+        recent_purchases: [],
+        active_virtual_cards: [{ id: "card-2" }],
+      });
+    }
+    return Promise.resolve({
+      agent_id: args?.agentId ?? "unknown",
+      budget: {
+        payments_enabled: false,
+        monthly_spent_cents: 0,
+        monthly_limit_cents: 0,
+      },
+      pending_approvals: [],
+      recent_purchases: [],
+      active_virtual_cards: [],
+    });
+  }
   if (cmd === "get_global_audit_log") return Promise.resolve([]);
   return Promise.resolve([]);
 });
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: any[]) => (mockInvoke as any)(...args),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async () => () => {}),
 }));
 
 function makeAgent(overrides: Partial<AgentData>): AgentData {
@@ -147,6 +190,16 @@ describe('Dashboard (My Usage)', () => {
       await waitFor(() => {
         // 100 + 50 = 150
         expect(screen.getByText(/of \$150 combined limit/)).toBeDefined();
+      });
+    });
+
+    it('renders the aggregate payment summary from live payment dashboards', async () => {
+      render(<Dashboard />);
+      await waitFor(() => {
+        expect(screen.getByText('Payments')).toBeDefined();
+        expect(screen.getByText('$95.00')).toBeDefined();
+        expect(screen.getByText('2 pending approvals')).toBeDefined();
+        expect(screen.getByText('2 active cards')).toBeDefined();
       });
     });
 

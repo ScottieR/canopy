@@ -16,10 +16,11 @@ type PaymentDashboard = {
     purchase_request: {
       merchant: string;
       category: string;
-      amount_cents: number;
+        amount_cents: number;
     };
     reason: string;
     flags: string[];
+    expires_at?: string | null;
   }>;
   recent_purchases: Array<{
     id: string;
@@ -36,8 +37,27 @@ type PaymentDashboard = {
     status: string;
     amount_cents: number;
     provider: string;
+    provider_card_ref: string;
+    expires_at?: string | null;
+  }>;
+  recent_transactions: Array<{
+    id: string;
+    merchant: string;
+    amount_cents: number;
+    status: string;
+    source: string;
+    decline_reason?: string | null;
+    created_at: string;
+  }>;
+  recent_audit_entries?: Array<{
+    id: string;
+    event_type: string;
+    detail_json?: Record<string, unknown>;
+    created_at: string;
   }>;
 };
+
+type VirtualCardRecord = PaymentDashboard["active_virtual_cards"][number];
 
 type PurchaseDraft = {
   description: string;
@@ -46,6 +66,50 @@ type PurchaseDraft = {
   amount: string;
   isRecurring: boolean;
 };
+
+function formatAuditEventLabel(eventType: string): string {
+  return eventType
+    .split("_")
+    .filter(Boolean)
+    .map(segment => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+}
+
+function formatAuditSummary(detailJson?: Record<string, unknown>): string {
+  if (!detailJson) return "Recorded by the payment workflow.";
+
+  const merchant = typeof detailJson.merchant === "string" ? detailJson.merchant : null;
+  const amountCents = typeof detailJson.amountCents === "number" ? detailJson.amountCents : null;
+  if (merchant && amountCents != null) {
+    return `${merchant} · $${(amountCents / 100).toFixed(2)}`;
+  }
+
+  const cardId = typeof detailJson.cardId === "string" ? detailJson.cardId : null;
+  if (cardId) {
+    return `Card ${cardId.slice(0, 8)}…`;
+  }
+
+  const purchaseRecordId =
+    typeof detailJson.purchaseRecordId === "string" ? detailJson.purchaseRecordId : null;
+  if (purchaseRecordId) {
+    return `Purchase ${purchaseRecordId.slice(0, 8)}…`;
+  }
+
+  const approvalId = typeof detailJson.approvalId === "string" ? detailJson.approvalId : null;
+  if (approvalId) {
+    return `Approval ${approvalId.slice(0, 8)}…`;
+  }
+
+  return "Recorded by the payment workflow.";
+}
+
+function formatProviderRef(providerRef: string): string {
+  if (providerRef.length <= 16) {
+    return providerRef;
+  }
+
+  return `${providerRef.slice(0, 8)}…${providerRef.slice(-6)}`;
+}
 
 function getDecisionStatus(decision: any): "approved" | "denied" | "requires_approval" {
   if (decision === "approved" || decision === "Approved" || decision?.Approved === null) {
@@ -82,10 +146,13 @@ function SpendBadge({ status }: { status: "approved" | "denied" | "requires_appr
 
 export function SpendTab({ agent }: { agent: AgentData }) {
   const [dashboard, setDashboard] = useState<PaymentDashboard | null>(null);
+  const [allCards, setAllCards] = useState<VirtualCardRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [submitting, setSubmitting] = useState(false);
+  const [cardActionId, setCardActionId] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string>("");
   const [purchaseDraft, setPurchaseDraft] = useState<PurchaseDraft>({
     description: "Test software purchase",
     merchant: "Amazon",
@@ -97,10 +164,16 @@ export function SpendTab({ agent }: { agent: AgentData }) {
   const fetchDashboard = React.useCallback(async () => {
     setLoading(true);
     try {
-      const result: any = await invoke("get_payment_dashboard", { agentId: agent.id });
-      setDashboard(result ?? null);
+      const [dashboardResult, cardsResult] = await Promise.all([
+        invoke<any>("get_payment_dashboard", { agentId: agent.id }),
+        invoke<any[]>("get_virtual_cards_for_agent", { agentId: agent.id, activeOnly: false }),
+      ]);
+      setDashboard(dashboardResult ?? null);
+      setAllCards(Array.isArray(cardsResult) ? cardsResult : []);
+      setFeedback("");
     } catch (e) {
       console.error("Failed to load payment dashboard", e);
+      setFeedback("Failed to refresh payment data.");
     } finally {
       setLoading(false);
     }
@@ -150,6 +223,89 @@ export function SpendTab({ agent }: { agent: AgentData }) {
     setPurchaseDraft(current => ({ ...current, [key]: value }));
   };
 
+  const cancelCard = async (cardId: string) => {
+    setCardActionId(cardId);
+    setFeedback("");
+    try {
+      await invoke("cancel_virtual_card", { cardId });
+      setFeedback("Virtual card cancelled.");
+      await fetchDashboard();
+    } catch (e) {
+      console.error("Failed to cancel virtual card", e);
+      setFeedback("Failed to cancel virtual card.");
+    } finally {
+      setCardActionId(null);
+    }
+  };
+
+  const simulateCardCharge = async (cardId: string) => {
+    setCardActionId(cardId);
+    setFeedback("");
+    try {
+      await invoke("simulate_virtual_card_charge", { cardId });
+      setFeedback("Mock card charge simulated.");
+      await fetchDashboard();
+    } catch (e) {
+      console.error("Failed to simulate virtual card charge", e);
+      setFeedback("Failed to simulate virtual card charge.");
+    } finally {
+      setCardActionId(null);
+    }
+  };
+
+  const simulateCardDecline = async (cardId: string) => {
+    setCardActionId(cardId);
+    setFeedback("");
+    try {
+      await invoke("simulate_virtual_card_decline", { cardId });
+      setFeedback("Mock card decline simulated and spend reconciled.");
+      await fetchDashboard();
+    } catch (e) {
+      console.error("Failed to simulate virtual card decline", e);
+      setFeedback("Failed to simulate virtual card decline.");
+    } finally {
+      setCardActionId(null);
+    }
+  };
+
+  const simulateProviderEvent = async (
+    cardId: string,
+    outcome: "captured" | "declined",
+  ) => {
+    setCardActionId(cardId);
+    setFeedback("");
+    try {
+      await invoke("simulate_provider_transaction_event", { cardId, outcome });
+      setFeedback(
+        outcome === "captured"
+          ? "Provider-style capture event injected."
+          : "Provider-style decline event injected and reconciled.",
+      );
+      await fetchDashboard();
+    } catch (e) {
+      console.error("Failed to simulate provider transaction event", e);
+      setFeedback("Failed to simulate provider transaction event.");
+    } finally {
+      setCardActionId(null);
+    }
+  };
+
+  const copyProviderRef = async (providerCardRef: string) => {
+    setFeedback("");
+    try {
+      if (!navigator.clipboard?.writeText) {
+        setFeedback("Clipboard copy is unavailable in this environment.");
+        return;
+      }
+
+      await navigator.clipboard.writeText(providerCardRef);
+      setFeedback("Provider reference copied for sandbox testing.");
+    } catch (e) {
+      console.error("Failed to copy provider card reference", e);
+      setFeedback("Failed to copy provider reference.");
+    }
+  };
+
   const submitTestPurchase = async () => {
     setSubmitting(true);
     try {
@@ -166,10 +322,34 @@ export function SpendTab({ agent }: { agent: AgentData }) {
       });
       if (result?.message) {
         console.info("Payment request result:", result.message);
+        setFeedback(String(result.message));
       }
       await fetchDashboard();
     } catch (e) {
       console.error("Failed to submit test purchase", e);
+      setFeedback("Failed to submit purchase request.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const issueDevelopmentProviderCard = async (provider: "privacy" | "lithic_sandbox") => {
+    setSubmitting(true);
+    setFeedback("");
+    try {
+      const amountCents = Math.max(0, Math.round((Number(purchaseDraft.amount) || 0) * 100));
+      const result = await invoke<string>("issue_development_provider_card", {
+        agentId: agent.id,
+        amountCents,
+        category: purchaseDraft.category,
+        merchant: purchaseDraft.merchant,
+        provider,
+      });
+      setFeedback(result || "Development provider card issued.");
+      await fetchDashboard();
+    } catch (e) {
+      console.error("Failed to issue development provider card", e);
+      setFeedback("Failed to issue development provider card.");
     } finally {
       setSubmitting(false);
     }
@@ -183,8 +363,15 @@ export function SpendTab({ agent }: { agent: AgentData }) {
     return <div style={{ color: "var(--text-sub)", fontSize: 14 }}>Failed to load payment dashboard.</div>;
   }
 
-  const { budget, pending_approvals, active_virtual_cards } = dashboard;
+  const {
+    budget,
+    pending_approvals,
+    active_virtual_cards,
+    recent_transactions,
+    recent_audit_entries = [],
+  } = dashboard;
   const monthlyRemaining = Math.max(0, (budget.monthly_limit_cents || 0) - (budget.monthly_spent_cents || 0));
+  const settledOrInactiveCards = allCards.filter(card => card.status !== "active");
 
   return (
     <div style={{ paddingBottom: 64 }}>
@@ -211,6 +398,12 @@ export function SpendTab({ agent }: { agent: AgentData }) {
         ))}
       </div>
 
+      {feedback && (
+        <div style={{ marginBottom: 16, fontSize: 12, color: "var(--text-sub)" }}>
+          {feedback}
+        </div>
+      )}
+
       {import.meta.env.DEV && (
         <div style={{ ...glass(0.5), borderRadius: 16, padding: 18, marginBottom: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
@@ -218,6 +411,12 @@ export function SpendTab({ agent }: { agent: AgentData }) {
           </div>
           <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 16 }}>
             Use this with the mock provider or a configured sandbox provider to validate the full approval and issuance flow without real charges.
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>
+            Mock gives you a fully local fake-card loop. Privacy.com and Lithic Sandbox cards can also use the dev-only Inject Capture and Inject Decline controls below to exercise reconciliation without waiting on a real webhook.
+          </div>
+          <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>
+            Need provider-specific testing without live issuance? Use the synthetic provider buttons below to create a local Privacy or Lithic-style card, then replay events with Inject Capture, Inject Decline, or the signed webhook smoke helper.
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr 1fr 0.8fr", gap: 10, marginBottom: 10 }}>
             <input value={purchaseDraft.description} onChange={e => handleDraftChange("description", e.target.value)} placeholder="Description" style={fieldStyle} />
@@ -234,22 +433,38 @@ export function SpendTab({ agent }: { agent: AgentData }) {
               />
               Mark as recurring
             </label>
-            <button
-              onClick={submitTestPurchase}
-              disabled={submitting}
-              style={{
-                padding: "8px 16px",
-                borderRadius: 8,
-                border: "none",
-                background: submitting ? "#4A9E96" : "#3c6663",
-                color: "var(--surface-card)",
-                fontSize: 12,
-                fontWeight: 700,
-                cursor: submitting ? "default" : "pointer",
-              }}
-            >
-              {submitting ? "Submitting..." : "Request Purchase"}
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => issueDevelopmentProviderCard("privacy")}
+                disabled={submitting}
+                style={devSecondaryButtonStyle(submitting)}
+              >
+                {submitting ? "Working..." : "Create Privacy Test Card"}
+              </button>
+              <button
+                onClick={() => issueDevelopmentProviderCard("lithic_sandbox")}
+                disabled={submitting}
+                style={devSecondaryButtonStyle(submitting)}
+              >
+                {submitting ? "Working..." : "Create Lithic Test Card"}
+              </button>
+              <button
+                onClick={submitTestPurchase}
+                disabled={submitting}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: submitting ? "#4A9E96" : "#3c6663",
+                  color: "var(--surface-card)",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: submitting ? "default" : "pointer",
+                }}
+              >
+                {submitting ? "Submitting..." : "Request Purchase"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -270,6 +485,11 @@ export function SpendTab({ agent }: { agent: AgentData }) {
                     <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>
                       {approval.purchase_request.category} · {approval.reason}
                     </div>
+                    {approval.expires_at && (
+                      <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 6 }}>
+                        Expires {new Date(approval.expires_at).toLocaleString()}
+                      </div>
+                    )}
                   </div>
                   <SpendBadge status="requires_approval" />
                 </div>
@@ -350,10 +570,219 @@ export function SpendTab({ agent }: { agent: AgentData }) {
                   <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>
                     {card.provider} · ${(card.amount_cents / 100).toFixed(2)}
                   </div>
+                  {import.meta.env.DEV && card.provider !== "mock" && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                      <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+                        Provider ref: <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", color: "var(--text-main)" }}>{formatProviderRef(card.provider_card_ref)}</span>
+                      </div>
+                      <button
+                        onClick={() => copyProviderRef(card.provider_card_ref)}
+                        style={{
+                          padding: "4px 8px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(0,0,0,0.08)",
+                          background: "var(--surface-card)",
+                          color: "var(--text-main)",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Copy Provider Ref
+                      </button>
+                    </div>
+                  )}
+                  {card.expires_at && (
+                    <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>
+                      Expires {new Date(card.expires_at).toLocaleString()}
+                    </div>
+                  )}
                 </div>
-                <span style={{ fontSize: 11, fontWeight: 700, color: "#4A9E96", background: "#4A9E9615", padding: "4px 8px", borderRadius: 999 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#4A9E96", background: "#4A9E9615", padding: "4px 8px", borderRadius: 999 }}>
+                    {String(card.status).toUpperCase()}
+                  </span>
+                  {card.provider === "mock" && (
+                    <>
+                      <button
+                        onClick={() => simulateCardCharge(card.id)}
+                        disabled={cardActionId === card.id}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(0,0,0,0.08)",
+                          background: "var(--surface-card)",
+                          color: "var(--text-main)",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: cardActionId === card.id ? "default" : "pointer",
+                        }}
+                      >
+                        {cardActionId === card.id ? "Simulating..." : "Simulate Use"}
+                      </button>
+                      <button
+                        onClick={() => simulateCardDecline(card.id)}
+                        disabled={cardActionId === card.id}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(0,0,0,0.08)",
+                          background: "var(--surface-card)",
+                          color: "#92400e",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: cardActionId === card.id ? "default" : "pointer",
+                        }}
+                      >
+                        {cardActionId === card.id ? "Simulating..." : "Simulate Decline"}
+                      </button>
+                    </>
+                  )}
+                  {import.meta.env.DEV && card.provider !== "mock" && (
+                    <>
+                      <button
+                        onClick={() => simulateProviderEvent(card.id, "captured")}
+                        disabled={cardActionId === card.id}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(0,0,0,0.08)",
+                          background: "var(--surface-card)",
+                          color: "var(--text-main)",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: cardActionId === card.id ? "default" : "pointer",
+                        }}
+                      >
+                        {cardActionId === card.id ? "Injecting..." : "Inject Capture"}
+                      </button>
+                      <button
+                        onClick={() => simulateProviderEvent(card.id, "declined")}
+                        disabled={cardActionId === card.id}
+                        style={{
+                          padding: "6px 10px",
+                          borderRadius: 8,
+                          border: "1px solid rgba(0,0,0,0.08)",
+                          background: "var(--surface-card)",
+                          color: "#92400e",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          cursor: cardActionId === card.id ? "default" : "pointer",
+                        }}
+                      >
+                        {cardActionId === card.id ? "Injecting..." : "Inject Decline"}
+                      </button>
+                    </>
+                  )}
+                  <button
+                    onClick={() => cancelCard(card.id)}
+                    disabled={cardActionId === card.id}
+                    style={{
+                      padding: "6px 10px",
+                      borderRadius: 8,
+                      border: "1px solid rgba(0,0,0,0.08)",
+                      background: "var(--surface-card)",
+                      color: "var(--text-main)",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: cardActionId === card.id ? "default" : "pointer",
+                    }}
+                  >
+                    {cardActionId === card.id ? "Cancelling..." : "Cancel Card"}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ ...glass(0.45), borderRadius: 16, padding: 18, marginTop: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>
+          Card Activity
+        </div>
+        {settledOrInactiveCards.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
+            No inactive or consumed cards yet.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {settledOrInactiveCards.map(card => (
+              <div key={card.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 12, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>
+                    {card.merchant} · •••• {card.last_four}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>
+                    {card.provider} · ${(card.amount_cents / 100).toFixed(2)}
+                  </div>
+                </div>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-main)", background: "rgba(0,0,0,0.06)", padding: "4px 8px", borderRadius: 999 }}>
                   {String(card.status).toUpperCase()}
                 </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ ...glass(0.45), borderRadius: 16, padding: 18, marginTop: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>
+          Transaction Activity
+        </div>
+        {recent_transactions.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
+            No settled or declined transactions recorded yet.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {recent_transactions.map(transaction => (
+              <div key={transaction.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 12, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>
+                    {transaction.merchant} · ${(transaction.amount_cents / 100).toFixed(2)}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>
+                    {transaction.source} · {new Date(transaction.created_at).toLocaleString()}
+                  </div>
+                  {transaction.decline_reason && (
+                    <div style={{ fontSize: 11, color: "#92400e", marginTop: 4 }}>
+                      {transaction.decline_reason}
+                    </div>
+                  )}
+                </div>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-main)", background: "rgba(0,0,0,0.06)", padding: "4px 8px", borderRadius: 999 }}>
+                  {String(transaction.status).toUpperCase()}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{ ...glass(0.45), borderRadius: 16, padding: 18, marginTop: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>
+          Audit Trail
+        </div>
+        {recent_audit_entries.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
+            No payment audit entries recorded yet.
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {recent_audit_entries.map(entry => (
+              <div key={entry.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 12, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>
+                    {formatAuditEventLabel(entry.event_type)}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4 }}>
+                    {formatAuditSummary(entry.detail_json)}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>
+                    {new Date(entry.created_at).toLocaleString()}
+                  </div>
+                </div>
               </div>
             ))}
           </div>
@@ -385,3 +814,17 @@ const cellStyle: React.CSSProperties = {
   fontSize: 13,
   color: "var(--text-main)",
 };
+
+function devSecondaryButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid rgba(0,0,0,0.08)",
+    background: "var(--surface-card)",
+    color: "var(--text-main)",
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: disabled ? "default" : "pointer",
+    opacity: disabled ? 0.7 : 1,
+  };
+}

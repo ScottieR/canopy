@@ -59,6 +59,19 @@ pub fn validate_privacy_key(key: &str) -> Result<()> {
     validate_opaque_secret("Privacy.com key", key, 20)
 }
 
+/// Validate Lithic sandbox API key format
+/// Pattern: Opaque secret, currently exposed as a printable ASCII token from the dashboard.
+pub fn validate_lithic_sandbox_key(key: &str) -> Result<()> {
+    validate_opaque_secret("Lithic sandbox key", key, 20)
+}
+
+/// Validate Lithic webhook secret format.
+/// Current secrets are prefixed with `whsec_`, but we accept the raw body as an opaque secret
+/// to avoid breaking rotated or dashboard-copied values in the future.
+pub fn validate_lithic_webhook_secret(secret: &str) -> Result<()> {
+    validate_opaque_secret("Lithic webhook secret", secret, 20)
+}
+
 /// Validate Slack OAuth client secret format
 /// Pattern: Must be non-empty, typically 30+ characters
 pub fn validate_slack_secret(secret: &str) -> Result<()> {
@@ -117,6 +130,18 @@ mod tests {
     fn test_validate_slack_secret() {
         assert!(validate_slack_secret(&"a".repeat(20)).is_ok());
         assert!(validate_slack_secret("short").is_err());
+    }
+
+    #[test]
+    fn test_validate_lithic_sandbox_key() {
+        assert!(validate_lithic_sandbox_key(&"a".repeat(20)).is_ok());
+        assert!(validate_lithic_sandbox_key("short").is_err());
+    }
+
+    #[test]
+    fn test_validate_lithic_webhook_secret() {
+        assert!(validate_lithic_webhook_secret("whsec_abcdefghijklmnopqrstuvwxyz").is_ok());
+        assert!(validate_lithic_webhook_secret("short").is_err());
     }
 
     #[test]

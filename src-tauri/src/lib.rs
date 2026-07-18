@@ -43,6 +43,13 @@ mod slack;
 mod voice;
 mod workspace_manager;
 
+pub use payment::{
+    cancel_virtual_card, evaluate_purchase, get_agent_budget, get_payment_dashboard,
+    get_purchase_history, get_virtual_cards_for_agent, list_pending_purchase_approvals,
+    handle_lithic_transaction_event, handle_privacy_transaction_event,
+    simulate_virtual_card_charge, simulate_virtual_card_decline, update_agent_budget,
+};
+
 use base64::Engine;
 use tauri::Manager;
 
@@ -713,6 +720,10 @@ pub fn run() {
                 }
             }
 
+            let payment_webhook_state =
+                std::sync::Arc::new(payment::PaymentWebhookListenerState::default());
+            handle.manage(payment_webhook_state.clone());
+
             // Initialize voice session manager
             handle.manage(voice::VoiceSessionManager::new());
 
@@ -763,8 +774,18 @@ pub fn run() {
             // Start the dispatch WebSocket server for mobile clients
             let dispatch_state = std::sync::Arc::new(dispatch::DispatchState::new());
             handle.manage(dispatch_state.clone());
+            let dispatch_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                dispatch::start_websocket_server(dispatch_state, handle.clone()).await;
+                dispatch::start_websocket_server(dispatch_state, dispatch_handle).await;
+            });
+
+            let payment_webhook_handle = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                payment::start_payment_webhook_server(
+                    payment_webhook_state,
+                    payment_webhook_handle,
+                )
+                .await;
             });
 
             // Sync pricing asynchronously from Admin Oracle
@@ -855,6 +876,7 @@ pub fn run() {
             openclaw::set_agent_paused,
             openclaw::delete_agent,
             openclaw::send_message,
+            openclaw::cancel_thread_run,
             openclaw::get_conversation_history,
             openclaw::list_agent_conversations,
             openclaw::list_thread_runs,
@@ -967,6 +989,15 @@ pub fn run() {
             payment::list_pending_purchase_approvals,
             payment::get_virtual_cards_for_agent,
             payment::get_payment_dashboard,
+            payment::cancel_virtual_card,
+            payment::simulate_virtual_card_charge,
+            payment::simulate_virtual_card_decline,
+            payment::simulate_provider_transaction_event,
+            payment::issue_development_provider_card,
+            payment::handle_privacy_transaction_event,
+            payment::handle_lithic_transaction_event,
+            payment::get_payment_provider_config,
+            payment::configure_payment_provider,
             payment::get_agent_budget,
             payment::update_agent_budget,
             payment::get_purchase_history,

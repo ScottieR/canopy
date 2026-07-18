@@ -472,6 +472,26 @@ impl Database {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS payment_transactions (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                purchase_record_id TEXT,
+                virtual_card_id TEXT,
+                provider TEXT NOT NULL,
+                provider_transaction_ref TEXT NOT NULL,
+                merchant TEXT NOT NULL,
+                amount_cents INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                decline_reason TEXT,
+                created_at TEXT NOT NULL,
+                settled_at TEXT,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+
         // Create global_config table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS global_config (
@@ -791,6 +811,16 @@ impl Database {
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_payment_audit_log_agent_created
              ON payment_audit_log(agent_id, created_at DESC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_payment_transactions_agent_created
+             ON payment_transactions(agent_id, created_at DESC)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_payment_transactions_card
+             ON payment_transactions(virtual_card_id, created_at DESC)",
             [],
         )?;
         conn.execute(
@@ -1315,6 +1345,17 @@ impl Database {
         Ok(exists)
     }
 
+    /// Return the owning agent ID for a conversation, if it exists.
+    pub fn get_conversation_agent_id(&self, conversation_id: &str) -> SqlResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT agent_id FROM conversations WHERE id = ?1 LIMIT 1",
+            params![conversation_id],
+            |row| row.get(0),
+        )
+        .optional()
+    }
+
     /// Check if a user has permission to modify an agent
     /// Combines existence check with future permission system
     pub fn can_modify_agent(&self, agent_id: &str, user_id: &str) -> SqlResult<bool> {
@@ -1654,6 +1695,55 @@ impl Database {
         Ok(())
     }
 
+    /// Persist a resumability checkpoint for a thread run and roll the
+    /// aggregate checkpoint metadata up to the parent conversation.
+    pub fn checkpoint_thread_run(
+        &self,
+        run_id: &str,
+        checkpoint_payload_json: &str,
+    ) -> SqlResult<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = Utc::now().to_rfc3339();
+
+        let conversation_id: String = tx.query_row(
+            "SELECT conversation_id FROM thread_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+
+        tx.execute(
+            "UPDATE thread_runs
+             SET checkpoint_payload_json = ?1,
+                 updated_at = ?2
+             WHERE id = ?3",
+            params![checkpoint_payload_json, &now, run_id],
+        )?;
+        tx.execute(
+            "UPDATE conversations
+             SET checkpoint_count = checkpoint_count + 1,
+                 last_checkpoint_at = ?1,
+                 updated_at = ?1
+             WHERE id = ?2",
+            params![&now, &conversation_id],
+        )?;
+
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn list_active_thread_run_ids(&self, conversation_id: &str) -> SqlResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id
+             FROM thread_runs
+             WHERE conversation_id = ?1 AND status = 'running'
+             ORDER BY started_at DESC",
+        )?;
+        let rows = stmt.query_map(params![conversation_id], |row| row.get(0))?;
+        rows.collect::<SqlResult<Vec<_>>>()
+    }
+
     pub fn list_thread_runs(&self, conversation_id: &str, limit: u32) -> SqlResult<Vec<ThreadRun>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1690,6 +1780,74 @@ impl Database {
         })?;
 
         rows.collect::<SqlResult<Vec<_>>>()
+    }
+
+    pub fn get_conversation_summary(
+        &self,
+        conversation_id: &str,
+    ) -> SqlResult<Option<ConversationSummary>> {
+        let conn = self.conn.lock().unwrap();
+
+        conn.query_row(
+            "SELECT
+                c.id,
+                c.agent_id,
+                c.title,
+                c.created_at,
+                c.updated_at,
+                COUNT(m.id) AS message_count,
+                (
+                    SELECT content
+                    FROM messages fm
+                    WHERE fm.conversation_id = c.id
+                      AND fm.role = 'user'
+                    ORDER BY fm.timestamp ASC
+                    LIMIT 1
+                ) AS first_user_message,
+                c.thread_status,
+                c.background_allowed,
+                c.active_run_count,
+                c.last_run_id,
+                c.last_run_status,
+                c.checkpoint_count,
+                c.last_checkpoint_at
+             FROM conversations c
+             LEFT JOIN messages m ON m.conversation_id = c.id
+             WHERE c.id = ?1
+             GROUP BY
+                c.id,
+                c.agent_id,
+                c.title,
+                c.created_at,
+                c.updated_at,
+                c.thread_status,
+                c.background_allowed,
+                c.active_run_count,
+                c.last_run_id,
+                c.last_run_status,
+                c.checkpoint_count,
+                c.last_checkpoint_at",
+            params![conversation_id],
+            |row| {
+                Ok(ConversationSummary {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    title: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    message_count: row.get::<_, i64>(5)?.max(0) as u32,
+                    first_user_message: row.get(6)?,
+                    thread_status: row.get(7)?,
+                    background_allowed: row.get::<_, bool>(8)?,
+                    active_run_count: row.get::<_, i64>(9)?.max(0) as u32,
+                    last_run_id: row.get(10)?,
+                    last_run_status: row.get(11)?,
+                    checkpoint_count: row.get::<_, i64>(12)?.max(0) as u32,
+                    last_checkpoint_at: row.get(13)?,
+                })
+            },
+        )
+        .optional()
     }
 
     /// List durable conversation summaries for an agent, newest activity first.
@@ -2682,6 +2840,90 @@ impl Database {
         Ok(())
     }
 
+    pub fn get_virtual_card(&self, card_id: &str) -> SqlResult<Option<VirtualCardRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, purchase_record_id, provider, provider_card_ref, last_four, amount_cents, merchant, memo, status, created_at, expires_at
+             FROM virtual_cards
+             WHERE id = ?1
+             LIMIT 1",
+        )?;
+
+        stmt.query_row(params![card_id], |row| {
+            let provider_json: String = row.get(3)?;
+            let status_json: String = row.get(9)?;
+            let created_at: String = row.get(10)?;
+            let expires_at: Option<String> = row.get(11)?;
+            Ok(VirtualCardRecord {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                purchase_record_id: row.get(2)?,
+                provider: serde_json::from_str(&provider_json)
+                    .unwrap_or(VirtualCardProviderKind::Mock),
+                provider_card_ref: row.get(4)?,
+                last_four: row.get(5)?,
+                amount_cents: row.get::<_, i64>(6)? as u64,
+                merchant: row.get(7)?,
+                memo: row.get(8)?,
+                status: serde_json::from_str(&status_json).unwrap_or(VirtualCardStatus::Active),
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::DateTime::default())
+                    .with_timezone(&Utc),
+                expires_at: expires_at.and_then(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .ok()
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                }),
+            })
+        })
+        .optional()
+    }
+
+    pub fn get_virtual_card_by_provider_ref(
+        &self,
+        provider: &VirtualCardProviderKind,
+        provider_card_ref: &str,
+    ) -> SqlResult<Option<VirtualCardRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let provider_json =
+            serde_json::to_string(provider).unwrap_or_else(|_| "\"mock\"".to_string());
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, purchase_record_id, provider, provider_card_ref, last_four, amount_cents, merchant, memo, status, created_at, expires_at
+             FROM virtual_cards
+             WHERE provider = ?1 AND provider_card_ref = ?2
+             LIMIT 1",
+        )?;
+
+        stmt.query_row(params![provider_json, provider_card_ref], |row| {
+            let provider_json: String = row.get(3)?;
+            let status_json: String = row.get(9)?;
+            let created_at: String = row.get(10)?;
+            let expires_at: Option<String> = row.get(11)?;
+            Ok(VirtualCardRecord {
+                id: row.get(0)?,
+                agent_id: row.get(1)?,
+                purchase_record_id: row.get(2)?,
+                provider: serde_json::from_str(&provider_json)
+                    .unwrap_or(VirtualCardProviderKind::Mock),
+                provider_card_ref: row.get(4)?,
+                last_four: row.get(5)?,
+                amount_cents: row.get::<_, i64>(6)? as u64,
+                merchant: row.get(7)?,
+                memo: row.get(8)?,
+                status: serde_json::from_str(&status_json).unwrap_or(VirtualCardStatus::Active),
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .unwrap_or_else(|_| chrono::DateTime::default())
+                    .with_timezone(&Utc),
+                expires_at: expires_at.and_then(|value| {
+                    chrono::DateTime::parse_from_rfc3339(&value)
+                        .ok()
+                        .map(|parsed| parsed.with_timezone(&Utc))
+                }),
+            })
+        })
+        .optional()
+    }
+
     pub fn list_virtual_cards(
         &self,
         agent_id: &str,
@@ -2732,6 +2974,34 @@ impl Database {
         Ok(cards)
     }
 
+    pub fn update_virtual_card(&self, card: &VirtualCardRecord) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE virtual_cards
+             SET provider = ?2,
+                 provider_card_ref = ?3,
+                 last_four = ?4,
+                 amount_cents = ?5,
+                 merchant = ?6,
+                 memo = ?7,
+                 status = ?8,
+                 expires_at = ?9
+             WHERE id = ?1",
+            params![
+                &card.id,
+                serde_json::to_string(&card.provider).unwrap_or_else(|_| "\"mock\"".to_string()),
+                &card.provider_card_ref,
+                &card.last_four,
+                card.amount_cents as i64,
+                &card.merchant,
+                &card.memo,
+                serde_json::to_string(&card.status).unwrap_or_else(|_| "\"active\"".to_string()),
+                card.expires_at.map(|value| value.to_rfc3339()),
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn record_payment_audit_entry(&self, entry: &PaymentAuditEntry) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -2746,6 +3016,208 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn list_payment_audit_entries(
+        &self,
+        agent_id: &str,
+        limit: u32,
+    ) -> SqlResult<Vec<PaymentAuditEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, event_type, detail_json, created_at
+             FROM payment_audit_log
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        )?;
+
+        let entries = stmt
+            .query_map(params![agent_id, limit as i32], |row| {
+                let detail_json: String = row.get(3)?;
+                let created_at: String = row.get(4)?;
+                Ok(PaymentAuditEntry {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    event_type: row.get(2)?,
+                    detail_json: serde_json::from_str(&detail_json)
+                        .unwrap_or_else(|_| serde_json::json!({})),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(entries)
+    }
+
+    pub fn record_payment_transaction(&self, transaction: &PaymentTransactionRecord) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO payment_transactions
+             (id, agent_id, purchase_record_id, virtual_card_id, provider, provider_transaction_ref, merchant, amount_cents, status, source, decline_reason, created_at, settled_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                &transaction.id,
+                &transaction.agent_id,
+                &transaction.purchase_record_id,
+                &transaction.virtual_card_id,
+                serde_json::to_string(&transaction.provider).unwrap_or_else(|_| "\"mock\"".to_string()),
+                &transaction.provider_transaction_ref,
+                &transaction.merchant,
+                transaction.amount_cents as i64,
+                serde_json::to_string(&transaction.status).unwrap_or_else(|_| "\"captured\"".to_string()),
+                &transaction.source,
+                &transaction.decline_reason,
+                transaction.created_at.to_rfc3339(),
+                transaction.settled_at.map(|value| value.to_rfc3339()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_payment_transaction_by_provider_ref(
+        &self,
+        provider: &VirtualCardProviderKind,
+        provider_transaction_ref: &str,
+    ) -> SqlResult<Option<PaymentTransactionRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let provider_json =
+            serde_json::to_string(provider).unwrap_or_else(|_| "\"mock\"".to_string());
+        conn.query_row(
+            "SELECT id, agent_id, purchase_record_id, virtual_card_id, provider, provider_transaction_ref, merchant, amount_cents, status, source, decline_reason, created_at, settled_at
+             FROM payment_transactions
+             WHERE provider = ?1 AND provider_transaction_ref = ?2
+             LIMIT 1",
+            params![provider_json, provider_transaction_ref],
+            |row| {
+                let provider_json: String = row.get(4)?;
+                let status_json: String = row.get(8)?;
+                let created_at: String = row.get(11)?;
+                let settled_at: Option<String> = row.get(12)?;
+                Ok(PaymentTransactionRecord {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    purchase_record_id: row.get(2)?,
+                    virtual_card_id: row.get(3)?,
+                    provider: serde_json::from_str(&provider_json)
+                        .unwrap_or(VirtualCardProviderKind::Mock),
+                    provider_transaction_ref: row.get(5)?,
+                    merchant: row.get(6)?,
+                    amount_cents: row.get::<_, i64>(7)? as u64,
+                    status: serde_json::from_str(&status_json)
+                        .unwrap_or(PaymentTransactionStatus::Captured),
+                    source: row.get(9)?,
+                    decline_reason: row.get(10)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    settled_at: settled_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                })
+            },
+        )
+        .optional()
+    }
+
+    pub fn list_payment_transactions(
+        &self,
+        agent_id: &str,
+        limit: u32,
+    ) -> SqlResult<Vec<PaymentTransactionRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, purchase_record_id, virtual_card_id, provider, provider_transaction_ref, merchant, amount_cents, status, source, decline_reason, created_at, settled_at
+             FROM payment_transactions
+             WHERE agent_id = ?1
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        )?;
+
+        let transactions = stmt
+            .query_map(params![agent_id, limit as i32], |row| {
+                let provider_json: String = row.get(4)?;
+                let status_json: String = row.get(8)?;
+                let created_at: String = row.get(11)?;
+                let settled_at: Option<String> = row.get(12)?;
+                Ok(PaymentTransactionRecord {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    purchase_record_id: row.get(2)?,
+                    virtual_card_id: row.get(3)?,
+                    provider: serde_json::from_str(&provider_json)
+                        .unwrap_or(VirtualCardProviderKind::Mock),
+                    provider_transaction_ref: row.get(5)?,
+                    merchant: row.get(6)?,
+                    amount_cents: row.get::<_, i64>(7)? as u64,
+                    status: serde_json::from_str(&status_json)
+                        .unwrap_or(PaymentTransactionStatus::Captured),
+                    source: row.get(9)?,
+                    decline_reason: row.get(10)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    settled_at: settled_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(transactions)
+    }
+
+    pub fn list_payment_transactions_for_card(
+        &self,
+        card_id: &str,
+    ) -> SqlResult<Vec<PaymentTransactionRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, agent_id, purchase_record_id, virtual_card_id, provider, provider_transaction_ref, merchant, amount_cents, status, source, decline_reason, created_at, settled_at
+             FROM payment_transactions
+             WHERE virtual_card_id = ?1
+             ORDER BY created_at DESC",
+        )?;
+
+        let transactions = stmt
+            .query_map(params![card_id], |row| {
+                let provider_json: String = row.get(4)?;
+                let status_json: String = row.get(8)?;
+                let created_at: String = row.get(11)?;
+                let settled_at: Option<String> = row.get(12)?;
+                Ok(PaymentTransactionRecord {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    purchase_record_id: row.get(2)?,
+                    virtual_card_id: row.get(3)?,
+                    provider: serde_json::from_str(&provider_json)
+                        .unwrap_or(VirtualCardProviderKind::Mock),
+                    provider_transaction_ref: row.get(5)?,
+                    merchant: row.get(6)?,
+                    amount_cents: row.get::<_, i64>(7)? as u64,
+                    status: serde_json::from_str(&status_json)
+                        .unwrap_or(PaymentTransactionStatus::Captured),
+                    source: row.get(9)?,
+                    decline_reason: row.get(10)?,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    settled_at: settled_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(transactions)
     }
 
     // ─── Budget Reset Operations ───────────────────────────────────────────
@@ -2848,6 +3320,36 @@ impl Database {
             conn.execute(
                 "UPDATE budgets SET monthly_spent_cents = monthly_spent_cents + ?1 WHERE agent_id = ?2",
                 params![amount_cents as i32, agent_id],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn adjust_agent_spending(
+        &self,
+        agent_id: &str,
+        delta_cents: i64,
+        is_daily: bool,
+        is_monthly: bool,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+
+        if is_daily {
+            conn.execute(
+                "UPDATE budgets
+                 SET daily_spent_cents = MAX(0, daily_spent_cents + ?1)
+                 WHERE agent_id = ?2",
+                params![delta_cents, agent_id],
+            )?;
+        }
+
+        if is_monthly {
+            conn.execute(
+                "UPDATE budgets
+                 SET monthly_spent_cents = MAX(0, monthly_spent_cents + ?1)
+                 WHERE agent_id = ?2",
+                params![delta_cents, agent_id],
             )?;
         }
 
@@ -3634,6 +4136,9 @@ mod tests {
         assert_eq!(running_summary.last_run_status.as_deref(), Some("running"));
         assert_eq!(running_summary.last_run_id.as_deref(), Some(run_id.as_str()));
 
+        db.checkpoint_thread_run(&run_id, "{\"summary\":\"Checkpoint captured\"}")
+            .unwrap();
+
         db.finish_thread_run(&run_id, "completed", None).unwrap();
 
         let completed_summary = db
@@ -3648,11 +4153,17 @@ mod tests {
             completed_summary.last_run_status.as_deref(),
             Some("completed")
         );
+        assert_eq!(completed_summary.checkpoint_count, 1);
+        assert!(completed_summary.last_checkpoint_at.is_some());
 
         let runs = db.list_thread_runs(&conv_id, 10).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, "completed");
         assert_eq!(runs[0].trigger_type, "user_message");
+        assert_eq!(
+            runs[0].checkpoint_payload_json.as_deref(),
+            Some("{\"summary\":\"Checkpoint captured\"}")
+        );
     }
 
     #[test]
@@ -3719,6 +4230,80 @@ mod tests {
         assert_eq!(final_summary.thread_status, "failed");
         assert_eq!(final_summary.active_run_count, 0);
         assert_eq!(final_summary.last_run_status.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn test_get_conversation_agent_id_returns_thread_owner() {
+        let db = create_test_db();
+
+        let alpha = Agent {
+            id: "agent-alpha".to_string(),
+            name: "Alpha".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#3366FF".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Alpha".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: vec![],
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        let beta = Agent {
+            id: "agent-beta".to_string(),
+            name: "Beta".to_string(),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#22AA88".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Beta".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: "".to_string(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: vec![],
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&alpha).unwrap();
+        db.insert_agent(&beta).unwrap();
+
+        let conv_id = "conv_shared_guard";
+        db.ensure_conversation(conv_id, "agent-alpha").unwrap();
+
+        assert_eq!(
+            db.get_conversation_agent_id(conv_id).unwrap().as_deref(),
+            Some("agent-alpha")
+        );
+        assert_ne!(
+            db.get_conversation_agent_id(conv_id).unwrap().as_deref(),
+            Some("agent-beta")
+        );
     }
 
     #[test]

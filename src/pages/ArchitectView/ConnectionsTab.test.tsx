@@ -127,7 +127,22 @@ describe('ConnectionsTab - Workspace Folder Access', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     invokeMock.mockImplementation(async (command: string) => (
-      command === 'get_agent_allowed_directories' ? [] : null
+      command === 'get_agent_allowed_directories'
+        ? []
+        : command === 'get_payment_provider_config'
+          ? {
+              provider: 'mock',
+              privacy_configured: false,
+              lithic_sandbox_configured: false,
+              lithic_webhook_secret_configured: false,
+              active_provider_ready: true,
+              using_env_fallback: false,
+              webhook_listener_listening: true,
+              privacy_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/privacy',
+              lithic_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/lithic',
+              webhook_listener_error: null,
+            }
+          : null
     ));
     dialogOpenMock.mockResolvedValue(null);
     (window as any).__TAURI_INTERNALS__ = {
@@ -144,6 +159,20 @@ describe('ConnectionsTab - Workspace Folder Access', () => {
       }
       if (command === 'get_agent_allowed_directories' || command === 'get_available_models') {
         return [];
+      }
+      if (command === 'get_payment_provider_config') {
+        return {
+          provider: 'mock',
+          privacy_configured: false,
+          lithic_sandbox_configured: false,
+          lithic_webhook_secret_configured: false,
+          active_provider_ready: true,
+          using_env_fallback: false,
+          webhook_listener_listening: true,
+          privacy_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/privacy',
+          lithic_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/lithic',
+          webhook_listener_error: null,
+        };
       }
       if (command === 'get_secret_cmd') {
         return '';
@@ -215,6 +244,177 @@ describe('ConnectionsTab - Workspace Folder Access', () => {
     });
 
     expect(invokeMock.mock.calls.some(([command]) => command === 'start_gateway')).toBe(false);
+  });
+
+  it('renders extended payment controls and saves merchant/category policy lists', async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'get_agent_allowed_directories' || command === 'get_available_models') {
+        return [];
+      }
+      if (command === 'get_payment_provider_config') {
+        return {
+          provider: 'mock',
+          privacy_configured: false,
+          lithic_sandbox_configured: false,
+          lithic_webhook_secret_configured: false,
+          active_provider_ready: true,
+          using_env_fallback: false,
+          webhook_listener_listening: true,
+          privacy_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/privacy',
+          lithic_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/lithic',
+          webhook_listener_error: null,
+        };
+      }
+      if (command === 'get_agent_budget') {
+        return {
+          agent_id: mockAgent.id,
+          payments_enabled: true,
+          auto_approve_threshold_cents: 5000,
+          per_transaction_limit_cents: 20000,
+          daily_limit_cents: 50000,
+          monthly_limit_cents: 200000,
+          hourly_velocity_limit: 5,
+          allowed_categories: ['software'],
+          allowed_merchants: ['amazon*'],
+          blocked_merchants: ['temu'],
+          daily_spent_cents: 0,
+          monthly_spent_cents: 0,
+          require_approval_new_merchant: true,
+          require_approval_recurring: true,
+        };
+      }
+      if (command === 'configure_payment_provider') {
+        return {
+          provider: 'lithic_sandbox',
+          privacy_configured: false,
+          lithic_sandbox_configured: true,
+          lithic_webhook_secret_configured: true,
+          active_provider_ready: true,
+          using_env_fallback: false,
+          webhook_listener_listening: true,
+          privacy_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/privacy',
+          lithic_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/lithic',
+          webhook_listener_error: null,
+        };
+      }
+      return null;
+    });
+
+    render(<ConnectionsTab agent={mockAgent} />);
+
+    expect(await screen.findByText('Monthly Budget Total ($)')).toBeInTheDocument();
+    expect(screen.getByText('Hourly Velocity Limit')).toBeInTheDocument();
+    expect(screen.getByText('Allowed Merchants')).toBeInTheDocument();
+    expect(screen.getByText('Blocked Merchants')).toBeInTheDocument();
+
+    fireEvent.change(
+      screen.getByPlaceholderText('software, office_supplies, cleaning_supplies'),
+      { target: { value: 'software, office_supplies' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('amazon*, apple, github'),
+      { target: { value: 'amazon*, github' } },
+    );
+    fireEvent.change(
+      screen.getByPlaceholderText('temu, wish, random-shop*'),
+      { target: { value: 'temu, wish' } },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Commit Limits' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('update_agent_budget', {
+        budget: expect.objectContaining({
+          agent_id: mockAgent.id,
+          monthly_limit_cents: 200000,
+          hourly_velocity_limit: 5,
+          allowed_categories: ['software', 'office_supplies'],
+          allowed_merchants: ['amazon*', 'github'],
+          blocked_merchants: ['temu', 'wish'],
+        }),
+      });
+    });
+  });
+
+  it('loads and saves payment provider configuration from the payments section', async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'get_agent_allowed_directories' || command === 'get_available_models') {
+        return [];
+      }
+      if (command === 'get_agent_budget') {
+        return {
+          agent_id: mockAgent.id,
+          payments_enabled: true,
+          auto_approve_threshold_cents: 5000,
+          per_transaction_limit_cents: 20000,
+          daily_limit_cents: 50000,
+          monthly_limit_cents: 200000,
+          hourly_velocity_limit: 5,
+          allowed_categories: ['software'],
+          allowed_merchants: [],
+          blocked_merchants: [],
+          daily_spent_cents: 0,
+          monthly_spent_cents: 0,
+          require_approval_new_merchant: true,
+          require_approval_recurring: true,
+        };
+      }
+      if (command === 'get_payment_provider_config') {
+        return {
+          provider: 'mock',
+          privacy_configured: false,
+          lithic_sandbox_configured: false,
+          lithic_webhook_secret_configured: false,
+          active_provider_ready: true,
+          using_env_fallback: false,
+          webhook_listener_listening: true,
+          privacy_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/privacy',
+          lithic_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/lithic',
+          webhook_listener_error: null,
+        };
+      }
+      if (command === 'configure_payment_provider') {
+        return {
+          provider: 'lithic_sandbox',
+          privacy_configured: false,
+          lithic_sandbox_configured: true,
+          lithic_webhook_secret_configured: true,
+          active_provider_ready: true,
+          using_env_fallback: false,
+          webhook_listener_listening: true,
+          privacy_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/privacy',
+          lithic_webhook_url: 'http://127.0.0.1:18080/payment-webhooks/lithic',
+          webhook_listener_error: null,
+        };
+      }
+      return null;
+    });
+
+    render(<ConnectionsTab agent={mockAgent} />);
+
+    expect(await screen.findByText('Provider & Sandbox')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue('Mock Provider'), {
+      target: { value: 'lithic_sandbox' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('Paste Lithic sandbox API key'), {
+      target: { value: 'aaaaaaaaaaaaaaaaaaaa' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Provider' }));
+
+    await waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith('configure_payment_provider', {
+        update: {
+          provider: 'lithic_sandbox',
+          privacy_api_key: null,
+          lithic_sandbox_api_key: 'aaaaaaaaaaaaaaaaaaaa',
+          lithic_webhook_secret: null,
+          clear_privacy_api_key: false,
+          clear_lithic_sandbox_api_key: false,
+          clear_lithic_webhook_secret: false,
+        },
+      });
+    });
   });
 });
 

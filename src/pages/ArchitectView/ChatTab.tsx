@@ -122,7 +122,7 @@ type BackendConversationSummary = {
   updated_at: string;
   message_count: number;
   first_user_message?: string | null;
-  thread_status: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed";
+  thread_status: "idle" | "queued" | "running" | "waiting_for_human" | "paused" | "completed" | "failed" | "cancelled";
   background_allowed: boolean;
   active_run_count: number;
   last_run_id?: string | null;
@@ -638,6 +638,64 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     []
   );
 
+  const upsertConversationSummary = useCallback((summary: BackendConversationSummary) => {
+    const nextTitle = deriveConversationTitle(summary.title, summary.first_user_message);
+    const createdAt = toUnixMs(summary.created_at);
+    const lastActiveAt = toUnixMs(summary.updated_at);
+
+    useWorldStore.setState(state => ({
+      agents: state.agents.map(a => {
+        if (a.id !== summary.agent_id) return a;
+
+        const conversations = [...(a.conversations || [])];
+        const existingIndex = conversations.findIndex(conv => conv.id === summary.id);
+        const existingConversation = existingIndex >= 0 ? conversations[existingIndex] : null;
+        const nextConversation = {
+          id: summary.id,
+          title: existingConversation
+            ? deriveConversationTitle(existingConversation.title, summary.first_user_message) || nextTitle
+            : nextTitle,
+          messages: existingConversation?.messages || [],
+          createdAt: existingConversation?.createdAt || createdAt,
+          lastActiveAt: Math.max(existingConversation?.lastActiveAt || 0, lastActiveAt),
+          type: existingConversation?.type || "dm",
+          status: existingConversation?.status || "active",
+          threadStatus: summary.thread_status,
+          backgroundAllowed: summary.background_allowed,
+          activeRunCount: summary.active_run_count,
+          lastRunId: summary.last_run_id || null,
+          lastRunStatus: summary.last_run_status || null,
+          checkpointCount: summary.checkpoint_count,
+          lastCheckpointAt: summary.last_checkpoint_at ? toUnixMs(summary.last_checkpoint_at) : null,
+        };
+
+        if (existingIndex >= 0) {
+          conversations[existingIndex] = nextConversation;
+        } else {
+          conversations.push(nextConversation);
+        }
+
+        return { ...a, conversations };
+      }),
+    }));
+  }, []);
+
+  const refreshConversationSummary = useCallback(async (sessionId?: string | null) => {
+    if (!sessionId) return;
+    try {
+      const summaries = await invoke<BackendConversationSummary[]>("list_agent_conversations", {
+        agentId: agentRef.current.id,
+        limit: 100,
+      });
+      const summary = summaries.find(item => item.id === sessionId);
+      if (summary) {
+        upsertConversationSummary(summary);
+      }
+    } catch (error) {
+      console.warn("Failed to refresh conversation summary:", error);
+    }
+  }, [upsertConversationSummary]);
+
   const activeThreadLoading = isSessionLoading(agent.activeConversationId);
 
   // Process queued messages when loading finishes
@@ -1044,9 +1102,23 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     }
   };
 
-  const handleStop = () => {
-    markSessionStopped(agentRef.current.activeConversationId);
+  const handleStop = async () => {
+    const sessionId = agentRef.current.activeConversationId;
     setQueuedMessages([]); // Clear queue on stop
+    if (!sessionId) return;
+
+    try {
+      const result = await invoke<{ signal_matched?: boolean; active_runs?: number }>("cancel_thread_run", {
+        agentId: agentRef.current.id,
+        sessionId,
+      });
+      if (result?.signal_matched || (result?.active_runs ?? 0) === 0) {
+        markSessionStopped(sessionId);
+        void refreshConversationSummary(sessionId);
+      }
+    } catch (e) {
+      console.error("Failed to hard-cancel thread run:", e);
+    }
   };
 
   const handleSendMessage = async (overrideText?: string, overrideAttachments?: any[], overrideSessionId?: string, isStarterTask?: boolean) => {
@@ -1184,14 +1256,22 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             ...a,
             conversations: (a.conversations || []).map(c =>
               c.id === activeSessionId
-                ? {
-                    ...c,
-                    threadStatus: response?.thread_status || "idle",
-                    activeRunCount: Math.max(0, (c.activeRunCount || 1) - 1),
-                    lastRunId: response?.run_id || c.lastRunId || null,
-                    lastRunStatus: "completed",
-                    lastActiveAt: Date.now(),
-                  }
+                  ? {
+                      ...c,
+                      threadStatus: response?.thread_status || ((response?.active_run_count ?? 0) > 0 ? "running" : "idle"),
+                      activeRunCount: typeof response?.active_run_count === "number"
+                        ? response.active_run_count
+                        : Math.max(0, (c.activeRunCount || 1) - 1),
+                      lastRunId: response?.last_run_id || response?.run_id || c.lastRunId || null,
+                      lastRunStatus: response?.last_run_status || "completed",
+                      checkpointCount: typeof response?.checkpoint_count === "number"
+                        ? response.checkpoint_count
+                        : c.checkpointCount,
+                      lastCheckpointAt: response?.last_checkpoint_at
+                        ? toUnixMs(response.last_checkpoint_at)
+                        : c.lastCheckpointAt,
+                      lastActiveAt: Date.now(),
+                    }
                 : c
             ),
           };
@@ -1220,6 +1300,33 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       }
     } catch (error) {
       let friendlyError = String(error);
+      const isCancelled = /Run cancelled by user/i.test(friendlyError);
+
+      if (isCancelled) {
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => {
+            if (a.id !== agent.id) return a;
+            return {
+              ...a,
+              conversations: (a.conversations || []).map(c =>
+                c.id !== activeSessionId
+                  ? c
+                  : (() => {
+                      const nextActiveRunCount = Math.max(0, (c.activeRunCount || 1) - 1);
+                      return {
+                        ...c,
+                        threadStatus: nextActiveRunCount > 0 ? "running" : "cancelled",
+                        activeRunCount: nextActiveRunCount,
+                        lastRunStatus: "cancelled",
+                        lastActiveAt: Date.now(),
+                      };
+                    })()
+              ),
+            };
+          }),
+        }));
+        return;
+      }
 
       const isGatewayRestart =
         friendlyError.includes("1012") ||
@@ -1262,10 +1369,18 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                   c.id === activeSessionId
                     ? {
                         ...c,
-                        threadStatus: retryResponse?.thread_status || "idle",
-                        activeRunCount: Math.max(0, (c.activeRunCount || 1) - 1),
-                        lastRunId: retryResponse?.run_id || c.lastRunId || null,
-                        lastRunStatus: "completed",
+                        threadStatus: retryResponse?.thread_status || ((retryResponse?.active_run_count ?? 0) > 0 ? "running" : "idle"),
+                        activeRunCount: typeof retryResponse?.active_run_count === "number"
+                          ? retryResponse.active_run_count
+                          : Math.max(0, (c.activeRunCount || 1) - 1),
+                        lastRunId: retryResponse?.last_run_id || retryResponse?.run_id || c.lastRunId || null,
+                        lastRunStatus: retryResponse?.last_run_status || "completed",
+                        checkpointCount: typeof retryResponse?.checkpoint_count === "number"
+                          ? retryResponse.checkpoint_count
+                          : c.checkpointCount,
+                        lastCheckpointAt: retryResponse?.last_checkpoint_at
+                          ? toUnixMs(retryResponse.last_checkpoint_at)
+                          : c.lastCheckpointAt,
                         lastActiveAt: Date.now(),
                       }
                     : c
@@ -1359,15 +1474,18 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             ...a,
             chatLog: [...a.chatLog, errorMsg],
             conversations: (a.conversations || []).map(c =>
-              c.id === activeSessionId
-                ? {
-                    ...c,
-                    threadStatus: "failed",
-                    activeRunCount: 0,
-                    lastRunStatus: "failed",
-                    lastActiveAt: Date.now(),
-                  }
-                : c
+              c.id !== activeSessionId
+                ? c
+                : (() => {
+                    const nextActiveRunCount = Math.max(0, (c.activeRunCount || 1) - 1);
+                    return {
+                      ...c,
+                      threadStatus: nextActiveRunCount > 0 ? "running" : "failed",
+                      activeRunCount: nextActiveRunCount,
+                      lastRunStatus: "failed",
+                      lastActiveAt: Date.now(),
+                    };
+                  })()
             ),
           };
         }),
@@ -1377,6 +1495,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     } finally {
       clearSessionLoading(activeSessionId);
       clearStoppedMarker(activeSessionId);
+      void refreshConversationSummary(activeSessionId);
     }
   };
 

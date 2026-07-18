@@ -684,6 +684,30 @@ fn discover_provider_key_availability() -> ProviderKeyAvailability {
     }
 }
 
+fn memory_search_config_for_keys(
+    key_availability: ProviderKeyAvailability,
+) -> serde_json::Value {
+    // OpenClaw's current memory-search runtime supports OpenAI, Gemini, or "none".
+    // Older Canopy builds wrote "chroma", which now causes the gateway to log
+    // "Unknown memory embedding provider: chroma" and degrade startup behavior.
+    if key_availability.has_openai {
+        serde_json::json!({
+            "enabled": true,
+            "provider": "openai"
+        })
+    } else if key_availability.has_gemini {
+        serde_json::json!({
+            "enabled": true,
+            "provider": "gemini"
+        })
+    } else {
+        serde_json::json!({
+            "enabled": true,
+            "provider": "none"
+        })
+    }
+}
+
 fn preflight_sanitize_and_merge_config_with_keys(
     state_dir: &std::path::Path,
     // `Some(agent_id)` → this is an isolated agent container; `None` → main gateway.
@@ -793,13 +817,8 @@ fn preflight_sanitize_and_merge_config_with_keys(
 
     // ── 5. Context-Aware Injections (gateway vs isolated) ──────────────────────
     if !is_isolated {
-        required_baseline["agents"]["defaults"]["memorySearch"] = serde_json::json!({
-            "enabled": true,
-            "provider": "chroma",
-            "remote": {
-                "baseUrl": "http://canopy-chroma:8000"
-            }
-        });
+        required_baseline["agents"]["defaults"]["memorySearch"] =
+            memory_search_config_for_keys(key_availability);
 
         required_baseline["plugins"]["entries"]["browser"]["enabled"] = serde_json::json!(true);
         required_baseline["browser"] = serde_json::json!({
@@ -1894,6 +1913,12 @@ mod tests {
             Some(crate::model_constants::DEFAULT_ANTHROPIC_MODEL),
             "preflight model selection should be deterministic in tests and not depend on host keychain state"
         );
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/provider")
+                .and_then(|v| v.as_str()),
+            Some("none"),
+            "without a supported embeddings key, memory search should fall back to keyword-only mode"
+        );
     }
 
     #[test]
@@ -1920,6 +1945,38 @@ mod tests {
             cfg.pointer("/agents/defaults/model/primary")
                 .and_then(|v| v.as_str()),
             Some(crate::model_constants::DEFAULT_OPENAI_MODEL)
+        );
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/provider")
+                .and_then(|v| v.as_str()),
+            Some("openai")
+        );
+    }
+
+    #[test]
+    fn preflight_uses_gemini_memory_search_when_only_gemini_key_exists() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            None,
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: false,
+                has_openai: false,
+                has_gemini: true,
+            },
+        );
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
+        )
+        .expect("valid json");
+
+        assert_eq!(
+            cfg.pointer("/agents/defaults/memorySearch/provider")
+                .and_then(|v| v.as_str()),
+            Some("gemini")
         );
     }
 }
