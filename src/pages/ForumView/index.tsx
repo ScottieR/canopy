@@ -4,9 +4,12 @@ import remarkGfm from "remark-gfm";
 import { useForumStore, Milestone, Forum, ForumBlock } from "../../store/forumStore";
 import { useWorldStore } from "../../store/worldStore";
 import { ForumThread } from "./ForumThread";
-import { createForumOrchestrator, createFollowUpOrchestrator, ForumOrchestratorController } from "./forumOrchestrator";
+import { createForumOrchestrator, createFollowUpOrchestrator, ForumOrchestratorController, agentAssetFilename } from "./forumOrchestrator";
+import { getAssetUrl } from "../../utils/assets";
 import { ForumBriefModal } from "./ForumBriefModal";
 import { ExportForumModal } from "./ExportForumModal";
+import { PublishShareModal } from "../../components/shared/PublishShareModal";
+import { getShareConfig } from "../../utils/sharePublish";
 import { HistoryPanel } from "./HistoryPanel";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { LiveVoiceOverlay } from "../ArchitectView/LiveVoiceOverlay";
@@ -1475,7 +1478,7 @@ function AgentCard({ agent, forumStatus, onRemove }: {
   const worldAgentImage = useWorldStore(
     s => s.agents.find(a => a.id === agent.agentId)?.image
   );
-  const avatarImage = agent.image || worldAgentImage || null;
+  const avatarImage = getAssetUrl(agent.image || worldAgentImage) || null;
   const elapsed = useElapsed(agent.actionChangedAt);
   const isActive = forumStatus === "active";
   const isThinking = isActive && !!agent.currentAction && !agent.currentAction.includes("✓") && !agent.currentAction.includes("Complete");
@@ -2146,7 +2149,7 @@ interface BoardCard {
   id: string;
   title: string;
   body: string;
-  authors: Array<{ name: string; robeColor: string; role: string }>;
+  authors: Array<{ name: string; robeColor: string; role: string; image?: string | null }>;
 }
 
 function parseBoardCards(content: string, agents: any[]): BoardCard[] {
@@ -2197,6 +2200,7 @@ function parseBoardCards(content: string, agents: any[]): BoardCard[] {
         name,
         robeColor: matchedAgent?.robeColor || "#4A9E96",
         role: matchedAgent?.forumRole || "Contributor",
+        image: matchedAgent?.image ?? null,
       };
     });
 
@@ -2211,7 +2215,7 @@ function parseBoardCards(content: string, agents: any[]): BoardCard[] {
   return cards;
 }
 
-function CoAuthors({ authors }: { authors: Array<{ name: string; robeColor: string; role: string }> }) {
+function CoAuthors({ authors }: { authors: Array<{ name: string; robeColor: string; role: string; image?: string | null }> }) {
   if (authors.length === 0) return null;
   const primary = authors[0];
   const others = authors.slice(1);
@@ -2232,10 +2236,13 @@ function CoAuthors({ authors }: { authors: Array<{ name: string; robeColor: stri
           fontSize: 10,
           fontWeight: 700,
           color: primary.robeColor,
+          overflow: "hidden",
         }}
         title={`${primary.name} (${primary.role})`}
       >
-        {primary.name.charAt(0).toUpperCase()}
+        {primary.image
+          ? <img src={getAssetUrl(primary.image)} alt={primary.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          : primary.name.charAt(0).toUpperCase()}
       </div>
 
       {/* Others overlapping */}
@@ -2258,10 +2265,13 @@ function CoAuthors({ authors }: { authors: Array<{ name: string; robeColor: stri
                 fontWeight: 700,
                 color: author.robeColor,
                 zIndex: 10 - i,
+                overflow: "hidden",
               }}
               title={`${author.name} (${author.role})`}
             >
-              {author.name.charAt(0).toUpperCase()}
+              {author.image
+                ? <img src={getAssetUrl(author.image)} alt={author.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                : author.name.charAt(0).toUpperCase()}
             </div>
           ))}
         </div>
@@ -2388,6 +2398,13 @@ function ForumBlackboard({
   // App-style deliverables (html/genui) render full-bleed; the research &
   // strategy reference rail becomes an on-demand drawer instead of a fixed 40%.
   const [refsOpen, setRefsOpen] = useState(false);
+  // Workstream E: Publish & Share — button only renders when the share service
+  // is configured (config-gated; no dead-end UI in unconfigured builds).
+  const [shareConfigured, setShareConfigured] = useState(false);
+  const [showPublishModal, setShowPublishModal] = useState(false);
+  useEffect(() => {
+    getShareConfig().then(cfg => setShareConfigured(cfg.configured)).catch(() => setShareConfigured(false));
+  }, []);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wasCompleted = useRef(false);
@@ -2435,7 +2452,22 @@ function ForumBlackboard({
   const isComplete = forum.status === "completed";
   const isRendered = viewMode === "rendered";
 
-  const attachments = React.useMemo(() => forum.messages.flatMap(m => m.attachments || []), [forum.messages]);
+  // Resolvable image assets for the deliverable: user uploads + agent portraits.
+  // Filenames must match agentAssetFilename() in forumOrchestrator (the writer
+  // is told these exact names). Server-relative portrait paths are resolved via
+  // getAssetUrl so they load inside the sandboxed srcDoc iframe.
+  const attachments = React.useMemo(() => {
+    const msgAtts = forum.messages.flatMap(m => m.attachments || []);
+    const agentAtts = (forum.agents || [])
+      .filter(a => !!a.image)
+      .map(a => ({
+        name: agentAssetFilename(a.name),
+        dataUrl: getAssetUrl(a.image),
+        mimeType: "image/png",
+      }))
+      .filter(a => a.dataUrl.startsWith("data:") || a.dataUrl.startsWith("http"));
+    return [...msgAtts, ...agentAtts];
+  }, [forum.messages, forum.agents]);
   const resolvedHtmlContent = React.useMemo(
     () => isolateGeneratedHtml(resolveHtmlImages(htmlContent, attachments)),
     [htmlContent, attachments],
@@ -2661,6 +2693,28 @@ function ForumBlackboard({
           </>,
           "Download with Made with Canopy watermark"
         )}
+
+        {/* Publish & Share — live link to a fully operational mini-app (Workstream E) */}
+        {shareConfigured && isHtmlMode && !!htmlContent && toolbarBtn(
+          () => setShowPublishModal(true), false, "#D4A04A",
+          <>
+            <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
+              <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+              <line x1="8.6" y1="10.5" x2="15.4" y2="6.5"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/>
+            </svg>
+            Publish
+          </>,
+          "Publish a live link anyone can open and use"
+        )}
+        {/* Fixed-position overlay; renders null when closed. */}
+        <PublishShareModal
+          isOpen={showPublishModal}
+          onClose={() => setShowPublishModal(false)}
+          html={htmlContent || ""}
+          title={forum.title || "Forum deliverable"}
+          agentName={(forum.agents || []).map((a: { name: string }) => a.name).join(", ")}
+          shareKey={`forum_${forum.id}${selectedArtifact ? `_${selectedArtifact.id}` : ""}`}
+        />
 
         {/* Pin project mini-apps to the originating agent's shelf */}
         {miniAppPinTarget && toolbarBtn(

@@ -39,6 +39,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useForumStore } from "../../store/forumStore";
+import { buildForumLaneDiscipline } from "../../utils/rosterScope";
 import type { Forum, ForumAgent, ForumBlock, ForumMessageKind } from "../../store/forumStore";
 
 // ─── Answer resolver — bridges orchestrator Promises to UI callbacks ───────────
@@ -195,6 +196,25 @@ function extractText(response: unknown): string {
   return text;
 }
 
+// ─── Thinking extraction ──────────────────────────────────────────────────────
+
+/**
+ * Agents are told to wrap process commentary / notes-to-self in <thinking> tags.
+ * Those blocks are routed to the shared scratchpad (working notes), keeping the
+ * user-facing board and chat free of meta commentary.
+ */
+function splitThinking(text: string): { content: string; thoughts: string[] } {
+  const thoughts: string[] = [];
+  const content = text
+    .replace(/<thinking>([\s\S]*?)<\/thinking>/gi, (_m, t) => {
+      const trimmed = String(t).trim();
+      if (trimmed) thoughts.push(trimmed);
+      return "";
+    })
+    .trim();
+  return { content, thoughts };
+}
+
 // ─── Question JSON detection ──────────────────────────────────────────────────
 
 interface AgentQuestion {
@@ -338,7 +358,8 @@ Rules:
 function buildParallelResearchPrompt(
   forum: Forum,
   agent: ForumAgent,
-  clarifications: string
+  clarifications: string,
+  isExperienceLead: boolean
 ): string {
   const steering = getSteeringDirectives(forum);
   const attachments = getAttachmentsContext(forum);
@@ -356,11 +377,18 @@ ${attachments ? `\n**User uploaded files/attachments (reference these assets):**
 **Your forum role:** ${agent.forumRole}
 ${teamList ? `**Other team members:** ${teamList}` : ""}
 
-This is the parallel RESEARCH & DISCOVERY phase. Using your specific expertise as ${agent.role}, provide substantive findings relevant to this brief. 
-Please focus on:
-1. Identify 2-3 best-in-class professional applications or software experiences in the real world related to this domain (e.g. Wanderlog/TripIt for itineraries; AirDNA/Airbnb for short term rentals; YNAB for budgets; Framebridge/Artfully Walls for gallery walls; LinkedIn/coaching tools for career moves) and deconstruct their core UX paradigms.
-2. State key facts, principles, or constraints that apply.
-3. Suggest options or layouts worth evaluating.
+This is the parallel RESEARCH & DISCOVERY phase.
+
+**STAY IN CHARACTER.** You are ${agent.role} — contribute ONLY what that expertise uniquely provides, written in your own professional voice. If a topic belongs to a teammate's specialty (see the roster above), leave it to them; overlapping generalist takes waste the user's budget. ${isExperienceLead
+    ? "As the team's experience lead, ALSO identify 1–2 best-in-class real-world apps in this domain (e.g. Wanderlog for itineraries; AirDNA/Zillow for rentals; YNAB for budgets) and note which of their UX paradigms the final deliverable app should emulate."
+    : "Do NOT discuss app design, UX paradigms, or software comparisons — that is the experience lead's job, not yours."}
+
+Deliver, from your discipline's perspective:
+1. 3–6 concrete findings specific to this brief — real names, numbers, places, prices, trade-offs.
+2. Options worth evaluating, with your professional opinion on each.
+3. Constraints or risks your discipline can see that others would miss.
+
+**Output discipline:** everything you write is placed verbatim on the user-facing project board. No meta commentary about the process, the team, or these instructions; no restating the brief; no "As a ${agent.role}, I…" preamble — just the findings. If you have process thoughts or notes-to-self, wrap them in <thinking></thinking> tags — they will be routed to the team scratchpad instead of the board.
 
 Return your research as clear markdown with headers. Be specific to the actual brief — not generic filler. Aim for 200–400 words.`;
 }
@@ -415,6 +443,8 @@ This is the STRATEGIC APPROACH phase. Based on the research and your expertise a
 - Key decisions the user needs to make
 - How to sequence the work
 - What to prioritise and why
+
+**Output discipline:** everything you write is placed verbatim on the user-facing project board. Stay in character as ${agent.role}; no meta commentary about the process or the team, no restating the brief. Process thoughts belong in <thinking></thinking> tags — they'll be routed to the team scratchpad.
 
 Format as clear markdown. Be specific and actionable — a recommended path, not another analysis. Aim for 150–300 words.`;
 }
@@ -534,15 +564,15 @@ const GENUI_BEST_PRACTICES = `**GENERATIVE UI BEST PRACTICES — the deliverable
 ENVIRONMENT (hard constraints):
 - ONE complete, self-contained HTML document: \`<!DOCTYPE html>\` … \`</html>\`. All CSS in a single <style> block, all JS in a single <script> block at the end of <body>. Never wrap the document in markdown code fences.
 - The sandbox has NO network access. Never reference external URLs: no CDN scripts or stylesheets, no Google Fonts, no web images, no fetch/XHR. Anything external renders as a broken asset.
-- Visuals therefore come from: inline SVG (preferred — draw real charts, maps, icons), CSS gradients/shapes, and unicode/emoji. Fonts: system stack only, e.g. font-family: -apple-system, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif.
+- Visuals therefore come from: inline SVG (preferred — draw real charts, maps, icons, and illustrative scenes), CSS gradients/shapes, unicode/emoji, and the provided image assets (exact filenames are listed in your prompt — agent portraits and user uploads; these are resolved at render time). Fonts: system stack only, e.g. font-family: -apple-system, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif.
 - No localStorage/sessionStorage/cookies (they throw in the sandbox) — keep state in JS variables. No alert/confirm/prompt.
 - FINISH the document. If you are running long, cut scope — fewer sections, tighter copy — but ALWAYS emit the closing </html>. A truncated page is the worst possible outcome.
 
 INFORMATION ARCHITECTURE (build an APP, not a scrolling document — this is the single most important section):
 - Structure the deliverable as a small product with distinct VIEWS switched by a persistent top nav (tabs), using JS show/hide. Never one long scroll of stacked sections.
-- The default landing view is the TAKEAWAY — an at-a-glance dashboard: the headline recommendation in one sentence, 3–5 key stats as stat cards, and ONE visual centerpiece built in inline SVG (a chart, map, timeline, or diagram of the core content — whatever best captures the essence of this project). Someone who reads ONLY this view must come away knowing the outcome and why.
+- The default landing view is the TAKEAWAY, laid out as a bento grid (one consistent gap, 16–24px radius): a HERO TILE (spanning ~2×2) that states the outcome as a decision — e.g. "→ Buy in Asheville, NC" — with a one-line why and a confidence note; 3–5 stat tiles with large numerals; and ONE visual centerpiece tile built in inline SVG (a chart, map, timeline, or diagram of the core content — whatever best captures the essence of this project). Someone who reads ONLY this view must come away knowing the outcome and why.
 - Then one view per major facet of the work (e.g. Itinerary / Budget / Activities, or Plan / Options / Risks) carrying the full detail with its own interactions.
-- The LAST view is a "Library": the team's supporting material embedded IN the app. Condense the research findings and strategy from the board into browsable cards or accordions (grouped per topic or per agent, with attribution). The app must be fully self-contained — the user should never need another panel to understand how the team got here.
+- The LAST view is a "Library": the team's supporting material embedded IN the app. Condense the research findings and strategy from the board into browsable cards or accordions (grouped per topic or per agent). Attribute each contribution with the agent's portrait image (use the exact asset filenames from your prompt, rendered as small round avatars) and name — the user should feel their team in the product, not just read text.
 - Depth over sprawl: each view fits its purpose in one or two screens; use progressive disclosure (accordions, drill-in, hover detail) instead of dumping prose.
 
 CONTENT GROUNDING (what makes it feel bespoke, not generic):
@@ -550,23 +580,39 @@ CONTENT GROUNDING (what makes it feel bespoke, not generic):
 - If the board lists specific items (routes, stops, dishes, exercises, line items), render THOSE items — the user should recognize their project instantly.
 - Prefer showing fewer, fully-realized sections over many skeletal ones.
 
-DESIGN SYSTEM (Canopy house style):
-- Palette: primary #3c6663, accent #4A9E96, warm highlight #F59E3F, page background #faf9f6, card background #ffffff, text #303330, subtle borders rgba(0,0,0,0.07).
+VISUAL IDENTITY (make it feel designed for THIS project, not templated):
+- DERIVE THE PALETTE FROM THE SUBJECT. Canopy's teal is the app chrome around you — do NOT default to it. A mountain rental app wants forest greens and warm timber; a coastal one, sea blues and sand; a food project, tomato reds and cream; a finance one, deep navy and gold. Choose 1 expressive primary, 1 accent, and warm neutrals (off-white background, near-black text), then use them with conviction: a tinted page background, colored section eyebrows, gradient hero tile. Reserve Canopy teal for the watermark only.
+- Every view must contain at least one non-text visual: an SVG chart with real data, an illustrated SVG scene or map, a progress meter, a photo-like CSS gradient panel, or portrait-attributed cards. If a view is only paragraphs and bullets, redesign it.
+- Draw generously-sized inline SVG: hero illustrations 200–320px tall, icons 32–48px, charts with axis labels, gridlines, and value annotations. Flat, geometric, 2–3 tones of your palette — cohesive, not clip-art.
 - html,body { margin:0 } with the page background color on body; the panel scrolls vertically and can be anywhere from ~700px to full-desktop wide — design a fluid layout (CSS grid with auto-fit/minmax) that uses width when it has it, never fixed pixel page widths.
-- Cards: white, border-radius 14–16px, soft shadow (0 2px 12px rgba(0,0,0,0.06)), 20–24px padding, generous whitespace between sections.
+- Cards/tiles: border-radius 16–24px, ONE consistent grid gap, soft shadow (0 2px 12px rgba(0,0,0,0.06)), 20–24px padding. Consistent radius + gap is what makes a bento layout read as designed.
 - Compact app chrome: a slim hero strip (project title + one-line purpose) directly above the nav — not a giant banner; the takeaway dashboard is the star, not the header.
-- Typography: 15–16px body, 1.6 line-height, headings with letter-spacing -0.01em; uppercase 11px letterspaced labels for section eyebrows.
+- Typography: 15–16px body, 1.6 line-height, headings with letter-spacing -0.01em; uppercase 11px letterspaced labels for section eyebrows; hero numerals 32–48px bold.
 
 INTERACTIVITY & DELIGHT (this is what makes it magical):
-- Include 2–4 interactive elements that genuinely serve the content: tabs, filters, toggles, accordions, checklists with a live progress bar, sliders that recompute real numbers, hover-reveal detail cards. Every control must visibly change something — no dead buttons.
+- Include 2–4 interactive elements that genuinely serve the content: tabs, filters, toggles, accordions, checklists with a live progress bar, sliders that recompute real numbers (e.g. a mortgage-rate slider that re-renders cash flow), hover-reveal detail cards. Every control must visibly change something — no dead buttons.
 - Micro-polish: 150–250ms ease transitions on hover/expand, subtle hover lift on cards (translateY(-2px) + shadow), a gentle staggered fade-in on load (CSS animation, max ~400ms).
 - Emulate the interaction paradigms of the best-in-class product for this domain identified in research (e.g. Wanderlog for trips, YNAB for budgets, Notion for structured plans) — layout patterns, not branding.
 - Accessibility basics: real <button> elements, sufficient color contrast, focus-visible outlines.
 - Finish with a subtle "Made with Canopy" watermark: fixed bottom-right, 10px, opacity 0.3.`;
 
+/** Stable filename for an agent portrait asset injected into the deliverable iframe.
+ *  MUST match the slug logic in ForumView's attachment resolver. */
+export function agentAssetFilename(name: string): string {
+  return `agent-${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}.png`;
+}
+
+function getAgentAssetManifest(forum: Forum): string {
+  return forum.agents
+    .filter(a => !!a.image)
+    .map(a => `- "${agentAssetFilename(a.name)}" — portrait of ${a.name} (${a.forumRole})`)
+    .join("\n");
+}
+
 function buildDraftPrompt(forum: Forum, agent: ForumAgent, boardSoFar: string, clarifications: string): string {
   const steering = getSteeringDirectives(forum);
   const attachments = getAttachmentsContext(forum);
+  const agentAssets = getAgentAssetManifest(forum);
   const reserved = 1500 + clarifications.length + steering.length + attachments.length + forum.brief.length;
   const safeBoard = fitBlock(boardSoFar, reserved);
   return `You are ${agent.name}, ${agent.role}, producing the final deliverable for a collaborative forum.
@@ -583,8 +629,8 @@ ${safeBoard}
 **DEFAULT TO HTML.** The deliverable panel renders your output full-bleed, like an app the team shipped — not a document in a frame. Build a small self-contained product: the takeaway front and center as an interactive, visual dashboard; the full detail in navigable views; and the team's research & strategy (from the board content above) condensed into an embedded Library view. Choose HTML unless the output is genuinely prose-only (e.g. a cover letter, a recipe, a poem).
 
 ${GENUI_BEST_PRACTICES}
-
-- If referencing uploaded image assets, use their EXACT filenames in src="..." or CSS url(...) (e.g. src="filename.png"). They will be resolved dynamically — these are the ONLY permitted image sources besides inline SVG/data URIs.
+${agentAssets ? `\n**Available image assets (reference by EXACT filename in src="..." — resolved at render time):**\n${agentAssets}\n` : ""}
+- If referencing uploaded or listed image assets, use their EXACT filenames in src="..." or CSS url(...) (e.g. src="filename.png"). They will be resolved dynamically — these are the ONLY permitted image sources besides inline SVG/data URIs.
 
 **MARKDOWN** — use only for outputs that are inherently prose: memos, letters, recipes, step-by-step guides, or any brief where visual layout adds nothing.
 
@@ -661,7 +707,7 @@ ${safeBoard}
 
 REVIEW PHASE — assess the deliverable:
 1. Does it address the brief and the user's steering?
-2. For HTML deliverables — is it structured as an app (nav with views), with the takeaway instantly digestible on the landing view (headline recommendation, key stats, a visual centerpiece)? Are the team's research and strategy embedded in a Library/supporting-docs view so it's self-contained? A single long scrolling document with no navigation is grounds for revision.
+2. For HTML deliverables — is it structured as an app (nav with views), with the takeaway instantly digestible on the landing view (headline decision, key stats, a visual centerpiece)? Are the team's research and strategy embedded in a Library/supporting-docs view so it's self-contained? Does it look designed for THIS subject — its own palette and real visuals — rather than a generic monochrome text page? A single long scrolling document with no navigation, or a page that is only text, is grounds for revision.
 3. Any specific gap or improvement to flag?
 
 Return ONLY valid JSON (no markdown, no fences):
@@ -901,7 +947,16 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
      *  Retries once on timeout errors (5s pause) — most "LLM request timeout"
      *  failures are transient Node event-loop blips, not permanent failures.
      */
-    const callAgent = async (agent: ForumAgent, prompt: string, phase: string): Promise<string> => {
+    const callAgent = async (agent: ForumAgent, rawPrompt: string, phase: string): Promise<string> => {
+      // Lane discipline on EVERY phase call (July 18): an STR Manager opines on
+      // renter ROI and local law — UX belongs to whoever owns design. Injected
+      // here (single choke point) so no phase prompt can forget it.
+      const forumForLanes = useForumStore.getState().forums.find(f => f.id === forumId);
+      const prompt = `${buildForumLaneDiscipline(
+        agent.name,
+        agent.role,
+        (forumForLanes?.agents || []).map(participant => ({ name: participant.name, role: participant.role })),
+      )}\n\n${rawPrompt}`;
       const isTimeoutErr  = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("timeout") || s.includes("taking a long time"); };
       const isRateLimitErr = (e: unknown) => { const s = String(e).toLowerCase(); return s.includes("rate limit") || s.includes("429") || s.includes("too many request"); };
       // Quota / billing errors: retrying won't help — surface immediately and let other agents continue
@@ -1311,9 +1366,18 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
           if (agentIndex > 0) await new Promise(r => setTimeout(r, agentIndex * 800));
           if (stopped) return { name: agent.name, text: "" };
           try {
-            const prompt = buildParallelResearchPrompt(forum, agent, clarifications);
-            const responseText = await callAgent(agent, prompt, "research");
+            const prompt = buildParallelResearchPrompt(
+              forum, agent, clarifications,
+              agent.agentId === strategist.agentId
+            );
+            const raw = await callAgent(agent, prompt, "research");
             if (stopped) return { name: agent.name, text: "" };
+
+            // Route <thinking> blocks to the scratchpad, not the board
+            const { content: responseText, thoughts } = splitThinking(raw);
+            for (const t of thoughts) {
+              appendScratchpad(forumId, `**${agent.name} (thinking):** ${t}\n\n`);
+            }
 
             // Post each agent's individual findings to the chat thread
             post(agent.agentId, chatPreview(responseText));
@@ -1333,7 +1397,7 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         // Merge all agent outputs
         const mergedResearch = results
           .filter(r => r.text.trim().length > 0)
-          .map(r => `### Discovery & UX Insights by ${r.name}\n\n${r.text}`)
+          .map(r => `### Findings — ${r.name}\n\n${r.text}`)
           .join("\n\n---\n\n");
 
         researchText = mergedResearch;
@@ -1391,11 +1455,16 @@ export function createForumOrchestrator(forumId: string): ForumOrchestratorContr
         updateAgentAction(forumId, strategist.agentId, "Developing approach…");
 
         try {
-          stratText = await callAgent(
+          const rawStrat = await callAgent(
             strategist,
             buildStrategyPrompt(forum, strategist, researchText, clarifications),
             "strategy"
           );
+          const stratSplit = splitThinking(rawStrat);
+          for (const t of stratSplit.thoughts) {
+            appendScratchpad(forumId, `**${strategist.name} (thinking):** ${t}\n\n`);
+          }
+          stratText = stratSplit.content;
         } catch (err) {
           if (isAbortError(err)) throw err;
           reportAgentError(err, strategist);

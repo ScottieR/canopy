@@ -590,7 +590,9 @@ export function KeeperPanel() {
 
   // On the Canopy view, Eddy's reef cave (bottom-left, EddyCorner) is the
   // opener — the pill would be a duplicate affordance, so it hides there.
-  const showPill = !open && activeView !== "canopy";
+  // Hidden on canopy (embodied Eddy lives there) and during onboarding (the
+  // wizard has its own Eddie surface — one Eddie per screen).
+  const showPill = !open && activeView !== "canopy" && activeView !== "onboarding";
 
   return (
     <>

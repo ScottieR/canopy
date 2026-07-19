@@ -898,6 +898,13 @@ pub async fn start_gateway(app_handle: tauri::AppHandle) -> Result<String, Strin
 pub async fn start_gateway_internal(
     app_handle: Option<tauri::AppHandle>,
 ) -> Result<String, String> {
+    // ── Engine readiness fast-fail (Workstream A) ──
+    // If background provisioning is known to be mid-flight or failed, return a
+    // clear, immediate error instead of letting downstream docker calls hang or
+    // fail cryptically. Idle (returning users, provisioning never ran) passes
+    // through to the legacy behavior below.
+    crate::engine_install::ensure_engine_ready_for_deploy()?;
+
     // ── RATE LIMITING ──
     crate::rate_limiter::limiters::DOCKER_EXEC_LIMITER
         .check("local-user")

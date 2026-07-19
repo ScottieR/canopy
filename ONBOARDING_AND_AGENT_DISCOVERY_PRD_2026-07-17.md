@@ -1,7 +1,7 @@
 # Canopy PRD: Conversational Agent Discovery, Onboarding, and Add-Agent Flow
 
 **Date:** July 17, 2026  
-**Status:** Proposed  
+**Status:** Phase A largely shipped (July 17–18): Eddie discovery shell, hybrid prompt + suggested cards, auto-draft with voice/accessory defaults, role-aware connection + heartbeat recommendations, confidence-honest draft copy, discovery-seeded starter task, channel-chooser final step. Outstanding: portrait system (P0.6), conversational connection requests from the drafted agent (Phase B), Add-Agent variant polish, generative drafting for no-match prompts (flagged, needs hosted inference).  
 **Owners:** Product, Design, Desktop  
 **Related:** `Canopy - Technical Specification.md`, `Canopy UX Audit — May 2026.md`, `canopy/CREATE_AGENT_FLOW_NOTES_2026-06-24.md`, `canopy/templates/README.md`
 

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState } from "react";
 import { Forum, ForumArtifact, ForumMessage, useForumStore } from "../../store/forumStore";
 import { resolveAnswer } from "./forumOrchestrator";
+import { getAssetUrl } from "../../utils/assets";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -25,6 +26,27 @@ function rgba(hex: string, alpha: number): string {
   const g = (bigint >> 8) & 255;
   const b = bigint & 255;
   return `rgba(${r},${g},${b},${alpha})`;
+}
+
+/** Round agent avatar: portrait when available, colored initial otherwise. */
+function AgentPip({ name, image, color, pulse }: {
+  name?: string; image?: string | null; color: string; pulse?: boolean;
+}) {
+  return (
+    <div style={{
+      width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
+      background: rgba(color, 0.15),
+      border: `1.5px solid ${rgba(color, pulse ? 0.5 : 0.4)}`,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontSize: 10, fontWeight: 700, color, overflow: "hidden",
+      marginTop: 2,
+      animation: pulse ? "typing-avatar-pulse 2s ease-in-out infinite" : undefined,
+    }}>
+      {image
+        ? <img src={getAssetUrl(image)} alt={name ?? "Agent"} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        : (name ?? "A").charAt(0).toUpperCase()}
+    </div>
+  );
 }
 
 // ─── Message renderers ────────────────────────────────────────────────────────
@@ -134,16 +156,7 @@ function AgentMessage({ msg, forum, onArtifactClick }: { msg: ForumMessage; foru
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
       {/* Avatar pip */}
-      <div style={{
-        width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
-        background: rgba(color, 0.15),
-        border: `1.5px solid ${rgba(color, 0.4)}`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 10, fontWeight: 700, color: color,
-        marginTop: 2,
-      }}>
-        {(agent?.name ?? "A").charAt(0).toUpperCase()}
-      </div>
+      <AgentPip name={agent?.name ?? msg.agentName} image={agent?.image} color={color} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
         {/* Sender line */}
@@ -395,16 +408,7 @@ function QuestionBubble({ msg, forum }: { msg: ForumMessage; forum: Forum }) {
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
       {/* Avatar pip */}
-      <div style={{
-        width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
-        background: rgba(color, 0.15),
-        border: `1.5px solid ${rgba(color, 0.4)}`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 10, fontWeight: 700, color,
-        marginTop: 2,
-      }}>
-        {(agent?.name ?? "A").charAt(0).toUpperCase()}
-      </div>
+      <AgentPip name={agent?.name ?? msg.agentName} image={agent?.image} color={color} />
 
       <div style={{ flex: 1, minWidth: 0 }}>
         {/* Sender + timestamp */}
@@ -885,17 +889,7 @@ function TypingBubble({ forum }: { forum: Forum }) {
   return (
     <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
       {/* Avatar with breathing ring */}
-      <div style={{
-        width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
-        background: rgba(color, 0.15),
-        border: `1.5px solid ${rgba(color, 0.5)}`,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 10, fontWeight: 700, color,
-        marginTop: 2,
-        animation: "typing-avatar-pulse 2s ease-in-out infinite",
-      }}>
-        {(activeAgent.name ?? "A").charAt(0).toUpperCase()}
-      </div>
+      <AgentPip name={activeAgent.name} image={activeAgent.image} color={color} pulse />
 
       <div style={{ flex: 1, minWidth: 0 }}>
         {/* Name + action label */}

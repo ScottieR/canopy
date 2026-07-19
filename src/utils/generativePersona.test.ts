@@ -1,0 +1,68 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildPersonaDraftMessage,
+  composePersonaPersonality,
+  parsePersonaDraftReply,
+} from "./generativePersona";
+
+const ROLES = ["Assistant", "Chef", "Media Advisor"];
+const ACCESSORIES = ["/a/1.png", "/a/2.png", "/a/3.png"];
+
+describe("parsePersonaDraftReply", () => {
+  it("parses a fenced reply, validates blend, maps accessory indices", () => {
+    const reply = 'Sure:\n```json\n{"fits_existing":false,"existing_role":null,"title":"Garden Sommelier","name":"Vio","tagline":"Wine and garden cocktails, handled.","soul_seed":"You are Vio, a warm sommelier.","blend":["Chef","FakeRole"],"voice":"fable","accessory_indices":[0,2,99]}\n```';
+    const persona = parsePersonaDraftReply(reply, ROLES, ACCESSORIES);
+    expect(persona).not.toBeNull();
+    expect(persona!.fitsExisting).toBe(false);
+    expect(persona!.title).toBe("Garden Sommelier");
+    expect(persona!.blend).toEqual(["Chef"]); // invalid keys dropped
+    expect(persona!.accessories).toEqual(["/a/1.png", "/a/3.png"]); // OOB dropped
+    expect(persona!.voice).toBe("fable");
+  });
+
+  it("handles the fits-existing path", () => {
+    const persona = parsePersonaDraftReply('{"fits_existing":true,"existing_role":"Chef"}', ROLES, ACCESSORIES);
+    expect(persona!.fitsExisting).toBe(true);
+    expect(persona!.existingRole).toBe("Chef");
+  });
+
+  it("returns null for garbage, missing identity, or unusable blends", () => {
+    expect(parsePersonaDraftReply("no json", ROLES, ACCESSORIES)).toBeNull();
+    expect(parsePersonaDraftReply('{"fits_existing":false,"title":"X"}', ROLES, ACCESSORIES)).toBeNull();
+    expect(parsePersonaDraftReply('{"fits_existing":false,"title":"X","name":"Y","blend":["Nope"]}', ROLES, ACCESSORIES)).toBeNull();
+  });
+
+  it("never returns an existing_role outside the library", () => {
+    const persona = parsePersonaDraftReply('{"fits_existing":true,"existing_role":"Hacker"}', ROLES, ACCESSORIES);
+    expect(persona).toBeNull(); // fits_existing without a valid role is unusable
+  });
+});
+
+describe("buildPersonaDraftMessage", () => {
+  it("stays under the helper endpoint's 4000-char cap with maximal inputs", () => {
+    const message = buildPersonaDraftMessage(
+      "x".repeat(2000),
+      ROLES.map(key => ({ key })),
+      Array.from({ length: 200 }, (_, i) => `Accessory Name ${i}`),
+    );
+    expect(message.length).toBeLessThan(4000);
+  });
+
+  it("includes the sommelier guardrail example", () => {
+    expect(buildPersonaDraftMessage("wine", ROLES.map(key => ({ key })))).toContain("sommelier is NOT a Media Advisor");
+  });
+});
+
+describe("composePersonaPersonality", () => {
+  it("is persona-first — role boilerplate can never contradict the user need", () => {
+    const persona = parsePersonaDraftReply(
+      '{"fits_existing":false,"title":"Garden Sommelier","name":"Vio","tagline":"t","soul_seed":"You are Vio, a warm sommelier.","blend":["Chef"]}',
+      ROLES,
+      ACCESSORIES,
+    )!;
+    const text = composePersonaPersonality(persona, "wine selections and craft cocktails");
+    expect(text.startsWith("You are Vio")).toBe(true);
+    expect(text).toContain("wine selections");
+    expect(text).not.toContain("Media Advisor");
+  });
+});

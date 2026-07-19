@@ -22,19 +22,28 @@ import { Toggle } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { getAssetUrl } from "../utils/assets";
 import { buildCompanionUrl } from "../utils/connectorCatalog";
+import { MobilePairingModal } from "../components/Companion/MobilePairingModal";
+import { TestDriveChat } from "../components/shared/TestDriveChat";
 import {
   DISCOVERY_EXAMPLES,
+  composeStarterPrompt,
+  generateAgentName,
+  getDiscoveryConfidenceCopy,
   getRoleDefaultName,
   getRoleVoiceDefault,
   inferRoleFromPrompt,
 } from "../utils/onboardingDiscovery";
 import { getOnboardingIntegrationIds } from "../utils/onboardingIntegrations";
 import { getInitialOnboardingStep } from "../utils/onboardingFlow";
+import { useEngineStatus, startEngineProvisioning, describeEngineStage, getDeployGate, isEngineInFlight } from "../utils/engineStatus";
+import { speakPreview } from "../utils/voicePreview";
+import { DynamicPersonaDraft, composePersonaPersonality, draftPersonaWithEddie, isGenerativeDiscoveryEnabled } from "../utils/generativePersona";
+import { getAccessoryName, listAccessoryOptions } from "../utils/accessoryCatalog";
+import { buildScopeSection, syncTeamRosterToAgents } from "../utils/rosterScope";
 import { getHeartbeatSuggestionsForProfile, serializeHeartbeatFile } from "../utils/heartbeats";
 import { getAgentProviderSecretSlot, getManagedProviderId, syncAgentProviderCredentials } from "../security/providerCredentials";
 import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
-import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
 
 const safeStartGateway = async () => {
@@ -81,15 +90,15 @@ const DISCOVERY_CONNECTIONS: Record<string, string[]> = {
   Trainer: ["Photos", "iMessage"],
 };
 
-// ─── Wizard progress — "show shape" (UX audit §5.1, spec Part 1C drift item 3)
-const PROGRESS_STAGES = ["Welcome", "Role", "Personality", "Intelligence", "Connections", "Launch"];
+// ─── Wizard progress — four beats (first-principles consolidation, July 18):
+// every visible stage is a moment, not a form. Meet Eddie → Meet your agent →
+// Give them power → Watch them work.
+const PROGRESS_STAGES = ["Meet Eddie", "Meet your agent", "Give them power", "Watch them work"];
 const stageForStep = (s: number): number => {
-  if (s < 1) return 0;            // 0, 0.5
-  if (s < 2) return 1;            // 1, 1.8 (import)
-  if (s < 3) return 2;            // 2, 2.5
-  if (s < 4) return 3;            // 3 (API key)
-  if (s < 6) return 4;            // 4, 5 (plugins + testing)
-  return 5;                       // 6, 7 (celebrate + pair)
+  if (s < 2) return 0;            // 0/1 discovery (+1.8 import detour)
+  if (s < 3) return 1;            // 2 studio (+2.5 dressing room detour)
+  if (s < 5) return 2;            // 3 brain + 4 connections
+  return 3;                       // 5, 6, 7 (test, deploy+starter, channel)
 };
 
 const deriveAgentId = (name: string): string => {
@@ -191,6 +200,9 @@ export function OnboardingWizard() {
   const [apiKeyMode, setApiKeyMode] = useState<"hidden" | "scan" | "manual">("hidden");
   const [autoProvisionProvider, setAutoProvisionProvider] = useState<"openai" | "xai" | null>(draft?.autoProvisionProvider || null);
   const [managementConnected, setManagementConnected] = useState(false);
+  // Power Up auto-detection: if this machine already has a key or a connected
+  // provider management setup, recognize it instead of asking again.
+  const [detectedSetup, setDetectedSetup] = useState<null | "key" | "management">(null);
   const [managementCredential, setManagementCredential] = useState("");
   const [managementScopeId, setManagementScopeId] = useState("");
   const [managementBusy, setManagementBusy] = useState(false);
@@ -199,6 +211,27 @@ export function OnboardingWizard() {
   const [selectedVoice, setSelectedVoice] = useState(draft?.selectedVoice || "alloy");
   const [selectedVoiceRate, setSelectedVoiceRate] = useState<number>(draft?.selectedVoiceRate || 1);
   const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
+  const [viewportSize, setViewportSize] = useState(() => ({
+    width: typeof window !== "undefined" ? window.innerWidth : 1440,
+    height: typeof window !== "undefined" ? window.innerHeight : 900,
+  }));
+  const [agentTypeInfo, setAgentTypeInfo] = useState(AGENT_TYPE_INFO);
+  const [globalLibrary, setGlobalLibrary] = useState<any[]>([]);
+  const [showAllRoles, setShowAllRoles] = useState(false);
+  // Two-beat discovery: the full role grid hides behind a quiet link.
+  const [showRoleBrowser, setShowRoleBrowser] = useState(false);
+  // True once the user has typed a name themselves — generated names then stop
+  // overwriting it on role changes.
+  const nameEditedRef = React.useRef(false);
+  // Eddie's AI-drafted persona for prompts the keyword matcher can't place
+  // ("sommelier" must never become "Media Advisor"). Fail-safe: null keeps
+  // the keyword draft.
+  const [dynamicPersona, setDynamicPersona] = useState<DynamicPersonaDraft | null>(null);
+  const [eddieThinking, setEddieThinking] = useState(false);
+  const personaRequestRef = React.useRef(0);
+  // Draft-panel setup details collapse behind one "Eddie has it handled" line.
+  const [setupExpanded, setSetupExpanded] = useState(false);
+  const [habitats, setHabitats] = useState<any[]>([]);
 
   const getNonOverlappingPosition = (existingAgents: AgentData[]): [number, number, number] => {
     if (existingAgents.length === 0) return [Math.random() * 2 - 1, 0, Math.random() * 2 - 1];
@@ -219,7 +252,52 @@ export function OnboardingWizard() {
 
   const optimisticId = deriveAgentId(agentName);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleResize = () => {
+      setViewportSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   const managedProviderId = getManagedProviderId(llmProvider);
+
+  // Power Up auto-detection: recognize existing setup instead of re-asking.
+  // Order of preference: connected provider management (mints a fresh
+  // per-agent key) → existing global key in the keychain.
+  useEffect(() => {
+    if (step !== 3 || !llmProvider) return;
+    let disposed = false;
+    (async () => {
+      setDetectedSetup(null);
+      try {
+        if (managedProviderId) {
+          const status = await invoke<{ connected: boolean }>("get_provider_management_status", { provider: managedProviderId }).catch(() => null);
+          if (!disposed && status?.connected) {
+            setManagementConnected(true);
+            setAutoProvisionProvider(managedProviderId);
+            setDetectedSetup("management");
+            return;
+          }
+        }
+        const providerMap: Record<string, string> = { "OpenAI": "OPENAI", "Google Gemini": "GEMINI", "Anthropic": "ANTHROPIC", "xAI Grok": "XAI" };
+        const slot = providerMap[llmProvider];
+        if (slot) {
+          const secret = await invoke<string>("get_secret_cmd", { key: `${slot}_API_KEY` }).catch(() => "");
+          if (!disposed && secret) {
+            setApiKey(secret);
+            setDetectedSetup("key");
+          }
+        }
+      } catch { /* detection is best-effort; the manual flow remains */ }
+    })();
+    return () => { disposed = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, llmProvider, managedProviderId]);
   useEffect(() => {
     if (!managedProviderId) {
       setManagementConnected(false);
@@ -332,12 +410,39 @@ export function OnboardingWizard() {
   // task into a dead key. null = not checked, "checking" = in flight.
   const [modelHealth, setModelHealth] = useState<null | "checking" | { status: string; detail?: string; provider: string; model: string }>(null);
   const [pairingCode, setPairingCode] = useState("");
+  // Workstream D: "Where should your agents reach you?" channel chooser state.
+  const [channelChoice, setChannelChoice] = useState<null | "mobile" | "telegram" | "slack">(null);
+  const [showMobilePairing, setShowMobilePairing] = useState(false);
+  // Workstream A: engine provisioning runs in the background from wizard mount.
+  // The wizard never blocks on it except at Deploy, and only when it FAILED.
+  const engineStatusLive = useEngineStatus();
+  const [showEngineGateModal, setShowEngineGateModal] = useState(false);
+  const pendingDeployRef = React.useRef<{ starterTask?: string } | null>(null);
+  useEffect(() => {
+    if (!hasCompletedInitialSetup) {
+      startEngineProvisioning();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // When the engine becomes ready while the user is waiting at the gate,
+  // continue the held deploy automatically (single-shot via ref clear).
+  useEffect(() => {
+    if (engineStatusLive.stage === "ready" && showEngineGateModal && pendingDeployRef.current) {
+      const opts = pendingDeployRef.current;
+      pendingDeployRef.current = null;
+      setShowEngineGateModal(false);
+      handleCreateAgent(opts.starterTask ? { starterTask: opts.starterTask } : undefined);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engineStatusLive.stage, showEngineGateModal]);
   const [isPairing, setIsPairing] = useState(false);
   const [pairingError, setPairingError] = useState("");
 
   const resetWizardState = () => {
     setStep(initialStepTarget);
     setAgentName("");
+    nameEditedRef.current = false;
+    lastNamedRoleRef.current = null;
     setSelectedRole(null);
     setDiscoveryInput("");
     setApiKey("");
@@ -726,9 +831,22 @@ export function OnboardingWizard() {
   };
   const discoveryExamples = DISCOVERY_EXAMPLES.filter(example => Boolean((agentTypeInfo as any)[example.role]));
   const continueFromDiscovery = async () => {
-    const nextRole = selectedRole || discoveryDraft.primaryRole;
+    // Eddie-invented personas anchor on their blend's base template for
+    // deterministic defaults, then override identity + personality.
+    const persona = personaActive ? dynamicPersona : null;
+    const nextRole = selectedRole || effectiveDraftRole || discoveryDraft.primaryRole;
     if (!nextRole) return;
     if (!selectedRole) handleRoleSelect(nextRole, discoveryInput);
+    if (persona) {
+      // handleRoleSelect just cleared persona state + set role defaults; put
+      // the tailored identity back on top (same tick — last write wins).
+      setAgentName(nameEditedRef.current && agentName.trim() ? agentName : persona.name);
+      setPersonalityPrompt(composePersonaPersonality(persona, discoveryInput));
+      if (persona.voice) setSelectedVoice(persona.voice);
+      if (persona.accessories.length > 0) {
+        setCustomIdentity(prev => ({ ...prev, accessories: persona.accessories }));
+      }
+    }
 
     if (agents.length === 0) {
       try {
@@ -749,11 +867,6 @@ export function OnboardingWizard() {
     }
     setStep(2);
   };
-
-  const [agentTypeInfo, setAgentTypeInfo] = useState(AGENT_TYPE_INFO);
-  const [globalLibrary, setGlobalLibrary] = useState<any[]>([]);
-  const [showAllRoles, setShowAllRoles] = useState(false);
-  const [habitats, setHabitats] = useState<any[]>([]);
 
   useEffect(() => {
     fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/habitats`)
@@ -807,10 +920,24 @@ export function OnboardingWizard() {
     () => inferRoleFromPrompt(discoveryInput, agentTypeInfo as any),
     [agentTypeInfo, discoveryInput],
   );
-  const draftRole = selectedRole || discoveryDraft.primaryRole || roleTypes[0]?.key || null;
-  const draftRoleInfo = draftRole ? (agentTypeInfo as any)[draftRole] : null;
-  const draftConnections = draftRole ? (DISCOVERY_CONNECTIONS[draftRole] || ["Files", "Slack"]) : [];
-  const draftVoice = getRoleVoiceDefault(draftRole || "Assistant");
+  // Two-beat discovery (July 18 redesign): the draft panel only exists once the
+  // user has given Eddie something — an explicit pick or typed words. An empty
+  // input must NEVER produce a phantom draft (that was the "is it already
+  // done?" confusion).
+  const hasDraftSource = !!selectedRole || !!discoveryInput.trim();
+  const draftRole = hasDraftSource ? (selectedRole || discoveryDraft.primaryRole) : null;
+  // When Eddie invented a persona, its blend anchor drives visuals/defaults
+  // (deterministic base-template rule); explicit picks always win.
+  const personaActive = !selectedRole && !!dynamicPersona && !dynamicPersona.fitsExisting;
+  const effectiveDraftRole = personaActive && (agentTypeInfo as any)[dynamicPersona!.blend[0]]
+    ? dynamicPersona!.blend[0]
+    : draftRole;
+  const draftRoleInfo = effectiveDraftRole ? (agentTypeInfo as any)[effectiveDraftRole] : null;
+  const draftConnections = effectiveDraftRole ? (DISCOVERY_CONNECTIONS[effectiveDraftRole] || ["Files", "Slack"]) : [];
+  const draftVoice = getRoleVoiceDefault(effectiveDraftRole || "Assistant");
+  const isCompactWindow = viewportSize.width < 1320;
+  const isNarrowWindow = viewportSize.width < 1120;
+  const isVeryNarrowWindow = viewportSize.width < 860;
   const discoveryHeartbeats = useMemo(
     () => draftRole
       ? getHeartbeatSuggestionsForProfile({
@@ -822,19 +949,75 @@ export function OnboardingWizard() {
     [draftRole],
   );
 
+  // Keep the generated name in step with the inferred role while the user
+  // types (explicit picks name themselves in handleRoleSelect). A user-typed
+  // name is never overwritten; an Eddie persona name wins over generated ones.
+  const lastNamedRoleRef = React.useRef<string | null>(null);
+  useEffect(() => {
+    if (selectedRole || nameEditedRef.current) return;
+    if (personaActive && dynamicPersona?.name) {
+      if (agentName !== dynamicPersona.name) setAgentName(dynamicPersona.name);
+      return;
+    }
+    if (!draftRole) return;
+    if (lastNamedRoleRef.current === draftRole && agentName.trim()) return;
+    lastNamedRoleRef.current = draftRole;
+    setAgentName(generateAgentName(draftRole));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftRole, selectedRole, personaActive, dynamicPersona]);
+
+  // Eddie's AI drafting: when the keyword matcher is unsure and the user has
+  // written a real sentence, ask the hosted brain for a tailored persona
+  // (debounced; stale responses discarded; silent failure keeps keyword draft).
+  useEffect(() => {
+    setDynamicPersona(null);
+    if (
+      !isGenerativeDiscoveryEnabled() ||
+      selectedRole ||
+      discoveryInput.trim().length < 12 ||
+      discoveryDraft.confidence === "high"
+    ) {
+      setEddieThinking(false);
+      return;
+    }
+    const requestId = ++personaRequestRef.current;
+    setEddieThinking(true);
+    const timer = setTimeout(async () => {
+      const persona = await draftPersonaWithEddie(
+        discoveryInput,
+        agentTypeInfo as any,
+        listAccessoryOptions(),
+      );
+      if (personaRequestRef.current !== requestId) return; // stale
+      setEddieThinking(false);
+      if (persona && !persona.fitsExisting) {
+        setDynamicPersona(persona);
+        if (persona.voice) setSelectedVoice(persona.voice);
+        if (persona.accessories.length > 0) {
+          setCustomIdentity(prev => ({ ...prev, accessories: persona.accessories }));
+        }
+        fireActivationEvent("eddie_persona_drafted", { title: persona.title });
+      }
+    }, 900);
+    return () => {
+      clearTimeout(timer);
+      if (personaRequestRef.current === requestId) setEddieThinking(false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discoveryInput, selectedRole]);
+
   const previewVoice = () => {
-    if (typeof window === "undefined" || typeof window.speechSynthesis === "undefined") return;
-    const utter = new SpeechSynthesisUtterance(
+    // Each voice id maps to a distinct system voice + pitch/rate personality —
+    // previously every option played the identical system default.
+    const started = speakPreview(
+      selectedVoice,
       draftRole
         ? getRoleVoiceDefault(draftRole).sample
         : "I help you figure out which agents to create and what they should take off your plate.",
+      selectedVoiceRate,
+      { onend: () => setIsPreviewingVoice(false), onerror: () => setIsPreviewingVoice(false) },
     );
-    utter.rate = selectedVoiceRate;
-    utter.onend = () => setIsPreviewingVoice(false);
-    utter.onerror = () => setIsPreviewingVoice(false);
-    setIsPreviewingVoice(true);
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utter);
+    if (started) setIsPreviewingVoice(true);
   };
 
   useEffect(() => {
@@ -854,8 +1037,15 @@ export function OnboardingWizard() {
     setRecentlyRead([]);
     setSelectedVoice(roleDefaults.voice);
     setSelectedVoiceRate(roleDefaults.rate);
-    const defaultName = getRoleDefaultName(roleKey);
-    const nextName = agentName.trim() ? agentName : defaultName;
+    // An explicit role pick supersedes any Eddie-invented persona.
+    setDynamicPersona(null);
+    setEddieThinking(false);
+    personaRequestRef.current++;
+    // Names are generated per-persona and randomized ("Custom" is never a
+    // name). A name the user typed themselves always survives role changes.
+    const nextName = nameEditedRef.current && agentName.trim()
+      ? agentName
+      : generateAgentName(roleKey);
     setAgentName(nextName);
     const rolePersonality = getDefaultPersonality(roleKey, nextName, agentTypeInfo);
     setPersonalityPrompt(seedPrompt?.trim()
@@ -882,23 +1072,36 @@ export function OnboardingWizard() {
   };
 
   const renderDiscoveryStep = (isAddAgentFlow: boolean) => (
-    <div style={{ maxWidth: 1080, width: "92%", minHeight: "78vh", display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 24, alignItems: "stretch" }}>
-      <div style={{ background: "var(--surface-card)", borderRadius: 28, padding: 28, boxShadow: "0 20px 48px rgba(0,0,0,0.06)", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}>
-        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 24 }}>
+    <div
+      style={{
+        width: "100%",
+        // Beat one: a single centered ask. Beat two (draft exists): ask + reveal.
+        maxWidth: !hasDraftSource ? 640 : (isNarrowWindow ? "100%" : 1180),
+        minHeight: isNarrowWindow ? "auto" : "78vh",
+        display: "grid",
+        gridTemplateColumns: !hasDraftSource ? "1fr" : (isNarrowWindow ? "1fr" : "minmax(0, 1.08fr) minmax(360px, 0.92fr)"),
+        gap: isCompactWindow ? 16 : 24,
+        alignItems: "stretch",
+        padding: isVeryNarrowWindow ? "0 10px 24px" : "0 16px 24px",
+        boxSizing: "border-box",
+        transition: "max-width 0.4s ease",
+      }}
+    >
+      <div style={{ background: "var(--surface-card)", borderRadius: 28, padding: isCompactWindow ? 22 : 28, boxShadow: "0 20px 48px rgba(0,0,0,0.06)", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", minWidth: 0 }}>
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginBottom: 24, flexWrap: isVeryNarrowWindow ? "wrap" : "nowrap" }}>
           <div style={{ width: 68, height: 68, borderRadius: 22, background: "rgba(242,140,99,0.14)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
             <LobsterIcon size={54} shellColor="#F28C63" accentColor="#F7C5A8" />
           </div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "#C76A42", marginBottom: 4 }}>
-              Eddie
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "#C76A42", marginBottom: 8 }}>
+              Eddie · your Canopy lifeguard
             </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-main)", marginBottom: 6 }}>
-              Canopy Lifeguard
-            </div>
-            <div style={{ fontSize: 14, color: "var(--text-sub)", lineHeight: 1.6 }}>
+            {/* Conversational, not a title card. First-run makes his ongoing
+                role explicit: he sticks around for help + troubleshooting. */}
+            <div style={{ fontSize: 15, color: "var(--text-main)", lineHeight: 1.65, background: "rgba(242,140,99,0.07)", border: "1px solid rgba(242,140,99,0.18)", borderRadius: "4px 16px 16px 16px", padding: "12px 14px" }}>
               {isAddAgentFlow
-                ? "Tell me what kind of work this new agent should take on, or click a likely fit below. I’ll draft the role, voice, accessories, permissions, and setup path."
-                : "Tell me what slows you down every day, or click a likely fit below. I’ll help draft the first agent, wire up its tools, and patch things up when it needs mending."}
+                ? "Who are we adding to the crew? Tell me what this one should take off your plate, or tap a fit below — I'll draft the rest."
+                : <>Hi{userName.trim() ? `, ${userName.trim()}` : ""} — I'm Eddie. I'll help you build your first agent, and I don't disappear afterward: whenever something needs fixing or you're not sure how anything works, just look for me in the corner of the app. <strong>So — what do you want off your plate?</strong></>}
             </div>
           </div>
         </div>
@@ -937,79 +1140,93 @@ export function OnboardingWizard() {
         </div>
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 20 }}>
-          {discoveryExamples.map(example => (
-            <button
-              key={example.label}
-              type="button"
-              onClick={() => handleRoleSelect(example.role, example.prompt)}
-              style={{ padding: "10px 14px", borderRadius: 14, border: "1px solid rgba(60,102,99,0.16)", background: "rgba(60,102,99,0.05)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
-            >
-              {example.label}
-            </button>
-          ))}
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 18 }}>
-          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>
-            {draftRole ? `Eddie would start with a ${draftRole}.` : "Pick an example or describe the work and Eddie will draft a fit."}
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button
-              type="button"
-              onClick={() => handleRoleSelect("Custom", discoveryInput)}
-              style={{ padding: "9px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "transparent", color: "var(--text-main)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
-            >
-              Start Custom
-            </button>
-            <button
-              type="button"
-              onClick={startImportFlow}
-              style={{ padding: "9px 12px", borderRadius: 10, border: "1px dashed rgba(0,0,0,0.16)", background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
-            >
-              Import Agent
-            </button>
-          </div>
-        </div>
-
-        <div style={{ padding: 16, borderRadius: 18, border: "1px solid rgba(0,0,0,0.06)", background: "rgba(255,255,255,0.55)", marginBottom: 18 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>Suggested archetypes</div>
-              <div style={{ fontSize: 11, color: "var(--text-sub)" }}>Click one to draft immediately, or browse more below.</div>
-            </div>
-            {!showAllRoles && (
+          {discoveryExamples.map(example => {
+            const exampleRoleInfo = (agentTypeInfo as any)[example.role] || {};
+            return (
               <button
+                key={example.label}
                 type="button"
-                onClick={() => setShowAllRoles(true)}
-                style={{ padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.08)", background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+                onClick={() => handleRoleSelect(example.role, example.prompt)}
+                style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 14px 7px 7px", borderRadius: 999, border: "1px solid rgba(60,102,99,0.16)", background: "rgba(60,102,99,0.05)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
               >
-                See more roles
+                {exampleRoleInfo.image ? (
+                  <img src={getAssetUrl(exampleRoleInfo.image)} alt="" style={{ width: 26, height: 26, borderRadius: "50%", objectFit: "cover", flexShrink: 0 }} />
+                ) : (
+                  <span style={{ width: 26, height: 26, borderRadius: "50%", background: `${exampleRoleInfo.robeColor || "#3c6663"}20`, display: "inline-flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <LobsterIcon size={20} shellColor={exampleRoleInfo.robeColor || "#3c6663"} accentColor={exampleRoleInfo.accentColor || "#4A9E96"} />
+                  </span>
+                )}
+                {example.label}
               </button>
-            )}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
-            {(showAllRoles ? roleTypes : roleTypes.slice(0, 6)).map(role => {
-              const active = draftRole === role.key;
-              return (
-                <button
-                  key={role.key}
-                  type="button"
-                  onClick={() => handleRoleSelect(role.key, discoveryInput)}
-                  style={{ textAlign: "left", padding: 14, borderRadius: 14, border: active ? `1px solid ${role.color}` : "1px solid rgba(0,0,0,0.08)", background: active ? `${role.color}10` : "var(--surface-card)", cursor: "pointer", fontFamily: "inherit" }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>{role.key}</div>
-                  <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.45 }}>{role.description}</div>
-                </button>
-              );
-            })}
-          </div>
+            );
+          })}
         </div>
 
-        <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center", marginTop: "auto" }}>
+        {/* Quiet secondary paths — one text row, not a button cluster. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12, color: "var(--text-sub)", flexWrap: "wrap" }}>
+          <button
+            type="button"
+            onClick={() => { setShowRoleBrowser(v => !v); setShowAllRoles(true); }}
+            style={{ padding: 0, border: "none", background: "transparent", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", textUnderlineOffset: 3 }}
+          >
+            {showRoleBrowser ? "Hide roles" : "Browse all roles"}
+          </button>
+          <span style={{ opacity: 0.4 }}>·</span>
+          <button
+            type="button"
+            onClick={startImportFlow}
+            style={{ padding: 0, border: "none", background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", textUnderlineOffset: 3 }}
+          >
+            Import agent
+          </button>
+          <span style={{ opacity: 0.4 }}>·</span>
+          <button
+            type="button"
+            onClick={() => handleRoleSelect("Custom", discoveryInput)}
+            style={{ padding: 0, border: "none", background: "transparent", color: "var(--text-sub)", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textDecoration: "underline", textUnderlineOffset: 3 }}
+          >
+            Start from scratch
+          </button>
+        </div>
+
+        {showRoleBrowser && (
+          <div style={{ padding: 16, borderRadius: 18, border: "1px solid rgba(0,0,0,0.06)", background: "rgba(255,255,255,0.55)", marginBottom: 18 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>All roles</div>
+            <div style={{ fontSize: 11, color: "var(--text-sub)", marginBottom: 12 }}>Click one and Eddie drafts it instantly.</div>
+            <div style={{ display: "grid", gridTemplateColumns: isVeryNarrowWindow ? "1fr" : "repeat(2, minmax(0, 1fr))", gap: 10, maxHeight: 280, overflowY: "auto" }}>
+              {roleTypes.map(role => {
+                const active = draftRole === role.key;
+                return (
+                  <button
+                    key={role.key}
+                    type="button"
+                    onClick={() => handleRoleSelect(role.key, discoveryInput)}
+                    style={{ display: "flex", gap: 12, alignItems: "center", textAlign: "left", padding: 12, borderRadius: 14, border: active ? `1px solid ${role.color}` : "1px solid rgba(0,0,0,0.08)", background: active ? `${role.color}10` : "var(--surface-card)", cursor: "pointer", fontFamily: "inherit" }}
+                  >
+                    {/* The portrait is the magic — these are beings, not options. */}
+                    {(role as any).image ? (
+                      <img src={getAssetUrl((role as any).image)} alt={role.key} style={{ width: 44, height: 44, borderRadius: 12, objectFit: "cover", flexShrink: 0 }} />
+                    ) : (
+                      <div style={{ width: 44, height: 44, borderRadius: 12, background: `${(role as any).robeColor || role.color || "#3c6663"}20`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        <LobsterIcon size={34} shellColor={(role as any).robeColor || role.color || "#3c6663"} accentColor={(role as any).accentColor || "#4A9E96"} />
+                      </div>
+                    )}
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", marginBottom: 3 }}>{role.key}</div>
+                      <div style={{ fontSize: 11, color: "var(--text-sub)", lineHeight: 1.45 }}>{role.description}</div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 12, justifyContent: "space-between", alignItems: "center", marginTop: "auto", flexDirection: isVeryNarrowWindow ? "column-reverse" : "row" }}>
           <button
             type="button"
             onClick={handleBackFromRoleStep}
-            style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)", background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+            style={{ padding: "12px 18px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.08)", background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", width: isVeryNarrowWindow ? "100%" : "auto" }}
           >
             {isAddAgentFlow ? "Cancel" : "Back"}
           </button>
@@ -1017,20 +1234,25 @@ export function OnboardingWizard() {
             type="button"
             disabled={(!selectedRole && !discoveryInput.trim()) || (!isAddAgentFlow && !userName.trim())}
             onClick={() => { void continueFromDiscovery(); }}
-            style={{ padding: "14px 24px", borderRadius: 14, border: "none", background: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "linear-gradient(135deg, #3c6663, #609995)" : "var(--border-subtle)", color: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "var(--surface-card)" : "var(--text-muted)", fontSize: 14, fontWeight: 800, cursor: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "pointer" : "default", fontFamily: "inherit", minWidth: 190 }}
+            style={{ padding: "14px 24px", borderRadius: 14, border: "none", background: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "linear-gradient(135deg, #3c6663, #609995)" : "var(--border-subtle)", color: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "var(--surface-card)" : "var(--text-muted)", fontSize: 14, fontWeight: 800, cursor: (selectedRole || discoveryInput.trim()) && (isAddAgentFlow || userName.trim()) ? "pointer" : "default", fontFamily: "inherit", minWidth: isVeryNarrowWindow ? 0 : 190, width: isVeryNarrowWindow ? "100%" : "auto" }}
           >
-            {isAddAgentFlow ? "Draft this agent" : "Draft my first agent"}
+            {hasDraftSource && draftRole
+              ? `Meet ${agentName || getRoleDefaultName(draftRole)} →`
+              : (isAddAgentFlow ? "Draft this agent" : "Draft my first agent")}
           </button>
         </div>
       </div>
 
-      <div style={{ background: "linear-gradient(180deg, rgba(244,240,233,0.92) 0%, rgba(255,255,255,0.92) 100%)", borderRadius: 28, padding: 24, boxShadow: "0 20px 48px rgba(0,0,0,0.05)", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}>
+      {/* Beat two: the reveal. Only exists once the user has given Eddie
+          something to work with — it materializes, it never pre-exists. */}
+      {hasDraftSource && draftRole && draftRoleInfo && (
+      <div style={{ background: "linear-gradient(180deg, rgba(244,240,233,0.92) 0%, rgba(255,255,255,0.92) 100%)", borderRadius: 28, padding: isCompactWindow ? 20 : 24, boxShadow: "0 20px 48px rgba(0,0,0,0.05)", border: "1px solid rgba(0,0,0,0.06)", display: "flex", flexDirection: "column", minWidth: 0, animation: "revealIn 0.45s ease" }}>
         <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "#3c6663", marginBottom: 8 }}>
           Eddie&apos;s Draft
         </div>
-        {draftRole && draftRoleInfo ? (
+        {(
           <>
-            <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
+            <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18, flexWrap: isVeryNarrowWindow ? "wrap" : "nowrap" }}>
               {draftRoleInfo.image ? (
                 <img src={getAssetUrl(draftRoleInfo.image)} alt={draftRole} style={{ width: 76, height: 76, borderRadius: 20, objectFit: "cover", flexShrink: 0 }} />
               ) : (
@@ -1038,41 +1260,79 @@ export function OnboardingWizard() {
                   <LobsterIcon size={62} shellColor={draftRoleInfo.robeColor || "#3c6663"} accentColor={draftRoleInfo.accentColor || "#4A9E96"} />
                 </div>
               )}
-              <div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
-                  {agentName || getRoleDefaultName(draftRole)}
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  {/* Name is editable right here — it's their being to name. */}
+                  <input
+                    value={agentName}
+                    onChange={e => {
+                      nameEditedRef.current = true;
+                      setAgentName(e.target.value);
+                    }}
+                    placeholder={generateAgentName(draftRole)}
+                    aria-label="Agent name"
+                    style={{ fontSize: 22, fontWeight: 700, color: "var(--text-main)", background: "transparent", border: "none", borderBottom: "1px dashed rgba(0,0,0,0.15)", outline: "none", padding: "0 0 2px", minWidth: 0, width: "100%", maxWidth: 220, fontFamily: "inherit" }}
+                  />
+                  <button
+                    type="button"
+                    title="Pick another name"
+                    onClick={() => {
+                      nameEditedRef.current = false;
+                      setAgentName(generateAgentName(draftRole, agentName));
+                    }}
+                    style={{ padding: "4px 8px", borderRadius: 8, border: "1px solid rgba(0,0,0,0.1)", background: "transparent", color: "var(--text-sub)", fontSize: 13, cursor: "pointer", fontFamily: "inherit", flexShrink: 0, lineHeight: 1 }}
+                  >
+                    ⟳
+                  </button>
                 </div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: "#3c6663", marginBottom: 6 }}>
-                  {draftRole}
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#3c6663", marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                  {personaActive ? dynamicPersona!.title : draftRole}
+                  {personaActive && (
+                    <span style={{ padding: "2px 8px", borderRadius: 999, background: "rgba(242,140,99,0.14)", color: "#C76A42", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em" }}>
+                      TAILORED BY EDDIE
+                    </span>
+                  )}
                 </div>
                 <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.55 }}>
-                  {draftRoleInfo.description}
+                  {/* Why this draft: Eddie's tailored tagline beats everything;
+                      personal for explicit picks; honest for weak inferences. */}
+                  {personaActive
+                    ? dynamicPersona!.tagline || `Invented just for what you described.`
+                    : eddieThinking
+                      ? "Eddie is thinking about a tailored fit…"
+                      : selectedRole
+                        ? (discoveryInput.trim()
+                            ? `Drafted for: “${discoveryInput.trim().slice(0, 90)}${discoveryInput.trim().length > 90 ? "…" : ""}”`
+                            : draftRoleInfo.description)
+                        : getDiscoveryConfidenceCopy(discoveryDraft.confidence, draftRole)}
                 </div>
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
-              <div style={{ padding: 14, borderRadius: 16, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)" }}>
-                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 6 }}>Model</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)", lineHeight: 1.45 }}>
-                  {getDynamicRecommendedModel(draftRole).provider}
-                </div>
+            {/* Tappable alternates — swap the draft live. */}
+            {!selectedRole && discoveryDraft.alternatives.filter(alt => (agentTypeInfo as any)[alt]).length > 0 && (
+              <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 16 }}>
+                <span style={{ fontSize: 11, color: "var(--text-sub)" }}>Or try:</span>
+                {discoveryDraft.alternatives.filter(alt => (agentTypeInfo as any)[alt]).slice(0, 3).map(alt => (
+                  <button
+                    key={alt}
+                    type="button"
+                    onClick={() => handleRoleSelect(alt, discoveryInput)}
+                    style={{ padding: "5px 10px", borderRadius: 999, border: "1px solid rgba(60,102,99,0.2)", background: "rgba(60,102,99,0.05)", color: "#3c6663", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+                  >
+                    {alt}
+                  </button>
+                ))}
               </div>
-              <div style={{ padding: 14, borderRadius: 16, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(0,0,0,0.06)" }}>
-                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 6 }}>Security</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>
-                  {draftRoleInfo.recommended_isolated ? "Isolated sandbox" : "Shared workspace"}
-                </div>
-              </div>
-            </div>
+            )}
 
             <div style={{ padding: 16, borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)", marginBottom: 14 }}>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>Voice & Identity</div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10 }}>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexDirection: isVeryNarrowWindow ? "column" : "row" }}>
                 <select
                   value={selectedVoice}
                   onChange={e => setSelectedVoice(e.target.value)}
-                  style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
+                  style={{ flex: 1, width: isVeryNarrowWindow ? "100%" : undefined, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
                 >
                   {["alloy", "echo", "fable", "nova", "onyx", "shimmer"].map(voice => (
                     <option key={voice} value={voice}>{voice}</option>
@@ -1081,7 +1341,7 @@ export function OnboardingWizard() {
                 <button
                   type="button"
                   onClick={previewVoice}
-                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.2)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", minWidth: 108 }}
+                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.2)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", minWidth: isVeryNarrowWindow ? 0 : 108, width: isVeryNarrowWindow ? "100%" : "auto" }}
                 >
                   {isPreviewingVoice ? "Playing..." : "Preview voice"}
                 </button>
@@ -1089,52 +1349,59 @@ export function OnboardingWizard() {
               <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 10 }}>
                 {draftVoice.sample}
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {(customIdentity?.accessories?.length ? customIdentity.accessories : draftRoleInfo.accessories || []).slice(0, 4).map((accessory: string) => (
-                  <span key={accessory} style={{ padding: "5px 8px", borderRadius: 999, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 700 }}>
-                    {accessory.split("/").pop()?.replace(".png", "").replace(/[-_]/g, " ")}
-                  </span>
-                ))}
-              </div>
+              {/* Accessory chips removed: raw ids leaked ("accessories set 1
+                  item 17") and the portrait already carries the identity. */}
             </div>
 
-            <div style={{ padding: 16, borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)", marginBottom: 14 }}>
-              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>First useful upgrades</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                {draftConnections.map(label => (
-                  <span key={label} style={{ padding: "6px 9px", borderRadius: 999, background: "rgba(33,131,128,0.08)", color: "#218380", fontSize: 11, fontWeight: 700 }}>
-                    {label}
-                  </span>
-                ))}
-              </div>
-              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
-                Eddie will prefill the role, permissions, and setup suggestions so this agent can get useful quickly instead of starting from a blank slate.
-              </div>
-            </div>
-
-            <div style={{ padding: 16, borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)" }}>
-              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>Suggested starting routines</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {discoveryHeartbeats.map(task => (
-                  <div key={task.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
-                    <span style={{ color: "var(--text-main)", fontWeight: 700 }}>{task.title}</span>
-                    <span style={{ color: "var(--text-sub)" }}>{task.scheduleLabel}</span>
+            {/* Setup is Eddie's job — one reassuring line, details on demand.
+                (Model/security/tools/routines config-speak stays out of the
+                first impression; it re-emerges conversationally in later steps.) */}
+            <div style={{ padding: "14px 16px", borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)" }}>
+              <button
+                type="button"
+                onClick={() => setSetupExpanded(v => !v)}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, width: "100%", padding: 0, border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 700, color: "var(--text-main)" }}>
+                  ✓ Eddie has the setup handled — brain, permissions, tools &amp; routines
+                </span>
+                <span style={{ fontSize: 11, fontWeight: 700, color: "#3c6663", flexShrink: 0 }}>
+                  {setupExpanded ? "Hide details" : "Show details"}
+                </span>
+              </button>
+              {setupExpanded && (
+                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
+                    <span style={{ color: "var(--text-sub)" }}>Recommended model</span>
+                    <span style={{ color: "var(--text-main)", fontWeight: 700 }}>{getDynamicRecommendedModel(draftRole).provider}</span>
                   </div>
-                ))}
-              </div>
-              {discoveryDraft.alternatives.length > 0 && (
-                <div style={{ marginTop: 12, fontSize: 11, color: "var(--text-sub)" }}>
-                  Also considered: {discoveryDraft.alternatives.join(", ")}
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
+                    <span style={{ color: "var(--text-sub)" }}>Workspace</span>
+                    <span style={{ color: "var(--text-main)", fontWeight: 700 }}>{draftRoleInfo.recommended_isolated ? "Isolated sandbox" : "Shared workspace"}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 12 }}>
+                    <span style={{ color: "var(--text-sub)" }}>First useful tools</span>
+                    <span style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end" }}>
+                      {draftConnections.map(label => (
+                        <span key={label} style={{ padding: "3px 8px", borderRadius: 999, background: "rgba(33,131,128,0.08)", color: "#218380", fontSize: 11, fontWeight: 700 }}>
+                          {label}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                  {discoveryHeartbeats.map(task => (
+                    <div key={task.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
+                      <span style={{ color: "var(--text-sub)" }}>{task.title}</span>
+                      <span style={{ color: "var(--text-main)", fontWeight: 700 }}>{task.scheduleLabel}</span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
           </>
-        ) : (
-          <div style={{ margin: "auto 0", padding: 24, borderRadius: 20, background: "rgba(255,255,255,0.72)", border: "1px dashed rgba(0,0,0,0.1)", textAlign: "center", color: "var(--text-sub)", fontSize: 14, lineHeight: 1.6 }}>
-            Describe the work you want handled or click an example card. Eddie will turn that into a drafted agent with a role, voice, accessories, and setup plan.
-          </div>
         )}
       </div>
+      )}
     </div>
   );
 
@@ -1149,6 +1416,10 @@ export function OnboardingWizard() {
     if (recentlyRead.length > 0) {
       finalPrompt += `\n\nRecently Read Books: You have recently read the following books and found them very interesting: ${recentlyRead.join(', ')}.`;
     }
+    // Lane awareness: slim, stable section pointing at the central TEAM.md
+    // (synced below after deploy) — the roster itself never lives in a SOUL,
+    // so it can't go stale when agents are added or retired.
+    finalPrompt += buildScopeSection(agentName, selectedRole);
 
     const tempId = `temp-${Date.now()}`;
 
@@ -1375,6 +1646,22 @@ export function OnboardingWizard() {
           } catch (e) { console.warn("Failed to set integrations", e); }
         }
 
+        // Central roster: refresh TEAM.md in EVERY agent's workspace so all
+        // teammates (old and new) see the updated team immediately.
+        try {
+          await syncTeamRosterToAgents(
+            invoke as any,
+            [...agents, newAgentData].map(member => ({
+              id: member.id,
+              name: member.name,
+              role: member.role,
+              description: (member as any).description,
+            })),
+          );
+        } catch (e) {
+          console.warn("TEAM.md roster sync failed (non-fatal):", e);
+        }
+
         if (selectedHeartbeatTasks.length > 0) {
           try {
             await invoke("write_workspace_file", {
@@ -1478,9 +1765,12 @@ export function OnboardingWizard() {
     <div style={{
       width: "100vw", height: "100vh",
       background: "#faf9f6",
-      display: "flex", alignItems: "center", justifyContent: "center",
+      display: "flex", alignItems: step <= 1.8 ? "flex-start" : "center", justifyContent: "center",
       fontFamily: "'Manrope', system-ui, -apple-system, sans-serif",
-      overflow: "hidden",
+      overflowX: "hidden",
+      overflowY: "auto",
+      padding: step <= 1.8 ? "72px 0 24px" : "24px 0",
+      boxSizing: "border-box",
       position: "relative",
     }}>
       {agents.length > 0 && step >= 0 && step < 6 && (
@@ -1540,7 +1830,9 @@ export function OnboardingWizard() {
 
       {/* Companion lobster — warmth on the anxiety-prone form steps.
           (Step 0 already shows the full WorldScene; -1 is the loader.) */}
-      {step >= 0.5 && (
+      {/* One Eddie per screen: the discovery step (1) has Eddie in its header,
+          so the ambient walking companion is suppressed there. */}
+      {step >= 0.5 && step !== 1 && (
         <div style={{
           position: "absolute", bottom: 8, left: 16, width: 150, height: 150,
           pointerEvents: "none", zIndex: 80,
@@ -1642,59 +1934,9 @@ export function OnboardingWizard() {
         renderDiscoveryStep(false)
       )}
 
-      {/* Step 0.5: User Info */}
-      {step === 0.5 && (
-        <div style={{ maxWidth: 640, width: "90%", background: "var(--surface-card)", padding: 40, borderRadius: 24, boxShadow: "0 12px 48px rgba(0,0,0,0.06)", display: "flex", flexDirection: "column" }}>
-          <h1 style={{ fontSize: 32, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
-            First, who are you?
-          </h1>
-          <p style={{ fontSize: 16, color: "#636E72", marginBottom: 32 }}>
-            Tell the agents what to call you and a little bit about what you do, so they can better assist you. You can change this later.
-          </p>
-
-          <div style={{ marginBottom: 24 }}>
-            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>What should we call you?</label>
-            <input
-              type="text"
-              placeholder="e.g. Scottie"
-              value={userName}
-              onChange={e => setUserName(e.target.value)}
-              style={{ width: "100%", padding: "16px", borderRadius: 12, border: "1px solid #E2E8F0", fontSize: 16, outline: "none", background: "#F8FAFC" }}
-            />
-          </div>
-
-
-          <button
-            disabled={!userName.trim()}
-            onClick={async () => {
-              try {
-                await invoke("save_user_profile", {
-                  profile: {
-                    name: userName,
-                    email: "",
-                    phone: "",
-                    timezone: "UTC",
-                    working_hours: "",
-                    communication_tone: "Professional",
-                    global_directives: "Always cite your sources and optimize for safety."
-                  }
-                });
-              } catch (e) {
-                console.warn("Failed to save user profile", e);
-              }
-              setStep(1);
-            }}
-            style={{
-              padding: "16px 32px", borderRadius: 12, border: "none",
-              background: userName.trim() ? "var(--text-main)" : "#CBD5E1",
-              color: "white", fontSize: 16, fontWeight: 600, cursor: userName.trim() ? "pointer" : "not-allowed",
-              alignSelf: "flex-end"
-            }}
-          >
-            Continue
-          </button>
-        </div>
-      )}
+      {/* Step 0.5 removed (first-principles consolidation): the user's name is
+          collected conversationally inside the discovery card, and the profile
+          is saved in continueFromDiscovery. One beat, not two. */}
 
       {/* Step 2: Choose Role */}
       {step === 1 && (
@@ -1743,13 +1985,16 @@ export function OnboardingWizard() {
 
       {/* Step 3: Name & Personality */}
       {step === 2 && (
-        <div style={{ maxWidth: 600, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
-          <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
+        <div style={{ maxWidth: 1180, width: "94%", height: "90vh", display: "flex", flexDirection: "column" }}>
+          {/* Meet {Name} studio: identity + personality on the left, living
+              preview + test-drive conversation on the right. Tweak ↔ talk. */}
+          <div style={{ flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: viewportSize.width < 1000 ? "1fr" : "minmax(0, 1fr) 400px", gap: 24 }}>
+          <div style={{ overflow: "auto", padding: "20px 0", minWidth: 0 }}>
             <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
-              Meet Your Draft
+              Meet {agentName.trim() || "Your Agent"}
             </h1>
             <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32 }}>
-              Tighten the identity Eddie drafted for you. You can keep moving fast here and fine-tune the rest later.
+              Shape who {agentName.trim() || "they"} are — and try them out live on the right while you do.
             </p>
 
             <div style={{ marginBottom: 32 }}>
@@ -1821,33 +2066,61 @@ export function OnboardingWizard() {
                   {isPreviewingVoice ? "Playing..." : "Preview voice"}
                 </button>
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {(customIdentity?.accessories || []).map(accessory => (
-                  <span key={accessory} style={{ padding: "5px 8px", borderRadius: 999, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 700 }}>
-                    {accessory.split("/").pop()?.replace(".png", "").replace(/[-_]/g, " ")}
-                  </span>
-                ))}
-                {(customIdentity?.accessories || []).length === 0 && (
-                  <span style={{ fontSize: 12, color: "var(--text-sub)" }}>No starter accessories yet. You can add them on the next screen.</span>
-                )}
+              {/* The being, live: lobster + accessories + habitat, same preview
+                  pipeline as the appearance step — never raw asset ids. */}
+              <div style={{ display: "flex", gap: 14, alignItems: "stretch", flexWrap: "wrap" }}>
+                <div style={{ width: 180, height: 150, borderRadius: 14, overflow: "hidden", background: "rgba(60,102,99,0.06)", border: "1px solid rgba(0,0,0,0.06)", flexShrink: 0 }}>
+                  <React.Suspense fallback={null}>
+                    <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 110 }} gl={{ alpha: true }}>
+                      <ambientLight intensity={0.7} />
+                      <directionalLight position={[5, 5, 5]} intensity={1} />
+                      <group position={[0, -0.06, 0]}>
+                        <WorldScene agents={[{
+                          id: "identity-preview-agent",
+                          role: selectedRole || "Custom",
+                          name: agentName || "Agent",
+                          visual_identity: {
+                            habitatId: customIdentity?.habitatId || 1,
+                            accessories: customIdentity?.accessories || [],
+                          } as any,
+                        }]} />
+                      </group>
+                    </Canvas>
+                  </React.Suspense>
+                </div>
+                <div style={{ flex: 1, minWidth: 160, display: "flex", flexDirection: "column", gap: 8, justifyContent: "center" }}>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {(customIdentity?.accessories || []).map(accessory => (
+                      <span key={accessory} style={{ padding: "5px 10px", borderRadius: 999, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 700 }}>
+                        {getAccessoryName(accessory)}
+                      </span>
+                    ))}
+                    {(customIdentity?.accessories || []).length === 0 && (
+                      <span style={{ fontSize: 12, color: "var(--text-sub)" }}>No starter accessories yet. You can add them on the next screen.</span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 11, color: "var(--text-sub)", opacity: 0.7 }}>Full dressing room on the next screen.</span>
+                </div>
               </div>
             </div>
 
             <div style={{ background: "var(--surface-base)", backdropFilter: "blur(4px)", padding: 24, borderRadius: 16, marginBottom: 32 }}>
               <div>
-                <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Agent Personality</h3>
+                <h3 style={{ fontSize: 16, color: "var(--text-main)", margin: "0 0 4px 0" }}>Personality</h3>
                 <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 16 }}>
-                  This is how {agentName || "your agent"} thinks. We've written a starting personality — tighten the tone, add house rules, change their boundaries. Or skip; you can always edit later.
+                  {/* Research-backed (July 18): concise + specific beats long
+                      trait essays; the model infers related traits, and memory
+                      accretes preferences over time. Eddie writes it; the user
+                      nudges it. Plain textarea, not a markdown IDE. */}
+                  Eddie wrote this from what you told him. Keep it short and specific — {agentName || "your agent"} fills in the rest, and learns your preferences as you work together. Try a change, then test it on the right.
                 </p>
-
-                <div data-color-mode="light" style={{ borderRadius: 12, overflow: "hidden", border: "1px solid rgba(0,0,0,0.1)" }}>
-                  <MDEditor
-                    value={personalityPrompt}
-                    onChange={(val) => setPersonalityPrompt(val || "")}
-                    preview="edit"
-                    height={400}
-                  />
-                </div>
+                <textarea
+                  value={personalityPrompt}
+                  onChange={e => setPersonalityPrompt(e.target.value)}
+                  rows={7}
+                  placeholder={`e.g. You are ${agentName || "Fern"}, a warm, sharp ${draftRole || "specialist"} who gives concrete recommendations, never waffles, and always says when something is outside your expertise.`}
+                  style={{ width: "100%", boxSizing: "border-box", padding: "14px 16px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)", fontSize: 14, lineHeight: 1.65, resize: "vertical", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
+                />
               </div>
 
               <div style={{ marginTop: 24 }}>
@@ -1913,23 +2186,58 @@ export function OnboardingWizard() {
             </div>
 
           </div>
-          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+
+          {/* Right pane: the living preview + test-drive conversation. */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 14, padding: "20px 0", minHeight: 0 }}>
+            <div style={{ height: 190, borderRadius: 18, overflow: "hidden", background: "rgba(60,102,99,0.06)", border: "1px solid rgba(0,0,0,0.06)", position: "relative", flexShrink: 0 }}>
+              <React.Suspense fallback={null}>
+                <Canvas orthographic camera={{ position: [10, 10, 10], zoom: 120 }} gl={{ alpha: true }}>
+                  <ambientLight intensity={0.7} />
+                  <directionalLight position={[5, 5, 5]} intensity={1} />
+                  <group position={[0, -0.06, 0]}>
+                    <WorldScene agents={[{
+                      id: "studio-preview-agent",
+                      role: selectedRole || "Custom",
+                      name: agentName || "Agent",
+                      visual_identity: {
+                        habitatId: customIdentity?.habitatId || 1,
+                        accessories: customIdentity?.accessories || [],
+                      } as any,
+                    }]} />
+                  </group>
+                </Canvas>
+              </React.Suspense>
+              <button
+                type="button"
+                onClick={() => setStep(2.5)}
+                style={{ position: "absolute", bottom: 10, right: 10, padding: "7px 12px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.25)", background: "rgba(255,255,255,0.85)", color: "#3c6663", fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+              >
+                Open dressing room
+              </button>
+            </div>
+            <div style={{ flex: 1, minHeight: 0, padding: 14, borderRadius: 18, background: "var(--surface-card)", border: "1px solid rgba(0,0,0,0.06)" }}>
+              <TestDriveChat personality={personalityPrompt} agentName={agentName.trim() || "your agent"} />
+            </div>
+          </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, borderTop: "1px solid rgba(0,0,0,0.05)" }}>
             <button onClick={() => setStep(agents.length > 0 ? 1 : 0)} style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
-            <button onClick={() => setStep(2.5)} disabled={!agentName.trim()} style={{
+            <button onClick={() => setStep(3)} disabled={!agentName.trim()} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
               background: agentName.trim() ? "#3c6663" : "var(--border-subtle)",
               color: agentName.trim() ? "var(--surface-card)" : "var(--text-muted)",
               fontSize: 14, fontWeight: 600, cursor: agentName.trim() ? "pointer" : "default",
               fontFamily: "inherit",
-            }}>Next</button>
+            }}>{`Give ${agentName.trim() || "them"} power →`}</button>
           </div>
         </div>
       )}
 
-      {/* Step 2.5: Appearance UI */}
+      {/* Step 2.5: Dressing room (optional detour from the studio) */}
       {step === 2.5 && (
         <div style={{ maxWidth: 900, width: "90%", height: "90vh", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
@@ -2016,15 +2324,15 @@ export function OnboardingWizard() {
           </div>
           
           <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", paddingTop: 20, marginTop: "auto", borderTop: "1px solid rgba(0,0,0,0.05)" }}>
-            <button onClick={() => setStep(2)} style={{
+            <button onClick={() => setStep(2)} data-role="dressing-back" style={{
               padding: "12px 28px", borderRadius: 12, background: "var(--surface-base)", color: "var(--text-sub)", fontSize: 14, fontWeight: 600,
               cursor: "pointer", fontFamily: "inherit",
             }}>Back</button>
-            <button onClick={() => setStep(3)} style={{
+            <button onClick={() => setStep(2)} style={{
               padding: "12px 28px", borderRadius: 12, border: "none",
               background: "#3c6663", color: "var(--surface-card)",
               fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
-            }}>Next</button>
+            }}>{`Done — back to ${agentName.trim() || "the studio"}`}</button>
           </div>
         </div>
       )}
@@ -2045,7 +2353,15 @@ export function OnboardingWizard() {
                 {llmProvider && llmProvider !== getDynamicRecommendedModel(selectedRole).provider ? (
                   <>Since you selected <strong>{llmProvider}</strong> for the <strong>{selectedRole}</strong> role, we recommend using <strong>{getProviderRecommendedModel(selectedRole, llmProvider).model}</strong>.</>
                 ) : (
-                  <>Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.</>
+                  <>Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.
+                  {detectedSetup && (
+                    <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "rgba(74,158,150,0.12)", border: "1px solid rgba(74,158,150,0.3)", color: "#2c5a55", fontSize: 13, fontWeight: 600 }}>
+                      ✓ {detectedSetup === "management"
+                        ? `You're already connected to ${llmProvider} — a dedicated key will be created for ${agentName || "this agent"} automatically. Just continue.`
+                        : `Found your existing ${llmProvider} key — ${agentName || "this agent"} is ready to think. Just continue.`}
+                    </div>
+                  )}
+                  </>
                 )}
               </div>
             )}
@@ -2260,24 +2576,22 @@ export function OnboardingWizard() {
           <div style={{ flex: 1, overflow: "auto", padding: "20px 0" }}>
             <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>Skills & Access</h1>
             <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.5 }}>
-              Choose what {agentName || "your agent"} can access. Workspace tools like Gmail are shared across all your agents. Slack requires a dedicated bot app per agent.
+              What should {agentName || "your agent"} be able to use? Connect the ones that matter — everything else can wait.
             </p>
 
-            {/* ── Security Posture ── */}
+            {/* ── Extra privacy (advanced) — plain language, technical detail
+                   obscured; defaults are safe either way. ── */}
             <div style={{ marginBottom: 28 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 12 }}>
-                Security Posture
-              </div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "var(--surface-card)", padding: "14px 18px", borderRadius: 12, border: isolated ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)" }}>
                 <div>
                   <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)", display: "flex", alignItems: "center", gap: 8 }}>
-                    Isolated Sandbox
+                    Keep {agentName || "this agent"} extra private
                     {AGENT_TYPE_INFO[selectedRole || ""]?.recommended_isolated && (
-                      <span style={{ fontSize: 10, background: "rgba(212,160,74,0.15)", color: "#A87212", padding: "2px 6px", borderRadius: 4 }}>Recommended</span>
+                      <span style={{ fontSize: 10, background: "rgba(212,160,74,0.15)", color: "#A87212", padding: "2px 6px", borderRadius: 4 }}>Recommended for this role</span>
                     )}
                   </div>
                   <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 4, lineHeight: 1.4, maxWidth: "90%" }}>
-                    Run this agent in a strictly isolated container. It will not share memory or contexts with other agents, and network/file access is restricted by default.
+                    {agentName || "This agent"} works alone and can't see what your other agents know. Good for sensitive work like finances or health.
                   </div>
                 </div>
                 <Toggle enabled={isolated} onChange={() => {
@@ -2504,7 +2818,7 @@ export function OnboardingWizard() {
                   Start {agentName || "this agent"} with proactive routines
                 </div>
                 <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
-                  These selected routines will be written into `HEARTBEAT.md` when you deploy. They stay editable later under Skills & Access.
+                  {agentName || "Your agent"} will run these on schedule once deployed. You can change or pause them anytime.
                 </div>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -3341,7 +3655,7 @@ export function OnboardingWizard() {
                     </div>
                   ))}
                   <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginTop: 4 }}>
-                    These will be seeded into `HEARTBEAT.md` and can evolve later as {agentName || "your agent"} learns your workflow.
+                    These routines can evolve later as {agentName || "your agent"} learns your workflow.
                   </div>
                 </div>
               ) : (
@@ -3433,11 +3747,21 @@ export function OnboardingWizard() {
                 <button
                   onClick={() => {
                     if (checking) return;
-                    if (starterEligible) {
-                      handleCreateAgent({ starterTask: getStarterTask(selectedRole).prompt });
-                    } else {
-                      handleCreateAgent();
+                    // Workstream B: weave the user's own discovery words into the
+                    // starter task so the first deliverable is domain-specific.
+                    const deployOpts = starterEligible
+                      ? { starterTask: composeStarterPrompt(getStarterTask(selectedRole).prompt, discoveryInput, draftConnections) }
+                      : undefined;
+                    // Workstream A: Deploy always has a working exit. If the
+                    // background engine job hasn't finished, hold the intent and
+                    // show live status instead of letting deploy fail cryptically.
+                    if (getDeployGate(engineStatusLive) !== "proceed") {
+                      pendingDeployRef.current = deployOpts || {};
+                      setShowEngineGateModal(true);
+                      fireActivationEvent("deploy_blocked_on_engine", { stage: engineStatusLive.stage });
+                      return;
                     }
+                    handleCreateAgent(deployOpts);
                   }}
                   disabled={isCreatingAgent || checking}
                   style={{
@@ -3457,7 +3781,15 @@ export function OnboardingWizard() {
                 </button>
                 {starterEligible && !isCreatingAgent && (
                   <button
-                    onClick={() => handleCreateAgent()}
+                    onClick={() => {
+                      if (getDeployGate(engineStatusLive) !== "proceed") {
+                        pendingDeployRef.current = {};
+                        setShowEngineGateModal(true);
+                        fireActivationEvent("deploy_blocked_on_engine", { stage: engineStatusLive.stage });
+                        return;
+                      }
+                      handleCreateAgent();
+                    }}
                     style={{
                       padding: "8px 16px", borderRadius: 10, border: "none", background: "transparent",
                       color: "var(--text-sub)", fontSize: 13, fontWeight: 600, cursor: "pointer",
@@ -3479,76 +3811,214 @@ export function OnboardingWizard() {
 
       {/* Step 7: Slack Pairing */}
       {step === 7 && (
-        <div style={{ textAlign: "center", maxWidth: 500 }}>
+        <div style={{ textAlign: "center", maxWidth: 560 }}>
           <h1 style={{ fontSize: 40, fontWeight: 700, color: "var(--text-main)", marginBottom: 12, fontFamily: "'Noto Serif', Georgia, serif" }}>
-            Final Step: Pair Slack
+            Where should {agentName || "your agent"} reach you?
           </h1>
-          <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 32 }}>
-            Your agent is online! Send a direct message to your new bot in Slack. It will reply with a pairing code. Enter it below to establish a secure link.
+          <p style={{ fontSize: 16, color: "var(--text-sub)", marginBottom: 28 }}>
+            {agentName || "Your agent"} will send your morning brief, finished work, and anything that needs your approval here — so things keep moving even when this app is closed.
           </p>
 
-          <div style={{ marginBottom: 24, textAlign: "left" }}>
-            <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Pairing Code</label>
-            <input 
-              value={pairingCode}
-              onChange={e => setPairingCode(e.target.value)}
-              placeholder="e.g. 123456"
-              style={{
-                width: "100%", padding: "14px 18px", borderRadius: 12,
-                fontSize: 16, textAlign: "center", letterSpacing: "2px",
-                fontFamily: "monospace", color: "var(--text-main)",
-                border: "2px solid rgba(60,102,99,0.3)", outline: "none",
-                background: "var(--surface-card)"
-              }}
-            />
+          {/* Channel cards */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24, textAlign: "left" }}>
+            {([
+              { key: "mobile" as const, title: "Canopy mobile app", desc: "Richest experience — approvals, deliverables, and briefs on your phone. Scan a QR to pair.", cta: "Pair my phone" },
+              { key: "telegram" as const, title: "Telegram", desc: `Get messages from ${agentName || "your agent"} in a chat you already use. Quick bot setup.`, cta: "Connect Telegram" },
+              { key: "slack" as const, title: "Slack", desc: "Best for teams — your agent joins your workspace as a bot.", cta: "Pair Slack" },
+            ]).map(channel => (
+              <div
+                key={channel.key}
+                style={{
+                  padding: "16px 18px", borderRadius: 16,
+                  border: channelChoice === channel.key ? "2px solid #3c6663" : "1px solid rgba(0,0,0,0.08)",
+                  background: "var(--surface-card)",
+                  display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 3 }}>{channel.title}</div>
+                  <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5 }}>{channel.desc}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChannelChoice(channel.key);
+                    fireActivationEvent("onboarding_channel_selected", { channel: channel.key });
+                    if (channel.key === "mobile") {
+                      setShowMobilePairing(true);
+                    } else if (channel.key === "telegram") {
+                      handleSetupIntegration("telegram");
+                    }
+                    // slack: reveals the pairing-code input below
+                  }}
+                  style={{
+                    padding: "10px 16px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.25)",
+                    background: channelChoice === channel.key ? "linear-gradient(135deg, #3c6663, #609995)" : "rgba(60,102,99,0.06)",
+                    color: channelChoice === channel.key ? "var(--surface-card)" : "#3c6663",
+                    fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap", fontFamily: "inherit",
+                  }}
+                >
+                  {channel.cta}
+                </button>
+              </div>
+            ))}
           </div>
 
-          {pairingError && (
-            <div style={{ marginBottom: 24, padding: "12px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 14 }}>
-              {pairingError}
+          {/* Slack pairing-code flow (unchanged behavior, revealed on selection) */}
+          {channelChoice === "slack" && (
+            <div style={{ marginBottom: 24, textAlign: "left", padding: 16, borderRadius: 16, border: "1px solid rgba(0,0,0,0.08)", background: "rgba(255,255,255,0.6)" }}>
+              <p style={{ fontSize: 13, color: "var(--text-sub)", marginBottom: 12, lineHeight: 1.5 }}>
+                Send a direct message to your new bot in Slack. It will reply with a pairing code — enter it below to establish a secure link.
+              </p>
+              <label style={{ display: "block", fontSize: 14, fontWeight: 600, color: "var(--text-main)", marginBottom: 8 }}>Pairing Code</label>
+              <input
+                value={pairingCode}
+                onChange={e => setPairingCode(e.target.value)}
+                placeholder="e.g. 123456"
+                style={{
+                  width: "100%", padding: "14px 18px", borderRadius: 12,
+                  fontSize: 16, textAlign: "center", letterSpacing: "2px",
+                  fontFamily: "monospace", color: "var(--text-main)",
+                  border: "2px solid rgba(60,102,99,0.3)", outline: "none",
+                  background: "var(--surface-card)"
+                }}
+              />
+              {pairingError && (
+                <div style={{ marginTop: 12, padding: "12px", background: "#FEF2F2", color: "#B91C1C", borderRadius: 8, fontSize: 14 }}>
+                  {pairingError}
+                </div>
+              )}
+              <button
+                disabled={isPairing || !pairingCode.trim()}
+                onClick={async () => {
+                  setIsPairing(true);
+                  setPairingError("");
+                  try {
+                    await invoke("approve_slack_pairing", { code: pairingCode.trim(), agentId: deployedAgentId });
+                    fireActivationEvent("channel_connected", { type: "slack" });
+                    resetWizardState();
+                    setActiveView("canopy");
+                  } catch (e) {
+                    setPairingError(String(e));
+                  } finally {
+                    setIsPairing(false);
+                  }
+                }}
+                style={{
+                  marginTop: 14, width: "100%", padding: "14px 24px", borderRadius: 14, border: "none",
+                  background: "linear-gradient(135deg, #3c6663, #609995)",
+                  color: "var(--surface-card)", fontSize: 15, fontWeight: 700,
+                  cursor: isPairing || !pairingCode.trim() ? "default" : "pointer",
+                  opacity: isPairing || !pairingCode.trim() ? 0.6 : 1, fontFamily: "inherit",
+                }}
+              >
+                {isPairing ? "Pairing..." : "Confirm Pairing"}
+              </button>
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
-            <button 
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", alignItems: "center" }}>
+            <button
               onClick={() => {
+                if (!channelChoice) fireActivationEvent("onboarding_channel_skipped");
                 resetWizardState();
                 setActiveView("canopy");
               }}
-              style={{ padding: "16px 24px", borderRadius: 16, background: "transparent", color: "var(--text-sub)", border: "none", fontSize: 16, fontWeight: 600, cursor: "pointer" }}
+              style={{ padding: "16px 24px", borderRadius: 16, background: channelChoice && channelChoice !== "slack" ? "linear-gradient(135deg, #3c6663, #609995)" : "transparent", color: channelChoice && channelChoice !== "slack" ? "var(--surface-card)" : "var(--text-sub)", border: "none", fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
             >
-              Skip for now
+              {channelChoice && channelChoice !== "slack" ? "Finish & Go to Dashboard" : "Skip for now"}
             </button>
-            <button 
-              disabled={isPairing || !pairingCode.trim()}
-              onClick={async () => {
-                setIsPairing(true);
-                setPairingError("");
-                try {
-                  await invoke("approve_slack_pairing", { code: pairingCode.trim(), agentId: deployedAgentId });
-                  resetWizardState();
-                  setActiveView("canopy");
-                } catch (e) {
-                  setPairingError(String(e));
-                } finally {
-                  setIsPairing(false);
-                }
-              }}
-              style={{
-                padding: "16px 40px", borderRadius: 16, border: "none",
-                background: "linear-gradient(135deg, #3c6663, #609995)",
-                color: "var(--surface-card)", fontSize: 16, fontWeight: 600, cursor: isPairing || !pairingCode.trim() ? "default" : "pointer",
-                boxShadow: "0 8px 40px rgba(48,51,48,0.08)",
-                opacity: isPairing || !pairingCode.trim() ? 0.6 : 1
-              }}
-            >
-              {isPairing ? "Pairing..." : "Finish & Go to Dashboard"}
-            </button>
+          </div>
+          {!channelChoice && (
+            <p style={{ fontSize: 12, color: "var(--text-sub)", opacity: 0.7, marginTop: 10 }}>
+              You can connect later — {agentName || "your agent"} will remind you when there's something worth sending.
+            </p>
+          )}
+
+          <MobilePairingModal
+            isOpen={showMobilePairing}
+            onClose={() => setShowMobilePairing(false)}
+            defaultAgentId={deployedAgentId || undefined}
+            initialView="pair-device"
+          />
+        </div>
+      )}
+
+      {/* ── Workstream A: ambient engine chip (steps 0–5, first-run only) ── */}
+      {!hasCompletedInitialSetup && step >= 0 && step < 6 && isEngineInFlight(engineStatusLive) && (
+        <div style={{
+          position: "fixed", bottom: 18, right: 18, zIndex: 9000,
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "8px 14px", borderRadius: 999,
+          background: "rgba(60,102,99,0.92)", color: "#F0FDF4",
+          fontSize: 12, fontWeight: 700, boxShadow: "0 6px 24px rgba(0,0,0,0.18)",
+        }}>
+          <span style={{ display: "inline-block", width: 10, height: 10, border: "2px solid rgba(240,253,244,0.35)", borderTopColor: "#F0FDF4", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+          {describeEngineStage(engineStatusLive)}
+        </div>
+      )}
+
+      {/* ── Workstream A: Deploy gate modal — the four exits, never a dead end ── */}
+      {showEngineGateModal && (
+        <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.55)", zIndex: 100000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "var(--surface-base)", padding: 32, borderRadius: 20, width: 440, boxShadow: "0 20px 40px rgba(0,0,0,0.2)", textAlign: "center" }}>
+            {getDeployGate(engineStatusLive) === "wait" ? (
+              <>
+                <div style={{ margin: "0 auto 16px", width: 42, height: 42, border: "4px solid rgba(60,102,99,0.2)", borderTopColor: "#3c6663", borderRadius: "50%", animation: "spin 1s linear infinite" }} />
+                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
+                  Almost ready — preparing the habitat
+                </div>
+                <div style={{ fontSize: 14, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: 6 }}>
+                  {engineStatusLive.detail}{engineStatusLive.progress != null ? ` (${engineStatusLive.progress}%)` : ""}
+                </div>
+                <div style={{ fontSize: 13, color: "var(--text-sub)", opacity: 0.75, marginBottom: 20 }}>
+                  {agentName || "Your agent"} will deploy automatically the moment this finishes. Your setup is saved either way.
+                </div>
+                <button
+                  onClick={() => { setShowEngineGateModal(false); }}
+                  style={{ padding: "12px 24px", borderRadius: 12, border: "1px solid var(--border-subtle)", background: "transparent", color: "var(--text-main)", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  I'll wait on the summary screen
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 30, marginBottom: 10 }}>🛟</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>
+                  Engine setup needs a retry
+                </div>
+                <div style={{ fontSize: 14, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: 20 }}>
+                  {engineStatusLive.detail}
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+                  <button
+                    onClick={() => {
+                      startEngineProvisioning();
+                      fireActivationEvent("engine_install_retry_clicked");
+                    }}
+                    style={{ padding: "12px 24px", borderRadius: 12, border: "none", background: "linear-gradient(135deg, #3c6663, #609995)", color: "var(--surface-card)", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+                  >
+                    Retry setup
+                  </button>
+                  <button
+                    onClick={() => {
+                      // Draft persists via canopy_onboarding_draft autosave; the
+                      // auto-continue effect deploys when the engine turns ready.
+                      setShowEngineGateModal(false);
+                    }}
+                    style={{ padding: "12px 20px", borderRadius: 12, border: "1px solid var(--border-subtle)", background: "transparent", color: "var(--text-main)", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+                  >
+                    Save my setup for later
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}
 
       <style>{`
+        @keyframes revealIn { from { opacity: 0; transform: translateY(14px) scale(0.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
         @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-20px); } }
         @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }

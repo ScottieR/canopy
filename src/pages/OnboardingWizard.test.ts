@@ -3,8 +3,8 @@ import { getInitialOnboardingStep } from "../utils/onboardingFlow";
 import { getAgentProviderSecretSlot, getManagedProviderId, syncAgentProviderCredentials } from "../security/providerCredentials";
 
 describe("getInitialOnboardingStep", () => {
-  it("shows the engine gate for a true first-run setup", () => {
-    expect(getInitialOnboardingStep(undefined, false)).toBe(-1);
+  it("starts a true first-run at Welcome — the engine gate is now a background job (Workstream A)", () => {
+    expect(getInitialOnboardingStep(undefined, false)).toBe(0);
   });
 
   it("skips the engine gate for the Add Agent flow", () => {

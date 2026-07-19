@@ -18,11 +18,47 @@ export type VoiceDefault = {
   sample: string;
 };
 
+// How sure the deterministic matcher is about the drafted role.
+// "high"  — at least one direct keyword match (score >= KEYWORD_SCORE).
+// "low"   — only weak context-token overlap; the draft is a guess worth hedging.
+// "none"  — nothing matched (or empty input); we fell back to the first role.
+// The wizard MUST vary its copy on low/none: never assert confidence the
+// matcher doesn't have (persona review §7, gap 4).
+export type DiscoveryConfidence = "high" | "low" | "none";
+
 export type DiscoveryDraft = {
   primaryRole: string | null;
   alternatives: string[];
   matchedKeywords: string[];
+  confidence: DiscoveryConfidence;
 };
+
+// ─── Generative persona drafting (Workstream C3 scaffold) ────────────────────
+// When the matcher returns low/none confidence AND generative drafting is
+// enabled (hosted inference or a configured key), the wizard may request a
+// tailored persona instead of settling for the fallback role. The draft MUST
+// resolve to a base template blend so accessories/voice/access defaults stay
+// deterministic (July 18 decision: static cards stay high-usage; niche comes
+// from generation). Until the inference path ships, isGenerativeDiscoveryEnabled
+// returns false and the honest-copy fallback is used.
+export type GenerativePersonaDraft = {
+  name: string;
+  roleSummary: string;
+  personalitySeed: string;
+  baseTemplateBlend: string[];      // existing role keys, e.g. ["Assistant", "Accountant"]
+  suggestedConnections: string[];
+  suggestedHeartbeatNames: string[];
+};
+
+export const GENERATIVE_DISCOVERY_FLAG = "canopy_generative_discovery";
+
+export function isGenerativeDiscoveryEnabled(): boolean {
+  try {
+    return localStorage.getItem(GENERATIVE_DISCOVERY_FLAG) === "true";
+  } catch {
+    return false;
+  }
+}
 
 const ROLE_KEYWORDS: Record<string, string[]> = {
   Assistant: ["calendar", "inbox", "email", "meeting", "schedule", "organize", "follow-up", "logistics", "assistant"],
@@ -108,6 +144,8 @@ function tokenize(value: string): string[] {
     .filter(token => token.length > 2 && !STOP_WORDS.has(token));
 }
 
+const KEYWORD_SCORE = 3;
+
 export function inferRoleFromPrompt(
   input: string,
   roleInfo: Record<string, DiscoveryRoleInfo>,
@@ -119,6 +157,7 @@ export function inferRoleFromPrompt(
       primaryRole: availableRoles[0] || null,
       alternatives: availableRoles.slice(1, 4),
       matchedKeywords: [],
+      confidence: "none",
     };
   }
 
@@ -133,7 +172,7 @@ export function inferRoleFromPrompt(
       ...tokenize(info.defaultPrompt || ""),
     ]);
     const overlapScore = tokens.filter(token => contextTokens.has(token)).length;
-    const keywordScore = matchedKeywords.length * 3;
+    const keywordScore = matchedKeywords.length * KEYWORD_SCORE;
     const score = keywordScore + overlapScore;
     return { role, score, matchedKeywords };
   }).sort((a, b) => b.score - a.score || a.role.localeCompare(b.role));
@@ -144,6 +183,7 @@ export function inferRoleFromPrompt(
       primaryRole: availableRoles[0] || null,
       alternatives: availableRoles.slice(1, 4),
       matchedKeywords: [],
+      confidence: "none",
     };
   }
 
@@ -151,11 +191,107 @@ export function inferRoleFromPrompt(
     primaryRole: best.role,
     alternatives: scored.slice(1, 4).map(item => item.role),
     matchedKeywords: best.matchedKeywords,
+    confidence: best.score >= KEYWORD_SCORE ? "high" : "low",
   };
+}
+
+/**
+ * Compose the starter task prompt, weaving in the user's own discovery input
+ * so the first deliverable is specific to their situation instead of generic
+ * (Workstream B — persona review §7, gap 3). The seed is user-authored text;
+ * it is passed as context, not as instructions to reinterpret the task.
+ */
+export function composeStarterPrompt(
+  basePrompt: string,
+  seed?: string | null,
+  recommendedConnections?: string[],
+): string {
+  const cleanSeed = (seed || "").trim();
+  let prompt = basePrompt;
+  if (cleanSeed) {
+    // Cap the seed so a pasted wall of text can't drown the task definition.
+    const bounded = cleanSeed.length > 600 ? `${cleanSeed.slice(0, 600)}…` : cleanSeed;
+    prompt += `\n\nContext: the user described their situation as: "${bounded}". Make the deliverable specifically useful for that situation, not generic.`;
+  }
+  // Conversational setup (four-beat consolidation): the agent itself proposes
+  // its next power-up after proving value — setup as a conversation with
+  // someone already working for you, not a dashboard of toggles.
+  const connections = (recommendedConnections || []).filter(Boolean).slice(0, 2);
+  if (connections.length > 0) {
+    prompt += `\n\nAfter you deliver the work above, add ONE short closing paragraph in your own voice: point out the single most valuable thing you could take on next if the user connected ${connections.join(" or ")}, and ask if they'd like you to walk them through connecting it. Keep it to two sentences, warm and concrete — no bullet lists.`;
+  }
+  return prompt;
+}
+
+/** Honest draft-card framing for each confidence level (Workstream C). */
+export function getDiscoveryConfidenceCopy(
+  confidence: DiscoveryConfidence,
+  role: string | null,
+): string {
+  if (!role) return "Describe the work you want handled and Eddie will draft a fit.";
+  switch (confidence) {
+    case "high":
+      return `Eddie would start with a ${role}.`;
+    case "low":
+      return `Eddie's closest match is a ${role} — tell him more and he'll sharpen the fit.`;
+    case "none":
+    default:
+      return `Eddie wasn't sure of the perfect fit, so he'd start you with a ${role} you can tailor — or tell him more.`;
+  }
 }
 
 export function getRoleDefaultName(role: string): string {
   return DEFAULT_ROLE_NAMES[role] || role;
+}
+
+// ─── Randomized persona names ────────────────────────────────────────────────
+// A drafted agent should feel like a being with a name, not a config object —
+// and not the same being every install. Role pools carry the persona flavor;
+// the general pool covers Custom and roles without a pool. "Custom" is never
+// a name.
+
+const ROLE_NAME_POOLS: Record<string, string[]> = {
+  Assistant: ["Sloane", "Piper", "Reese", "Emery", "Quinn", "Marlow"],
+  Researcher: ["Atlas", "Darwin", "Meridian", "Sage", "Newton", "Iris"],
+  Coder: ["Dev", "Turing", "Pixel", "Ada", "Lovelace", "Kernel"],
+  Strategist: ["Marlowe", "Vega", "Archer", "Noor", "Kasparov", "Sun"],
+  Accountant: ["Ledger", "Penny", "Tally", "Sterling", "Moss", "Cedar"],
+  Editor: ["Quill", "Harper", "Wren", "Scout", "Indigo", "Blue"],
+  Chef: ["Mise", "Basil", "Saffron", "Remy", "Julia", "Pepper"],
+  "Travel Agent": ["Harbor", "Compass", "Marco", "Juno", "Wren", "Sol"],
+  Trainer: ["Pace", "Blaze", "Stride", "Koa", "Rocky", "Dash"],
+  Tutor: ["Sage", "Merlin", "Athena", "Ollie", "Beatrix", "Finch"],
+  "Kids Coordinator": ["Poppins", "Maple", "Sunny", "Birdie", "Juno", "Clover"],
+  "Marketing Guru": ["Echo", "Vale", "Sterling", "Nova", "Reya", "Banks"],
+  Coach: ["North", "Ash", "True", "Kai", "Summit", "Roan"],
+};
+
+const GENERAL_NAME_POOL = [
+  "Juniper", "Rowan", "Ellis", "Ada", "Miles", "Nova", "Fern", "Otis",
+  "Hazel", "Felix", "Ivy", "Oscar", "Luna", "Reef", "Coral", "Pearl",
+];
+
+/**
+ * Pick a random name suited to the role. `exclude` avoids re-rolling the same
+ * name (used by the shuffle button). Never returns "Custom" or the role key.
+ */
+export function generateAgentName(role: string | null, exclude?: string): string {
+  const pool = [
+    ...((role && ROLE_NAME_POOLS[role]) || []),
+    ...GENERAL_NAME_POOL,
+  ].filter(name => name !== exclude && name !== "Custom" && name !== role);
+  if (pool.length === 0) return "Pearl";
+  // Role-pool names are listed first and get 3x weight so the persona flavor
+  // usually wins while the general pool keeps things fresh.
+  const rolePoolSize = (role && ROLE_NAME_POOLS[role])
+    ? ROLE_NAME_POOLS[role].filter(n => n !== exclude).length
+    : 0;
+  const weighted: string[] = [
+    ...pool.slice(0, rolePoolSize),
+    ...pool.slice(0, rolePoolSize),
+    ...pool,
+  ];
+  return weighted[Math.floor(Math.random() * weighted.length)];
 }
 
 export function getRoleVoiceDefault(role: string): VoiceDefault {

@@ -25,7 +25,9 @@ pub mod db;
 mod dispatch;
 mod docker;
 mod durable_content;
+mod engine_install;
 mod feedback;
+mod share_publish;
 mod google;
 mod health_monitor;
 mod imessage;
@@ -856,6 +858,12 @@ pub fn run() {
             docker::check_orbstack_installed,
             docker::check_docker_installed,
             docker::install_orbstack,
+            engine_install::start_engine_provisioning,
+            engine_install::get_engine_status,
+            // Publish & Share (Workstream E)
+            share_publish::get_share_config,
+            share_publish::publish_share_artifact,
+            share_publish::revoke_share_artifact,
             docker::configure_orbstack_memory,
             docker::get_container_status,
             docker::start_gateway,
