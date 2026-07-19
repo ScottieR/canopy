@@ -178,6 +178,55 @@ function sameMessages(a: ChatMessage[] = [], b: ChatMessage[] = []): boolean {
   return true;
 }
 
+// ─── Proactive UX Updates ──────────────────────────────────────────────
+function WorkflowApprovalCard({ routineName }: { routineName: string }) {
+    const [status, setStatus] = React.useState<"pending"|"approved"|"rejected">("pending");
+    return (
+        <div style={{ marginTop: 12, marginBottom: 12, padding: 16, background: "rgba(10,14,10,0.8)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#fff" }}>
+                <Activity size={18} color="#00ffcc" />
+                <span style={{ fontWeight: 600 }}>Workflow PR: {routineName}</span>
+            </div>
+            <div style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.7)" }}>
+                This agent is proposing a new proactive heartbeat routine. Modifies: <code>HEARTBEAT.md</code>, <code>MEMORY.md</code>.
+            </div>
+            {status === "pending" ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setStatus("approved")} style={{ background: "#00ffcc", color: "#000", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontWeight: 600, fontSize: "0.85rem" }}>Approve & Merge</button>
+                    <button onClick={() => setStatus("rejected")} style={{ background: "rgba(255,255,255,0.1)", color: "#fff", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontWeight: 600, fontSize: "0.85rem" }}>Reject</button>
+                </div>
+            ) : status === "approved" ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#00ffcc", fontSize: "0.85rem" }}><CheckCircle size={14} /> Workflow merged into HEARTBEAT.md</div>
+            ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#ff6b6b", fontSize: "0.85rem" }}><X size={14} /> Routine rejected</div>
+            )}
+        </div>
+    );
+}
+
+function AuthorizeConnectionCard({ serviceName }: { serviceName: string }) {
+    const [authorized, setAuthorized] = React.useState(false);
+    return (
+        <div style={{ marginTop: 12, marginBottom: 12, padding: 16, background: "rgba(10,14,10,0.8)", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#fff" }}>
+                <Lock size={18} color="#ffb347" />
+                <span style={{ fontWeight: 600 }}>Connection Required: {serviceName}</span>
+            </div>
+            <div style={{ fontSize: "0.85rem", color: "rgba(255,255,255,0.7)" }}>
+                This agent is blocked. It requires authorization to access {serviceName} in order to complete its task.
+            </div>
+            {!authorized ? (
+                <div>
+                    <button onClick={() => setAuthorized(true)} style={{ background: "#ffb347", color: "#000", padding: "6px 12px", borderRadius: 4, border: "none", cursor: "pointer", fontWeight: 600, fontSize: "0.85rem" }}>Authorize Connection</button>
+                </div>
+            ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 6, color: "#00ffcc", fontSize: "0.85rem" }}><CheckCircle size={14} /> {serviceName} connected successfully</div>
+            )}
+        </div>
+    );
+}
+// ───────────────────────────────────────────────────────────────────────
+
 function EmbedPreview({ agentId, refName, title, height, messageId }: { agentId: string; refName: string; title: string; height: string; messageId?: string }) {
   const [content, setContent] = useState<string | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
@@ -1879,45 +1928,65 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                               </details>
                           );
                       } else if (chunk.type === "text" && chunk.content) {
+                          
                           const embedRegex = /\[embed\s+([^\]]+)\/\]/gi;
-                          let textToProcess = chunk.content;
-                          let match;
+                          const workflowRegex = /\[Workflow Approval:\s*([^\]]+)\]/gi;
+                          const authorizeRegex = /\[Authorize Connection:\s*([^\]]+)\]/gi;
+                          
+                          // Quick and dirty tokenization for all three
+                          let tokens: Array<{type: string, match: any, index: number}> = [];
+                          
+                          let m;
+                          while ((m = embedRegex.exec(chunk.content)) !== null) tokens.push({type: 'embed', match: m, index: m.index });
+                          while ((m = workflowRegex.exec(chunk.content)) !== null) tokens.push({type: 'workflow', match: m, index: m.index });
+                          while ((m = authorizeRegex.exec(chunk.content)) !== null) tokens.push({type: 'authorize', match: m, index: m.index });
+                          
+                          tokens.sort((a, b) => a.index - b.index);
+                          
                           let lastIndex = 0;
                           
-                          while ((match = embedRegex.exec(textToProcess)) !== null) {
-                              if (match.index > lastIndex) {
-                                  const beforeText = textToProcess.substring(lastIndex, match.index);
-                                  if (beforeText.trim()) {
-                                      elements.push(
-                                          <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
-                                            <MDEditor.Markdown source={beforeText} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
-                                          </div>
-                                      );
-                                  }
+                          tokens.forEach(token => {
+                              const matchIndex = token.index;
+                              const fullMatch = token.match[0];
+                              
+                              if (matchIndex < lastIndex) return; // Overlap? shouldn't happen
+                              
+                              const beforeText = chunk.content.substring(lastIndex, matchIndex);
+                              if (beforeText.trim()) {
+                                  elements.push(
+                                      <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                                        <MDEditor.Markdown source={beforeText} style={{ background: "transparent", color: "inherit", fontSize: "inherit", lineHeight: "inherit" }} />
+                                      </div>
+                                  );
                               }
                               
-                              const attrsStr = match[1];
-                              const refMatch = attrsStr.match(/ref="([^"]+)"/i);
-                              const titleMatch = attrsStr.match(/title="([^"]+)"/i);
-                              const heightMatch = attrsStr.match(/height="([^"]+)"/i);
+                              if (token.type === 'embed') {
+                                  const refMatch = token.match[1].match(/ref="([^"]+)"/);
+                                  const titleMatch = token.match[1].match(/title="([^"]+)"/);
+                                  const heightMatch = token.match[1].match(/height="([^"]+)"/);
+                                  const refName = refMatch ? refMatch[1] : "";
+                                  const title = titleMatch ? titleMatch[1] : "Embedded Content";
+                                  const height = heightMatch ? heightMatch[1] : "400";
+                                  elements.push(
+                                      <EmbedPreview
+                                          key={`embed-${elements.length}`}
+                                          agentId={agent.id}
+                                          refName={refName}
+                                          title={title}
+                                          height={height}
+                                          messageId={msg.ts?.toString()}
+                                      />
+                                  );
+                              } else if (token.type === 'workflow') {
+                                  elements.push(<WorkflowApprovalCard key={`wf-${elements.length}`} routineName={token.match[1].trim()} />);
+                              } else if (token.type === 'authorize') {
+                                  elements.push(<AuthorizeConnectionCard key={`auth-${elements.length}`} serviceName={token.match[1].trim()} />);
+                              }
                               
-                              const refName = refMatch ? refMatch[1] : "unknown";
-                              const title = titleMatch ? titleMatch[1] : "Embedded Content";
-                              const height = heightMatch ? heightMatch[1] : "400";
-                              
-                              elements.push(
-                                  <EmbedPreview
-                                      key={`embed-${elements.length}`}
-                                      agentId={agent.id}
-                                      refName={refName}
-                                      title={title}
-                                      height={height}
-                                      messageId={msg.ts?.toString()}
-                                  />
-                              );
-                              lastIndex = embedRegex.lastIndex;
-                          }
-                          const afterText = textToProcess.substring(lastIndex);
+                              lastIndex = matchIndex + fullMatch.length;
+                          });
+                          
+                          const afterText = chunk.content.substring(lastIndex);
                           if (afterText.trim()) {
                               elements.push(
                                   <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
@@ -1925,6 +1994,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                                   </div>
                               );
                           }
+
                       }
                   });
                   
