@@ -56,7 +56,7 @@ jobs:
           cargo test --locked
 
       - name: Audit Rust dependencies
-        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          working-directory: src-tauri
+        working-directory: src-tauri
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
