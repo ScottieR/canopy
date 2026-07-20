@@ -32,7 +32,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1.0.103"
 thiserror = "1"
-rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+rusqlite = { version = "0.40", features = ["bundled", "chrono"] }
 notify = "6"                  # FSEvents file watcher (iMessage bridge)
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }  # WebSocket (Slack Socket Mode)
 futures-util = "0.3"          # Stream/Sink traits for WebSocket
