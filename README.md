@@ -49,7 +49,9 @@ flowchart TD
     Core -. "model metadata" .-> Admin
 ```
 
-The hosted control plane supplies public product configuration such as agent personas, habitat assets, model metadata, and pricing. Agent workspaces, conversations, credentials, and runtime state are managed locally. Eddy and agent requests go directly from the Mac to the provider selected by the user; the Canopy control plane does not proxy desktop LLM traffic. Requests sent to a provider or connected integration are governed by that provider's own data policy.
+The hosted control plane supplies public product configuration such as agent personas, habitat assets, model metadata, and pricing. Agent workspaces, credentials, and runtime state are managed locally. Agent requests and Eddy requests after provider setup go directly from the Mac to the provider selected by the user.
+
+First-run onboarding has one deliberate exception so Eddy is still an AI before a user connects a key. The desktop can call `/api/canopy-helper/bootstrap` with one current setup request plus `runtime_ready`, an `active_view` fixed to `onboarding`, and the bounded onboarding step. Persona drafting and the pre-deploy test drive may include their bounded current task framing (including the current draft personality for a test drive) in that single request. Prior conversation turns, the agent roster, provider diagnostics, logs, credentials, permissions, workspaces, and instructions from existing agents are not added from app context. The route is onboarding-only and rate-limited; once any supported user provider key is present, Eddy automatically switches to direct provider calls from the Mac. An explicit local-only mode remains available.
 
 ## Quick start
 
@@ -120,7 +122,8 @@ Optional integrations such as Slack, Google, GitHub, Telegram, and Discord requi
 | Prompts and model responses | Sent from the local runtime to the model provider selected by the user |
 | Persona catalogs, model metadata, pricing, and visual assets | Fetched from the hosted Canopy control plane |
 | Usage telemetry | Disabled unless the user opts in; aggregate, anonymized events only |
-| Canopy Helper requests | Sent directly from the Mac to the user's provider or local Ollama; Rust allowlists one current message, minimized diagnostics, and short-lived continuity |
+| Canopy Helper after provider setup | Sent directly from the Mac to the user's provider or local Ollama; Rust allowlists one current message, minimized diagnostics, and short-lived continuity |
+| Canopy Helper during first-run setup | One bounded current setup request plus runtime readiness and onboarding step goes to the hosted bootstrap; no prior turns or general diagnostic context |
 
 Container services are published only on `127.0.0.1`. Host-level computer control is treated as a separate, higher-risk capability and is restricted to isolated agents.
 

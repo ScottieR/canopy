@@ -12,7 +12,7 @@ Use this checklist before changing the repository from private to public. A publ
 
 ## Hosted-service safety
 
-- [x] **Protect server-funded LLM routes.** Desktop Eddy/persona/test-drive requests now use the user's provider or Ollama directly. Server-funded generation and helper routes require admin authentication.
+- [x] **Protect server-funded LLM routes.** General helper and generation routes require admin authentication. First-run Eddy uses only the narrow, rate-limited onboarding bootstrap route, then switches automatically to the user's provider (or Ollama when selected).
 - [ ] **Keep admin-only routes authenticated.** Reconfirm that all catalog mutation, model sync, release, and studio-generation routes reject requests without `ADMIN_API_KEY`.
 - [ ] **Review public data contracts.** Confirm catalog responses and telemetry schemas contain no private customer, operator, agent, or infrastructure data.
 - [ ] **Test failure behavior.** Exhausted quotas or an unavailable hosted control plane should produce a clear degraded mode and must not prevent local data access.

@@ -23,7 +23,7 @@ cargo test --locked
 - Never commit populated `.env` files or runtime credentials.
 - Never make one agent inherit another agent's credentials or integrations.
 - Keep privileged operations behind narrow Tauri commands with validation.
-- Do not add desktop calls to server-funded LLM endpoints. Eddy and agent inference must use the user's provider directly or an on-device model.
+- Do not add desktop calls to general server-funded LLM endpoints. The sole exception is the bounded `/api/canopy-helper/bootstrap` first-run route: one current onboarding request and its minimal setup state, with no history, credentials, logs, agent records, or workspace content. Eddy must switch to the user's provider as soon as one is connected; agent inference always uses the user's provider or an on-device model.
 - Add regression tests for credential scope, shell/path handling, IPC allowlists, and authorization changes.
 - Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
 

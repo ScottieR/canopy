@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type CanopyHelperMode = "offline" | "provider" | "local";
+export type CanopyHelperMode = "bootstrap" | "offline" | "provider" | "local";
 
 export type CanopyHelperConfig = {
   mode: CanopyHelperMode;
@@ -12,10 +12,10 @@ export type CanopyHelperConfig = {
 /**
  * Send one message through Eddy's local Tauri boundary.
  *
- * The Rust command allowlists diagnostic context before calling either the
- * user's provider or Ollama. No desktop path in this helper calls the Canopy
- * control plane, and offline mode fails fast so the UI can use deterministic
- * local guidance.
+ * The Rust command allowlists diagnostic context before calling the user's
+ * provider or Ollama. Before a key exists, bootstrap mode sends one current
+ * onboarding request plus three setup fields to Canopy's bounded setup route;
+ * it never sends conversation history. Offline mode remains an explicit opt-out.
  */
 export async function requestCanopyHelper(
   message: string,

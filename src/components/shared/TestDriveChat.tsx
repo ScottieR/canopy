@@ -1,8 +1,8 @@
 // ─── Test-drive chat (Meet {Name} studio) ────────────────────────────────────
-// Talk to the DRAFT before deploying. Runs through the user's connected
-// provider (or on-device model) from the local Tauri boundary, so personality
-// tweaks can be tested without sending draft instructions to Canopy's server.
-// Capped turns; graceful offline copy before a provider is available.
+// Talk to the DRAFT before deploying. Runs through the local Tauri boundary:
+// the user's provider or on-device model when available, otherwise the bounded
+// first-run bootstrap. Bootstrap receives only this current roleplay request;
+// prior test-drive turns are never included. Capped turns with graceful failure.
 
 import React, { useRef, useState } from "react";
 import { requestCanopyHelper } from "../../utils/canopyHelperClient";

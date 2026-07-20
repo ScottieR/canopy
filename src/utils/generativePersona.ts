@@ -2,8 +2,8 @@
 // When the keyword matcher can't find a real fit ("sommelier" → Media Advisor
 // is the canonical miss), Eddie can ask the user's connected provider directly
 // from the Mac to either pick the best existing role or invent a tailored
-// persona. Before a key exists this remains a fail-safe enhancement: the
-// deterministic keyword draft stays in place and no server-funded LLM runs.
+// persona. Before a key exists, the same bounded request can use the dedicated
+// onboarding bootstrap; the deterministic keyword draft remains the fail-safe.
 //
 // Design rules (July 18 decisions):
 //   • Generated personas resolve to a BLEND of existing base templates so
@@ -170,7 +170,7 @@ type HelperRequester = (
   continuity?: Record<string, unknown>,
 ) => Promise<string>;
 
-/** Ask Eddie through the user's local provider boundary. Null on ANY failure. */
+/** Ask Eddie through the local privacy boundary. Null on ANY failure. */
 export async function draftPersonaWithEddie(
   userPrompt: string,
   roleInfo: Record<string, { description?: string }>,

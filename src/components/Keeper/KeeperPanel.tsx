@@ -1,10 +1,9 @@
 // ─── The Keeper (Eddy) — persistent helper pill + chat panel ─────────────────
 // Spec: spec-helper-agent-and-orchestrator.md Part 1 / F-K1.
 // Provider-direct or on-device inference with a local rule-based fallback.
-// Once the user connects a provider, Eddy calls it directly from this Mac;
-// before then, common setup failures are diagnosed without sending anything
-// to the Canopy server. The Tauri layer assembles the same minimized context
-// the wrench icon sees and applies a strict allowlist before provider calls.
+// During first-run onboarding, a bounded Canopy-funded bootstrap keeps Eddy
+// intelligent before a user key exists. The moment a provider is connected,
+// requests switch to that provider directly from this Mac.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
@@ -56,7 +55,7 @@ type SubmittedFeedbackReport = {
 };
 
 type ProviderHealth = { provider: string; status: string; detail?: string; model: string };
-type HelperMode = "offline" | "provider" | "local";
+type HelperMode = "bootstrap" | "offline" | "provider" | "local";
 type HelperConfig = { mode: HelperMode; provider?: string; model?: string; credentialPresent: boolean };
 type HelperContinuity = { topic?: "provider_setup" | "integration_setup" | "diagnostics" | "onboarding"; target_agent?: string; provider?: "openai" | "anthropic" | "gemini" | "xai"; expires_at: number };
 
@@ -568,7 +567,7 @@ export function KeeperPanel() {
         mode: settingsMode,
         provider: settingsMode === "provider" ? settingsProvider : null,
         credential: settingsMode === "provider" && settingsCredential ? settingsCredential : null,
-        model: settingsMode === "offline" ? null : (settingsModel || null),
+        model: settingsMode === "offline" || settingsMode === "bootstrap" ? null : (settingsModel || null),
       });
       setHelperConfig(config);
       setSettingsCredential("");
@@ -653,6 +652,7 @@ export function KeeperPanel() {
             <div style={{ padding: 12, borderBottom: "1px solid rgba(0,0,0,0.08)", background: "var(--surface-base, #faf9f6)", fontSize: 11.5 }}>
               <div style={{ fontWeight: 800, marginBottom: 8 }}>Eddy privacy mode</div>
               <select value={settingsMode} onChange={e => setSettingsMode(e.target.value as HelperMode)} style={{ width: "100%", padding: 7, borderRadius: 8, marginBottom: 7 }}>
+                <option value="bootstrap">Canopy setup AI — onboarding only</option>
                 <option value="offline">Local guidance — no model</option>
                 <option value="provider">My provider — direct from this Mac</option>
                 <option value="local">On-device — Ollama</option>
@@ -663,8 +663,8 @@ export function KeeperPanel() {
                 </select>
                 <input type="password" value={settingsCredential} onChange={e => setSettingsCredential(e.target.value)} placeholder={helperConfig.credentialPresent ? "Connected key found — blank keeps it" : "Optional dedicated Eddy API key"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />
               </>}
-              {settingsMode !== "offline" && <input value={settingsModel} onChange={e => setSettingsModel(e.target.value)} placeholder={settingsMode === "local" ? "Ollama model, e.g. llama3.2:3b" : "Model (optional)"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />}
-              <div style={{ color: "var(--text-sub, #636E72)", lineHeight: 1.4, marginBottom: 8 }}>{settingsMode === "offline" ? "No message leaves this Mac. Eddy uses built-in setup diagnostics." : settingsMode === "provider" ? "Uses an already connected provider key automatically, or the optional dedicated key above. Requests go directly from this Mac." : "Requests stay on this Mac through Ollama."}</div>
+              {settingsMode !== "offline" && settingsMode !== "bootstrap" && <input value={settingsModel} onChange={e => setSettingsModel(e.target.value)} placeholder={settingsMode === "local" ? "Ollama model, e.g. llama3.2:3b" : "Model (optional)"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />}
+              <div style={{ color: "var(--text-sub, #636E72)", lineHeight: 1.4, marginBottom: 8 }}>{settingsMode === "offline" ? "No message leaves this Mac. Eddy uses built-in setup diagnostics." : settingsMode === "bootstrap" ? "During onboarding, sends only the current setup request and minimal step state to Canopy. It switches to your provider automatically once connected." : settingsMode === "provider" ? "Uses an already connected provider key automatically, or the optional dedicated key above. Requests go directly from this Mac." : "Requests stay on this Mac through Ollama."}</div>
               {settingsError && <div style={{ color: "#b42318", marginBottom: 7 }}>{settingsError}</div>}
               <button onClick={saveHelperSettings} style={{ width: "100%", padding: 7, border: "none", borderRadius: 8, background: "#3c6663", color: "#fff", fontWeight: 800, cursor: "pointer" }}>Save privacy mode</button>
             </div>

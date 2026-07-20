@@ -7,6 +7,7 @@ const MODE_SLOT: &str = "canopy_helper_mode";
 const PROVIDER_SLOT: &str = "canopy_helper_provider";
 const MODEL_SLOT: &str = "canopy_helper_model";
 const OFFLINE_MODE: &str = "offline";
+const BOOTSTRAP_MODE: &str = "bootstrap";
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 1_000_000;
 
 fn bounded_text(value: Option<&Value>, max: usize) -> String {
@@ -113,6 +114,25 @@ fn sanitize_continuity(continuity: &Value) -> Value {
         "topic": topic,
         "target_agent": target_agent,
         "provider": provider,
+    })
+}
+
+// The server-funded first-run path receives much less than the provider-direct
+// diagnostics path. In particular, no agent list, provider health, usage,
+// logs, credentials, instructions, or prior conversation turns cross this
+// boundary.
+fn sanitize_bootstrap_context(context: &Value) -> Value {
+    let draft_step = context
+        .pointer("/onboarding/draft_step")
+        .and_then(Value::as_u64)
+        .map(|value| value.min(100));
+    json!({
+        "runtime_ready": context.get("runtime_ready").and_then(Value::as_bool).unwrap_or(false),
+        "active_view": "onboarding",
+        "onboarding": {
+            "in_onboarding": context.pointer("/onboarding/in_onboarding").and_then(Value::as_bool).unwrap_or(false),
+            "draft_step": draft_step,
+        },
     })
 }
 
@@ -234,13 +254,14 @@ fn connected_provider() -> Option<String> {
 fn resolve_mode(configured: Option<&str>, has_connected_provider: bool) -> String {
     match configured {
         Some("local") => "local".into(),
-        Some("provider") => "provider".into(),
+        Some("provider") if has_connected_provider => "provider".into(),
+        Some("provider") => BOOTSTRAP_MODE.into(),
         Some(OFFLINE_MODE) => OFFLINE_MODE.into(),
-        // `hosted` is a legacy bootstrap setting. Server-funded inference is
-        // no longer available to desktop clients; migrate it automatically to
-        // the user's connected provider, or stay entirely offline.
-        Some("hosted") | None if has_connected_provider => "provider".into(),
-        _ => OFFLINE_MODE.into(),
+        // Bootstrap is only the pre-key state. The moment a user provider is
+        // available, Eddy switches to a direct request from this Mac.
+        Some(BOOTSTRAP_MODE) | Some("hosted") | None if has_connected_provider => "provider".into(),
+        Some(BOOTSTRAP_MODE) | Some("hosted") | None => BOOTSTRAP_MODE.into(),
+        _ => BOOTSTRAP_MODE.into(),
     }
 }
 
@@ -280,13 +301,16 @@ pub fn configure_canopy_helper(
     credential: Option<String>,
     model: Option<String>,
 ) -> Result<CanopyHelperConfig, String> {
-    if !matches!(mode.as_str(), "offline" | "hosted" | "provider" | "local") {
-        return Err("Eddy mode must be offline, provider, or local".into());
+    if !matches!(
+        mode.as_str(),
+        "offline" | "bootstrap" | "hosted" | "provider" | "local"
+    ) {
+        return Err("Eddy mode must be bootstrap, offline, provider, or local".into());
     }
-    // Older UIs may still submit `hosted`; persist the privacy-preserving
-    // replacement so a legacy setting never re-enables server inference.
+    // Older UIs may still submit `hosted`; retain first-run AI under the
+    // clearer bootstrap name and its narrower server contract.
     let effective_mode = if mode == "hosted" {
-        OFFLINE_MODE
+        BOOTSTRAP_MODE
     } else {
         &mode
     };
@@ -350,6 +374,36 @@ async fn call_openai_compatible(
         .ok_or_else(|| "Provider returned no reply".into())
 }
 
+async fn call_canopy_bootstrap(message: &str, context: &Value) -> Result<String, String> {
+    if context
+        .pointer("/onboarding/in_onboarding")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err("Canopy-funded Eddy assistance is limited to onboarding".into());
+    }
+    let endpoint = format!(
+        "{}/api/canopy-helper/bootstrap",
+        crate::admin_api_base_url().trim_end_matches('/')
+    );
+    let response = helper_http_client()?
+        .post(endpoint)
+        .json(&json!({
+            "message": message,
+            "context": sanitize_bootstrap_context(context),
+            "continuity": { "topic": "onboarding" },
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Canopy setup assistant is unavailable: {error}"))?;
+    let body = bounded_success_json(response).await?;
+    body.get("reply")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .filter(|reply| !reply.trim().is_empty())
+        .ok_or_else(|| "Canopy setup assistant returned no reply".into())
+}
+
 #[tauri::command]
 pub async fn send_canopy_helper_message(
     message: String,
@@ -371,8 +425,10 @@ pub async fn send_canopy_helper_message(
             default_model(&provider).into()
         }
     });
-    let user_prompt = prompt(message.trim(), &context, &continuity);
-    let reply = if config.mode == "local" {
+    let reply = if config.mode == BOOTSTRAP_MODE {
+        call_canopy_bootstrap(message.trim(), &context).await?
+    } else if config.mode == "local" {
+        let user_prompt = prompt(message.trim(), &context, &continuity);
         let response = helper_http_client()?.post("http://127.0.0.1:11434/api/chat")
             .json(&json!({"model": model, "stream": false, "messages": [{"role":"user", "content": user_prompt}]}))
             .send().await.map_err(|e| format!("Ollama is unavailable: {e}"))?;
@@ -382,6 +438,7 @@ pub async fn send_canopy_helper_message(
             .map(str::to_string)
             .ok_or("Ollama returned no reply")?
     } else {
+        let user_prompt = prompt(message.trim(), &context, &continuity);
         let key = provider_credential(&provider).ok_or("Eddy's provider key is missing")?;
         match provider.as_str() {
             "anthropic" => {
@@ -509,18 +566,47 @@ mod tests {
     }
 
     #[test]
-    fn legacy_hosted_mode_migrates_to_user_provider_or_offline() {
+    fn legacy_hosted_mode_migrates_to_user_provider_or_bootstrap() {
         assert_eq!(resolve_mode(Some("hosted"), true), "provider");
-        assert_eq!(resolve_mode(Some("hosted"), false), "offline");
+        assert_eq!(resolve_mode(Some("hosted"), false), "bootstrap");
         assert_eq!(resolve_mode(None, true), "provider");
-        assert_eq!(resolve_mode(None, false), "offline");
+        assert_eq!(resolve_mode(None, false), "bootstrap");
     }
 
     #[test]
     fn explicit_local_and_offline_choices_are_stable() {
         assert_eq!(resolve_mode(Some("local"), true), "local");
         assert_eq!(resolve_mode(Some("offline"), true), "offline");
-        assert_eq!(resolve_mode(Some("provider"), false), "provider");
+        assert_eq!(resolve_mode(Some("provider"), false), "bootstrap");
+    }
+
+    #[test]
+    fn bootstrap_context_contains_setup_state_only() {
+        let clean = sanitize_bootstrap_context(&json!({
+            "runtime_ready": true,
+            "active_view": "architect",
+            "onboarding": { "in_onboarding": true, "draft_step": 2, "private_draft": "secret" },
+            "conversation_history": ["private turn"],
+            "agents": [{ "name": "Patch", "instructions": "private SOUL.md" }],
+            "provider_health": [{ "detail": "private provider response" }],
+            "credential": "secret key",
+            "raw_logs": "private logs"
+        }));
+        assert_eq!(clean.pointer("/runtime_ready"), Some(&json!(true)));
+        assert_eq!(clean.pointer("/active_view"), Some(&json!("onboarding")));
+        assert_eq!(clean.pointer("/onboarding/draft_step"), Some(&json!(2)));
+        let encoded = clean.to_string();
+        for private_value in [
+            "secret",
+            "private turn",
+            "Patch",
+            "private SOUL.md",
+            "private provider response",
+            "secret key",
+            "private logs",
+        ] {
+            assert!(!encoded.contains(private_value));
+        }
     }
 
     #[test]
