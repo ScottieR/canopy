@@ -8,7 +8,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS } from "../store/worldStore";
-import { GenerativeResult } from "../components/GenerativeStudio";
+import type { GenerativeResult } from "../types/generative";
 import { Toggle, ServiceRow, glass } from "../App";
 
 export // ═══════════════════════════════════════════════════════════════════════════════

@@ -7,7 +7,7 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, UserProfile, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS } from "../store/worldStore";
-import { GenerativeResult } from "../components/GenerativeStudio";
+import type { GenerativeResult } from "../types/generative";
 import { Toggle, ServiceRow, glass } from "../App";
 import { TokenSpendChart } from "../components/agents/TokenSpendChart";
 

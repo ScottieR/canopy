@@ -318,10 +318,7 @@ impl Database {
             "ALTER TABLE conversations ADD COLUMN active_run_count INTEGER NOT NULL DEFAULT 0",
             [],
         );
-        let _ = conn.execute(
-            "ALTER TABLE conversations ADD COLUMN last_run_id TEXT",
-            [],
-        );
+        let _ = conn.execute("ALTER TABLE conversations ADD COLUMN last_run_id TEXT", []);
         let _ = conn.execute(
             "ALTER TABLE conversations ADD COLUMN last_run_status TEXT",
             [],
@@ -1413,9 +1410,8 @@ impl Database {
 
     pub fn list_forum_summary_jsons(&self) -> SqlResult<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT summary_json FROM forum_states ORDER BY updated_at DESC",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT summary_json FROM forum_states ORDER BY updated_at DESC")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
         rows.collect::<SqlResult<Vec<_>>>()
     }
@@ -2501,10 +2497,12 @@ impl Database {
                 merchant: row.get(3)?,
                 amount_cents: row.get::<_, i64>(4)? as u64,
                 category: row.get(5)?,
-                decision: serde_json::from_str(&decision_json).unwrap_or(PurchaseDecision::Denied {
-                    reasons: vec!["Failed to deserialize decision".to_string()],
-                    flags: vec!["deserialization_error".to_string()],
-                }),
+                decision: serde_json::from_str(&decision_json).unwrap_or(
+                    PurchaseDecision::Denied {
+                        reasons: vec!["Failed to deserialize decision".to_string()],
+                        flags: vec!["deserialization_error".to_string()],
+                    },
+                ),
                 virtual_card_id: row.get(7)?,
                 timestamp: chrono::DateTime::parse_from_rfc3339(&timestamp_str)
                     .unwrap_or_else(|_| chrono::DateTime::default())
@@ -2572,10 +2570,12 @@ impl Database {
                     merchant: row.get(3)?,
                     amount_cents: row.get::<_, i32>(4)? as u64,
                     category: row.get(5)?,
-                    decision: serde_json::from_str(&decision_json).unwrap_or(PurchaseDecision::Denied {
-                        reasons: vec!["Failed to deserialize decision".to_string()],
-                        flags: vec!["deserialization_error".to_string()],
-                    }),
+                    decision: serde_json::from_str(&decision_json).unwrap_or(
+                        PurchaseDecision::Denied {
+                            reasons: vec!["Failed to deserialize decision".to_string()],
+                            flags: vec!["deserialization_error".to_string()],
+                        },
+                    ),
                     virtual_card_id: row.get(7)?,
                     timestamp: chrono::DateTime::parse_from_rfc3339(&timestamp_str)
                         .unwrap_or_else(|_| chrono::DateTime::default())
@@ -2594,7 +2594,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let request_json =
             serde_json::to_string(&approval.purchase_request).unwrap_or_else(|_| "{}".to_string());
-        let flags_json = serde_json::to_string(&approval.flags).unwrap_or_else(|_| "[]".to_string());
+        let flags_json =
+            serde_json::to_string(&approval.flags).unwrap_or_else(|_| "[]".to_string());
         conn.execute(
             "INSERT INTO payment_approval_requests
              (id, agent_id, purchase_record_id, request_json, reason, flags_json, status, created_at, resolved_at, expires_at)
@@ -2649,7 +2650,8 @@ impl Database {
                 }),
                 reason: row.get(4)?,
                 flags: serde_json::from_str(&flags_json).unwrap_or_default(),
-                status: serde_json::from_str(&status_json).unwrap_or(PurchaseApprovalStatus::Pending),
+                status: serde_json::from_str(&status_json)
+                    .unwrap_or(PurchaseApprovalStatus::Pending),
                 created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                     .unwrap_or_else(|_| chrono::DateTime::default())
                     .with_timezone(&Utc),
@@ -2713,17 +2715,20 @@ impl Database {
                     id: row.get(0)?,
                     agent_id: row.get(1)?,
                     purchase_record_id: row.get(2)?,
-                    purchase_request: serde_json::from_str(&request_json).unwrap_or(PurchaseRequest {
-                        agent_id: row.get::<_, String>(1)?,
-                        description: "Unknown purchase".to_string(),
-                        merchant: "Unknown".to_string(),
-                        amount_cents: 0,
-                        category: "unknown".to_string(),
-                        is_recurring: false,
-                    }),
+                    purchase_request: serde_json::from_str(&request_json).unwrap_or(
+                        PurchaseRequest {
+                            agent_id: row.get::<_, String>(1)?,
+                            description: "Unknown purchase".to_string(),
+                            merchant: "Unknown".to_string(),
+                            amount_cents: 0,
+                            category: "unknown".to_string(),
+                            is_recurring: false,
+                        },
+                    ),
                     reason: row.get(4)?,
                     flags: serde_json::from_str(&flags_json).unwrap_or_default(),
-                    status: serde_json::from_str(&status_json).unwrap_or(PurchaseApprovalStatus::Pending),
+                    status: serde_json::from_str(&status_json)
+                        .unwrap_or(PurchaseApprovalStatus::Pending),
                     created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                         .unwrap_or_else(|_| chrono::DateTime::default())
                         .with_timezone(&Utc),
@@ -2752,17 +2757,20 @@ impl Database {
                     id: row.get(0)?,
                     agent_id: row.get(1)?,
                     purchase_record_id: row.get(2)?,
-                    purchase_request: serde_json::from_str(&request_json).unwrap_or(PurchaseRequest {
-                        agent_id: row.get::<_, String>(1)?,
-                        description: "Unknown purchase".to_string(),
-                        merchant: "Unknown".to_string(),
-                        amount_cents: 0,
-                        category: "unknown".to_string(),
-                        is_recurring: false,
-                    }),
+                    purchase_request: serde_json::from_str(&request_json).unwrap_or(
+                        PurchaseRequest {
+                            agent_id: row.get::<_, String>(1)?,
+                            description: "Unknown purchase".to_string(),
+                            merchant: "Unknown".to_string(),
+                            amount_cents: 0,
+                            category: "unknown".to_string(),
+                            is_recurring: false,
+                        },
+                    ),
                     reason: row.get(4)?,
                     flags: serde_json::from_str(&flags_json).unwrap_or_default(),
-                    status: serde_json::from_str(&status_json).unwrap_or(PurchaseApprovalStatus::Pending),
+                    status: serde_json::from_str(&status_json)
+                        .unwrap_or(PurchaseApprovalStatus::Pending),
                     created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
                         .unwrap_or_else(|_| chrono::DateTime::default())
                         .with_timezone(&Utc),
@@ -2791,7 +2799,8 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let request_json =
             serde_json::to_string(&approval.purchase_request).unwrap_or_else(|_| "{}".to_string());
-        let flags_json = serde_json::to_string(&approval.flags).unwrap_or_else(|_| "[]".to_string());
+        let flags_json =
+            serde_json::to_string(&approval.flags).unwrap_or_else(|_| "[]".to_string());
         let status_json =
             serde_json::to_string(&approval.status).unwrap_or_else(|_| "\"pending\"".to_string());
         conn.execute(
@@ -2943,33 +2952,35 @@ impl Database {
         };
 
         let mut stmt = conn.prepare(query)?;
-        let cards = stmt.query_map(params![agent_id], |row| {
-            let provider_json: String = row.get(3)?;
-            let status_json: String = row.get(9)?;
-            let created_at: String = row.get(10)?;
-            let expires_at: Option<String> = row.get(11)?;
-            Ok(VirtualCardRecord {
-                id: row.get(0)?,
-                agent_id: row.get(1)?,
-                purchase_record_id: row.get(2)?,
-                provider: serde_json::from_str(&provider_json).unwrap_or(VirtualCardProviderKind::Mock),
-                provider_card_ref: row.get(4)?,
-                last_four: row.get(5)?,
-                amount_cents: row.get::<_, i64>(6)? as u64,
-                merchant: row.get(7)?,
-                memo: row.get(8)?,
-                status: serde_json::from_str(&status_json).unwrap_or(VirtualCardStatus::Active),
-                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
-                    .unwrap_or_else(|_| chrono::DateTime::default())
-                    .with_timezone(&Utc),
-                expires_at: expires_at.and_then(|value| {
-                    chrono::DateTime::parse_from_rfc3339(&value)
-                        .ok()
-                        .map(|parsed| parsed.with_timezone(&Utc))
-                }),
-            })
-        })?
-        .collect::<SqlResult<Vec<_>>>()?;
+        let cards = stmt
+            .query_map(params![agent_id], |row| {
+                let provider_json: String = row.get(3)?;
+                let status_json: String = row.get(9)?;
+                let created_at: String = row.get(10)?;
+                let expires_at: Option<String> = row.get(11)?;
+                Ok(VirtualCardRecord {
+                    id: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    purchase_record_id: row.get(2)?,
+                    provider: serde_json::from_str(&provider_json)
+                        .unwrap_or(VirtualCardProviderKind::Mock),
+                    provider_card_ref: row.get(4)?,
+                    last_four: row.get(5)?,
+                    amount_cents: row.get::<_, i64>(6)? as u64,
+                    merchant: row.get(7)?,
+                    memo: row.get(8)?,
+                    status: serde_json::from_str(&status_json).unwrap_or(VirtualCardStatus::Active),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                        .unwrap_or_else(|_| chrono::DateTime::default())
+                        .with_timezone(&Utc),
+                    expires_at: expires_at.and_then(|value| {
+                        chrono::DateTime::parse_from_rfc3339(&value)
+                            .ok()
+                            .map(|parsed| parsed.with_timezone(&Utc))
+                    }),
+                })
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
 
         Ok(cards)
     }
@@ -3052,7 +3063,10 @@ impl Database {
         Ok(entries)
     }
 
-    pub fn record_payment_transaction(&self, transaction: &PaymentTransactionRecord) -> SqlResult<()> {
+    pub fn record_payment_transaction(
+        &self,
+        transaction: &PaymentTransactionRecord,
+    ) -> SqlResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO payment_transactions
@@ -4134,7 +4148,10 @@ mod tests {
         assert_eq!(running_summary.thread_status, "running");
         assert_eq!(running_summary.active_run_count, 1);
         assert_eq!(running_summary.last_run_status.as_deref(), Some("running"));
-        assert_eq!(running_summary.last_run_id.as_deref(), Some(run_id.as_str()));
+        assert_eq!(
+            running_summary.last_run_id.as_deref(),
+            Some(run_id.as_str())
+        );
 
         db.checkpoint_thread_run(&run_id, "{\"summary\":\"Checkpoint captured\"}")
             .unwrap();
@@ -4546,9 +4563,7 @@ mod tests {
         db.upsert_agent_mini_apps("agent_atlas", &apps, false)
             .unwrap();
         assert_eq!(
-            db.get_agent_mini_apps_json("agent_atlas")
-                .unwrap()
-                .unwrap(),
+            db.get_agent_mini_apps_json("agent_atlas").unwrap().unwrap(),
             apps
         );
     }

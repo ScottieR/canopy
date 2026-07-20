@@ -968,7 +968,10 @@ fn ensure_legacy_agent_workspace_alias_for_layout(
             .join("workspace")
             .join(agent_id)
     } else {
-        canopy_root.join("openclaw-state").join("workspace").join(agent_id)
+        canopy_root
+            .join("openclaw-state")
+            .join("workspace")
+            .join(agent_id)
     };
     std::fs::create_dir_all(&canonical_path).map_err(|e| e.to_string())?;
 
@@ -976,8 +979,7 @@ fn ensure_legacy_agent_workspace_alias_for_layout(
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
                 let desired_target = std::path::Path::new("workspace").join(agent_id);
-                let current_target =
-                    std::fs::read_link(&legacy_path).map_err(|e| e.to_string())?;
+                let current_target = std::fs::read_link(&legacy_path).map_err(|e| e.to_string())?;
                 if current_target != desired_target {
                     std::fs::remove_file(&legacy_path).map_err(|e| e.to_string())?;
                 } else {
@@ -987,9 +989,7 @@ fn ensure_legacy_agent_workspace_alias_for_layout(
                 return Ok(false);
             }
         }
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            return Err(error.to_string())
-        }
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.to_string()),
         Err(_) => {}
     }
 
@@ -1206,10 +1206,7 @@ _This file is app-managed and refreshed automatically to help you rejoin a speci
             summary.thread_status, summary.active_run_count, summary.checkpoint_count
         ));
         if let Some(last_checkpoint_at) = &summary.last_checkpoint_at {
-            content.push_str(&format!(
-                "- **Last checkpoint:** {}\n",
-                last_checkpoint_at
-            ));
+            content.push_str(&format!("- **Last checkpoint:** {}\n", last_checkpoint_at));
         }
     }
     content.push('\n');
@@ -1364,7 +1361,8 @@ _This file is app-managed and summarizes durable execution checkpoints for this 
                 if let Some(summary) = payload.get("summary").and_then(|value| value.as_str()) {
                     content.push_str(&format!("{}\n", summary));
                 }
-                if let Some(open_loops) = payload.get("open_loops").and_then(|value| value.as_array())
+                if let Some(open_loops) =
+                    payload.get("open_loops").and_then(|value| value.as_array())
                 {
                     if !open_loops.is_empty() {
                         content.push_str("\nOpen loops:\n");
@@ -1474,7 +1472,12 @@ fn refresh_thread_context_files(
     .map_err(|e| e.to_string())?;
     std::fs::write(
         thread_dir.join("THREAD_STATE.md"),
-        generate_thread_state_md(agent_id, session_id, &messages, conversation_summary.as_ref()),
+        generate_thread_state_md(
+            agent_id,
+            session_id,
+            &messages,
+            conversation_summary.as_ref(),
+        ),
     )
     .map_err(|e| e.to_string())?;
     std::fs::write(
@@ -3012,11 +3015,7 @@ pub async fn send_message_internal_with_context(
                 "failed",
                 Some(&error_json),
                 Some(&build_thread_checkpoint_payload(
-                    "failed",
-                    &combined,
-                    None,
-                    None,
-                    None,
+                    "failed", &combined, None, None, None,
                 )),
             );
             return Err(
@@ -3046,11 +3045,7 @@ pub async fn send_message_internal_with_context(
                     "failed",
                     Some(&error_json),
                     Some(&build_thread_checkpoint_payload(
-                        "failed",
-                        &oom_error,
-                        None,
-                        None,
-                        None,
+                        "failed", &oom_error, None, None, None,
                     )),
                 );
                 return Err("Infrastructure gateway was terminated by the OS due to excessive memory usage (OOM).".to_string());
@@ -3089,11 +3084,7 @@ pub async fn send_message_internal_with_context(
             "failed",
             Some(&error_json),
             Some(&build_thread_checkpoint_payload(
-                "failed",
-                &combined,
-                None,
-                None,
-                None,
+                "failed", &combined, None, None, None,
             )),
         );
         return Err(combined);
@@ -8080,11 +8071,23 @@ mod tests {
             content
         );
         assert_eq!(
-            std::fs::read_to_string(canopy_root.join("openclaw-state").join("workspace-agent-one").join("USER.md")).unwrap(),
+            std::fs::read_to_string(
+                canopy_root
+                    .join("openclaw-state")
+                    .join("workspace-agent-one")
+                    .join("USER.md")
+            )
+            .unwrap(),
             content
         );
         assert_eq!(
-            std::fs::read_to_string(canopy_root.join("openclaw-state").join("workspace-agent-two").join("USER.md")).unwrap(),
+            std::fs::read_to_string(
+                canopy_root
+                    .join("openclaw-state")
+                    .join("workspace-agent-two")
+                    .join("USER.md")
+            )
+            .unwrap(),
             content
         );
     }
@@ -8101,7 +8104,9 @@ mod tests {
             ensure_legacy_agent_workspace_alias_for_root(&canopy_root, &db, &agent.id).unwrap();
         assert!(created);
 
-        let legacy = canopy_root.join("openclaw-state").join("workspace-agent-sloane");
+        let legacy = canopy_root
+            .join("openclaw-state")
+            .join("workspace-agent-sloane");
         #[cfg(unix)]
         {
             let metadata = std::fs::symlink_metadata(&legacy).unwrap();
@@ -8131,7 +8136,9 @@ mod tests {
             .join("openclaw-state")
             .join("workspace")
             .join("agent-sloane");
-        let legacy = canopy_root.join("openclaw-state").join("workspace-agent-sloane");
+        let legacy = canopy_root
+            .join("openclaw-state")
+            .join("workspace-agent-sloane");
         assert!(roots.contains(&canonical));
         assert!(roots.contains(&legacy));
 
@@ -8161,7 +8168,9 @@ mod tests {
             .join("openclaw-state")
             .join("workspace")
             .join("agent-boots");
-        let legacy = canopy_root.join("openclaw-state").join("workspace-agent-boots");
+        let legacy = canopy_root
+            .join("openclaw-state")
+            .join("workspace-agent-boots");
         std::fs::create_dir_all(&canonical).unwrap();
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("BOOTSTRAP.md"), "wake up").unwrap();
@@ -8171,7 +8180,10 @@ mod tests {
         assert_eq!(summary.legacy_dirs_repaired, 1);
         assert_eq!(summary.bootstrap_files_removed, 1);
         assert!(!legacy.join("BOOTSTRAP.md").exists());
-        assert_eq!(std::fs::read_to_string(legacy.join("notes.txt")).unwrap(), "keep me");
+        assert_eq!(
+            std::fs::read_to_string(legacy.join("notes.txt")).unwrap(),
+            "keep me"
+        );
         assert!(legacy.join("APP_OPERATING_MODEL.md").exists());
         assert!(legacy.join("MEMORY.md").exists());
 

@@ -6,6 +6,7 @@ use std::time::Duration;
 const MODE_SLOT: &str = "canopy_helper_mode";
 const PROVIDER_SLOT: &str = "canopy_helper_provider";
 const MODEL_SLOT: &str = "canopy_helper_model";
+const OFFLINE_MODE: &str = "offline";
 const MAX_PROVIDER_RESPONSE_BYTES: usize = 1_000_000;
 
 fn bounded_text(value: Option<&Value>, max: usize) -> String {
@@ -196,6 +197,53 @@ fn key_slot(provider: &str) -> Result<String, String> {
     }
 }
 
+fn global_key_slot(provider: &str) -> Result<&'static str, String> {
+    match provider.to_ascii_lowercase().as_str() {
+        "openai" => Ok("OPENAI_API_KEY"),
+        "anthropic" => Ok("ANTHROPIC_API_KEY"),
+        "gemini" | "google" => Ok("GEMINI_API_KEY"),
+        "xai" | "grok" => Ok("XAI_API_KEY"),
+        _ => Err("Unsupported Eddy provider".into()),
+    }
+}
+
+fn provider_credential(provider: &str) -> Option<String> {
+    key_slot(provider)
+        .ok()
+        .and_then(|slot| stored(&slot))
+        .or_else(|| global_key_slot(provider).ok().and_then(stored))
+        .or_else(|| {
+            (provider == "xai")
+                .then(|| stored("GROK_API_KEY"))
+                .flatten()
+        })
+}
+
+fn connected_provider() -> Option<String> {
+    let preferred = stored(PROVIDER_SLOT)
+        .map(|provider| provider.to_ascii_lowercase())
+        .filter(|provider| provider_credential(provider).is_some());
+    preferred.or_else(|| {
+        ["anthropic", "openai", "gemini", "xai"]
+            .into_iter()
+            .find(|provider| provider_credential(provider).is_some())
+            .map(str::to_string)
+    })
+}
+
+fn resolve_mode(configured: Option<&str>, has_connected_provider: bool) -> String {
+    match configured {
+        Some("local") => "local".into(),
+        Some("provider") => "provider".into(),
+        Some(OFFLINE_MODE) => OFFLINE_MODE.into(),
+        // `hosted` is a legacy bootstrap setting. Server-funded inference is
+        // no longer available to desktop clients; migrate it automatically to
+        // the user's connected provider, or stay entirely offline.
+        Some("hosted") | None if has_connected_provider => "provider".into(),
+        _ => OFFLINE_MODE.into(),
+    }
+}
+
 fn default_model(provider: &str) -> &'static str {
     match provider {
         "anthropic" => "claude-sonnet-4-5",
@@ -207,14 +255,16 @@ fn default_model(provider: &str) -> &'static str {
 
 #[tauri::command]
 pub fn get_canopy_helper_config() -> Result<CanopyHelperConfig, String> {
-    let mode = stored(MODE_SLOT).unwrap_or_else(|| "hosted".into());
-    let provider = stored(PROVIDER_SLOT);
+    let configured_mode = stored(MODE_SLOT);
+    let provider = connected_provider().or_else(|| stored(PROVIDER_SLOT));
+    let mode = resolve_mode(
+        configured_mode.as_deref(),
+        provider
+            .as_deref()
+            .is_some_and(|value| provider_credential(value).is_some()),
+    );
     let model = stored(MODEL_SLOT);
-    let credential_present = provider
-        .as_deref()
-        .and_then(|p| key_slot(p).ok())
-        .and_then(|slot| stored(&slot))
-        .is_some();
+    let credential_present = provider.as_deref().and_then(provider_credential).is_some();
     Ok(CanopyHelperConfig {
         mode,
         provider,
@@ -230,10 +280,17 @@ pub fn configure_canopy_helper(
     credential: Option<String>,
     model: Option<String>,
 ) -> Result<CanopyHelperConfig, String> {
-    if !matches!(mode.as_str(), "hosted" | "provider" | "local") {
-        return Err("Eddy mode must be hosted, provider, or local".into());
+    if !matches!(mode.as_str(), "offline" | "hosted" | "provider" | "local") {
+        return Err("Eddy mode must be offline, provider, or local".into());
     }
-    if mode == "provider" {
+    // Older UIs may still submit `hosted`; persist the privacy-preserving
+    // replacement so a legacy setting never re-enables server inference.
+    let effective_mode = if mode == "hosted" {
+        OFFLINE_MODE
+    } else {
+        &mode
+    };
+    if effective_mode == "provider" {
         let provider = provider
             .as_deref()
             .ok_or("Choose a provider")?
@@ -250,12 +307,12 @@ pub fn configure_canopy_helper(
             let value = value.trim();
             validate_provider_key(normalized, value)?;
             crate::keychain::store_secret(&slot, value).map_err(|e| e.to_string())?;
-        } else if stored(&slot).is_none() {
-            return Err("A dedicated Eddy provider key is required".into());
+        } else if provider_credential(normalized).is_none() {
+            return Err("Connect this provider in Canopy or enter a dedicated Eddy key".into());
         }
         crate::keychain::store_secret(PROVIDER_SLOT, normalized).map_err(|e| e.to_string())?;
     }
-    crate::keychain::store_secret(MODE_SLOT, &mode).map_err(|e| e.to_string())?;
+    crate::keychain::store_secret(MODE_SLOT, effective_mode).map_err(|e| e.to_string())?;
     if let Some(model) = model.as_deref().filter(|v| !v.trim().is_empty()) {
         let model = model.trim();
         validate_model_name(model)?;
@@ -303,8 +360,8 @@ pub async fn send_canopy_helper_message(
         return Err("Message must be 1-4000 characters".into());
     }
     let config = get_canopy_helper_config()?;
-    if config.mode == "hosted" {
-        return Err("Hosted Eddy is handled by the Canopy server".into());
+    if config.mode == OFFLINE_MODE {
+        return Err("Eddy is using local rule-based guidance until a provider is connected".into());
     }
     let provider = config.provider.unwrap_or_else(|| "openai".into());
     let model = config.model.unwrap_or_else(|| {
@@ -325,8 +382,7 @@ pub async fn send_canopy_helper_message(
             .map(str::to_string)
             .ok_or("Ollama returned no reply")?
     } else {
-        let key =
-            stored(&key_slot(&provider)?).ok_or("Eddy's dedicated provider key is missing")?;
+        let key = provider_credential(&provider).ok_or("Eddy's provider key is missing")?;
         match provider.as_str() {
             "anthropic" => {
                 let response = helper_http_client()?.post("https://api.anthropic.com/v1/messages")
@@ -450,5 +506,28 @@ mod tests {
         }
         assert!(validate_model_name("gemini-2.5-flash").is_ok());
         assert!(validate_model_name("llama3.2:3b").is_ok());
+    }
+
+    #[test]
+    fn legacy_hosted_mode_migrates_to_user_provider_or_offline() {
+        assert_eq!(resolve_mode(Some("hosted"), true), "provider");
+        assert_eq!(resolve_mode(Some("hosted"), false), "offline");
+        assert_eq!(resolve_mode(None, true), "provider");
+        assert_eq!(resolve_mode(None, false), "offline");
+    }
+
+    #[test]
+    fn explicit_local_and_offline_choices_are_stable() {
+        assert_eq!(resolve_mode(Some("local"), true), "local");
+        assert_eq!(resolve_mode(Some("offline"), true), "offline");
+        assert_eq!(resolve_mode(Some("provider"), false), "provider");
+    }
+
+    #[test]
+    fn provider_key_slots_keep_helper_overrides_separate() {
+        assert_eq!(key_slot("openai").unwrap(), "canopy_helper_openai_key");
+        assert_eq!(global_key_slot("openai").unwrap(), "OPENAI_API_KEY");
+        assert_eq!(key_slot("xai").unwrap(), "canopy_helper_xai_key");
+        assert_eq!(global_key_slot("xai").unwrap(), "XAI_API_KEY");
     }
 }

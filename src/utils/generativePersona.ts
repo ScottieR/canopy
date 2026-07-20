@@ -1,8 +1,9 @@
 // ─── Dynamic persona drafting — "Eddie uses his AI" (C3, live) ───────────────
 // When the keyword matcher can't find a real fit ("sommelier" → Media Advisor
-// is the canonical miss), Eddie asks his own cloud brain (the canopy-helper
-// endpoint — Canopy-hosted, works before any user API key exists) to either
-// pick the best existing role or invent a tailored persona on the fly.
+// is the canonical miss), Eddie can ask the user's connected provider directly
+// from the Mac to either pick the best existing role or invent a tailored
+// persona. Before a key exists this remains a fail-safe enhancement: the
+// deterministic keyword draft stays in place and no server-funded LLM runs.
 //
 // Design rules (July 18 decisions):
 //   • Generated personas resolve to a BLEND of existing base templates so
@@ -11,6 +12,8 @@
 //     failure returns null and the keyword draft stands. Eddie thinking is a
 //     bonus, never a blocker.
 //   • Kill-switch: localStorage canopy_generative_discovery = "false".
+
+import { requestCanopyHelper } from "./canopyHelperClient";
 
 export type DynamicPersonaDraft = {
   fitsExisting: boolean;
@@ -161,12 +164,18 @@ export function composePersonaPersonality(
 
 const HELPER_TIMEOUT_MS = 12_000;
 
-/** Ask Eddie's cloud brain for a persona draft. Null on ANY failure. */
+type HelperRequester = (
+  message: string,
+  context?: Record<string, unknown>,
+  continuity?: Record<string, unknown>,
+) => Promise<string>;
+
+/** Ask Eddie through the user's local provider boundary. Null on ANY failure. */
 export async function draftPersonaWithEddie(
   userPrompt: string,
   roleInfo: Record<string, { description?: string }>,
   accessoryOptions: Array<{ id: string; name: string }> = [],
-  fetchImpl: typeof fetch = fetch,
+  requestImpl: HelperRequester = requestCanopyHelper,
 ): Promise<DynamicPersonaDraft | null> {
   try {
     const roles = Object.entries(roleInfo)
@@ -177,18 +186,10 @@ export async function draftPersonaWithEddie(
       roles,
       accessoryOptions.map(option => option.name),
     );
-    const base = (import.meta as any).env?.VITE_API_URL || "http://localhost:3001";
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), HELPER_TIMEOUT_MS);
-    const response = await fetchImpl(`${base}/api/canopy-helper/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, context: { active_view: "onboarding", onboarding: { in_onboarding: true } } }),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!response.ok) return null;
-    const reply = String((await response.json()).reply || "");
+    const reply = await Promise.race([
+      requestImpl(message, { active_view: "onboarding", onboarding: { in_onboarding: true } }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Eddy timed out")), HELPER_TIMEOUT_MS)),
+    ]);
     return parsePersonaDraftReply(
       reply,
       roles.map(role => role.key),

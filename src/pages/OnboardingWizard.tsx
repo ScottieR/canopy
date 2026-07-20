@@ -17,7 +17,7 @@ import { WorldScene } from "../components/World/WorldScene";
 import { OnboardingCompanion } from "../components/World/OnboardingCompanion";
 import { LoadingScreen } from "../components/LoadingScreen";
 import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission, fireActivationEvent } from "../store/worldStore";
-import { GenerativeResult } from "../components/GenerativeStudio";
+import type { GenerativeResult } from "../types/generative";
 import { Toggle } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { getAssetUrl } from "../utils/assets";
@@ -42,7 +42,6 @@ import { getAccessoryName, listAccessoryOptions } from "../utils/accessoryCatalo
 import { buildScopeSection, syncTeamRosterToAgents } from "../utils/rosterScope";
 import { getHeartbeatSuggestionsForProfile, serializeHeartbeatFile } from "../utils/heartbeats";
 import { getAgentProviderSecretSlot, getManagedProviderId, syncAgentProviderCredentials } from "../security/providerCredentials";
-import { GenerativeStudio } from "../components/GenerativeStudio";
 import { PasswordInput } from "../components/shared/PasswordInput";
 import rehypeSanitize from "rehype-sanitize";
 
@@ -227,6 +226,10 @@ export function OnboardingWizard() {
   // ("sommelier" must never become "Media Advisor"). Fail-safe: null keeps
   // the keyword draft.
   const [dynamicPersona, setDynamicPersona] = useState<DynamicPersonaDraft | null>(null);
+  // Persisted persona identity for the rest of the flow: the blend anchor
+  // (e.g. Chef) powers permissions/visuals, but the USER-FACING role stays
+  // the persona title ("Mixologist") all the way through deploy.
+  const [personaMeta, setPersonaMeta] = useState<{ title: string; tagline: string } | null>(draft?.personaMeta || null);
   const [eddieThinking, setEddieThinking] = useState(false);
   const personaRequestRef = React.useRef(0);
   // Draft-panel setup details collapse behind one "Eddie has it handled" line.
@@ -265,6 +268,42 @@ export function OnboardingWizard() {
   }, []);
 
   const managedProviderId = getManagedProviderId(llmProvider);
+
+  // Round-trip from the API-key companion window (bug fix, July 18): when the
+  // companion saves a key it emits `companion-finished`, but nothing synced it
+  // back into this field or returned focus. Listen while on Power Up: pull the
+  // key from the keychain (never from the event payload), fill the field, and
+  // have the MAIN window take focus itself — more reliable than the companion
+  // hunting for a window labeled "main".
+  useEffect(() => {
+    if (step !== 3) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    (async () => {
+      try {
+        const { listen } = await import("@tauri-apps/api/event");
+        const stop = await listen<{ type?: string }>("companion-finished", async event => {
+          const providerMap: Record<string, string> = { openai: "OPENAI", gemini: "GEMINI", anthropic: "ANTHROPIC", xai: "XAI" };
+          const slot = providerMap[String(event.payload?.type || "").toLowerCase()];
+          if (!slot) return;
+          try {
+            const secret = await invoke<string>("get_secret_cmd", { key: `${slot}_API_KEY` });
+            if (!disposed && secret) {
+              setApiKey(secret);
+              setApiKeyMode("hidden");
+              setDetectedSetup("key");
+            }
+          } catch { /* key not there yet — user can rescan */ }
+          try {
+            const { getCurrentWindow } = await import("@tauri-apps/api/window");
+            await getCurrentWindow().setFocus();
+          } catch { /* focus is best-effort */ }
+        });
+        if (disposed) stop(); else unlisten = stop;
+      } catch { /* non-Tauri env */ }
+    })();
+    return () => { disposed = true; if (unlisten) unlisten(); };
+  }, [step]);
 
   // Power Up auto-detection: recognize existing setup instead of re-asking.
   // Order of preference: connected provider management (mints a fresh
@@ -444,6 +483,7 @@ export function OnboardingWizard() {
     nameEditedRef.current = false;
     lastNamedRoleRef.current = null;
     setSelectedRole(null);
+    setPersonaMeta(null);
     setDiscoveryInput("");
     setApiKey("");
     setPersonalityPrompt("");
@@ -501,10 +541,10 @@ export function OnboardingWizard() {
   useEffect(() => {
     if (step >= 0) {
       localStorage.setItem('canopy_onboarding_draft', JSON.stringify({
-        step, agentName, selectedRole, discoveryInput, selectedVoice, selectedVoiceRate, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider, selectedHeartbeatNames
+        step, agentName, selectedRole, discoveryInput, selectedVoice, selectedVoiceRate, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider, selectedHeartbeatNames, personaMeta
       }));
     }
-  }, [step, agentName, selectedRole, discoveryInput, selectedVoice, selectedVoiceRate, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider, selectedHeartbeatNames]);
+  }, [step, agentName, selectedRole, discoveryInput, selectedVoice, selectedVoiceRate, plugins, customIdentity, isolated, llmProvider, autoProvisionProvider, selectedHeartbeatNames, personaMeta]);
 
   useEffect(() => {
     setSelectedHeartbeatNames(previous => {
@@ -842,6 +882,7 @@ export function OnboardingWizard() {
       // the tailored identity back on top (same tick — last write wins).
       setAgentName(nameEditedRef.current && agentName.trim() ? agentName : persona.name);
       setPersonalityPrompt(composePersonaPersonality(persona, discoveryInput));
+      setPersonaMeta({ title: persona.title, tagline: persona.tagline });
       if (persona.voice) setSelectedVoice(persona.voice);
       if (persona.accessories.length > 0) {
         setCustomIdentity(prev => ({ ...prev, accessories: persona.accessories }));
@@ -924,6 +965,9 @@ export function OnboardingWizard() {
   // user has given Eddie something — an explicit pick or typed words. An empty
   // input must NEVER produce a phantom draft (that was the "is it already
   // done?" confusion).
+  // User-facing role label: the persona title ("Mixologist") survives past
+  // discovery even though the blend anchor (e.g. Chef) powers the internals.
+  const displayRole = personaMeta?.title || selectedRole;
   const hasDraftSource = !!selectedRole || !!discoveryInput.trim();
   const draftRole = hasDraftSource ? (selectedRole || discoveryDraft.primaryRole) : null;
   // When Eddie invented a persona, its blend anchor drives visuals/defaults
@@ -1039,6 +1083,7 @@ export function OnboardingWizard() {
     setSelectedVoiceRate(roleDefaults.rate);
     // An explicit role pick supersedes any Eddie-invented persona.
     setDynamicPersona(null);
+    setPersonaMeta(null);
     setEddieThinking(false);
     personaRequestRef.current++;
     // Names are generated per-persona and randomized ("Custom" is never a
@@ -1432,8 +1477,8 @@ export function OnboardingWizard() {
       status: "deploying", // Signals UI to show loader rings instead of GLB
       role: selectedRole,
       emoji: "agent",
-      title: `The ${selectedRole}`,
-      description: roleInfo?.description || "A custom agent",
+      title: personaMeta?.title || `The ${selectedRole}`,
+      description: personaMeta?.tagline || roleInfo?.description || "A custom agent",
       image: roleInfo?.image,
       color: customIdentity?.color || customIdentity?.dynamicColors?.color || roleInfo?.color || "#888",
       robeColor: customIdentity?.color || customIdentity?.dynamicColors?.robeColor || roleInfo?.robeColor || "#888",
@@ -2118,7 +2163,7 @@ export function OnboardingWizard() {
                   value={personalityPrompt}
                   onChange={e => setPersonalityPrompt(e.target.value)}
                   rows={7}
-                  placeholder={`e.g. You are ${agentName || "Fern"}, a warm, sharp ${draftRole || "specialist"} who gives concrete recommendations, never waffles, and always says when something is outside your expertise.`}
+                  placeholder={`e.g. You are ${agentName || "Fern"}, a warm, sharp ${displayRole || draftRole || "specialist"} who gives concrete recommendations, never waffles, and always says when something is outside your expertise.`}
                   style={{ width: "100%", boxSizing: "border-box", padding: "14px 16px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)", fontSize: 14, lineHeight: 1.65, resize: "vertical", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
                 />
               </div>
@@ -2159,13 +2204,8 @@ export function OnboardingWizard() {
                       if (title) {
                         setRecentlyRead([...recentlyRead, title]);
                         setCustomBookInput("");
-                        if (selectedRole && selectedRole !== "Custom") {
-                          fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}/api/agents/add-suggestion`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ role: selectedRole, bookTitle: title })
-                          }).catch(e => console.warn("Failed to suggest book to backend", e));
-                        }
+                        // Custom reading context belongs to this local draft.
+                        // It is never uploaded to mutate the shared catalog.
                       }
                     };
                     return (
@@ -2353,7 +2393,7 @@ export function OnboardingWizard() {
                 {llmProvider && llmProvider !== getDynamicRecommendedModel(selectedRole).provider ? (
                   <>Since you selected <strong>{llmProvider}</strong> for the <strong>{selectedRole}</strong> role, we recommend using <strong>{getProviderRecommendedModel(selectedRole, llmProvider).model}</strong>.</>
                 ) : (
-                  <>Based on the <strong>{selectedRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.
+                  <>Based on the <strong>{displayRole}</strong> role, we default to the <strong>{getDynamicRecommendedModel(selectedRole).model}</strong> model.
                   {detectedSetup && (
                     <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 10, background: "rgba(74,158,150,0.12)", border: "1px solid rgba(74,158,150,0.3)", color: "#2c5a55", fontSize: 13, fontWeight: 600 }}>
                       ✓ {detectedSetup === "management"

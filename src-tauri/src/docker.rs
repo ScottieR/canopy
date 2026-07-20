@@ -684,9 +684,7 @@ fn discover_provider_key_availability() -> ProviderKeyAvailability {
     }
 }
 
-fn memory_search_config_for_keys(
-    key_availability: ProviderKeyAvailability,
-) -> serde_json::Value {
+fn memory_search_config_for_keys(key_availability: ProviderKeyAvailability) -> serde_json::Value {
     // OpenClaw's current memory-search runtime supports OpenAI, Gemini, or "none".
     // Older Canopy builds wrote "chroma", which now causes the gateway to log
     // "Unknown memory embedding provider: chroma" and degrade startup behavior.

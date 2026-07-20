@@ -421,16 +421,21 @@ fn test_update_agent_budget_round_trips_through_public_commands() {
     agent.id = "agent-budget-1".to_string();
     agent.name = "Agent agent-budget-1".to_string();
     db_state.insert_agent(&agent).unwrap();
-    db_state.upsert_budget(&default_test_budget("agent-budget-1")).unwrap();
+    db_state
+        .upsert_budget(&default_test_budget("agent-budget-1"))
+        .unwrap();
 
-    let mut budget = get_agent_budget("agent-budget-1".to_string(), db_state.clone(), app_state.clone())
-        .expect("seeded budget should be readable");
+    let mut budget = get_agent_budget(
+        "agent-budget-1".to_string(),
+        db_state.clone(),
+        app_state.clone(),
+    )
+    .expect("seeded budget should be readable");
     budget.auto_approve_threshold_cents = 7_500;
     budget.allowed_merchants = vec!["Staples".to_string()];
     budget.blocked_merchants = vec!["Evil Corp".to_string()];
 
-    let updated =
-        update_agent_budget(budget.clone(), db_state.clone(), app_state.clone()).unwrap();
+    let updated = update_agent_budget(budget.clone(), db_state.clone(), app_state.clone()).unwrap();
     let fetched = get_agent_budget("agent-budget-1".to_string(), db_state, app_state).unwrap();
 
     assert_eq!(updated.auto_approve_threshold_cents, 7_500);
@@ -572,12 +577,18 @@ fn test_dashboard_commands_reflect_seeded_purchase_card_and_approval_state() {
         })
         .unwrap();
 
-    let dashboard =
-        get_payment_dashboard("agent-dashboard-1".to_string(), db_state.clone(), app_state.clone())
-            .unwrap();
-    let history =
-        get_purchase_history("agent-dashboard-1".to_string(), db_state.clone(), app_state.clone())
-            .unwrap();
+    let dashboard = get_payment_dashboard(
+        "agent-dashboard-1".to_string(),
+        db_state.clone(),
+        app_state.clone(),
+    )
+    .unwrap();
+    let history = get_purchase_history(
+        "agent-dashboard-1".to_string(),
+        db_state.clone(),
+        app_state.clone(),
+    )
+    .unwrap();
     let pending = list_pending_purchase_approvals(
         Some("agent-dashboard-1".to_string()),
         db_state.clone(),

@@ -22,8 +22,7 @@ use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-const DEFAULT_ALLOWED_CATEGORIES: &[&str] =
-    &["software", "office_supplies", "cleaning_supplies"];
+const DEFAULT_ALLOWED_CATEGORIES: &[&str] = &["software", "office_supplies", "cleaning_supplies"];
 const PAYMENT_PROVIDER_SLOT: &str = "payment_provider_selected";
 const LITHIC_WEBHOOK_SECRET_SLOT: &str = "LITHIC_SANDBOX_WEBHOOK_SECRET";
 const DEFAULT_PAYMENT_WEBHOOK_HOST: &str = "127.0.0.1";
@@ -251,9 +250,9 @@ fn recent_approved_purchases<'a>(
     history: &'a [PurchaseRecord],
     now: chrono::DateTime<Utc>,
 ) -> impl Iterator<Item = &'a PurchaseRecord> {
-    history.iter().filter(move |record| {
-        record.timestamp <= now && is_approved_purchase(&record.decision)
-    })
+    history
+        .iter()
+        .filter(move |record| record.timestamp <= now && is_approved_purchase(&record.decision))
 }
 
 fn evaluate_purchase_with_context(
@@ -449,11 +448,7 @@ fn validate_merchant_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_payment_access(
-    db: &Database,
-    app_state: &AppState,
-    agent_id: &str,
-) -> Result<Agent> {
+fn ensure_payment_access(db: &Database, app_state: &AppState, agent_id: &str) -> Result<Agent> {
     crate::validators::agent::validate_id(agent_id)?;
     if !db.is_agent_owner(agent_id, &app_state.user_id)? {
         return Err(CanopyError::Unauthorized(format!(
@@ -591,7 +586,8 @@ fn current_payment_provider_config(
     webhook_runtime: &PaymentWebhookListenerRuntime,
 ) -> Result<PaymentProviderConfig> {
     let (provider, using_env_fallback) = resolve_selected_provider()?;
-    let privacy_configured = has_keychain_secret("PRIVACY_API_KEY") || has_env_secret("PRIVACY_API_KEY");
+    let privacy_configured =
+        has_keychain_secret("PRIVACY_API_KEY") || has_env_secret("PRIVACY_API_KEY");
     let lithic_sandbox_configured = has_keychain_secret("LITHIC_SANDBOX_API_KEY")
         || has_keychain_secret("LITHIC_API_KEY")
         || has_env_secret("LITHIC_SANDBOX_API_KEY")
@@ -604,7 +600,9 @@ fn current_payment_provider_config(
     let active_provider_ready = match provider {
         CardProvider::Mock => true,
         CardProvider::Privacy => privacy_configured,
-        CardProvider::LithicSandbox => lithic_sandbox_configured && lithic_webhook_secret_configured,
+        CardProvider::LithicSandbox => {
+            lithic_sandbox_configured && lithic_webhook_secret_configured
+        }
     };
 
     Ok(PaymentProviderConfig {
@@ -807,9 +805,8 @@ fn write_canonical_json(value: &Value, output: &mut String) -> Result<()> {
 }
 
 fn calculate_hmac_base64(secret: &[u8], message: &[u8]) -> Result<String> {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret).map_err(|error| {
-        CanopyError::Internal(format!("Failed to initialize HMAC: {}", error))
-    })?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret)
+        .map_err(|error| CanopyError::Internal(format!("Failed to initialize HMAC: {}", error)))?;
     mac.update(message);
     Ok(BASE64.encode(mac.finalize().into_bytes()))
 }
@@ -842,17 +839,12 @@ fn verify_privacy_webhook_request(
     let request_hmac = headers
         .get("x-privacy-hmac")
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            CanopyError::Unauthorized("Missing X-Privacy-HMAC header".to_string())
-        })?;
+        .ok_or_else(|| CanopyError::Unauthorized("Missing X-Privacy-HMAC header".to_string()))?;
     let api_key = get_privacy_key()?;
     crate::validators::keys::validate_privacy_key(&api_key)?;
 
     let payload: Value = serde_json::from_slice(body).map_err(|error| {
-        CanopyError::Serialization(format!(
-            "Invalid Privacy webhook payload: {}",
-            error
-        ))
+        CanopyError::Serialization(format!("Invalid Privacy webhook payload: {}", error))
     })?;
     let canonical = canonical_json_string(&payload)?;
     let expected = calculate_hmac_base64(api_key.as_bytes(), canonical.as_bytes())?;
@@ -875,24 +867,20 @@ fn verify_lithic_webhook_request(
     let timestamp = headers
         .get("webhook-timestamp")
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            CanopyError::Unauthorized("Missing webhook-timestamp header".to_string())
-        })?;
+        .ok_or_else(|| CanopyError::Unauthorized("Missing webhook-timestamp header".to_string()))?;
     let signatures = headers
         .get("webhook-signature")
         .or_else(|| headers.get("x-lithic-signature"))
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            CanopyError::Unauthorized("Missing webhook-signature header".to_string())
-        })?;
+        .ok_or_else(|| CanopyError::Unauthorized("Missing webhook-signature header".to_string()))?;
 
     let secret = get_lithic_webhook_secret()?;
     crate::validators::keys::validate_lithic_webhook_secret(&secret)?;
     let secret_body = secret.strip_prefix("whsec_").unwrap_or(secret.as_str());
 
-    let timestamp_value = timestamp.parse::<i64>().map_err(|_| {
-        CanopyError::Unauthorized("Invalid webhook-timestamp header".to_string())
-    })?;
+    let timestamp_value = timestamp
+        .parse::<i64>()
+        .map_err(|_| CanopyError::Unauthorized("Invalid webhook-timestamp header".to_string()))?;
     let now = Utc::now().timestamp();
     if (now - timestamp_value).abs() > DEFAULT_PAYMENT_WEBHOOK_TIMESTAMP_TOLERANCE_SECS {
         return Err(CanopyError::Unauthorized(
@@ -909,7 +897,12 @@ fn verify_lithic_webhook_request(
     let expected = calculate_hmac_base64(secret_body.as_bytes(), signed_content.as_bytes())?;
     let matches_signature = signatures
         .split_whitespace()
-        .filter_map(|entry| entry.split_once(',').map(|(_, signature)| signature).or(Some(entry)))
+        .filter_map(|entry| {
+            entry
+                .split_once(',')
+                .map(|(_, signature)| signature)
+                .or(Some(entry))
+        })
         .any(|signature| constant_time_eq(signature.trim(), &expected));
     if !matches_signature {
         return Err(CanopyError::Unauthorized(
@@ -918,15 +911,9 @@ fn verify_lithic_webhook_request(
     }
 
     let payload: Value = serde_json::from_slice(body).map_err(|error| {
-        CanopyError::Serialization(format!(
-            "Invalid Lithic webhook payload: {}",
-            error
-        ))
+        CanopyError::Serialization(format!("Invalid Lithic webhook payload: {}", error))
     })?;
-    Ok(payload
-        .get("payload")
-        .cloned()
-        .unwrap_or(payload))
+    Ok(payload.get("payload").cloned().unwrap_or(payload))
 }
 
 async fn handle_payment_webhook_request<R: tauri::Runtime>(
@@ -1051,9 +1038,12 @@ async fn handle_payment_webhook_connection<R: tauri::Runtime>(
     let method = request_line_parts.next().unwrap_or_default();
     let path = request_line_parts.next().unwrap_or("/");
     let headers = lowercase_headers(&header_text);
-    let body = &req_data[body_start..body_start + content_length.min(req_data.len().saturating_sub(body_start))];
+    let body = &req_data
+        [body_start..body_start + content_length.min(req_data.len().saturating_sub(body_start))];
 
-    let response = match handle_payment_webhook_request(app_handle, method, path, &headers, body).await {
+    let response = match handle_payment_webhook_request(app_handle, method, path, &headers, body)
+        .await
+    {
         Ok((status, body)) => http_json_response(status, body),
         Err(CanopyError::Unauthorized(message)) => {
             http_json_response(401, json!({ "error": message }))
@@ -1202,17 +1192,11 @@ fn emit_payment_state_changed<R: tauri::Runtime>(
     );
 }
 
-fn is_same_utc_day(
-    left: chrono::DateTime<Utc>,
-    right: chrono::DateTime<Utc>,
-) -> bool {
+fn is_same_utc_day(left: chrono::DateTime<Utc>, right: chrono::DateTime<Utc>) -> bool {
     left.date_naive() == right.date_naive()
 }
 
-fn is_same_utc_month(
-    left: chrono::DateTime<Utc>,
-    right: chrono::DateTime<Utc>,
-) -> bool {
+fn is_same_utc_month(left: chrono::DateTime<Utc>, right: chrono::DateTime<Utc>) -> bool {
     left.year() == right.year() && left.month() == right.month()
 }
 
@@ -1225,7 +1209,8 @@ fn expire_approval_if_needed(
     approval: &PurchaseApprovalRequest,
     now: chrono::DateTime<Utc>,
 ) -> Result<bool> {
-    if approval.status != PurchaseApprovalStatus::Pending || !expiration_due(approval.expires_at, now)
+    if approval.status != PurchaseApprovalStatus::Pending
+        || !expiration_due(approval.expires_at, now)
     {
         return Ok(false);
     }
@@ -1463,10 +1448,9 @@ async fn record_provider_transaction_event_inner<R: tauri::Runtime>(
     crate::rate_limiter::limiters::PAYMENT_EVAL_LIMITER.check(&app_state.user_id)?;
 
     if let Some(provider_transaction_ref) = provider_transaction_ref.as_deref() {
-        if let Some(existing) = state.get_payment_transaction_by_provider_ref(
-            &provider,
-            provider_transaction_ref,
-        )? {
+        if let Some(existing) =
+            state.get_payment_transaction_by_provider_ref(&provider, provider_transaction_ref)?
+        {
             return Ok(existing);
         }
     }
@@ -1609,10 +1593,7 @@ async fn issue_privacy_card(agent_id: &str, request: &PurchaseRequest) -> Result
     }
 
     let card_data: PrivacyCardResponse = response.json().await.map_err(|error| {
-        CanopyError::Serialization(format!(
-            "Failed to parse Privacy.com response: {}",
-            error
-        ))
+        CanopyError::Serialization(format!("Failed to parse Privacy.com response: {}", error))
     })?;
 
     let last_four = card_data
@@ -1674,7 +1655,10 @@ fn build_lithic_sandbox_card_request(
     }
 }
 
-async fn issue_lithic_sandbox_card(agent_id: &str, request: &PurchaseRequest) -> Result<IssuedCard> {
+async fn issue_lithic_sandbox_card(
+    agent_id: &str,
+    request: &PurchaseRequest,
+) -> Result<IssuedCard> {
     let lithic_key = get_lithic_sandbox_key()?;
     crate::validators::keys::validate_lithic_sandbox_key(&lithic_key)?;
 
@@ -1690,10 +1674,7 @@ async fn issue_lithic_sandbox_card(agent_id: &str, request: &PurchaseRequest) ->
         .send()
         .await
         .map_err(|error| {
-            CanopyError::Request(format!(
-                "Lithic sandbox API connection failed: {}",
-                error
-            ))
+            CanopyError::Request(format!("Lithic sandbox API connection failed: {}", error))
         })?;
 
     if !response.status().is_success() {
@@ -2504,29 +2485,31 @@ async fn handle_privacy_transaction_event_inner<R: tauri::Runtime>(
     app_state: State<'_, AppState>,
     state: State<'_, Database>,
 ) -> Result<PaymentTransactionRecord> {
-    let payload: PrivacyTransactionEventPayload = serde_json::from_value(event).map_err(|error| {
-        CanopyError::Serialization(format!(
-            "Invalid Privacy.com transaction event payload: {}",
-            error
-        ))
-    })?;
+    let payload: PrivacyTransactionEventPayload =
+        serde_json::from_value(event).map_err(|error| {
+            CanopyError::Serialization(format!(
+                "Invalid Privacy.com transaction event payload: {}",
+                error
+            ))
+        })?;
 
     let source = payload
         .event_type
         .clone()
         .unwrap_or_else(|| "privacy_event".to_string());
-    let merchant = payload.merchant.and_then(|details| details.name.or(details.descriptor));
+    let merchant = payload
+        .merchant
+        .and_then(|details| details.name.or(details.descriptor));
     let provider_transaction_ref = payload
         .transaction_token
         .clone()
         .or_else(|| Some(payload.token.clone()));
-    let decline_reason = payload
-        .decline_reason
-        .clone()
-        .or_else(|| match parse_provider_transaction_status(&payload.status) {
+    let decline_reason = payload.decline_reason.clone().or_else(|| {
+        match parse_provider_transaction_status(&payload.status) {
             PaymentTransactionStatus::Declined => payload.result.clone(),
             _ => None,
-        });
+        }
+    });
 
     record_provider_transaction_event_inner(
         app_handle,
@@ -2560,26 +2543,28 @@ async fn handle_lithic_transaction_event_inner<R: tauri::Runtime>(
     app_state: State<'_, AppState>,
     state: State<'_, Database>,
 ) -> Result<PaymentTransactionRecord> {
-    let payload: LithicTransactionEventPayload = serde_json::from_value(event).map_err(|error| {
-        CanopyError::Serialization(format!(
-            "Invalid Lithic transaction event payload: {}",
-            error
-        ))
-    })?;
+    let payload: LithicTransactionEventPayload =
+        serde_json::from_value(event).map_err(|error| {
+            CanopyError::Serialization(format!(
+                "Invalid Lithic transaction event payload: {}",
+                error
+            ))
+        })?;
 
-    let merchant = payload.merchant.and_then(|details| details.name.or(details.descriptor));
+    let merchant = payload
+        .merchant
+        .and_then(|details| details.name.or(details.descriptor));
     let provider_transaction_ref = payload
         .transaction_token
         .clone()
         .or(payload.token.clone())
         .or_else(|| Some(payload.card_token.clone()));
-    let decline_reason = payload
-        .decline_reason
-        .clone()
-        .or_else(|| match parse_provider_transaction_status(&payload.status) {
+    let decline_reason = payload.decline_reason.clone().or_else(|| {
+        match parse_provider_transaction_status(&payload.status) {
             PaymentTransactionStatus::Declined => payload.result.clone(),
             _ => None,
-        });
+        }
+    });
     let source = payload
         .event_type
         .clone()
@@ -2722,8 +2707,7 @@ pub async fn simulate_provider_transaction_event(
     app_state: State<'_, AppState>,
     state: State<'_, Database>,
 ) -> Result<PaymentTransactionRecord> {
-    simulate_provider_transaction_event_inner(app_handle, card_id, outcome, app_state, state)
-        .await
+    simulate_provider_transaction_event_inner(app_handle, card_id, outcome, app_state, state).await
 }
 
 async fn issue_development_provider_card_inner<R: tauri::Runtime>(
@@ -2984,9 +2968,15 @@ mod tests {
     async fn wait_for_listener_base_url(
         state: &Arc<PaymentWebhookListenerState>,
     ) -> Result<String> {
-        let deadline = Instant::now() + TokioDuration::from_secs(5);
+        // CI and developer machines can be briefly CPU-starved while the full
+        // Rust test matrix links in parallel. Give the loopback listener enough
+        // time to publish its ephemeral port without making this test flaky.
+        let deadline = Instant::now() + TokioDuration::from_secs(15);
         loop {
             let runtime = state.snapshot().await;
+            if let Some(error) = runtime.last_error {
+                return Err(CanopyError::Internal(error));
+            }
             if runtime.listening {
                 if let Some(base_url) = runtime.base_url {
                     return Ok(base_url);
@@ -3057,8 +3047,7 @@ mod tests {
             timestamp: Utc::now() - Duration::hours(2),
         }];
         let request = purchase_request("agent-1", 1_500, "cleaning_supplies");
-        let result =
-            evaluate_purchase_with_context(&request, &budget, &history, false, Utc::now());
+        let result = evaluate_purchase_with_context(&request, &budget, &history, false, Utc::now());
         match result {
             PurchaseDecision::RequiresUserApproval { flags, .. } => {
                 assert!(flags.iter().any(|flag| flag == "spend_auto_disabled"));
@@ -3154,15 +3143,18 @@ mod tests {
         std::env::remove_var("LITHIC_SANDBOX_API_KEY");
         std::env::remove_var(LITHIC_WEBHOOK_SECRET_SLOT);
 
-        let config = apply_payment_provider_update(PaymentProviderUpdate {
-            provider: VirtualCardProviderKind::LithicSandbox,
-            privacy_api_key: None,
-            lithic_sandbox_api_key: Some("a".repeat(20)),
-            lithic_webhook_secret: Some("whsec_abcdefghijklmnopqrstuvwxyz".to_string()),
-            clear_privacy_api_key: false,
-            clear_lithic_sandbox_api_key: false,
-            clear_lithic_webhook_secret: false,
-        }, &test_webhook_runtime())
+        let config = apply_payment_provider_update(
+            PaymentProviderUpdate {
+                provider: VirtualCardProviderKind::LithicSandbox,
+                privacy_api_key: None,
+                lithic_sandbox_api_key: Some("a".repeat(20)),
+                lithic_webhook_secret: Some("whsec_abcdefghijklmnopqrstuvwxyz".to_string()),
+                clear_privacy_api_key: false,
+                clear_lithic_sandbox_api_key: false,
+                clear_lithic_webhook_secret: false,
+            },
+            &test_webhook_runtime(),
+        )
         .unwrap();
 
         assert_eq!(config.provider, VirtualCardProviderKind::LithicSandbox);
@@ -3170,7 +3162,10 @@ mod tests {
         assert!(config.lithic_webhook_secret_configured);
         assert!(config.active_provider_ready);
         assert!(!config.using_env_fallback);
-        assert!(matches!(selected_provider().unwrap(), CardProvider::LithicSandbox));
+        assert!(matches!(
+            selected_provider().unwrap(),
+            CardProvider::LithicSandbox
+        ));
 
         restore_secret(PAYMENT_PROVIDER_SLOT, stored_provider);
         restore_secret("LITHIC_SANDBOX_API_KEY", stored_lithic);
@@ -3188,18 +3183,20 @@ mod tests {
         let env_privacy = backup_env("PRIVACY_API_KEY");
         let _ = delete_config_secret("PRIVACY_API_KEY");
         std::env::remove_var("PRIVACY_API_KEY");
-        std::env::set_var("PRIVACY_API_KEY", "privacy_test_key_abcdefghijklmnopqrstuvwxyz");
+        std::env::set_var(
+            "PRIVACY_API_KEY",
+            "privacy_test_key_abcdefghijklmnopqrstuvwxyz",
+        );
 
         let body = br#"{"status":"SETTLED","amount":1500,"token":"privacy-card-1"}"#;
         let payload: Value = serde_json::from_slice(body).unwrap();
         let canonical = canonical_json_string(&payload).unwrap();
-        let signature =
-            calculate_hmac_base64(b"privacy_test_key_abcdefghijklmnopqrstuvwxyz", canonical.as_bytes())
-                .unwrap();
-        let headers = std::collections::HashMap::from([(
-            "x-privacy-hmac".to_string(),
-            signature,
-        )]);
+        let signature = calculate_hmac_base64(
+            b"privacy_test_key_abcdefghijklmnopqrstuvwxyz",
+            canonical.as_bytes(),
+        )
+        .unwrap();
+        let headers = std::collections::HashMap::from([("x-privacy-hmac".to_string(), signature)]);
 
         let verified = verify_privacy_webhook_request(&headers, body).unwrap();
         assert_eq!(verified["token"], "privacy-card-1");
@@ -3419,9 +3416,12 @@ mod tests {
         assert_eq!(after_budget.daily_spent_cents, request.amount_cents);
         assert_eq!(after_budget.monthly_spent_cents, request.amount_cents);
 
-        let pending =
-            list_pending_purchase_approvals(Some(agent_id.to_string()), db_state.clone(), app_state)
-                .unwrap();
+        let pending = list_pending_purchase_approvals(
+            Some(agent_id.to_string()),
+            db_state.clone(),
+            app_state,
+        )
+        .unwrap();
         assert!(pending.is_empty());
     }
 
@@ -3481,7 +3481,10 @@ mod tests {
         let stored_budget = db_state.get_budget(agent_id).unwrap().unwrap();
         assert_eq!(stored_budget.daily_spent_cents, 0);
         assert_eq!(stored_budget.monthly_spent_cents, 0);
-        assert!(db_state.list_virtual_cards(agent_id, true).unwrap().is_empty());
+        assert!(db_state
+            .list_virtual_cards(agent_id, true)
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -3611,7 +3614,10 @@ mod tests {
                 assert!(reasons.iter().any(|reason| reason.contains("expired")));
                 assert!(flags.iter().any(|flag| flag == "approval_expired"));
             }
-            other => panic!("Expected expired approval purchase to be denied, got {:?}", other),
+            other => panic!(
+                "Expected expired approval purchase to be denied, got {:?}",
+                other
+            ),
         }
 
         let card = db_state.get_virtual_card("card-expired").unwrap().unwrap();
@@ -3673,7 +3679,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(card.status, VirtualCardStatus::Cancelled);
-        assert!(db_state.list_virtual_cards(agent_id, true).unwrap().is_empty());
+        assert!(db_state
+            .list_virtual_cards(agent_id, true)
+            .unwrap()
+            .is_empty());
 
         let dashboard =
             get_payment_dashboard(agent_id.to_string(), db_state.clone(), app_state).unwrap();
@@ -3735,7 +3744,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(transaction.status, PaymentTransactionStatus::Captured);
-        assert!(db_state.list_virtual_cards(agent_id, true).unwrap().is_empty());
+        assert!(db_state
+            .list_virtual_cards(agent_id, true)
+            .unwrap()
+            .is_empty());
         let transactions = db_state.list_payment_transactions(agent_id, 10).unwrap();
         assert_eq!(transactions.len(), 1);
         assert_eq!(transactions[0].status, PaymentTransactionStatus::Captured);
@@ -3819,10 +3831,17 @@ mod tests {
             .unwrap();
         match purchase.decision {
             PurchaseDecision::Denied { reasons, flags } => {
-                assert!(reasons.iter().any(|reason| reason.contains("Mock provider simulated decline")));
-                assert!(flags.iter().any(|flag| flag == "provider_transaction_declined"));
+                assert!(reasons
+                    .iter()
+                    .any(|reason| reason.contains("Mock provider simulated decline")));
+                assert!(flags
+                    .iter()
+                    .any(|flag| flag == "provider_transaction_declined"));
             }
-            other => panic!("Expected denied purchase after simulated decline, got {:?}", other),
+            other => panic!(
+                "Expected denied purchase after simulated decline, got {:?}",
+                other
+            ),
         }
 
         let dashboard =
@@ -3973,14 +3992,16 @@ mod tests {
 
         assert_eq!(transaction.status, PaymentTransactionStatus::Declined);
         assert_eq!(transaction.provider_transaction_ref, "lithic-txn-1");
-        assert_eq!(transaction.decline_reason.as_deref(), Some("insufficient_funds"));
+        assert_eq!(
+            transaction.decline_reason.as_deref(),
+            Some("insufficient_funds")
+        );
 
         let budget = db_state.get_budget(agent_id).unwrap().unwrap();
         assert_eq!(budget.daily_spent_cents, 0);
         assert_eq!(budget.monthly_spent_cents, 0);
 
-        let dashboard =
-            get_payment_dashboard(agent_id.to_string(), db_state, app_state).unwrap();
+        let dashboard = get_payment_dashboard(agent_id.to_string(), db_state, app_state).unwrap();
         assert_eq!(dashboard.recent_transactions.len(), 1);
         assert_eq!(
             dashboard.recent_transactions[0].status,
@@ -4044,10 +4065,13 @@ mod tests {
 
         assert_eq!(transaction.status, PaymentTransactionStatus::Captured);
         assert_eq!(transaction.source, "privacy_simulated_capture");
-        assert!(transaction.provider_transaction_ref.starts_with("privacy-sim-"));
+        assert!(transaction
+            .provider_transaction_ref
+            .starts_with("privacy-sim-"));
 
         let dashboard =
-            get_payment_dashboard(agent_id.to_string(), db_state.clone(), app_state.clone()).unwrap();
+            get_payment_dashboard(agent_id.to_string(), db_state.clone(), app_state.clone())
+                .unwrap();
         assert_eq!(dashboard.recent_transactions.len(), 1);
         assert!(dashboard
             .recent_audit_entries
@@ -4088,7 +4112,8 @@ mod tests {
 
         assert!(message.contains("Mock virtual card ending in"));
 
-        let dashboard = get_payment_dashboard(agent_id.to_string(), db_state.clone(), app_state).unwrap();
+        let dashboard =
+            get_payment_dashboard(agent_id.to_string(), db_state.clone(), app_state).unwrap();
         assert_eq!(dashboard.active_virtual_cards.len(), 1);
         assert_eq!(dashboard.recent_purchases.len(), 1);
         assert!(!dashboard.recent_audit_entries.is_empty());

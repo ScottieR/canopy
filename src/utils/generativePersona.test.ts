@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildPersonaDraftMessage,
   composePersonaPersonality,
+  draftPersonaWithEddie,
   parsePersonaDraftReply,
 } from "./generativePersona";
 
@@ -64,5 +65,19 @@ describe("composePersonaPersonality", () => {
     expect(text.startsWith("You are Vio")).toBe(true);
     expect(text).toContain("wine selections");
     expect(text).not.toContain("Media Advisor");
+  });
+});
+
+describe("draftPersonaWithEddie", () => {
+  it("uses the injected local helper boundary and fails closed", async () => {
+    const request = vi.fn().mockResolvedValue(
+      '{"fits_existing":false,"title":"Garden Sommelier","name":"Vio","tagline":"t","soul_seed":"You are Vio.","blend":["Chef"]}',
+    );
+    const result = await draftPersonaWithEddie("wine", { Chef: {} }, [], request);
+    expect(result?.title).toBe("Garden Sommelier");
+    expect(request).toHaveBeenCalledOnce();
+
+    await expect(draftPersonaWithEddie("wine", { Chef: {} }, [], async () => { throw new Error("offline"); }))
+      .resolves.toBeNull();
   });
 });

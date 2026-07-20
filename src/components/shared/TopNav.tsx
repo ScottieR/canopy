@@ -8,7 +8,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO } from "../../store/worldStore";
 import { Toggle, ServiceRow, glass } from "../../App";
-import { GenerativeResult } from "../GenerativeStudio";
+import type { GenerativeResult } from "../../types/generative";
 import { GlobalAlertsFeed } from "../GlobalAlertsFeed";
 import { DecisionQueuePanel } from "../DecisionQueue/DecisionQueuePanel";
 

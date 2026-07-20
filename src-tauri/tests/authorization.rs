@@ -4,8 +4,6 @@
 #[cfg(test)]
 mod authorization_tests {
     use canopy_lib::app_state::AppState;
-    use canopy_lib::errors::CanopyError;
-
     #[test]
     fn test_app_state_creation() {
         let state = AppState::new();

@@ -1,10 +1,11 @@
 // ─── Test-drive chat (Meet {Name} studio) ────────────────────────────────────
-// Talk to the DRAFT before deploying. Runs on Eddie's hosted brain (works
-// pre-key, pre-engine) roleplaying the current personality text — so every
-// tweak to instructions/voice/accessories can be felt immediately, back and
-// forth between conversation and setup. Capped turns; graceful offline copy.
+// Talk to the DRAFT before deploying. Runs through the user's connected
+// provider (or on-device model) from the local Tauri boundary, so personality
+// tweaks can be tested without sending draft instructions to Canopy's server.
+// Capped turns; graceful offline copy before a provider is available.
 
 import React, { useRef, useState } from "react";
+import { requestCanopyHelper } from "../../utils/canopyHelperClient";
 
 const MAX_TEST_TURNS = 5;
 const HELPER_TIMEOUT_MS = 20_000;
@@ -44,22 +45,13 @@ export function TestDriveChat({
     setMessages(prev => [...prev, { role: "user", text }]);
     setBusy(true);
     try {
-      const base = (import.meta as any).env?.VITE_API_URL || "http://localhost:3001";
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), HELPER_TIMEOUT_MS);
-      const response = await fetch(`${base}/api/canopy-helper/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: buildTestDriveMessage(personality, agentName, text),
-          context: { active_view: "onboarding", onboarding: { in_onboarding: true } },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-      if (!response.ok) throw new Error(`http ${response.status}`);
-      const reply = String((await response.json()).reply || "").trim();
-      if (!reply) throw new Error("empty");
+      const reply = await Promise.race([
+        requestCanopyHelper(
+          buildTestDriveMessage(personality, agentName, text),
+          { active_view: "onboarding", onboarding: { in_onboarding: true } },
+        ),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Test drive timed out")), HELPER_TIMEOUT_MS)),
+      ]);
       setMessages(prev => [...prev, { role: "agent", text: reply }]);
     } catch {
       setMessages(prev => [...prev, {

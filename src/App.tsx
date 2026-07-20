@@ -17,7 +17,7 @@ import { WorldScene, TerrariumBase } from "./components/World/WorldScene";
 import { KeeperPanel } from "./components/Keeper/KeeperPanel";
 import { getConnectorSecretKey } from "./utils/connectorCatalog";
 import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
-import { GenerativeStudio, GenerativeResult } from "./components/GenerativeStudio";
+import type { GenerativeResult } from "./types/generative";
 import { ProvidersVault } from "./components/ProvidersVault";
 import { IntegrationsView } from "./components/IntegrationsView";
 import { WebVault } from "./components/WebVault";
@@ -927,12 +927,20 @@ export function CompanionGuide({ type }: { type: string }) {
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [step, status]);
 
   const closeCompanionWindow = async () => {
+    // Focus and close are independent best-efforts: a failed focus lookup must
+    // NEVER prevent the close (bug: companion stayed open when the "main"
+    // window label wasn't found). The main window also refocuses itself on
+    // `companion-finished`, so focus here is just belt-and-braces.
     try {
-      const { getCurrentWindow, getAllWindows } = await import('@tauri-apps/api/window');
-      const mainWindow = (await getAllWindows()).find(w => w.label === 'main');
+      const { getAllWindows } = await import('@tauri-apps/api/window');
+      const windows = await getAllWindows();
+      const mainWindow = windows.find(w => w.label === 'main') || windows.find(w => !w.label.toLowerCase().includes('companion'));
       if (mainWindow) await mainWindow.setFocus();
+    } catch (e) { /* focus is best-effort */ }
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
       await getCurrentWindow().close();
-    } catch (e) { }
+    } catch (e) { /* window may already be closing */ }
   };
 
   const finishWithSuccess = async () => {

@@ -9,7 +9,7 @@ import {
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, fireActivationEvent } from "../../store/worldStore";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { useForumStore } from "../../store/forumStore";
-import { GenerativeResult } from "../../components/GenerativeStudio";
+import type { GenerativeResult } from "../../types/generative";
 import { Toggle, ServiceRow, glass } from "../../App";
 import MDEditor from "@uiw/react-md-editor";
 import { invoke } from "@tauri-apps/api/core";

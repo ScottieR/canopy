@@ -40,7 +40,9 @@ fn validate_feedback_submission(submission: &FeedbackSubmissionInput) -> CanopyR
 
     let title = submission.title.trim();
     if title.is_empty() {
-        return Err(CanopyError::Validation("Feedback title cannot be empty".into()));
+        return Err(CanopyError::Validation(
+            "Feedback title cannot be empty".into(),
+        ));
     }
     if title.len() > 160 {
         return Err(CanopyError::Validation(
@@ -83,7 +85,10 @@ async fn sync_feedback_report_to_admin(report: &FeedbackReport) -> Result<(), St
     if response.status().is_success() {
         Ok(())
     } else {
-        Err(format!("admin feedback sync returned {}", response.status()))
+        Err(format!(
+            "admin feedback sync returned {}",
+            response.status()
+        ))
     }
 }
 
@@ -109,11 +114,7 @@ async fn notify_feedback_to_slack(report: &FeedbackReport) -> Result<bool, Strin
 
     let text = format!(
         "*New Canopy feedback received*\nType: `{}`\nTitle: {}\nReporter: {}{}\n\n{}",
-        report.kind,
-        report.title,
-        reporter,
-        agent_line,
-        report.description
+        report.kind, report.title, reporter, agent_line, report.description
     );
 
     let client = reqwest::Client::builder()

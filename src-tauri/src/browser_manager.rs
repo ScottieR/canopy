@@ -2456,6 +2456,10 @@ fn compute_offscreen_position() -> (i32, i32) {
         return *p;
     }
 
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
     let probe = std::process::Command::new("osascript")
         .args([
             "-e",
@@ -2467,11 +2471,40 @@ fn compute_offscreen_position() -> (i32, i32) {
                 return (item 1 of b as string) & "," & (item 2 of b as string) & "," & (item 3 of b as string) & "," & (item 4 of b as string)
             end tell"#,
         ])
-        .output();
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn();
+
+    // Finder can be unresponsive while macOS is restoring a session or when a
+    // headless test process has no GUI session. Never let browser startup (or
+    // the test suite) wait indefinitely for this cosmetic placement probe.
+    let probe = probe.ok().and_then(|mut child| {
+        let deadline = Instant::now() + Duration::from_millis(750);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let mut stdout = Vec::new();
+                    let read_ok = child
+                        .stdout
+                        .take()
+                        .is_some_and(|mut pipe| pipe.read_to_end(&mut stdout).is_ok());
+                    return (status.success() && read_ok).then_some(stdout);
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) | Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+            }
+        }
+    });
 
     let (left, top) = match probe {
-        Ok(out) if out.status.success() => {
-            let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        Some(stdout) => {
+            let raw = String::from_utf8_lossy(&stdout).trim().to_string();
             let parts: Vec<i32> = raw
                 .split(',')
                 .filter_map(|s| s.trim().parse().ok())

@@ -18,8 +18,8 @@ fn test_agent_belongs_to_creator() {
     let agent = default_test_agent();
 
     // Simulate ownership check
-    let creator_id = "user-123";
-    let other_user_id = "user-456";
+    let _creator_id = "user-123";
+    let _other_user_id = "user-456";
 
     // In real implementation:
     // assert!(agent.is_owned_by(creator_id));
@@ -38,7 +38,7 @@ fn test_agent_operations_require_ownership() {
     // Validates: Ownership enforcement
     // Ensures: Other users can't hijack agents
 
-    let agent = default_test_agent();
+    let _agent = default_test_agent();
     let owner = "user-123";
     let attacker = "user-evil";
 
@@ -74,8 +74,8 @@ fn test_pause_agent_requires_ownership() {
     // Validates: Pause permission check
     // Ensures: Users can't silence others' agents
 
-    let mut agent = default_test_agent();
-    let attacker = "attacker-user";
+    let agent = default_test_agent();
+    let _attacker = "attacker-user";
 
     // Pause operation should check ownership
     // In real implementation:
@@ -122,7 +122,7 @@ fn test_modify_budget_requires_ownership() {
     use common::default_test_budget;
 
     let budget = default_test_budget("agent-1");
-    let attacker = "user-evil";
+    let _attacker = "user-evil";
 
     // In real implementation:
     // assert!(modify_budget(&budget.agent_id, attacker, new_limit).is_err());

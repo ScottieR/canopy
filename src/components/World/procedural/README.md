@@ -1,7 +1,7 @@
 # Procedural Lobsters — POC
 
 This folder contains the first cut of the **GLB → Code hybrid** strategy.
-See `/STRATEGY_GLB_TO_CODE.md` at the repo root for the full plan.
+See [`docs/design/glb-to-code-strategy.md`](../../../docs/design/glb-to-code-strategy.md) for the full plan.
 
 ## What's here
 
@@ -58,7 +58,7 @@ Then `npm run dev`, orbit, compare against `/public/agents/Accountant.png`.
 
 - Wiring into the real `WorldScene.tsx` — that's a follow-up after aesthetic QA.
 - The other 4 archetypes — they'll follow the same pattern once Accountant
-  passes the fidelity checklist in `STRATEGY_GLB_TO_CODE.md § 7`.
+  passes the fidelity checklist in `docs/design/glb-to-code-strategy.md § 7`.
 - The offscreen-bake helper for 2D surfaces (`lib/lobster-bake.ts`) — only
   needed once the procedural body passes QA.
 - Deletion of the large GLB source files in `public/models/lobsters/` —
@@ -67,7 +67,7 @@ Then `npm run dev`, orbit, compare against `/public/agents/Accountant.png`.
 ## Aesthetic budget
 
 Every file in this folder was written against the constraints in
-`/canopy/STYLING.md` and the reference PNGs in
+`docs/design/styling.md` and the reference PNGs in
 `/Lobster Styling/` and `/public/agents/`. If anything looks wrong when you
 render it, the PNG wins — adjust the procedural code, don't adjust the
 reference.

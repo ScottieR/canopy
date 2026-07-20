@@ -55,7 +55,7 @@ fn test_bridge_starts_disabled() {
     // Validates: Safe default state
     // Ensures: No accidental API calls
 
-    let mut bridge = default_test_bridge();
+    let bridge = default_test_bridge();
     // For security, bridges should start disabled until fully configured
     // This test validates that pattern can be enforced
     assert!(!bridge.id.is_empty(), "Bridge should have ID");

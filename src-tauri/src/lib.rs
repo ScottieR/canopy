@@ -19,15 +19,14 @@ mod audit_openclaw;
 mod bluetooth;
 mod bridge;
 mod browser_manager;
-mod channels;
 mod canopy_helper;
+mod channels;
 pub mod db;
 mod dispatch;
 mod docker;
 mod durable_content;
 mod engine_install;
 mod feedback;
-mod share_publish;
 mod google;
 mod health_monitor;
 mod imessage;
@@ -41,14 +40,15 @@ pub mod openclaw;
 mod payment;
 mod provider_provisioning;
 mod security_scanner;
+mod share_publish;
 mod slack;
 mod voice;
 mod workspace_manager;
 
 pub use payment::{
     cancel_virtual_card, evaluate_purchase, get_agent_budget, get_payment_dashboard,
-    get_purchase_history, get_virtual_cards_for_agent, list_pending_purchase_approvals,
-    handle_lithic_transaction_event, handle_privacy_transaction_event,
+    get_purchase_history, get_virtual_cards_for_agent, handle_lithic_transaction_event,
+    handle_privacy_transaction_event, list_pending_purchase_approvals,
     simulate_virtual_card_charge, simulate_virtual_card_decline, update_agent_budget,
 };
 
@@ -593,9 +593,10 @@ async fn resolve_workspace_asset(
     if relative.is_absolute()
         || relative.components().any(|component| match component {
             Component::Normal(value) => value.to_string_lossy().starts_with('.'),
-            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                true
-            }
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => true,
         })
         || !workspace_asset_extension_allowed(relative)
     {
@@ -631,10 +632,10 @@ pub fn run() {
                 let uri = request.uri().to_string();
                 let without_scheme = uri.strip_prefix("canopy-workspace://").unwrap_or(&uri);
                 let without_host = without_scheme.strip_prefix("localhost/").unwrap_or(without_scheme);
-                
+
                 // Format: <agent_id>/<file_path>
                 let parts: Vec<&str> = without_host.splitn(2, '/').collect();
-                
+
                 if parts.len() < 2 {
                     responder.respond(tauri::http::Response::builder().status(400).body(Vec::new()).unwrap());
                     return;
@@ -652,7 +653,7 @@ pub fn run() {
                 let file_path = urlencoding::decode(file_path).unwrap_or(std::borrow::Cow::Borrowed(file_path)).to_string();
 
                 let db = app_handle.state::<crate::db::Database>();
-                
+
                 match crate::openclaw::get_agent_workspace_dir(&db, agent_id) {
                     Ok(workspace_dir) => {
                         let full_path = match resolve_workspace_asset(&workspace_dir, &file_path).await {
@@ -748,7 +749,7 @@ pub fn run() {
                     }
                 }
             });
-            
+
             // Start JIT Server for Agent Authorization
             let jit_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
@@ -766,13 +767,13 @@ pub fn run() {
                     tracing::warn!("Shared browser bridge failed to start: {}", e);
                 }
             });
-            
+
             // Start Activity Sniffer Daemon
             activity_sniffer::start_sniffer_daemon(handle.clone());
-            
+
             // Start Health Monitor Daemon
             health_monitor::start_health_monitor_daemon(handle.clone());
-            
+
             // Start the dispatch WebSocket server for mobile clients
             let dispatch_state = std::sync::Arc::new(dispatch::DispatchState::new());
             handle.manage(dispatch_state.clone());
@@ -1392,12 +1393,12 @@ mod access_tier_tests {
         assert!(resolve_workspace_asset(tmp.path(), "../outside.html")
             .await
             .is_err());
-        assert!(resolve_workspace_asset(tmp.path(), ".canopy/jit-bridge-token")
-            .await
-            .is_err());
-        assert!(resolve_workspace_asset(tmp.path(), "secret")
-            .await
-            .is_err());
+        assert!(
+            resolve_workspace_asset(tmp.path(), ".canopy/jit-bridge-token")
+                .await
+                .is_err()
+        );
+        assert!(resolve_workspace_asset(tmp.path(), "secret").await.is_err());
     }
 
     #[cfg(unix)]

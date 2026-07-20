@@ -3,31 +3,11 @@
 
 mod common;
 
-use canopy_lib::models::{Agent, AgentStatus};
+use canopy_lib::models::AgentStatus;
 use common::{
     default_test_agent, test_agent_with_id, test_agent_with_name, validate_test_agent_id,
     TestContext,
 };
-use std::path::Path;
-
-// ────────────────────────────────────────────────────────────────────────────
-// TEST SETUP & UTILITIES
-// ────────────────────────────────────────────────────────────────────────────
-
-/// Helper to create a minimal agent in database
-fn create_test_agent_in_db(ctx: &TestContext, agent: &Agent) -> Result<(), String> {
-    // In real implementation, this would insert into SQLite
-    // For now, validates agent structure is sound
-    validate_test_agent_id(&agent.id)?;
-    Ok(())
-}
-
-/// Helper to verify agent exists in database
-fn agent_exists_in_db(_ctx: &TestContext, agent_id: &str) -> bool {
-    // In real implementation, queries SQLite
-    // For integration tests, this would connect to test database
-    !agent_id.is_empty()
-}
 
 // ────────────────────────────────────────────────────────────────────────────
 // PHASE 1.1: AGENT CREATION & PERSISTENCE
@@ -39,7 +19,7 @@ fn test_agent_creation_persists_to_database() {
     // Validates: Database schema supports all Agent fields
     // Ensures: No data loss during DB round-trip
 
-    let ctx = TestContext::new();
+    let _ctx = TestContext::new();
     let mut agent = default_test_agent();
     agent.id = "test-agent-persistence".to_string();
     agent.name = "Persistence Test Agent".to_string();
@@ -69,9 +49,9 @@ fn test_agent_name_persists_with_unicode() {
     // Validates: Database handles UTF-8 encoding
     // Ensures: No unicode loss or corruption
 
-    let ctx = TestContext::new();
+    let _ctx = TestContext::new();
     let unicode_name = "Agent 🦞 Lobster 🌊 Sea";
-    let mut agent = test_agent_with_name(unicode_name);
+    let agent = test_agent_with_name(unicode_name);
 
     // Validate unicode is preserved
     assert_eq!(
@@ -196,7 +176,7 @@ fn test_agent_capabilities_default_structure() {
     // Ensures: Capabilities can be extended without breaking
 
     let agent = default_test_agent();
-    let caps = agent.capabilities;
+    let _caps = agent.capabilities;
 
     // Verify structure exists (actual field validation depends on AgentCapabilities definition)
     assert!(!agent.id.is_empty(), "Agent should have ID");

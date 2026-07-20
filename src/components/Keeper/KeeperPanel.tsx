@@ -1,10 +1,10 @@
 // ─── The Keeper (Eddy) — persistent helper pill + chat panel ─────────────────
 // Spec: spec-helper-agent-and-orchestrator.md Part 1 / F-K1.
-// Cloud-hosted brain (admin server /api/canopy-helper/chat, Canopy's key) with a
-// local rule-based fallback so Eddy can still diagnose the most common
-// failures (runtime down, key rate-limited, agent in error state) even when
-// the admin server is unreachable. The Tauri layer's live state is assembled
-// into a context payload on every send — Eddy sees what the wrench icon sees.
+// Provider-direct or on-device inference with a local rule-based fallback.
+// Once the user connects a provider, Eddy calls it directly from this Mac;
+// before then, common setup failures are diagnosed without sending anything
+// to the Canopy server. The Tauri layer assembles the same minimized context
+// the wrench icon sees and applies a strict allowlist before provider calls.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
@@ -56,7 +56,7 @@ type SubmittedFeedbackReport = {
 };
 
 type ProviderHealth = { provider: string; status: string; detail?: string; model: string };
-type HelperMode = "hosted" | "provider" | "local";
+type HelperMode = "offline" | "provider" | "local";
 type HelperConfig = { mode: HelperMode; provider?: string; model?: string; credentialPresent: boolean };
 type HelperContinuity = { topic?: "provider_setup" | "integration_setup" | "diagnostics" | "onboarding"; target_agent?: string; provider?: "openai" | "anthropic" | "gemini" | "xai"; expires_at: number };
 
@@ -399,8 +399,8 @@ export function KeeperPanel() {
   const [busy, setBusy] = useState(false);
   const [submittingFeedbackTs, setSubmittingFeedbackTs] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [helperConfig, setHelperConfig] = useState<HelperConfig>({ mode: "hosted", credentialPresent: false });
-  const [settingsMode, setSettingsMode] = useState<HelperMode>("hosted");
+  const [helperConfig, setHelperConfig] = useState<HelperConfig>({ mode: "offline", credentialPresent: false });
+  const [settingsMode, setSettingsMode] = useState<HelperMode>("offline");
   const [settingsProvider, setSettingsProvider] = useState("openai");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsCredential, setSettingsCredential] = useState("");
@@ -418,7 +418,7 @@ export function KeeperPanel() {
       setSettingsMode(config.mode);
       setSettingsProvider(config.provider || "openai");
       setSettingsModel(config.model || "");
-    }).catch(() => { /* hosted remains default */ });
+    }).catch(() => { /* offline remains default */ });
   }, []);
 
   // Eddy in the world (or anything else) can open the panel via this event.
@@ -470,18 +470,12 @@ export function KeeperPanel() {
     continuityRef.current = continuity;
     try { localStorage.setItem(CONTINUITY_KEY, JSON.stringify(continuity)); } catch { /* ignore */ }
     try {
-      let reply = "";
-      if (helperConfig.mode === "hosted") {
-        const base = (import.meta as any).env?.VITE_API_URL || "http://localhost:3001";
-        const r = await fetch(`${base}/api/canopy-helper/chat`, {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: content, context: ctx, continuity }),
-        });
-        if (!r.ok) throw new Error(`canopy helper http ${r.status}`);
-        reply = String((await r.json()).reply || "").trim();
-      } else {
-        reply = String((await invoke<any>("send_canopy_helper_message", { message: content, context: ctx, continuity }))?.reply || "").trim();
-      }
+      // Refresh on every send so Eddy switches to a newly connected provider
+      // immediately, without requiring an app restart or reopening the panel.
+      const activeConfig = await invoke<HelperConfig>("get_canopy_helper_config").catch(() => helperConfig);
+      setHelperConfig(activeConfig);
+      if (activeConfig.mode === "offline") throw new Error("provider not connected");
+      const reply = String((await invoke<any>("send_canopy_helper_message", { message: content, context: ctx, continuity }))?.reply || "").trim();
       if (!reply) throw new Error("empty reply");
       const parsed = parseKeeperReply(reply);
       const assistantContent = feedbackDraft ? `${parsed.text}\n\n${feedbackDraft.prompt}` : parsed.text;
@@ -574,7 +568,7 @@ export function KeeperPanel() {
         mode: settingsMode,
         provider: settingsMode === "provider" ? settingsProvider : null,
         credential: settingsMode === "provider" && settingsCredential ? settingsCredential : null,
-        model: settingsMode === "hosted" ? null : (settingsModel || null),
+        model: settingsMode === "offline" ? null : (settingsModel || null),
       });
       setHelperConfig(config);
       setSettingsCredential("");
@@ -645,7 +639,7 @@ export function KeeperPanel() {
               <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-main, #303330)" }}>Eddy</div>
               <div style={{ fontSize: 11, color: "var(--text-sub, #636E72)", display: "flex", alignItems: "center", gap: 5 }}>
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusDot, display: "inline-block" }} />
-                {hasTrouble ? "Something needs attention" : `All systems healthy · ${helperConfig.mode === "local" ? "On-device" : helperConfig.mode === "provider" ? "Your provider" : "Canopy-hosted"}`}
+                {hasTrouble ? "Something needs attention" : `All systems healthy · ${helperConfig.mode === "local" ? "On-device" : helperConfig.mode === "provider" ? "Your provider" : "Local guidance"}`}
               </div>
             </div>
             <button onClick={() => setShowSettings(v => !v)} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 15, color: "var(--text-sub, #636E72)", padding: 4 }} title="Eddy privacy and model settings">⚙</button>
@@ -659,7 +653,7 @@ export function KeeperPanel() {
             <div style={{ padding: 12, borderBottom: "1px solid rgba(0,0,0,0.08)", background: "var(--surface-base, #faf9f6)", fontSize: 11.5 }}>
               <div style={{ fontWeight: 800, marginBottom: 8 }}>Eddy privacy mode</div>
               <select value={settingsMode} onChange={e => setSettingsMode(e.target.value as HelperMode)} style={{ width: "100%", padding: 7, borderRadius: 8, marginBottom: 7 }}>
-                <option value="hosted">Canopy-hosted bootstrap</option>
+                <option value="offline">Local guidance — no model</option>
                 <option value="provider">My provider — direct from this Mac</option>
                 <option value="local">On-device — Ollama</option>
               </select>
@@ -667,10 +661,10 @@ export function KeeperPanel() {
                 <select value={settingsProvider} onChange={e => setSettingsProvider(e.target.value)} style={{ width: "100%", padding: 7, borderRadius: 8, marginBottom: 7 }}>
                   <option value="openai">OpenAI</option><option value="anthropic">Anthropic</option><option value="gemini">Google Gemini</option><option value="xai">xAI Grok</option>
                 </select>
-                <input type="password" value={settingsCredential} onChange={e => setSettingsCredential(e.target.value)} placeholder={helperConfig.credentialPresent ? "Dedicated key saved — blank keeps it" : "Dedicated Eddy API key"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />
+                <input type="password" value={settingsCredential} onChange={e => setSettingsCredential(e.target.value)} placeholder={helperConfig.credentialPresent ? "Connected key found — blank keeps it" : "Optional dedicated Eddy API key"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />
               </>}
-              {settingsMode !== "hosted" && <input value={settingsModel} onChange={e => setSettingsModel(e.target.value)} placeholder={settingsMode === "local" ? "Ollama model, e.g. llama3.2:3b" : "Model (optional)"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />}
-              <div style={{ color: "var(--text-sub, #636E72)", lineHeight: 1.4, marginBottom: 8 }}>{settingsMode === "hosted" ? "Only the latest message and minimized structured context go through Canopy." : settingsMode === "provider" ? "Requests go directly to your provider from this Mac." : "Requests stay on this Mac through Ollama."}</div>
+              {settingsMode !== "offline" && <input value={settingsModel} onChange={e => setSettingsModel(e.target.value)} placeholder={settingsMode === "local" ? "Ollama model, e.g. llama3.2:3b" : "Model (optional)"} style={{ width: "100%", boxSizing: "border-box", padding: 7, borderRadius: 8, border: "1px solid rgba(0,0,0,0.12)", marginBottom: 7 }} />}
+              <div style={{ color: "var(--text-sub, #636E72)", lineHeight: 1.4, marginBottom: 8 }}>{settingsMode === "offline" ? "No message leaves this Mac. Eddy uses built-in setup diagnostics." : settingsMode === "provider" ? "Uses an already connected provider key automatically, or the optional dedicated key above. Requests go directly from this Mac." : "Requests stay on this Mac through Ollama."}</div>
               {settingsError && <div style={{ color: "#b42318", marginBottom: 7 }}>{settingsError}</div>}
               <button onClick={saveHelperSettings} style={{ width: "100%", padding: 7, border: "none", borderRadius: 8, background: "#3c6663", color: "#fff", fontWeight: 800, cursor: "pointer" }}>Save privacy mode</button>
             </div>

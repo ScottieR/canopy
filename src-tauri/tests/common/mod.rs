@@ -1,4 +1,9 @@
-/// Common test utilities, fixtures, and setup for integration tests
+//! Common test utilities, fixtures, and setup for integration tests.
+//!
+//! Each integration test compiles this module as a separate crate, so a helper
+//! used by one test binary can legitimately be unused in another.
+#![allow(dead_code, unused_imports)]
+
 use canopy_lib::models::{
     Agent, AgentBudget, AgentCapabilities, AgentPersonality, AgentStats, AgentStatus, Bridge,
     BridgeConfig, BridgePermissions, BridgeType, PurchaseDecision, PurchaseRequest,

@@ -95,7 +95,8 @@ pub async fn start_google_oauth(
         }
         if scope == "photos" {
             // Only requesting read-only access to photos as specified by the user
-            requested_scopes.push("https://www.googleapis.com/auth/photoslibrary.readonly".to_string());
+            requested_scopes
+                .push("https://www.googleapis.com/auth/photoslibrary.readonly".to_string());
         }
     }
 

@@ -9,6 +9,9 @@ dist-preview/
 !.env.development
 !.env.production
 src-tauri/target/
+src-tauri/canopy.db
+scratch/target/
+*.timestamp-*.mjs
 public/models/lobsters/FlatIvyBase.glb
 public/models/lobsters/IvyBase.glb
 .claude/

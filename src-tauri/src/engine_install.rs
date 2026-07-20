@@ -88,7 +88,7 @@ pub fn transition_allowed(from: EngineStage, to: EngineStage) -> bool {
             | (Verifying, Ready)
             | (Verifying, Failed)
             | (Failed, Detecting)            // retry
-            | (Ready, Detecting)             // health re-check / engine died
+            | (Ready, Detecting) // health re-check / engine died
     )
 }
 
@@ -173,7 +173,11 @@ async fn docker_daemon_healthy() -> bool {
 }
 
 async fn launch_engine_app(engine: &str) -> Result<(), String> {
-    let app_name = if engine == "OrbStack" { "OrbStack" } else { "Docker" };
+    let app_name = if engine == "OrbStack" {
+        "OrbStack"
+    } else {
+        "Docker"
+    };
     let out = tokio::process::Command::new("open")
         .args(["-a", app_name, "--background"])
         .output()
@@ -252,7 +256,8 @@ async fn install_orbstack_from_dmg(app: &tauri::AppHandle) -> Result<(), String>
     use std::io::Write;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("download_interrupted: {e}"))?;
-        file.write_all(&chunk).map_err(|e| format!("disk_write_failed: {e}"))?;
+        file.write_all(&chunk)
+            .map_err(|e| format!("disk_write_failed: {e}"))?;
         received += chunk.len() as u64;
         if total > 0 {
             let pct = ((received * 100) / total).min(99) as u8;
@@ -534,7 +539,12 @@ mod tests {
 
     #[test]
     fn happy_path_existing_engine() {
-        for (from, to) in [(Idle, Detecting), (Detecting, Starting), (Starting, Verifying), (Verifying, Ready)] {
+        for (from, to) in [
+            (Idle, Detecting),
+            (Detecting, Starting),
+            (Starting, Verifying),
+            (Verifying, Ready),
+        ] {
             assert!(transition_allowed(from, to), "{from:?}→{to:?}");
         }
     }

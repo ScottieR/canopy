@@ -85,27 +85,14 @@ pub(crate) fn agent_jit_token(agent_id: &str) -> Result<String, String> {
 }
 
 fn request_agent_id(body: &[u8]) -> Result<String, (u16, String)> {
-    let value: Value = serde_json::from_slice(body).map_err(|_| {
-        (
-            400,
-            r#"{"error":"Invalid JSON request body"}"#.to_string(),
-        )
-    })?;
+    let value: Value = serde_json::from_slice(body)
+        .map_err(|_| (400, r#"{"error":"Invalid JSON request body"}"#.to_string()))?;
     let agent_id = value
         .get("agent_id")
         .and_then(Value::as_str)
-        .ok_or_else(|| {
-            (
-                400,
-                r#"{"error":"agent_id is required"}"#.to_string(),
-            )
-        })?;
-    crate::validators::agent::validate_id(agent_id).map_err(|_| {
-        (
-            400,
-            r#"{"error":"Invalid agent_id"}"#.to_string(),
-        )
-    })?;
+        .ok_or_else(|| (400, r#"{"error":"agent_id is required"}"#.to_string()))?;
+    crate::validators::agent::validate_id(agent_id)
+        .map_err(|_| (400, r#"{"error":"Invalid agent_id"}"#.to_string()))?;
     Ok(agent_id.to_string())
 }
 
@@ -795,10 +782,7 @@ mod tests {
             Some("canopy_jit_wrong"),
             "canopy_jit_expected"
         ));
-        assert!(!presented_capability_matches(
-            None,
-            "canopy_jit_expected"
-        ));
+        assert!(!presented_capability_matches(None, "canopy_jit_expected"));
     }
 
     #[test]

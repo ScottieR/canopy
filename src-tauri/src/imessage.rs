@@ -138,10 +138,7 @@ fn open_system_settings_targets(targets: &[&str]) -> Result<(), String> {
         match std::process::Command::new("open").arg(target).status() {
             Ok(status) if status.success() => return Ok(()),
             Ok(status) => {
-                last_error = Some(format!(
-                    "open {} exited with status {}",
-                    target, status
-                ));
+                last_error = Some(format!("open {} exited with status {}", target, status));
             }
             Err(err) => {
                 last_error = Some(format!("open {} failed: {}", target, err));

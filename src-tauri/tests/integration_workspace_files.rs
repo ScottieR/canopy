@@ -11,8 +11,6 @@ async fn test_workspace_file_upload_and_read_base64() {
     std::env::set_var("CANOPY_DATA_DIR", ctx.temp_dir.path());
 
     let app = tauri::test::mock_app();
-    let handle = app.handle();
-
     // Initialize temporary database in the mock app
     let db = canopy_lib::db::Database::init_in_memory().unwrap();
     app.manage(db);
