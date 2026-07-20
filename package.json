@@ -51,6 +51,7 @@
     "icons:generate": "npm run icons:prepare && npm run tauri icon app-icon.png",
     "tauri": "tauri",
     "test": "vitest",
+    "typecheck": "tsc --noEmit",
     "test:ui": "vitest --ui",
     "test:coverage": "vitest --coverage"
   }

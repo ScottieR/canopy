@@ -35,6 +35,7 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm audit --audit-level=high
+          npm run typecheck
           npm test -- --run
           npm run build
 

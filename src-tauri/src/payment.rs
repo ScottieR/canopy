@@ -3882,7 +3882,7 @@ mod tests {
             app.handle().clone(),
             json!({
                 "token": "privacy-provider-ref",
-                "transaction_token": "privacy-txn-1",
+                "transaction_token": "privacy-txn-1", // gitleaks:allow -- deterministic test fixture
                 "amount": 5390,
                 "status": "CAPTURED",
                 "merchant": { "name": "Figma" },

@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic Privacy transaction fixture"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''src-tauri/src/payment\.rs''']
+regexTarget = "match"
+regexes = ['''transaction_token"\s*:\s*"privacy-txn-1"''']

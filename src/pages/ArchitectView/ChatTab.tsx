@@ -942,7 +942,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 messages: [],
                 createdAt,
                 lastActiveAt,
-                type: inferConversationType(summary.id) as const,
+                type: inferConversationType(summary.id),
                 status: "active" as const,
                 threadStatus: summary.thread_status,
                 backgroundAllowed: summary.background_allowed,
@@ -1928,6 +1928,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                               </details>
                           );
                       } else if (chunk.type === "text" && chunk.content) {
+                          const chunkContent = chunk.content;
                           
                           const embedRegex = /\[embed\s+([^\]]+)\/\]/gi;
                           const workflowRegex = /\[Workflow Approval:\s*([^\]]+)\]/gi;
@@ -1937,9 +1938,9 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                           let tokens: Array<{type: string, match: any, index: number}> = [];
                           
                           let m;
-                          while ((m = embedRegex.exec(chunk.content)) !== null) tokens.push({type: 'embed', match: m, index: m.index });
-                          while ((m = workflowRegex.exec(chunk.content)) !== null) tokens.push({type: 'workflow', match: m, index: m.index });
-                          while ((m = authorizeRegex.exec(chunk.content)) !== null) tokens.push({type: 'authorize', match: m, index: m.index });
+                          while ((m = embedRegex.exec(chunkContent)) !== null) tokens.push({type: 'embed', match: m, index: m.index });
+                          while ((m = workflowRegex.exec(chunkContent)) !== null) tokens.push({type: 'workflow', match: m, index: m.index });
+                          while ((m = authorizeRegex.exec(chunkContent)) !== null) tokens.push({type: 'authorize', match: m, index: m.index });
                           
                           tokens.sort((a, b) => a.index - b.index);
                           
@@ -1951,7 +1952,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                               
                               if (matchIndex < lastIndex) return; // Overlap? shouldn't happen
                               
-                              const beforeText = chunk.content.substring(lastIndex, matchIndex);
+                              const beforeText = chunkContent.substring(lastIndex, matchIndex);
                               if (beforeText.trim()) {
                                   elements.push(
                                       <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
@@ -1986,7 +1987,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                               lastIndex = matchIndex + fullMatch.length;
                           });
                           
-                          const afterText = chunk.content.substring(lastIndex);
+                          const afterText = chunkContent.substring(lastIndex);
                           if (afterText.trim()) {
                               elements.push(
                                   <div key={`text-${elements.length}`} className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
