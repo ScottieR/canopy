@@ -8,6 +8,10 @@ Canopy turns a collection of model APIs, tools, and integrations into a visible 
 
 > **Project status:** active portfolio preview. The current build is macOS-first, under active development, and not yet intended for production use with high-stakes data or unattended financial actions.
 
+![Canopy's interactive 3D agent world](docs/images/canopy-world.jpg)
+
+*Canopy gives each agent a visible place in a shared, interactive 3D world while its runtime, credentials, and workspace remain locally managed.*
+
 ## Why this project exists
 
 Most agent frameworks optimize for getting one autonomous loop running. Canopy explores the product and systems questions that appear after that:

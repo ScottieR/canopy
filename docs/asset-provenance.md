@@ -6,6 +6,7 @@ This inventory covers non-code visual assets committed to the desktop repository
 |---|---|---|
 | `app-icon-source.png` | Original Canopy icon source maintained by the project owner | Project artwork; included with the repository |
 | `app-icon.png`, `public/app-icon.png`, `public/favicon.png`, `src-tauri/icons/**` | Derived application icons generated from the Canopy source icon | Project artwork; included in source and packaged builds |
+| `docs/images/canopy-world.jpg` | Product screenshot captured from Canopy's live Three.js onboarding-world renderer using project-owned character and habitat artwork | Project artwork; displayed in the repository README |
 | `assets/reference/Gemini_Generated_Image_*.png` | Google Gemini-generated concept studies created for Canopy | Development reference only; excluded from packaged builds |
 | `assets/reference/lobster-onboarding-render.png` | AI-assisted Canopy onboarding concept study | Development reference only; excluded from packaged builds |
 | `assets/reference/Accountant.png` | Canopy character concept used to evaluate procedural rendering | Development reference only; excluded from packaged builds |
