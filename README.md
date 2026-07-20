@@ -2,7 +2,7 @@
 
 **A local-first desktop operating system for building, isolating, and supervising AI agents.**
 
-> **Evaluation-only source license:** This repository is publicly available for portfolio and recruiting review. You may clone, build, and run it locally only to evaluate the author's qualifications. Commercial use, production use, redistribution, public deployment, and derivative products are prohibited. See [LICENSE](LICENSE).
+> **Portfolio preview:** Thanks for taking a look. You are welcome to inspect, clone, build, and run Canopy for evaluation. The source is here to make the product, architecture, and implementation easy to explore. This is a portfolio preview rather than a general open-source release; see [LICENSE](LICENSE) for details.
 
 Canopy turns a collection of model APIs, tools, and integrations into a visible team of agents. Each agent has its own identity, model configuration, credentials, workspace, permissions, and audit trail. The desktop app coordinates those agents while the execution plane stays in local containers on the user's Mac.
 
@@ -205,6 +205,4 @@ This evaluation release is not currently accepting outside contributions. Securi
 
 ## License
 
-Copyright © 2026 Scottie Ryan. All rights reserved.
-
-Canopy is source-available solely for portfolio and recruiting evaluation; it is not open-source software. The limited permission and prohibited uses are stated in [LICENSE](LICENSE).
+Canopy is shared as a portfolio preview under a limited evaluation license. Reviewers are welcome to inspect, clone, build, and run it. See [LICENSE](LICENSE) for the full terms.
