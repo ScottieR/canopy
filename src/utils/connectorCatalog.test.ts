@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import sharedConnectors from "../../../shared/connectors.json";
+import sharedConnectors from "../../shared/connectors.json";
 import { CONNECTOR_CATALOG, buildCompanionUrl, getConnectorSecretKey } from "./connectorCatalog";
 
 describe("connectorCatalog", () => {

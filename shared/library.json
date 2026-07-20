@@ -1,0 +1,1060 @@
+[
+  {
+    "key": "/works/OL244537W",
+    "title": "The Art of War",
+    "author": "孙武 (Sun Tzu)",
+    "coverUrl": "https://covers.openlibrary.org/b/id/4849549-M.jpg",
+    "description": "The Art of War is an ancient Chinese military treatise dating from the Late Spring and Autumn Period.",
+    "subjects": [
+      "strategy",
+      "history"
+    ],
+    "recommendedAgents": [
+      "Strategist"
+    ]
+  },
+  {
+    "key": "/works/OL28521353W",
+    "title": "Meditations",
+    "author": "Marcus Aurelius",
+    "coverUrl": "https://covers.openlibrary.org/b/id/13202688-M.jpg",
+    "description": "",
+    "subjects": [
+      "philosophy"
+    ],
+    "recommendedAgents": [
+      "Strategist",
+      "Custom"
+    ]
+  },
+  {
+    "key": "/works/OL102749W",
+    "title": "Moby Dick",
+    "author": "Herman Melville",
+    "coverUrl": "https://covers.openlibrary.org/b/id/10544254-M.jpg",
+    "description": "\"Command the murderous chalices! Drink ye harpooners! Drink and swear, ye men that man the deathful whaleboat's bow -- Death to Moby Dick!\" So Captain...",
+    "subjects": [
+      "fiction",
+      "classics"
+    ],
+    "recommendedAgents": [
+      "Researcher"
+    ]
+  },
+  {
+    "key": "/works/OL1866671W",
+    "title": "The Principles of Scientific Management",
+    "author": "Frederick Winslow Taylor",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8235250-M.jpg",
+    "description": "This is a management classic that is actually a short booklet.",
+    "subjects": [
+      "business",
+      "management"
+    ],
+    "recommendedAgents": [
+      "Accountant",
+      "Assistant"
+    ]
+  },
+  {
+    "key": "/works/OL1168083W",
+    "title": "Nineteen Eighty-Four",
+    "author": "George Orwell",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9267242-M.jpg",
+    "description": "Nineteen Eighty-Four: A Novel, often referred to as 1984, is a dystopian social science fiction novel by the English novelist George Orwell (the pen name of Eric Arthur Blair).",
+    "subjects": [],
+    "recommendedAgents": [
+      "Tutor",
+      "Accountant",
+      "Musician",
+      "Engineer",
+      "Coach"
+    ]
+  },
+  {
+    "key": "/works/OL15992072W",
+    "title": "Thinking, fast and slow",
+    "author": "Daniel Kahneman",
+    "coverUrl": "https://covers.openlibrary.org/b/id/13290711-M.jpg",
+    "description": "In his mega bestseller, Thinking, Fast and Slow, Daniel Kahneman, world-famous psychologist and winner of the Nobel Prize in Economics, takes us on a...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Researcher"
+    ]
+  },
+  {
+    "key": "/works/OL17075811W",
+    "title": "Sapiens",
+    "author": "Yuval Noah Harari",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8634250-M.jpg",
+    "description": "From a renowned historian comes a groundbreaking narrative of humanity’s creation and evolution—a #1 international bestseller—that explores the ways i...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Researcher"
+    ]
+  },
+  {
+    "key": "/works/OL15586927W",
+    "title": "The Information",
+    "author": "James Gleick",
+    "coverUrl": "https://covers.openlibrary.org/b/id/6699475-M.jpg",
+    "description": "The Information: A History, a Theory, a Flood begins with the tale of colonial European explorers and their fascination with African talking drums and...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Researcher"
+    ]
+  },
+  {
+    "key": "/works/OL468431W",
+    "title": "The Great Gatsby",
+    "author": "F. Scott Fitzgerald",
+    "coverUrl": "https://covers.openlibrary.org/b/id/10590366-M.jpg",
+    "description": "Here is a novel, glamorous, ironical, compassionate – a marvelous fusion into unity of the curious incongruities of the life of the period – which rev...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Researcher",
+      "Interior Designer",
+      "Business Strategist",
+      "Marketing Guru",
+      "Educator",
+      "Editor"
+    ]
+  },
+  {
+    "key": "/works/OL2003465W",
+    "title": "Mindset",
+    "author": "Carol S. Dweck",
+    "coverUrl": "https://covers.openlibrary.org/b/id/746414-M.jpg",
+    "description": "Mindset is one of those rare books that can help you make positive changes in your life and at the same time see the world in a new way.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Tutor"
+    ]
+  },
+  {
+    "key": "/works/OL16664450W",
+    "title": "How children succeed",
+    "author": "Paul Tough",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7241045-M.jpg",
+    "description": "Why do some children succeed while others fail? The story we usually tell about childhood and success is the one about intelligence: success comes to...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Tutor"
+    ]
+  },
+  {
+    "key": "/works/OL38285W",
+    "title": "The Elements of Style",
+    "author": "William Strunk, Jr.",
+    "coverUrl": "https://covers.openlibrary.org/b/id/10515358-M.jpg",
+    "description": "You know the authors' names.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Tutor",
+      "Editor"
+    ]
+  },
+  {
+    "key": "/works/OL17930368W",
+    "title": "Atomic Habits",
+    "author": "James Clear",
+    "coverUrl": "https://covers.openlibrary.org/b/id/12539702-M.jpg",
+    "description": "No matter your goals, Atomic Habits offers a proven framework for improving every day.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Assistant"
+    ]
+  },
+  {
+    "key": "/works/OL271504W",
+    "title": "Getting Things Done",
+    "author": "David Allen",
+    "coverUrl": "https://covers.openlibrary.org/b/id/109288-M.jpg",
+    "description": "In today's world, yesterday's methods just don't work.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Assistant"
+    ]
+  },
+  {
+    "key": "/works/OL8838576W",
+    "title": "Essential Maths",
+    "author": "Sean McArdle",
+    "coverUrl": "https://covers.openlibrary.org/b/id/2584771-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Assistant"
+    ]
+  },
+  {
+    "key": "/works/OL3335245W",
+    "title": "The Catcher in the Rye",
+    "author": "J. D. Salinger",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9273490-M.jpg",
+    "description": "Story of Holden Caufield with his idiosyncrasies, penetrating insight, confusion, sensitivity and negativism.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Assistant",
+      "Fashion Stylist",
+      "Architect",
+      "Investment Manager",
+      "Negotiator",
+      "Custom"
+    ]
+  },
+  {
+    "key": "/works/OL3453898W",
+    "title": "Setting the Table",
+    "author": "Danny Meyer",
+    "coverUrl": "https://covers.openlibrary.org/b/id/33989-M.jpg",
+    "description": "In October 1985, at age twenty-seven, Danny Meyer, with a good idea and scant experience, opened what would become one of New York City's most revered restaurants—Union Square Cafe.",
+    "subjects": [],
+    "recommendedAgents": [
+      "STR Manager"
+    ]
+  },
+  {
+    "key": "/works/OL17838611W",
+    "title": "The Airbnb Story",
+    "author": "Leigh Gallagher",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8133669-M.jpg",
+    "description": "La 4e de couv.",
+    "subjects": [],
+    "recommendedAgents": [
+      "STR Manager"
+    ]
+  },
+  {
+    "key": "/works/OL27245328W",
+    "title": "Unreasonable Hospitality",
+    "author": "Will Guidara",
+    "coverUrl": "https://covers.openlibrary.org/b/id/14553904-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "STR Manager"
+    ]
+  },
+  {
+    "key": "/works/OL893415W",
+    "title": "Dune",
+    "author": "Frank Herbert",
+    "coverUrl": "https://covers.openlibrary.org/b/id/11481354-M.jpg",
+    "description": "Set on the desert planet Arrakis, Dune is the story of the boy Paul Atreides, heir to a noble family tasked with ruling an inhospitable world where th...",
+    "subjects": [],
+    "recommendedAgents": [
+      "STR Manager",
+      "Travel Agent",
+      "Artist"
+    ]
+  },
+  {
+    "key": "/works/OL107927W",
+    "title": "The Architecture of Happiness",
+    "author": "Alain De Botton",
+    "coverUrl": "https://covers.openlibrary.org/b/id/5314605-M.jpg",
+    "description": "One of the great but often unmentioned causes of both happiness and misery is the quality of our environment: the kinds of walls, chairs, buildings and streets that surround us.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Interior Designer"
+    ]
+  },
+  {
+    "key": "/works/OL3923600W",
+    "title": "A pattern language",
+    "author": "Christopher Alexander",
+    "coverUrl": "https://covers.openlibrary.org/b/id/120825-M.jpg",
+    "description": "Alexander and his co-authors present us with over two hundred (roughly 250) \"patterns\" that they believe must be present in order for an environment t...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Interior Designer"
+    ]
+  },
+  {
+    "key": "/works/OL2482693W",
+    "title": "Wabi-sabi for artists, designers, poets & philosophers",
+    "author": "Leonard Koren",
+    "coverUrl": "https://covers.openlibrary.org/b/id/926890-M.jpg",
+    "description": "“Wabi-sabi is a beauty of things imperfect, impermanent, and incomplete.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Interior Designer"
+    ]
+  },
+  {
+    "key": "/works/OL277318W",
+    "title": "The End of Fashion",
+    "author": "Teri Agins",
+    "coverUrl": "https://covers.openlibrary.org/b/id/431768-M.jpg",
+    "description": "\"The End of Fashion traces an arc from the origins of couture and its apotheosis in the early part of this century to the advent of pret-a-porter post...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Fashion Stylist"
+    ]
+  },
+  {
+    "key": "/works/OL3574920W",
+    "title": "Black gods and kings",
+    "author": "Robert Farris Thompson",
+    "coverUrl": "https://covers.openlibrary.org/b/id/6597145-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Fashion Stylist"
+    ]
+  },
+  {
+    "key": "/works/OL29983W",
+    "title": "Little Women",
+    "author": "Louisa May Alcott",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8775559-M.jpg",
+    "description": "Louisa May Alcotts classic novel, set during the Civil War, has always captivated even the most reluctant readers.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Fashion Stylist"
+    ]
+  },
+  {
+    "key": "/works/OL18147687W",
+    "title": "The Body Keeps the Score",
+    "author": "Bessel van der Kolk",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8315367-M.jpg",
+    "description": "Trauma is a fact of life.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Therapist"
+    ]
+  },
+  {
+    "key": "/works/OL1268413W",
+    "title": "... Trotzdem Ja zum Leben sagen",
+    "author": "Viktor E. Frankl",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8516506-M.jpg",
+    "description": "Psychiatrist Viktor Frankl's memoir has riveted generations of readers with its descriptions of life in Nazi death camps and its lessons for spiritual survival.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Therapist"
+    ]
+  },
+  {
+    "key": "/works/OL16664399W",
+    "title": "Daring Greatly",
+    "author": "Brené Brown",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7367250-M.jpg",
+    "description": "Based on twelve years of research, thought leader Dr.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Therapist"
+    ]
+  },
+  {
+    "key": "/works/OL3140822W",
+    "title": "To Kill a Mockingbird",
+    "author": "Harper Lee",
+    "coverUrl": "https://covers.openlibrary.org/b/id/14351077-M.jpg",
+    "description": "One of the best-loved stories of all time, To Kill a Mockingbird has been translated into more than 40 languages, sold more than 30 million copies wor...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Therapist",
+      "Kids Coordinator",
+      "Coder",
+      "Strategist"
+    ]
+  },
+  {
+    "key": "/works/OL3348011W",
+    "title": "Kitchen Confidential",
+    "author": "Anthony Bourdain",
+    "coverUrl": "https://covers.openlibrary.org/b/id/843879-M.jpg",
+    "description": "A celebrity chef shares anecdotes of his experience in the restaurant industry, and of his journey from dishwasher to a position of fame in the food industry.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Chef"
+    ]
+  },
+  {
+    "key": "/works/OL18147901W",
+    "title": "Salt, Fat, Acid, Heat",
+    "author": "Samin Nosrat",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8315567-M.jpg",
+    "description": "A visionary new master class in cooking that distills decades of professional experience into just four simple elements, from the woman declared “America’s next great cooking teacher” by Alice Waters.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Chef"
+    ]
+  },
+  {
+    "key": "/works/OL8127897W",
+    "title": "The flavor bible",
+    "author": "Karen Page",
+    "coverUrl": "https://covers.openlibrary.org/b/id/6421086-M.jpg",
+    "description": "Winner of the 2009 James Beard Book Award for Best Book: Reference and Scholarship                    Great cooking goes beyond following a recipe--it...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Chef"
+    ]
+  },
+  {
+    "key": "/works/OL450063W",
+    "title": "Frankenstein or The Modern Prometheus",
+    "author": "Mary Shelley",
+    "coverUrl": "https://covers.openlibrary.org/b/id/12356249-M.jpg",
+    "description": "*Frankenstein; or, The Modern Prometheus* is an 1818 novel written by English author Mary Shelley.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Chef",
+      "Media Advisor",
+      "Trainer"
+    ]
+  },
+  {
+    "key": "/works/OL41815W",
+    "title": "Eat, Pray, Love",
+    "author": "Elizabeth Gilbert",
+    "coverUrl": "https://covers.openlibrary.org/b/id/111433-M.jpg",
+    "description": "This beautifully written, heartfelt memoir touched a nerve among both readers and reviewers.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Chef"
+    ]
+  },
+  {
+    "key": "/works/OL4463698W",
+    "title": "Beloved Vagabond",
+    "author": "Anne Hampson",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7283889-M.jpg",
+    "description": "She soon regretted her careless words\r In anger, Lynn had called the dark Gypsy stranger \"one of the dregs of society.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Travel Agent"
+    ]
+  },
+  {
+    "key": "/works/OL11633223W",
+    "title": "The art of travel",
+    "author": "Alain De Botton",
+    "coverUrl": "https://covers.openlibrary.org/b/id/10410653-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Travel Agent"
+    ]
+  },
+  {
+    "key": "/works/OL612498W",
+    "title": "In Patagonia",
+    "author": "Bruce Chatwin",
+    "coverUrl": "https://covers.openlibrary.org/b/id/94640-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Travel Agent"
+    ]
+  },
+  {
+    "key": "/works/OL16564458W",
+    "title": "Trust Me, I'm Lying",
+    "author": "Ryan Holiday",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7888907-M.jpg",
+    "description": "You've seen it all before.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Media Advisor"
+    ]
+  },
+  {
+    "key": "/works/OL137916W",
+    "title": "Amusing Ourselves to Death",
+    "author": "Neil Postman",
+    "coverUrl": "https://covers.openlibrary.org/b/id/94285-M.jpg",
+    "description": "Amusing Ourselves to Death is a prophetic look at what happens when politics, journalism, education, and even religion become subject to the demands of  entertainment.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Media Advisor"
+    ]
+  },
+  {
+    "key": "/works/OL871842W",
+    "title": "The medium is the massage",
+    "author": "Marshall McLuhan",
+    "coverUrl": "https://covers.openlibrary.org/b/id/936722-M.jpg",
+    "description": "Pictorial presentation of the impact on contemporary society and individual man of the new developments in technology and communications media.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Media Advisor"
+    ]
+  },
+  {
+    "key": "/works/OL16929630W",
+    "title": "Attached",
+    "author": "Amir Levine",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8620497-M.jpg",
+    "description": "Introduces the theory of adult attachment as an advanced relationship science that can enable individuals to find and sustain love, offering insight i...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Relationship Guru"
+    ]
+  },
+  {
+    "key": "/works/OL2018966W",
+    "title": "Nonviolent Communication",
+    "author": "Marshall B. Rosenberg",
+    "coverUrl": "https://covers.openlibrary.org/b/id/940686-M.jpg",
+    "description": "An enlighting look at how peaceful communication can create compassionate connections with family, friends, and other acquaintances, this book uses st...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Relationship Guru"
+    ]
+  },
+  {
+    "key": "/works/OL1680319W",
+    "title": "The Five Love Languages",
+    "author": "Gary D. Chapman",
+    "coverUrl": "https://covers.openlibrary.org/b/id/12602983-M.jpg",
+    "description": "Chapman explains that the five languages of love are:\r \r - Words of affirmation\r - Quality Time\r - Receiving Gifts\r - Acts of Service\r - Physical Touc...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Relationship Guru"
+    ]
+  },
+  {
+    "key": "/works/OL1085186W",
+    "title": "The Alchemist, 1612",
+    "author": "Ben Jonson",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7463992-M.jpg",
+    "description": "[Samuel Taylor Coleridge](/authors/OL26099A/Samuel_Taylor_Coleridge) said of Ben Jonson's _The Alchemist_ that it had one out of the three most perfect plots in literature.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Relationship Guru"
+    ]
+  },
+  {
+    "key": "/works/OL553866W",
+    "title": "How to talk so kids will listen & listen so kids will talk",
+    "author": "Adele Faber",
+    "coverUrl": "https://covers.openlibrary.org/b/id/237165-M.jpg",
+    "description": "You can stop fighting with your children! Here is the bestselling book that will give you the know-how you need to be more effective with your children—and more supportive of yourself.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Kids Coordinator"
+    ]
+  },
+  {
+    "key": "/works/OL20006758W",
+    "title": "Thirty million words",
+    "author": "Dana Suskind",
+    "coverUrl": "https://covers.openlibrary.org/b/id/13101487-M.jpg",
+    "description": "\"The founder and director of the Thirty Million Words Initiative, Professor Dana Suskind, explains why the most important--and astoundingly simple--th...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Kids Coordinator"
+    ]
+  },
+  {
+    "key": "/works/OL27023527W",
+    "title": "Free Range Kids",
+    "author": "Barbara E Knight",
+    "coverUrl": "https://covers.openlibrary.org/b/id/12527102-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Kids Coordinator"
+    ]
+  },
+  {
+    "key": "/works/OL273184W",
+    "title": "The Intelligent Investor",
+    "author": "Benjamin Graham",
+    "coverUrl": "https://covers.openlibrary.org/b/id/36434-M.jpg",
+    "description": "This classic text is annotated to update Graham's timeless wisdom for today's market conditions.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Accountant"
+    ]
+  },
+  {
+    "key": "/works/OL17825802W",
+    "title": "Shoe Dog",
+    "author": "Phil Knight",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8858487-M.jpg",
+    "description": "\"In this candid and riveting memoir, for the first time ever, Nike founder and CEO Phil Knight shares the inside story of the company's early days as...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Accountant"
+    ]
+  },
+  {
+    "key": "/works/OL278022W",
+    "title": "Freakonomics",
+    "author": "Steven D. Levitt",
+    "coverUrl": "https://covers.openlibrary.org/b/id/11172914-M.jpg",
+    "description": "*A Rogue Economist Explores the Hidden Side of Everything*\r \r Which is more dangerous, a gun or a swimming pool? What do schoolteachers and sumo wrest...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Accountant"
+    ]
+  },
+  {
+    "key": "/works/OL6669337W",
+    "title": "Good to Great",
+    "author": "Jim Collins",
+    "coverUrl": "https://covers.openlibrary.org/b/id/53111-M.jpg",
+    "description": "The Challenge:\r Built to Last, the defining management study of the nineties, showed how great companies triumph over time and how long-term sustained...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Business Strategist"
+    ]
+  },
+  {
+    "key": "/works/OL17078706W",
+    "title": "Zero to One",
+    "author": "Peter A. Thiel",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9002334-M.jpg",
+    "description": "If you want to build a better future, you must believe in secrets.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Business Strategist"
+    ]
+  },
+  {
+    "key": "/works/OL1999873W",
+    "title": "The Innovator's Dilemma",
+    "author": "Clayton M. Christensen",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9274687-M.jpg",
+    "description": "In his book,  The Innovator's Dilemma [3], Professor Clayton Christensen of Harvard Business School  describes a theory about how large, outstanding firms can fail \"by doing everything right.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Business Strategist"
+    ]
+  },
+  {
+    "key": "/works/OL19711031W",
+    "title": "Contagious",
+    "author": "Jonah Berger",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9039370-M.jpg",
+    "description": "In this book, Berger reveals the secret science behind word-of-mouth and social transmission.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Marketing Guru"
+    ]
+  },
+  {
+    "key": "/works/OL3902892W",
+    "title": "Influence",
+    "author": "Robert B. Cialdini",
+    "coverUrl": "https://covers.openlibrary.org/b/id/431011-M.jpg",
+    "description": "Influence, the classic book on persuasion, explains the psychology of why people say \"yes\"—and how to apply these understandings.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Marketing Guru"
+    ]
+  },
+  {
+    "key": "/works/OL3346506W",
+    "title": "Ogilvy on advertising",
+    "author": "David Ogilvy",
+    "coverUrl": "https://covers.openlibrary.org/b/id/4222376-M.jpg",
+    "description": "This primer on all aspects of advertising was written by the founder of Ogilvy & Mather, an advertising agency with 450 offices in 120 countries.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Marketing Guru"
+    ]
+  },
+  {
+    "key": "/works/OL1870556W",
+    "title": "Pedagogia do Oprimido",
+    "author": "Paulo Freire",
+    "coverUrl": "https://covers.openlibrary.org/b/id/630082-M.jpg",
+    "description": "\"The methodology of the late Paulo Freire, once considered such a threat to the established order that he was \"invited\" to leave his native Brazil, ha...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Educator"
+    ]
+  },
+  {
+    "key": "/works/OL17879515W",
+    "title": "Make It Stick",
+    "author": "Peter C. Brown",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8188891-M.jpg",
+    "description": "To most of us, learning something \"the hard way\" implies wasted time and effort.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Educator"
+    ]
+  },
+  {
+    "key": "/works/OL111359W",
+    "title": "Democracy and Education",
+    "author": "John Dewey",
+    "coverUrl": "https://covers.openlibrary.org/b/id/6738842-M.jpg",
+    "description": "Publisher description: John Dewey (1859-1952) believed that learning was active and schooling unnecessarily long and restrictive.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Educator"
+    ]
+  },
+  {
+    "key": "/works/OL497483W",
+    "title": "The War of Art",
+    "author": "Steven Pressfield",
+    "coverUrl": "https://covers.openlibrary.org/b/id/288439-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Artist"
+    ]
+  },
+  {
+    "key": "/works/OL16489931W",
+    "title": "Steal like an artist",
+    "author": "Austin Kleon",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7244512-M.jpg",
+    "description": "When asked to talk to students at Broome Community College in upstate New York in the spring of 2011, Austin Kleon wrote a simple list often things he...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Artist"
+    ]
+  },
+  {
+    "key": "/works/OL1980231W",
+    "title": "Ways of Seeing",
+    "author": "John Berger",
+    "coverUrl": "https://covers.openlibrary.org/b/id/95272-M.jpg",
+    "description": "How do we see the world around us? The Penguin on Design series includes the works of creative thinkers whose writings on art, design and the media have changed our vision forever.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Artist"
+    ]
+  },
+  {
+    "key": "/works/OL17618370W",
+    "title": "Clean Code",
+    "author": "Robert C. Martin",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8065615-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Coder"
+    ]
+  },
+  {
+    "key": "/works/OL5748544W",
+    "title": "The Pragmatic Programmer",
+    "author": "Andy Hunt",
+    "coverUrl": "https://covers.openlibrary.org/b/id/10143650-M.jpg",
+    "description": "The Pragmatic Programmer is one of those rare tech audiobooks you’ll listen, re-listen, and listen to again over the years.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Coder"
+    ]
+  },
+  {
+    "key": "/works/OL2973119W",
+    "title": "Hackers & painters",
+    "author": "Graham, Paul",
+    "coverUrl": "https://covers.openlibrary.org/b/id/388913-M.jpg",
+    "description": "\"The computer world is like an intellectual Wild West, in which you can shoot anyone you wish with your ideas, if you're willing to risk the consequences.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Coder"
+    ]
+  },
+  {
+    "key": "/works/OL3737036W",
+    "title": "Thinking in systems",
+    "author": "Donella H. Meadows",
+    "coverUrl": "https://covers.openlibrary.org/b/id/14420637-M.jpg",
+    "description": "A clear, thoughtful, and wide-reaching exploration of complex systems, in theory and in practice.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Architect"
+    ]
+  },
+  {
+    "key": "/works/OL93641W",
+    "title": "The Death and Life of Great American Cities",
+    "author": "Jane Jacobs",
+    "coverUrl": "https://covers.openlibrary.org/b/id/5540237-M.jpg",
+    "description": "The Death and Life of Great American Cities was described by The New York Times as “perhaps the most influential single work in the history of town planning.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Architect"
+    ]
+  },
+  {
+    "key": "/works/OL15130687W",
+    "title": "Chemistry",
+    "author": "Theodore L. Brown",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9407725-M.jpg",
+    "description": "The book provides the basis of modern chemistry that every student needs for their professional development and as preparation for more complex chemistry courses.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Architect"
+    ]
+  },
+  {
+    "key": "/works/OL7952954W",
+    "title": "This Is Your Brain on Music",
+    "author": "Daniel J. Levitin",
+    "coverUrl": "https://covers.openlibrary.org/b/id/362325-M.jpg",
+    "description": "This book explores the connection between music and its performances, its composition, how we listen to it, why we enjoy it and the human brain.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Musician"
+    ]
+  },
+  {
+    "key": "/works/OL17068219W",
+    "title": "How Music Works",
+    "author": "David Byrne",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8867987-M.jpg",
+    "description": "The Rock-and-Roll Hall of Fame inductee and co-founder of Talking Heads presents a celebration of music that offers insight into the roles of time, pl...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Musician"
+    ]
+  },
+  {
+    "key": "/works/OL265777W",
+    "title": "The Rest Is Noise",
+    "author": "Alex Ross",
+    "coverUrl": "https://covers.openlibrary.org/b/id/1188468-M.jpg",
+    "description": "Winner of the 2007 National Book Critics Circle Award for Criticism\r A New York Times Book Review Top Ten Book of the Year\r Time magazine Top Ten Nonf...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Musician"
+    ]
+  },
+  {
+    "key": "/works/OL1807517W",
+    "title": "Principles of marketing",
+    "author": "Philip Kotler",
+    "coverUrl": "https://covers.openlibrary.org/b/id/3812733-M.jpg",
+    "description": "“Marketing is the creative use of truth.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Investment Manager"
+    ]
+  },
+  {
+    "key": "/works/OL5917484W",
+    "title": "Twelve against the gods",
+    "author": "William Bolitho",
+    "coverUrl": "https://covers.openlibrary.org/b/id/1448623-M.jpg",
+    "description": "Alexander the Great.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Investment Manager"
+    ]
+  },
+  {
+    "key": "/works/OL8062007W",
+    "title": "A Random Walk Down Wall Street",
+    "author": "Burton Gordon Malkiel",
+    "coverUrl": "https://covers.openlibrary.org/b/id/249923-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Investment Manager"
+    ]
+  },
+  {
+    "key": "/works/OL19903741W",
+    "title": "Starting strength",
+    "author": "Mark Rippetoe",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8722490-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Trainer"
+    ]
+  },
+  {
+    "key": "/works/OL1943602W",
+    "title": "Born to Run",
+    "author": "Bruce Springsteen",
+    "coverUrl": "https://covers.openlibrary.org/b/id/962287-M.jpg",
+    "description": "There was something inside the bag, squeaking and squealing in terror.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Trainer"
+    ]
+  },
+  {
+    "key": "/works/OL17078341W",
+    "title": "Becoming a Supple Leopard",
+    "author": "Kelly Starrett",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7318487-M.jpg",
+    "description": "Based on the premise that dysfunctional movement patterns impede athletic performance, the author presents the construction and function of his own mo...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Trainer"
+    ]
+  },
+  {
+    "key": "/works/OL19963678W",
+    "title": "Playing to win",
+    "author": "A. G. Lafley",
+    "coverUrl": "https://covers.openlibrary.org/b/id/14507238-M.jpg",
+    "description": "Strategy is not complex.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Strategist"
+    ]
+  },
+  {
+    "key": "/works/OL27690478W",
+    "title": "blue ocean strategy",
+    "author": "Unknown",
+    "coverUrl": "https://covers.openlibrary.org/b/id/15099760-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Strategist"
+    ]
+  },
+  {
+    "key": "/works/OL29693007W",
+    "title": "Never Split the Difference",
+    "author": "Frank Walsh",
+    "coverUrl": "https://covers.openlibrary.org/b/id/15164886-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Negotiator"
+    ]
+  },
+  {
+    "key": "/works/OL1837566W",
+    "title": "Getting to yes",
+    "author": "Roger Drummer Fisher",
+    "coverUrl": "https://covers.openlibrary.org/b/id/96165-M.jpg",
+    "description": "Getting to Yes offers a concise, step-by-step, proven strategy for coming to mutually acceptable agreements in every sort of conflict—whether it invol...",
+    "subjects": [],
+    "recommendedAgents": [
+      "Negotiator"
+    ]
+  },
+  {
+    "key": "/works/OL15415557W",
+    "title": "Pitch anything",
+    "author": "Oren Klaff",
+    "coverUrl": "https://covers.openlibrary.org/b/id/7304551-M.jpg",
+    "description": "When it comes to delivering a pitch, Oren Klaff has unparalleled credentials.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Negotiator"
+    ]
+  },
+  {
+    "key": "/works/OL16806686W",
+    "title": "The Phoenix Project",
+    "author": "Gene Kim",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9151976-M.jpg",
+    "description": "The Phoenix Project: A Novel About IT, DevOps, and Helping Your Business Win is the third book by Gene Kim.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Engineer"
+    ]
+  },
+  {
+    "key": "/works/OL6030812W",
+    "title": "Design Patterns",
+    "author": "Erich Gamma",
+    "coverUrl": "https://covers.openlibrary.org/b/id/6601119-M.jpg",
+    "description": "Four software designers present a catalog of simple and succinct solutions to commonly occurring design problems, using Smalltalk and C++ in example code.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Engineer"
+    ]
+  },
+  {
+    "key": "/works/OL20846121W",
+    "title": "Ultralearning",
+    "author": "Scott Young",
+    "coverUrl": "https://covers.openlibrary.org/b/id/10156205-M.jpg",
+    "description": "Multi-talented author, programmer and entrepreneur Scott Young has learnt four new languages and taught himself the entire four-year MIT curriculum for computer science all within a year.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Engineer"
+    ]
+  },
+  {
+    "key": "/works/OL81601W",
+    "title": "On Writing",
+    "author": "Stephen King",
+    "coverUrl": "https://covers.openlibrary.org/b/id/9255939-M.jpg",
+    "description": "On Writing is both a textbook for writers and a memoir of Stephen's life and will, thus, appeal even to those who are not aspiring writers.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Editor"
+    ]
+  },
+  {
+    "key": "/works/OL489421W",
+    "title": "Bird by Bird",
+    "author": "Anne Lamott",
+    "coverUrl": "https://covers.openlibrary.org/b/id/240973-M.jpg",
+    "description": "Anne Lamott gives her perspective on the art and work of writing.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Editor"
+    ]
+  },
+  {
+    "key": "/works/OL20152976W",
+    "title": "Trillion Dollar Coach",
+    "author": "Eric Schmidt",
+    "coverUrl": "https://covers.openlibrary.org/b/id/8797805-M.jpg",
+    "description": "",
+    "subjects": [],
+    "recommendedAgents": [
+      "Coach"
+    ]
+  },
+  {
+    "key": "/works/OL2619508W",
+    "title": "The Inner Game of Tennis",
+    "author": "W. Timothy Gallwey",
+    "coverUrl": "https://covers.openlibrary.org/b/id/5413630-M.jpg",
+    "description": "Concentrates upon overcoming mental attitudes that adversely affect tennis performance, including learning to relax, effectively concentrating, and discarding bad habits.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Coach"
+    ]
+  },
+  {
+    "key": "/works/OL15016965W",
+    "title": "Drive",
+    "author": "Daniel H. Pink",
+    "coverUrl": "https://covers.openlibrary.org/b/id/6404786-M.jpg",
+    "description": "From Daniel H.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Coach"
+    ]
+  },
+  {
+    "key": "/works/OL2163649W",
+    "title": "The Hitch Hiker's Guide to the Galaxy",
+    "author": "Douglas Adams",
+    "coverUrl": "https://covers.openlibrary.org/b/id/12986869-M.jpg",
+    "description": "The Hitchhiker's Guide to the Galaxy is the first of six books in the Hitchhiker's Guide to the Galaxy comedy science fiction \"hexalogy\" by Douglas Adams.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Custom"
+    ]
+  },
+  {
+    "key": "/works/OL827357W",
+    "title": "Zen and the Art of Motorcycle Maintenance",
+    "author": "Robert M. Pirsig",
+    "coverUrl": "https://covers.openlibrary.org/b/id/10673266-M.jpg",
+    "description": "\"The real cycle you're working on is a cycle called 'yourself.",
+    "subjects": [],
+    "recommendedAgents": [
+      "Custom"
+    ]
+  }
+]

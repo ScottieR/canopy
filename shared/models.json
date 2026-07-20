@@ -1,0 +1,196 @@
+{
+  "models": [
+    {
+      "id": "anthropic/claude-sonnet-4-6",
+      "provider": "Anthropic",
+      "name": "Claude Sonnet 4.6",
+      "description": "Fast & highly capable",
+      "costIn": 3,
+      "costOut": 15,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "claude-sonnet-4-6"
+    },
+    {
+      "id": "anthropic/claude-haiku-4-5",
+      "provider": "Anthropic",
+      "name": "Claude Haiku 4.5",
+      "description": "Fastest Anthropic model",
+      "costIn": 1,
+      "costOut": 5,
+      "strategy": "light",
+      "status": "stable",
+      "rawVariable": "claude-haiku-4-5"
+    },
+    {
+      "id": "anthropic/claude-opus-4-6",
+      "provider": "Anthropic",
+      "name": "Claude Opus 4.6",
+      "description": "Most capable Anthropic",
+      "costIn": 5,
+      "costOut": 25,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "claude-opus-4-6"
+    },
+    {
+      "id": "anthropic/claude-opus-4-7",
+      "provider": "Anthropic",
+      "name": "Claude Opus 4.7",
+      "description": "Flagship Anthropic model",
+      "costIn": 5,
+      "costOut": 25,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "claude-opus-4-7"
+    },
+    {
+      "id": "openai/gpt-4o",
+      "provider": "OpenAI",
+      "name": "GPT-4o",
+      "description": "Flagship multimodal",
+      "costIn": 2.5,
+      "costOut": 10,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "gpt-4o"
+    },
+    {
+      "id": "openai/gpt-4o-mini",
+      "provider": "OpenAI",
+      "name": "GPT-4o Mini",
+      "description": "Fast & affordable",
+      "costIn": 0.15,
+      "costOut": 0.6,
+      "strategy": "light",
+      "status": "stable",
+      "rawVariable": "gpt-4o-mini"
+    },
+    {
+      "id": "openai/o4-mini",
+      "provider": "OpenAI",
+      "name": "o4-mini",
+      "description": "Fast reasoning model",
+      "costIn": 1.1,
+      "costOut": 4.4,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "o4-mini"
+    },
+    {
+      "id": "xai/grok-beta",
+      "provider": "xAI",
+      "name": "Grok Beta",
+      "description": "Real-time web access",
+      "costIn": 5,
+      "costOut": 15,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "grok-beta"
+    },
+    {
+      "id": "google/gemini-3.5-flash",
+      "provider": "Google Gemini",
+      "name": "Gemini 3.5 Flash",
+      "description": "Stable — speed optimized flagship",
+      "costIn": 1.5,
+      "costOut": 9,
+      "strategy": "light",
+      "status": "stable",
+      "rawVariable": "gemini-3.5-flash"
+    },
+    {
+      "id": "google/gemini-3.5-pro",
+      "provider": "Google Gemini",
+      "name": "Gemini 3.5 Pro",
+      "description": "Preview — flagship 3.5 model",
+      "costIn": 1.25,
+      "costOut": 5,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "gemini-3.5-pro"
+    },
+    {
+      "id": "google/gemini-3-flash-preview",
+      "provider": "Google Gemini",
+      "name": "Gemini 3 Flash",
+      "description": "Preview — successor to 2.5 Flash",
+      "costIn": 0.5,
+      "costOut": 3,
+      "strategy": "light",
+      "status": "preview",
+      "rawVariable": "gemini-3-flash-preview"
+    },
+    {
+      "id": "google/gemini-3.1-flash-lite-preview",
+      "provider": "Google Gemini",
+      "name": "Gemini 3.1 Flash Lite",
+      "description": "Preview — successor to 2.5 Flash Lite",
+      "costIn": 0.25,
+      "costOut": 1.5,
+      "strategy": "light",
+      "status": "preview",
+      "rawVariable": "gemini-3.1-flash-lite-preview"
+    },
+    {
+      "id": "google/gemini-3.1-pro-preview",
+      "provider": "Google Gemini",
+      "name": "Gemini 3.1 Pro",
+      "description": "Preview — successor to 2.5 Pro",
+      "costIn": 2,
+      "costOut": 12,
+      "strategy": "heavy",
+      "status": "preview",
+      "rawVariable": "gemini-3.1-pro-preview"
+    },
+    {
+      "id": "google/gemini-2.5-flash",
+      "provider": "Google Gemini",
+      "name": "Gemini 2.5 Flash",
+      "description": "Stable — recommended default",
+      "costIn": 0.3,
+      "costOut": 2.5,
+      "strategy": "light",
+      "status": "stable",
+      "rawVariable": "gemini-2.5-flash"
+    },
+    {
+      "id": "google/gemini-2.5-flash-lite",
+      "provider": "Google Gemini",
+      "name": "Gemini-2.5-flash-lite",
+      "description": "Stable — fastest/cheapest",
+      "costIn": 0.09999999999999999,
+      "costOut": 0.39999999999999997,
+      "strategy": "light",
+      "status": "stable",
+      "rawVariable": "gemini-2.5-flash-lite"
+    },
+    {
+      "id": "google/gemini-2.5-pro",
+      "provider": "Google Gemini",
+      "name": "Gemini 2.5 Pro",
+      "description": "Stable — flagship model",
+      "costIn": 1.25,
+      "costOut": 10,
+      "strategy": "heavy",
+      "status": "stable",
+      "rawVariable": "gemini-2.5-pro"
+    }
+  ],
+  "strategies": {
+    "heavy": [
+      "Researcher",
+      "Coder",
+      "Architect",
+      "Financial",
+      "Accountant",
+      "Business Strategist",
+      "Investment Manager",
+      "Strategist",
+      "Engineer",
+      "Data Analyst"
+    ],
+    "defaultHeavyModel": "anthropic/claude-sonnet-4-6",
+    "defaultLightModel": "google/gemini-2.5-flash"
+  }
+}

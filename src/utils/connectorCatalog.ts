@@ -1,4 +1,4 @@
-import connectorCatalog from "../../../shared/connectors.json";
+import connectorCatalog from "../../shared/connectors.json";
 
 export type ConnectorCatalogEntry = {
   id: string;

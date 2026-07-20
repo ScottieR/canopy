@@ -33,8 +33,7 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
 
     let possible_paths = [
         data_dir,
-        std::path::PathBuf::from("../shared/models.json"),
-        std::path::PathBuf::from("../../shared/models.json"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shared/models.json"),
     ];
 
     for path in &possible_paths {
@@ -787,4 +786,20 @@ pub struct SystemWarning {
     pub warning_type: String,
     pub message: String,
     pub resolved: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn bundled_model_catalog_is_inside_the_repository_and_valid() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shared/models.json");
+        let catalog = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("missing bundled model catalog at {path:?}: {error}"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&catalog).expect("bundled model catalog must be valid JSON");
+        assert!(parsed
+            .get("models")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|entries| !entries.is_empty()));
+    }
 }

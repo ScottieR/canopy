@@ -5,7 +5,7 @@ Use this checklist before changing the repository from private to public. A publ
 ## Release blockers
 
 - [ ] **Confirm the historical pull-request ref is purged.** GitHub Support must remove the remaining read-only `refs/pull/1/head` ref and associated cached views from the earlier secret cleanup. Do not make the repository public until Support confirms completion.
-- [ ] **Choose and add a license.** Without a `LICENSE` file, viewers can read the source but do not receive permission to copy, modify, or redistribute it. Select the intended terms before describing Canopy as open source.
+- [x] **Add the intended source license.** `LICENSE` grants only portfolio and recruiting evaluation rights and prohibits commercial use, production use, redistribution, public deployment, and derivative products. Canopy must be described as source-available, not open source.
 - [ ] **Review every GitHub Actions run and artifact.** Visibility changes make historical workflow logs public. Delete any run, log, or artifact that contains private environment details or credentials.
 - [ ] **Verify a fresh clone.** On a clean macOS account or machine, follow only the README and confirm onboarding, agent creation, provider-key entry, one agent response, and app restart.
 - [ ] **Run the complete release gate.** Confirm frontend tests/build, Rust check/tests/audit, and a full-history Gitleaks scan all pass on the exact commit that will become public.

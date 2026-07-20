@@ -2,6 +2,8 @@
 
 **A local-first desktop operating system for building, isolating, and supervising AI agents.**
 
+> **Evaluation-only source license:** This repository is publicly available for portfolio and recruiting review. You may clone, build, and run it locally only to evaluate the author's qualifications. Commercial use, production use, redistribution, public deployment, and derivative products are prohibited. See [LICENSE](LICENSE).
+
 Canopy turns a collection of model APIs, tools, and integrations into a visible team of agents. Each agent has its own identity, model configuration, credentials, workspace, permissions, and audit trail. The desktop app coordinates those agents while the execution plane stays in local containers on the user's Mac.
 
 > **Project status:** active portfolio preview. The current build is macOS-first, under active development, and not yet intended for production use with high-stakes data or unattended financial actions.
@@ -185,9 +187,9 @@ If you find a security issue after this repository becomes public, follow [SECUR
 
 Visual and generated-asset origins are documented in [docs/asset-provenance.md](docs/asset-provenance.md).
 
-## Contributing
+## Contributions
 
-Small, focused pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before changing security boundaries, credential handling, Tauri commands, or agent isolation behavior.
+This evaluation release is not currently accepting outside contributions. Security reports remain welcome through the private process in [SECURITY.md](SECURITY.md). Authorized collaborators should read [CONTRIBUTING.md](CONTRIBUTING.md) before changing security boundaries, credential handling, Tauri commands, or agent isolation behavior.
 
 ## Current limitations
 
@@ -199,4 +201,6 @@ Small, focused pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md
 
 ## License
 
-A project license has not yet been selected. Add a `LICENSE` file before treating this repository as open source.
+Copyright © 2026 Scottie Ryan. All rights reserved.
+
+Canopy is source-available solely for portfolio and recruiting evaluation; it is not open-source software. The limited permission and prohibited uses are stated in [LICENSE](LICENSE).

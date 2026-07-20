@@ -557,6 +557,14 @@ lazy_static::lazy_static! {
     static ref CONNECTORS_CACHE: tokio::sync::Mutex<Option<serde_json::Value>> = tokio::sync::Mutex::new(None);
 }
 
+fn bundled_connectors_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shared/connectors.json")
+}
+
+fn bundled_library_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shared/library.json")
+}
+
 #[tauri::command]
 pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
     {
@@ -566,8 +574,7 @@ pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
         }
     }
 
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let path = std::path::Path::new(manifest_dir).join("../../shared/connectors.json");
+    let path = bundled_connectors_path();
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| format!("Failed to read connectors.json at {:?}: {}", path, e))?;
@@ -653,8 +660,7 @@ pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 pub async fn get_library_books() -> Result<serde_json::Value, String> {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let path = std::path::Path::new(manifest_dir).join("../../shared/library.json");
+    let path = bundled_library_path();
     let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| format!("Failed to read library.json at {:?}: {}", path, e))?;
@@ -7629,6 +7635,27 @@ mod tests {
 
     fn create_test_db() -> crate::db::Database {
         crate::db::Database::init_in_memory().unwrap()
+    }
+
+    #[test]
+    fn bundled_connector_catalog_is_inside_the_repository_and_valid() {
+        let path = super::bundled_connectors_path();
+        let catalog = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("missing bundled connector catalog at {path:?}: {error}")
+        });
+        let parsed: serde_json::Value =
+            serde_json::from_str(&catalog).expect("bundled connector catalog must be valid JSON");
+        assert!(parsed.as_array().is_some_and(|entries| !entries.is_empty()));
+    }
+
+    #[test]
+    fn bundled_library_catalog_is_inside_the_repository_and_valid() {
+        let path = super::bundled_library_path();
+        let catalog = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("missing bundled library catalog at {path:?}: {error}"));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&catalog).expect("bundled library catalog must be valid JSON");
+        assert!(parsed.as_array().is_some_and(|entries| !entries.is_empty()));
     }
 
     fn test_agent(id: &str, name: &str, role: &str) -> crate::models::Agent {

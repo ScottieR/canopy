@@ -1,6 +1,6 @@
-# Contributing to Canopy
+# Development notes for authorized contributors
 
-Canopy is an active macOS-first portfolio project. Contributions should be small, reviewable, and preserve its local-first and per-agent isolation guarantees.
+Canopy is an active macOS-first portfolio project. The public evaluation license does not grant permission to modify or create derivative works, and unsolicited pull requests are not currently accepted. These notes apply to collaborators who have received separate written authorization. Authorized changes should be small, reviewable, and preserve Canopy's local-first and per-agent isolation guarantees.
 
 ## Development setup
 

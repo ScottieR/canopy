@@ -1,0 +1,183 @@
+[
+  {
+    "id": "slack",
+    "name": "Slack",
+    "subtitle": "Control which Slack channels route messages to this agent",
+    "icon": "slack",
+    "isGlobal": false,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "gmail",
+    "name": "Gmail",
+    "subtitle": "Read and send emails using your Google account",
+    "icon": "mail",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": false
+  },
+  {
+    "id": "imessage",
+    "name": "iMessage",
+    "subtitle": "Choose which contacts and group threads this agent can read and reply to",
+    "icon": "message-circle",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": false
+  },
+  {
+    "id": "filesystem",
+    "name": "Workspace (File System)",
+    "subtitle": "Allow agent to read and mutate local files in their designated workspace directory.",
+    "icon": "folder",
+    "isGlobal": false,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": false
+  },
+  {
+    "id": "calendar",
+    "name": "Google Calendar",
+    "subtitle": "Allow agent to view and schedule events on your Google Calendar",
+    "icon": "calendar",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": false
+  },
+  {
+    "id": "drive",
+    "name": "Google Drive",
+    "subtitle": "Allow agent to read, write, and organize files in your Google Drive",
+    "icon": "hard-drive",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": false
+  },
+  {
+    "id": "github",
+    "name": "GitHub",
+    "subtitle": "Allow agent to read repositories, create PRs, and review code",
+    "icon": "github",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "telegram",
+    "name": "Telegram",
+    "subtitle": "Connect a Telegram bot so this agent can chat in channels or DMs",
+    "icon": "send",
+    "isGlobal": false,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "discord",
+    "name": "Discord",
+    "subtitle": "Connect a Discord bot to respond in channels and DMs.",
+    "icon": "message-circle",
+    "isGlobal": false,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "figma",
+    "name": "Figma",
+    "subtitle": "A design agent can co-create and modify design files directly in Figma.",
+    "icon": "figma",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true,
+    "type": "oauth"
+  },
+  {
+    "id": "twilio",
+    "name": "Twilio Voice & SMS",
+    "subtitle": "Connect a Twilio phone number so this agent can make and receive calls or texts.",
+    "icon": "message-circle",
+    "isGlobal": false,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "apple_health",
+    "name": "Apple Health",
+    "subtitle": "Allow agent to read and analyze your Apple Health data",
+    "icon": "activity",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "live_location",
+    "name": "Live Location & Geofencing",
+    "subtitle": "Agent knows when you leave home or arrive at work",
+    "icon": "map-pin",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "shortcuts",
+    "name": "Apple Shortcuts",
+    "subtitle": "Allow the agent to trigger Siri Intents and Shortcuts",
+    "icon": "zap",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "vision",
+    "name": "Vision & Photo Sync",
+    "subtitle": "Agent silently indexes your recent camera roll for context",
+    "icon": "camera",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "notifications",
+    "name": "Actionable Push Notifications",
+    "subtitle": "Approve agent actions directly from your lock screen",
+    "icon": "bell",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "homekit",
+    "name": "Smart Home / HomeKit",
+    "subtitle": "Bridge HomeKit access so the agent can control lights",
+    "icon": "home",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  },
+  {
+    "id": "bluetooth",
+    "name": "Bluetooth Peripherals",
+    "subtitle": "Zero-Trust Bluetooth Bridge for local smart devices",
+    "icon": "bluetooth",
+    "isGlobal": true,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true
+  }
+]
