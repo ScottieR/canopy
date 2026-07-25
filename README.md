@@ -36,26 +36,49 @@ The result is a Tauri desktop application with a React/Three.js interface, a Rus
 
 ## Architecture
 
+> Maintainer note: when major architectural or functional behavior changes, update this section and the diagram in the same pull request so the README stays operationally accurate.
+
 ```mermaid
 flowchart TD
-    User["User"] --> UI["React + TypeScript UI"]
-    UI -->|"Tauri IPC"| Core["Rust desktop core"]
+    User["User"] --> UI
 
-    Core --> DB["SQLite agent state"]
-    Core --> Keychain["macOS Keychain"]
-    Core --> Workspaces["Local agent workspaces"]
-    Core --> Docker["Docker / OrbStack"]
+    subgraph Mac["Canopy desktop on the user's Mac"]
+        UI["React + TypeScript UI"]
+        Core["Rust desktop core"]
+        DB["SQLite agent state"]
+        Keychain["macOS Keychain"]
+        Workspaces["Local agent workspaces"]
 
-    Docker --> Gateway["OpenClaw agent gateways"]
-    Docker --> Memory["Chroma memory service"]
-    Gateway --> Providers["User-selected model providers"]
-    Gateway --> Integrations["User-authorized integrations"]
+        subgraph LocalRuntime["Local container runtime"]
+            Docker["Docker / OrbStack"]
+            Gateway["OpenClaw agent gateways"]
+            Memory["Chroma memory service"]
+        end
+    end
 
-    UI -. "catalog, assets, pricing" .-> Admin["Hosted Canopy control plane"]
-    Core -. "model metadata" .-> Admin
+    subgraph Cloud["Hosted / third-party services"]
+        Admin["Hosted Canopy control plane"]
+        Providers["User-selected model providers"]
+        Integrations["User-authorized integrations"]
+    end
+
+    UI <-->|"Tauri IPC"| Core
+    Core --> DB
+    Core --> Keychain
+    Core --> Workspaces
+    Core --> Docker
+    Docker --> Gateway
+    Docker --> Memory
+    Workspaces -->|"bind mounts"| Gateway
+    Gateway <-->|"memory search + writes"| Memory
+    Gateway <-->|"agent inference"| Providers
+    Gateway <-->|"tool + channel access"| Integrations
+    Admin -. "personas, habitats, accessories, assets" .-> UI
+    Admin -. "models, pricing, onboarding bootstrap" .-> Core
+    Core -. "Eddy after provider setup" .-> Providers
 ```
 
-The hosted control plane supplies public product configuration such as agent personas, habitat assets, model metadata, and pricing. Agent workspaces, credentials, and runtime state are managed locally. Agent requests and Eddy requests after provider setup go directly from the Mac to the provider selected by the user.
+The hosted control plane supplies public product configuration such as agent personas, habitats, accessories, visual assets, model metadata, pricing, and the bounded first-run Eddy bootstrap route. Agent workspaces, credentials, and runtime state are managed locally. OpenClaw mounts each agent workspace into the local container runtime, uses Chroma for memory search and storage, and sends agent inference directly to the provider selected by the user. Eddy follows a separate direct-from-the-Mac path after provider setup.
 
 First-run onboarding has one deliberate exception so Eddy is still an AI before a user connects a key. The desktop can call `/api/canopy-helper/bootstrap` with one current setup request plus `runtime_ready`, an `active_view` fixed to `onboarding`, and the bounded onboarding step. Persona drafting and the pre-deploy test drive may include their bounded current task framing (including the current draft personality for a test drive) in that single request. Prior conversation turns, the agent roster, provider diagnostics, logs, credentials, permissions, workspaces, and instructions from existing agents are not added from app context. The route is onboarding-only and rate-limited; once any supported user provider key is present, Eddy automatically switches to direct provider calls from the Mac. An explicit local-only mode remains available.
 
