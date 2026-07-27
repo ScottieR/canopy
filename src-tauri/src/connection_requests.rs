@@ -109,10 +109,7 @@ fn strip_request_tag(text: &str, full_match: &str) -> String {
     text.replacen(full_match, "", 1).trim().to_string()
 }
 
-fn connection_display_name(
-    companion_type: &str,
-    params: &BTreeMap<String, String>,
-) -> String {
+fn connection_display_name(companion_type: &str, params: &BTreeMap<String, String>) -> String {
     if let Some(provider_name) = params.get("providerName").map(String::as_str) {
         if !provider_name.trim().is_empty() {
             return provider_name.trim().to_string();
@@ -166,12 +163,8 @@ mod tests {
             "reservations.read,reservations.write".to_string(),
         );
 
-        let deep_link = build_companion_deep_link(
-            "custom_oauth",
-            "agent-1",
-            Some("Bridge Bot"),
-            &params,
-        );
+        let deep_link =
+            build_companion_deep_link("custom_oauth", "agent-1", Some("Bridge Bot"), &params);
 
         assert_eq!(
             deep_link,

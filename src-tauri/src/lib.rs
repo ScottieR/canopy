@@ -142,12 +142,10 @@ async fn sync_model_metadata_from_admin_oracle() {
 #[tauri::command]
 async fn refresh_available_models() -> Result<Vec<model_constants::ModelInfo>, String> {
     sync_model_metadata_from_admin_oracle().await;
-    Ok(
-        model_constants::MODEL_REGISTRY
-            .read()
-            .expect("MODEL_REGISTRY poisoned")
-            .clone(),
-    )
+    Ok(model_constants::MODEL_REGISTRY
+        .read()
+        .expect("MODEL_REGISTRY poisoned")
+        .clone())
 }
 
 // ─── Forum project folder sync ────────────────────────────────────────────────
@@ -793,7 +791,8 @@ pub fn run() {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
-    builder.setup(|app| {
+    builder
+        .setup(|app| {
             let handle = app.handle().clone();
 
             #[cfg(any(target_os = "linux", windows))]
@@ -843,7 +842,10 @@ pub fn run() {
                         handle_clone.manage(manager);
                     }
                     Err(e) => {
-                        tracing::warn!("Docker not available: {}. Will prompt for OrbStack install.", e);
+                        tracing::warn!(
+                            "Docker not available: {}. Will prompt for OrbStack install.",
+                            e
+                        );
                     }
                 }
             });
@@ -861,7 +863,9 @@ pub fn run() {
             // `browser.attachOnly` + `browser.cdpUrl` config that points OpenClaw here.
             let browser_bridge_handle = handle.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = browser_manager::ensure_shared_browser_bridge(browser_bridge_handle).await {
+                if let Err(e) =
+                    browser_manager::ensure_shared_browser_bridge(browser_bridge_handle).await
+                {
                     tracing::warn!("Shared browser bridge failed to start: {}", e);
                 }
             });

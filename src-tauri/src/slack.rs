@@ -367,7 +367,10 @@ async fn make_api_call_json(
 
     let mut last_error = String::new();
     for attempt in 0..2 {
-        let request = HTTP.request(method.clone(), &url).bearer_auth(&token).json(body);
+        let request = HTTP
+            .request(method.clone(), &url)
+            .bearer_auth(&token)
+            .json(body);
 
         match request.send().await {
             Ok(response) => {
@@ -592,10 +595,8 @@ pub async fn send_slack_message(
         .await?
     };
 
-    let response: PostMessageResponse = serde_json::from_value(
-        response_value,
-    )
-    .map_err(|e| format!("Failed to parse response: {}", e))?;
+    let response: PostMessageResponse = serde_json::from_value(response_value)
+        .map_err(|e| format!("Failed to parse response: {}", e))?;
 
     if !response.ok {
         let error = response

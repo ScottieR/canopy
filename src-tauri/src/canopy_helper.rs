@@ -99,7 +99,11 @@ fn sanitize_continuity(continuity: &Value) -> Value {
         .filter(|value| {
             matches!(
                 *value,
-                "provider_setup" | "integration_setup" | "diagnostics" | "onboarding" | "persona_draft"
+                "provider_setup"
+                    | "integration_setup"
+                    | "diagnostics"
+                    | "onboarding"
+                    | "persona_draft"
             )
         });
     let provider = continuity
@@ -383,9 +387,13 @@ async fn call_openai_compatible(
     if json_mode {
         body["response_format"] = json!({ "type": "json_object" });
     }
-    let response = helper_http_client()?.post(base).bearer_auth(key)
+    let response = helper_http_client()?
+        .post(base)
+        .bearer_auth(key)
         .json(&body)
-        .send().await.map_err(|e| e.to_string())?;
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
     let body = bounded_success_json(response).await?;
     body.pointer("/choices/0/message/content")
         .and_then(Value::as_str)
@@ -393,7 +401,11 @@ async fn call_openai_compatible(
         .ok_or_else(|| "Provider returned no reply".into())
 }
 
-async fn call_canopy_bootstrap(message: &str, context: &Value, continuity: &Value) -> Result<String, String> {
+async fn call_canopy_bootstrap(
+    message: &str,
+    context: &Value,
+    continuity: &Value,
+) -> Result<String, String> {
     if context
         .pointer("/onboarding/in_onboarding")
         .and_then(Value::as_bool)

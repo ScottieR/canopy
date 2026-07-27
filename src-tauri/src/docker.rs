@@ -616,7 +616,10 @@ pub async fn teardown_isolated_container(agent_id: &str) -> Result<(), String> {
         .await
         {
             Ok(Ok(out)) if out.status.success() => {
-                tracing::info!("teardown_isolated_container: compose down ok for {}", agent_id);
+                tracing::info!(
+                    "teardown_isolated_container: compose down ok for {}",
+                    agent_id
+                );
             }
             Ok(Ok(out)) => tracing::warn!(
                 "teardown_isolated_container: compose down exited {} for {}: {}",
@@ -625,7 +628,11 @@ pub async fn teardown_isolated_container(agent_id: &str) -> Result<(), String> {
                 String::from_utf8_lossy(&out.stderr).trim()
             ),
             Ok(Err(e)) => {
-                tracing::warn!("teardown_isolated_container: compose down failed to spawn for {}: {}", agent_id, e)
+                tracing::warn!(
+                    "teardown_isolated_container: compose down failed to spawn for {}: {}",
+                    agent_id,
+                    e
+                )
             }
             Err(_) => tracing::warn!(
                 "teardown_isolated_container: compose down timed out for {}",

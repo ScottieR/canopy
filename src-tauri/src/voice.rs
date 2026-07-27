@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use chrono::{DateTime, Duration, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -6,7 +7,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use uuid::Uuid;
-use base64::Engine as _;
 
 use crate::db::Database;
 use crate::keychain::get_secret;
@@ -457,8 +457,11 @@ pub async fn transcribe_audio(audio_path: String) -> Result<String, String> {
         return Err("Audio file not found".into());
     }
 
-    let api_key = get_agent_or_global_secret(None, "openai_key", "OPENAI_API_KEY")
-        .ok_or_else(|| "Speech transcription is unavailable because no OpenAI API key is configured".to_string())?;
+    let api_key =
+        get_agent_or_global_secret(None, "openai_key", "OPENAI_API_KEY").ok_or_else(|| {
+            "Speech transcription is unavailable because no OpenAI API key is configured"
+                .to_string()
+        })?;
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(60))
@@ -496,7 +499,10 @@ pub async fn transcribe_audio(audio_path: String) -> Result<String, String> {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let detail = body.chars().take(240).collect::<String>();
-        return Err(format!("Transcription failed with HTTP {}: {}", status, detail));
+        return Err(format!(
+            "Transcription failed with HTTP {}: {}",
+            status, detail
+        ));
     }
 
     let payload: serde_json::Value = response
@@ -521,7 +527,8 @@ pub async fn synthesize_speech(text: String, voice: String) -> Result<String, St
 
     let mut failures: Vec<String> = Vec::new();
     for provider in native_tts_fallback_order(None) {
-        match synthesize_with_native_provider(provider, clean.to_string(), &voice, 1.0, None).await {
+        match synthesize_with_native_provider(provider, clean.to_string(), &voice, 1.0, None).await
+        {
             Ok(path) => return Ok(path),
             Err(err) => failures.push(format!("{}: {}", native_tts_provider_label(provider), err)),
         }
@@ -565,9 +572,8 @@ pub async fn synthesize_agent_speech(
     }
 
     let mut failures: Vec<String> = Vec::new();
-    let explicit_elevenlabs_voice =
-        config.tts_provider == TTSProvider::ElevenLabs
-            && resolve_elevenlabs_voice_id(&config.tts_voice).is_some();
+    let explicit_elevenlabs_voice = config.tts_provider == TTSProvider::ElevenLabs
+        && resolve_elevenlabs_voice_id(&config.tts_voice).is_some();
 
     if explicit_elevenlabs_voice {
         if let Ok(path) = synthesize_with_elevenlabs(
@@ -645,7 +651,11 @@ fn write_voice_cache_file(prefix: &str, ext: &str, bytes: &[u8]) -> Result<Strin
         .map(|s| s.to_string())
 }
 
-fn get_agent_or_global_secret(agent_id: Option<&str>, suffix: &str, global_key: &str) -> Option<String> {
+fn get_agent_or_global_secret(
+    agent_id: Option<&str>,
+    suffix: &str,
+    global_key: &str,
+) -> Option<String> {
     if let Some(agent) = agent_id {
         let agent_key = format!("agent_{}_{}", agent, suffix);
         if let Ok(value) = get_secret(&agent_key) {
@@ -687,10 +697,26 @@ fn native_tts_provider_for_model(model: Option<&str>) -> Option<NativeTtsProvide
 
 fn native_tts_fallback_order(primary: Option<NativeTtsProvider>) -> Vec<NativeTtsProvider> {
     let mut order = match primary {
-        Some(NativeTtsProvider::OpenAI) => vec![NativeTtsProvider::OpenAI, NativeTtsProvider::Gemini, NativeTtsProvider::XAI],
-        Some(NativeTtsProvider::Gemini) => vec![NativeTtsProvider::Gemini, NativeTtsProvider::OpenAI, NativeTtsProvider::XAI],
-        Some(NativeTtsProvider::XAI) => vec![NativeTtsProvider::XAI, NativeTtsProvider::OpenAI, NativeTtsProvider::Gemini],
-        Some(NativeTtsProvider::Anthropic) | None => vec![NativeTtsProvider::OpenAI, NativeTtsProvider::Gemini, NativeTtsProvider::XAI],
+        Some(NativeTtsProvider::OpenAI) => vec![
+            NativeTtsProvider::OpenAI,
+            NativeTtsProvider::Gemini,
+            NativeTtsProvider::XAI,
+        ],
+        Some(NativeTtsProvider::Gemini) => vec![
+            NativeTtsProvider::Gemini,
+            NativeTtsProvider::OpenAI,
+            NativeTtsProvider::XAI,
+        ],
+        Some(NativeTtsProvider::XAI) => vec![
+            NativeTtsProvider::XAI,
+            NativeTtsProvider::OpenAI,
+            NativeTtsProvider::Gemini,
+        ],
+        Some(NativeTtsProvider::Anthropic) | None => vec![
+            NativeTtsProvider::OpenAI,
+            NativeTtsProvider::Gemini,
+            NativeTtsProvider::XAI,
+        ],
     };
     order.dedup();
     order
@@ -713,10 +739,16 @@ async fn synthesize_with_native_provider(
     agent_id: Option<&str>,
 ) -> Result<String, String> {
     match provider {
-        NativeTtsProvider::OpenAI => synthesize_with_openai(text, voice, speaking_rate, agent_id).await,
-        NativeTtsProvider::Gemini => synthesize_with_gemini(text, voice, speaking_rate, agent_id).await,
+        NativeTtsProvider::OpenAI => {
+            synthesize_with_openai(text, voice, speaking_rate, agent_id).await
+        }
+        NativeTtsProvider::Gemini => {
+            synthesize_with_gemini(text, voice, speaking_rate, agent_id).await
+        }
         NativeTtsProvider::XAI => synthesize_with_xai(text, voice, speaking_rate, agent_id).await,
-        NativeTtsProvider::Anthropic => Err("Anthropic does not expose a native TTS API for this path".into()),
+        NativeTtsProvider::Anthropic => {
+            Err("Anthropic does not expose a native TTS API for this path".into())
+        }
     }
 }
 
@@ -740,7 +772,10 @@ fn openai_voice_instructions(voice: &str) -> &'static str {
 }
 
 fn is_builtin_canopy_voice(voice: &str) -> bool {
-    matches!(voice, "alloy" | "echo" | "fable" | "nova" | "onyx" | "shimmer")
+    matches!(
+        voice,
+        "alloy" | "echo" | "fable" | "nova" | "onyx" | "shimmer"
+    )
 }
 
 fn resolve_gemini_voice(voice: &str) -> &str {
@@ -783,8 +818,10 @@ async fn synthesize_with_openai(
     speaking_rate: f32,
     agent_id: Option<&str>,
 ) -> Result<String, String> {
-    let api_key = get_agent_or_global_secret(agent_id, "openai_key", "OPENAI_API_KEY")
-        .ok_or_else(|| "OpenAI TTS is unavailable because no OpenAI API key is configured".to_string())?;
+    let api_key =
+        get_agent_or_global_secret(agent_id, "openai_key", "OPENAI_API_KEY").ok_or_else(|| {
+            "OpenAI TTS is unavailable because no OpenAI API key is configured".to_string()
+        })?;
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
@@ -812,7 +849,10 @@ async fn synthesize_with_openai(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let detail = body.chars().take(240).collect::<String>();
-        return Err(format!("OpenAI TTS failed with HTTP {}: {}", status, detail));
+        return Err(format!(
+            "OpenAI TTS failed with HTTP {}: {}",
+            status, detail
+        ));
     }
 
     let bytes = response
@@ -851,8 +891,10 @@ async fn synthesize_with_gemini(
     _speaking_rate: f32,
     agent_id: Option<&str>,
 ) -> Result<String, String> {
-    let api_key = get_agent_or_global_secret(agent_id, "gemini_key", "GEMINI_API_KEY")
-        .ok_or_else(|| "Gemini TTS is unavailable because no Gemini API key is configured".to_string())?;
+    let api_key =
+        get_agent_or_global_secret(agent_id, "gemini_key", "GEMINI_API_KEY").ok_or_else(|| {
+            "Gemini TTS is unavailable because no Gemini API key is configured".to_string()
+        })?;
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(60))
@@ -883,7 +925,10 @@ async fn synthesize_with_gemini(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let detail = body.chars().take(240).collect::<String>();
-        return Err(format!("Gemini TTS failed with HTTP {}: {}", status, detail));
+        return Err(format!(
+            "Gemini TTS failed with HTTP {}: {}",
+            status, detail
+        ));
     }
 
     let payload: serde_json::Value = response
@@ -954,7 +999,9 @@ async fn synthesize_with_elevenlabs(
     let voice_id = resolve_elevenlabs_voice_id(voice)
         .ok_or_else(|| format!("No ElevenLabs voice ID configured for '{}'", voice))?;
     let api_key = get_agent_or_global_secret(agent_id, "elevenlabs_key", "ELEVENLABS_API_KEY")
-        .ok_or_else(|| "ElevenLabs TTS is unavailable because no ElevenLabs API key is configured".to_string())?;
+        .ok_or_else(|| {
+            "ElevenLabs TTS is unavailable because no ElevenLabs API key is configured".to_string()
+        })?;
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(5))
@@ -988,7 +1035,10 @@ async fn synthesize_with_elevenlabs(
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let detail = body.chars().take(240).collect::<String>();
-        return Err(format!("ElevenLabs TTS failed with HTTP {}: {}", status, detail));
+        return Err(format!(
+            "ElevenLabs TTS failed with HTTP {}: {}",
+            status, detail
+        ));
     }
 
     let bytes = response
