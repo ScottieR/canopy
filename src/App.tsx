@@ -51,6 +51,16 @@ import { syncAgentProviderCredentials } from './security/providerCredentials';
 let gatewayBootPromise: Promise<any> | null = null;
 const AGENT_REGISTRATION_TIMEOUT_MS = 180_000;
 const AGENT_READY_TIMEOUT_MS = 60_000;
+
+/// Handle for the usage-telemetry interval, module-scoped so the startup path can
+/// only ever have ONE outstanding timer.
+///
+/// It previously called bare `setInterval(reportUsage, 60000)` with no handle and
+/// no cleanup. Every re-run of the startup effect (React StrictMode double-invokes
+/// in dev, plus every HMR reload) added another interval, and each one pinned its
+/// own `loadedAgents` snapshot in the closure forever — so both the timers and the
+/// agent arrays they captured accumulated for the life of the session.
+let usageReportTimer: number | null = null;
 const withStartupTimeout = <T,>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> =>
   Promise.race([
     promise,
@@ -1831,7 +1841,11 @@ export default function App() {
           }
         };
         reportUsage();
-        setInterval(reportUsage, 60000);
+        // Replace rather than add: see `usageReportTimer` above.
+        if (usageReportTimer !== null) {
+          window.clearInterval(usageReportTimer);
+        }
+        usageReportTimer = window.setInterval(reportUsage, 60000);
 
         if (loadedAgents.length === 0) {
           setActiveView("onboarding");

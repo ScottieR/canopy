@@ -9,6 +9,7 @@ export type StandaloneViewKind =
   | "discord"
   | "telegram"
   | "figma"
+  | "custom_oauth"
   | "bluetooth"
   | "companionGuide"
   | "app";
@@ -40,6 +41,7 @@ export function resolveStandaloneViewKind(params: {
     case "discord":
     case "telegram":
     case "figma":
+    case "custom_oauth":
     case "bluetooth":
       return companionType;
     default:

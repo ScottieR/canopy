@@ -6,6 +6,7 @@ import { SkeletonUtils } from "three-stdlib";
 import accessoriesData from "../../../shared/accessories.json";
 import { AttachedAccessory } from "./AttachedAccessory";
 import { getAssetUrl } from "../../utils/assets";
+import { disposeClonedMaterials } from "./disposal";
 
 // Maintain a module-level stagger so each agent drops into the scene exactly 100ms out of phase with the previous
 let globalAnimationStagger = 0;
@@ -68,6 +69,23 @@ export function GLBAgent({ fileUrl, accessories = [], accessoryBehaviors = {}, p
 
     return clone;
   }, [scene]);
+
+  // ⚠️  MEMORY: the materials cloned above are OURS — `robeColor` mutates them
+  // per agent, which is exactly why they can't be shared with the useGLTF cache.
+  // three.js does not GC materials, so without this cleanup every agent that
+  // unmounts (view switch, roster change, HMR reload in dev) abandons a full set
+  // of live WebGL materials. That was a measurable contributor to the app's
+  // runaway memory growth.
+  //
+  // `disposeTextures` stays false on purpose: `material.clone()` keeps the `.map`
+  // reference pointing at the shared GLTF texture. Disposing it would blank the
+  // lobster for every other agent on screen, and the useGLTF cache would never
+  // reload it.
+  useEffect(() => {
+    return () => {
+      disposeClonedMaterials(clonedScene, { disposeTextures: false });
+    };
+  }, [clonedScene]);
 
   // Dynamically colorize the outfit in-place so we don't break the animation mixer bindings!
   useEffect(() => {

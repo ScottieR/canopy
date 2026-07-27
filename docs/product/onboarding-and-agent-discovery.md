@@ -1,7 +1,7 @@
 # Canopy PRD: Conversational Agent Discovery, Onboarding, and Add-Agent Flow
 
 **Date:** July 17, 2026  
-**Status:** Phase A largely shipped (July 17–18): Eddie discovery shell, hybrid prompt + suggested cards, auto-draft with voice/accessory defaults, role-aware connection + heartbeat recommendations, confidence-honest draft copy, discovery-seeded starter task, channel-chooser final step. Outstanding: portrait system (P0.6), conversational connection requests from the drafted agent (Phase B), Add-Agent variant polish, generative drafting for no-match prompts (flagged, needs hosted inference).  
+**Status:** Updated Saturday, July 25, 2026. Phase A is shipped: Eddie discovery shell, hybrid prompt + suggested cards, auto-draft with voice/accessory defaults, role-aware connection + heartbeat recommendations, confidence-honest draft copy, discovery-seeded starter task, channel-chooser final step, drafted-agent setup handoff into chat, roster-aware Add Agent recommendations, persona-driven Connections tab guidance, and robust hosted generative drafting for no-match prompts. Outstanding: portrait system (P0.6).  
 **Owners:** Product, Design, Desktop  
 **Related:** [`create-agent-flow-notes.md`](create-agent-flow-notes.md), [`../../templates/README.md`](../../templates/README.md)
 
@@ -230,6 +230,8 @@ This portrait is especially important in Forums, where full-body world-scale ren
 
 ### P0.7 First conversation should lead into setup
 
+Status on Saturday, July 25, 2026: shipped in the current onboarding flow.
+
 The first drafted agent's opening exchange should focus on useful capability, not generic pleasantries.
 
 The agent should say:
@@ -258,6 +260,8 @@ Examples:
 
 ### P0.9 Add Agent uses the same pattern
 
+Status on Saturday, July 25, 2026: shipped in the current Add Agent flow.
+
 Add Agent must reuse the same Eddie-led flow but with copy and pacing tuned for an existing user.
 
 Differences:
@@ -268,6 +272,8 @@ Differences:
 - faster path from prompt/card to draft
 
 ### P0.10 Dynamic Connections tab recommendations
+
+Status on Saturday, July 25, 2026: shipped at the P0 level; later agent-voiced recommendation layers remain future work.
 
 The Connections tab should stop feeling like a static bundle list.
 

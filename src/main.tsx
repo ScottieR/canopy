@@ -7,12 +7,15 @@ import { GithubCompanion } from "./components/Companion/GithubCompanion";
 import { DiscordCompanion } from "./components/Companion/DiscordCompanion";
 import { TelegramCompanion } from "./components/Companion/TelegramCompanion";
 import { FigmaCompanion } from "./components/Companion/FigmaCompanion";
+import { CustomOAuthCompanion } from "./components/Companion/CustomOAuthCompanion";
 import { ChatCompanion } from "./components/Companion/ChatCompanion";
 import { BluetoothCompanion } from "./components/Companion/BluetoothCompanion";
 import { BrowserPopout } from "./components/BrowserPopout";
 import { GenUIRenderer } from "./components/GenUI/GenUIRenderer";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { MiniAppStandalone } from "./components/MiniAppStandalone";
+import { buildCompanionUrl } from "./utils/connectorCatalog";
+import { parseCompanionDeepLink } from "./utils/connectionRequests";
 import { resolveStandaloneViewKind } from "./utils/standaloneView";
 import "./styles/globals.css";
 
@@ -105,8 +108,11 @@ if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload 
   installGlobalExternalLinkHandler();
 }
 
+const isPrimaryAppWindow =
+  !companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload && !miniappPayload;
+
 const WindowWrapper = ({ children }: { children: React.ReactNode }) => {
-  if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload && !miniappPayload) return <>{children}</>;
+  if (isPrimaryAppWindow) return <>{children}</>;
   
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -202,6 +208,67 @@ const GlobalGenUIListener = () => {
   return null;
 };
 
+const GlobalCompanionDeepLinkListener = () => {
+  React.useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    async function openUrls(urls: string[]) {
+      const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+
+      for (const rawUrl of urls) {
+        const request = parseCompanionDeepLink(rawUrl);
+        if (!request) continue;
+
+        const { agentId, agentName, ...extraParams } = request.params;
+        const titleBase =
+          request.params.providerName || request.companionType.replace(/_/g, " ");
+
+        new WebviewWindow(`companion_${request.companionType}_${Date.now()}`, {
+          url: buildCompanionUrl(request.companionType, {
+            agentId,
+            agentName,
+            extraParams,
+          }),
+          title: `Setup ${titleBase}`,
+          width: 480,
+          height: 860,
+          x: window.screen.availWidth - 500,
+          y: 50,
+          alwaysOnTop: true,
+          decorations: true,
+        });
+      }
+    }
+
+    async function setupDeepLinks() {
+      try {
+        const { getCurrent, onOpenUrl } = await import("@tauri-apps/plugin-deep-link");
+        const currentUrls = await getCurrent();
+        if (currentUrls?.length) {
+          await openUrls(currentUrls);
+        }
+        unlisten = await onOpenUrl(async (urls) => {
+          await openUrls(urls);
+        });
+      } catch (err) {
+        console.warn("Global companion deep-link listener failed", err);
+      }
+    }
+
+    setupDeepLinks();
+
+    return () => {
+      if (unlisten) {
+        try {
+          unlisten();
+        } catch (e) {}
+      }
+    };
+  }, []);
+
+  return null;
+};
+
 const rootElement = document.getElementById("root") as HTMLElement;
 let root: ReactDOM.Root;
 if ((window as any).__REACT_ROOT__) {
@@ -215,6 +282,7 @@ root.render(
   <React.StrictMode>
     <ErrorBoundary showDetails={true} allowNavigation={true}>
       <WindowWrapper>
+        {isPrimaryAppWindow && <GlobalCompanionDeepLinkListener />}
         {standaloneViewKind === "miniapp" ? (
           <MiniAppStandalone payload={miniappPayload!} />
         ) : standaloneViewKind === "genui" ? (
@@ -253,13 +321,16 @@ root.render(
           <TelegramCompanion />
         ) : standaloneViewKind === "figma" ? (
           <FigmaCompanion />
+        ) : standaloneViewKind === "custom_oauth" ? (
+          <CustomOAuthCompanion />
         ) : standaloneViewKind === "bluetooth" ? (
           <BluetoothCompanion />
         ) : standaloneViewKind === "companionGuide" ? (
           <CompanionGuide type={companionType!} />
         ) : (
           <>
-            <GlobalBrowserListener />
+            {isPrimaryAppWindow && <GlobalBrowserListener />}
+            {isPrimaryAppWindow && <GlobalGenUIListener />}
             <App />
           </>
         )}

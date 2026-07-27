@@ -356,6 +356,101 @@ async fn make_api_call(
     Err(format!("API request failed: {}", last_error))
 }
 
+async fn make_api_call_json(
+    method: reqwest::Method,
+    endpoint: &str,
+    body: &Value,
+    agent_id: Option<&str>,
+) -> Result<Value, String> {
+    let token = get_bot_token(agent_id).await?;
+    let url = format!("{}/{}", SLACK_API_BASE, endpoint);
+
+    let mut last_error = String::new();
+    for attempt in 0..2 {
+        let request = HTTP.request(method.clone(), &url).bearer_auth(&token).json(body);
+
+        match request.send().await {
+            Ok(response) => {
+                let json_resp = response
+                    .json::<Value>()
+                    .await
+                    .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+                let ok = json_resp
+                    .get("ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if !ok {
+                    let error = json_resp
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown error");
+                    return Err(format!("Slack API error: {}", error));
+                }
+
+                return Ok(json_resp);
+            }
+            Err(e) => {
+                if attempt == 0 {
+                    tracing::warn!(
+                        "Slack connection dropped, likely stale pool socket. Retrying once: {}",
+                        e
+                    );
+                    continue;
+                }
+                last_error = e.to_string();
+            }
+        }
+    }
+
+    Err(format!("API request failed: {}", last_error))
+}
+
+fn build_post_message_payload(
+    channel_id: &str,
+    text: &str,
+    agent_id: &str,
+    agent_name: Option<&str>,
+) -> Value {
+    if let Some(prompt) =
+        crate::connection_requests::build_external_connection_prompt(text, agent_id, agent_name)
+    {
+        json!({
+            "channel": channel_id,
+            "text": prompt.plain_text_message,
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": prompt.body_text,
+                    }
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {
+                                "type": "plain_text",
+                                "text": prompt.button_text,
+                                "emoji": true
+                            },
+                            "url": prompt.deep_link_url
+                        }
+                    ]
+                }
+            ]
+        })
+    } else {
+        json!({
+            "channel": channel_id,
+            "text": text,
+        })
+    }
+}
+
 /// List all channels the bot has access to
 #[tauri::command]
 pub async fn list_slack_channels(agent_id: Option<String>) -> Result<Vec<SlackChannel>, String> {
@@ -471,14 +566,34 @@ pub async fn send_slack_message(
         return Err("Message exceeds 40000 character limit".to_string());
     }
 
-    let response: PostMessageResponse = serde_json::from_value(
+    let agent_name = db
+        .get_agent(&agent_id)
+        .ok()
+        .flatten()
+        .map(|agent| agent.name);
+
+    let payload = build_post_message_payload(&channel_id, &text, &agent_id, agent_name.as_deref());
+
+    let response_value = if payload.get("blocks").is_some() {
+        make_api_call_json(
+            reqwest::Method::POST,
+            "chat.postMessage",
+            &payload,
+            Some(&agent_id),
+        )
+        .await?
+    } else {
         make_api_call(
             reqwest::Method::POST,
             "chat.postMessage",
             Some(&[("channel", &channel_id), ("text", &text)]),
             Some(&agent_id),
         )
-        .await?,
+        .await?
+    };
+
+    let response: PostMessageResponse = serde_json::from_value(
+        response_value,
     )
     .map_err(|e| format!("Failed to parse response: {}", e))?;
 
@@ -1282,5 +1397,41 @@ mod tests {
             "Missing channels:history scope"
         );
         assert!(scopes.contains("chat:write"), "Missing chat:write scope");
+    }
+
+    #[test]
+    fn slack_connection_requests_render_as_button_payloads() {
+        let payload = build_post_message_payload(
+            "C123",
+            "Please connect Airbnb. [request_connection: custom_oauth?providerName=Airbnb&scopes=reservations.read]",
+            "agent-1",
+            Some("Bridge Bot"),
+        );
+
+        assert_eq!(payload["channel"], "C123");
+        assert!(
+            payload["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("canopy://companion?"),
+            "fallback text should contain a Canopy deep link"
+        );
+        assert_eq!(
+            payload["blocks"][1]["elements"][0]["text"]["text"],
+            "Connect Airbnb"
+        );
+        assert_eq!(
+            payload["blocks"][1]["elements"][0]["url"],
+            "canopy://companion?companion=custom_oauth&agentId=agent-1&agentName=Bridge+Bot&providerName=Airbnb&scopes=reservations.read"
+        );
+    }
+
+    #[test]
+    fn plain_slack_messages_stay_plain() {
+        let payload = build_post_message_payload("C123", "Hello from Canopy", "agent-1", None);
+
+        assert_eq!(payload["channel"], "C123");
+        assert_eq!(payload["text"], "Hello from Canopy");
+        assert!(payload.get("blocks").is_none());
     }
 }

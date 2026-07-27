@@ -144,6 +144,7 @@ fn validate_secret_key_for_ipc(key: &str) -> Result<()> {
         key,
         "ANTHROPIC_API_KEY"
             | "OPENAI_API_KEY"
+            | "ELEVENLABS_API_KEY"
             | "GEMINI_API_KEY"
             | "XAI_API_KEY"
             | "GROK_API_KEY"
@@ -260,6 +261,7 @@ pub fn auto_discover_keys_cmd() -> Result<std::collections::HashMap<String, Stri
 
     let target_keys = vec![
         "OPENAI_API_KEY",
+        "ELEVENLABS_API_KEY",
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
         "XAI_API_KEY",  // current xAI env var name
@@ -485,6 +487,7 @@ mod tests {
     #[test]
     fn ipc_secret_key_validation_allows_known_scoped_keys() {
         assert!(validate_secret_key_for_ipc("OPENAI_API_KEY").is_ok());
+        assert!(validate_secret_key_for_ipc("ELEVENLABS_API_KEY").is_ok());
         assert!(validate_secret_key_for_ipc("agent_agent-alpha_slack_bot_token").is_ok());
         assert!(validate_secret_key_for_ipc("github-access-token-agent-alpha").is_ok());
         assert!(validate_secret_key_for_ipc("web_example.com_user@example.com").is_ok());

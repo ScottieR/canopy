@@ -552,6 +552,252 @@ networks:
     )
 }
 
+/// Label every Canopy-managed isolated container carries (see
+/// `generate_isolated_compose`). Matching on the label rather than the name survives
+/// renames and never picks up a container Canopy didn't create.
+pub const ISOLATED_TYPE_LABEL: &str = "com.canopy.type=isolated";
+/// Label holding the owning agent id.
+pub const AGENT_ID_LABEL: &str = "com.canopy.agent-id";
+
+fn canopy_data_dir() -> Option<PathBuf> {
+    std::env::var_os("CANOPY_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(dirs::data_dir)
+        .map(|path| path.join("Canopy"))
+}
+
+/// Return the container's Docker state (`running`, `exited`, …), or `None` if no such
+/// container exists.
+async fn container_state(container_name: &str) -> Option<String> {
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::openclaw::get_docker_command()
+            .args(["inspect", "--format", "{{.State.Status}}", container_name])
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+
+    if !output.status.success() {
+        return None; // `inspect` fails when the container doesn't exist
+    }
+    let state = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!state.is_empty()).then_some(state)
+}
+
+/// Remove an agent's isolated container and CONFIRM it is gone.
+///
+/// The compose file sets `restart: unless-stopped`, so a container that survives
+/// teardown is not merely stale — it resurrects on every Docker daemon start and runs
+/// forever against a frozen config. Every exit path here is therefore checked:
+///
+///   1. `compose down` (the graceful path, also removes the project network)
+///   2. verify by `docker inspect`; if the container is still there, `docker rm -f`
+///   3. verify again — only then report success
+///   4. retire the compose file so nothing can `compose up` it back
+///
+/// The agent's `isolated/<id>/state` and `workspace` directories are deliberately
+/// left untouched: re-isolating later must restore the agent exactly as it was.
+pub async fn teardown_isolated_container(agent_id: &str) -> Result<(), String> {
+    let container_name = format!("canopy-isolated-{}", agent_id);
+    let data_dir = canopy_data_dir().ok_or("Could not locate the Canopy data directory")?;
+    let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
+
+    // ── 1. Graceful teardown ─────────────────────────────────────────────────
+    if compose_path.exists() {
+        let compose_arg = compose_path.to_string_lossy().to_string();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            get_docker_compose_command()
+                .args(["-f", compose_arg.as_str(), "down"])
+                .output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) if out.status.success() => {
+                tracing::info!("teardown_isolated_container: compose down ok for {}", agent_id);
+            }
+            Ok(Ok(out)) => tracing::warn!(
+                "teardown_isolated_container: compose down exited {} for {}: {}",
+                out.status,
+                agent_id,
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Ok(Err(e)) => {
+                tracing::warn!("teardown_isolated_container: compose down failed to spawn for {}: {}", agent_id, e)
+            }
+            Err(_) => tracing::warn!(
+                "teardown_isolated_container: compose down timed out for {}",
+                agent_id
+            ),
+        }
+    }
+
+    // ── 2. Verify, then force ────────────────────────────────────────────────
+    if let Some(state) = container_state(&container_name).await {
+        tracing::warn!(
+            "teardown_isolated_container: {} still present after compose down (state={}), forcing removal",
+            container_name,
+            state
+        );
+        let forced = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            crate::openclaw::get_docker_command()
+                .args(["rm", "-f", &container_name])
+                .output(),
+        )
+        .await;
+        match forced {
+            Ok(Ok(out)) if out.status.success() => {}
+            Ok(Ok(out)) => {
+                return Err(format!(
+                    "docker rm -f {} exited {}: {}",
+                    container_name,
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ))
+            }
+            Ok(Err(e)) => return Err(format!("docker rm -f {} failed: {}", container_name, e)),
+            Err(_) => return Err(format!("docker rm -f {} timed out", container_name)),
+        }
+    }
+
+    // ── 3. Confirm ───────────────────────────────────────────────────────────
+    if let Some(state) = container_state(&container_name).await {
+        return Err(format!(
+            "{} is still present after forced removal (state={})",
+            container_name, state
+        ));
+    }
+
+    // ── 4. Retire the compose file ───────────────────────────────────────────
+    // Leaving it in place means any stray `compose up` — including our own boot path
+    // if the DB flag flaps — can resurrect the container. A fresh one is generated
+    // from scratch whenever the agent is isolated again.
+    if compose_path.exists() {
+        let retired = compose_path.with_extension("yml.orphaned");
+        if let Err(e) = std::fs::rename(&compose_path, &retired) {
+            tracing::warn!(
+                "teardown_isolated_container: could not retire {}: {}",
+                compose_path.display(),
+                e
+            );
+        }
+    }
+
+    tracing::info!(
+        "teardown_isolated_container: {} removed; state dir preserved",
+        container_name
+    );
+    Ok(())
+}
+
+/// Every `(agent_id, container_name)` pair Docker currently knows about that carries
+/// the Canopy isolated label — running or stopped.
+pub async fn list_isolated_containers() -> Vec<(String, String)> {
+    let format_arg = format!("{{{{.Label \"{}\"}}}}|{{{{.Names}}}}", AGENT_ID_LABEL);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        crate::openclaw::get_docker_command()
+            .args([
+                "ps",
+                "-a",
+                "--filter",
+                &format!("label={}", ISOLATED_TYPE_LABEL),
+                "--format",
+                &format_arg,
+            ])
+            .output(),
+    )
+    .await;
+
+    let Ok(Ok(output)) = output else {
+        tracing::warn!("list_isolated_containers: docker ps failed or timed out");
+        return Vec::new();
+    };
+
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (agent_id, name) = line.split_once('|')?;
+            let (agent_id, name) = (agent_id.trim(), name.trim());
+            (!agent_id.is_empty() && !name.is_empty())
+                .then(|| (agent_id.to_string(), name.to_string()))
+        })
+        .collect()
+}
+
+/// Remove isolated containers that the database says shouldn't exist.
+///
+/// A container is a zombie when its agent is marked `isolated = 0` (switched back to
+/// the shared gateway) or no longer exists in the database at all (deleted agent).
+/// Because the compose sets `restart: unless-stopped`, such a container otherwise
+/// outlives every app restart with a frozen config — invisible in the UI, unreachable
+/// by app traffic (all routing goes through the DB-driven `get_agent_container_name`),
+/// but still holding memory and any channel sockets it had.
+///
+/// Runs at boot, before agents are registered, so a zombie can never race the
+/// gateway registration of the same agent. Returns the number removed.
+pub async fn reconcile_isolated_containers(db: &crate::db::Database) -> usize {
+    let containers = list_isolated_containers().await;
+    if containers.is_empty() {
+        return 0;
+    }
+
+    let mut removed = 0usize;
+    for (agent_id, container_name) in containers {
+        let verdict = match db.get_agent(&agent_id) {
+            Ok(Some(agent)) if agent.isolated => continue, // legitimate
+            Ok(Some(_)) => "agent is shared-gateway in the database",
+            Ok(None) => "agent no longer exists in the database",
+            Err(e) => {
+                // Never delete on a DB read error — that is how a transient lock
+                // turns into data loss.
+                tracing::warn!(
+                    "reconcile_isolated_containers: skipping {} — could not read agent {}: {}",
+                    container_name,
+                    agent_id,
+                    e
+                );
+                continue;
+            }
+        };
+
+        tracing::warn!(
+            "reconcile_isolated_containers: {} is a zombie ({}) — removing",
+            container_name,
+            verdict
+        );
+
+        match teardown_isolated_container(&agent_id).await {
+            Ok(()) => {
+                removed += 1;
+                let _ = db.log_audit(
+                    &agent_id,
+                    "reconcile_isolated_container",
+                    Some("docker"),
+                    &format!("Removed zombie isolated container ({})", verdict),
+                    None,
+                );
+            }
+            Err(e) => tracing::error!(
+                "reconcile_isolated_containers: could not remove {}: {}",
+                container_name,
+                e
+            ),
+        }
+    }
+
+    if removed > 0 {
+        tracing::info!(
+            "reconcile_isolated_containers: removed {} zombie container(s)",
+            removed
+        );
+    }
+    removed
+}
+
 pub fn get_docker_compose_command() -> tokio::process::Command {
     if let Some(home) = dirs::home_dir() {
         let orb_compose = home.join(".orbstack/bin/docker-compose");
@@ -749,6 +995,9 @@ fn preflight_sanitize_and_merge_config_with_keys(
                 if let Some(bindings) = existing.get("bindings") {
                     base["bindings"] = bindings.clone();
                 }
+                if let Some(models) = existing.get("models") {
+                    base["models"] = models.clone();
+                }
 
                 // For plugins, preserve the enabled flags of specific integrations
                 if let Some(plugins) = existing.pointer("/plugins/entries") {
@@ -810,6 +1059,20 @@ fn preflight_sanitize_and_merge_config_with_keys(
             },
             "mode": "local",
             "port": 18789
+        },
+        // OpenClaw's bundled anthropic plugin catalog lags behind the model IDs
+        // Canopy targets (e.g. claude-sonnet-5 isn't in its static list yet).
+        // Without an explicit transport, OpenClaw's model resolver falls through
+        // every lookup to its hardcoded "openai-responses" default, sending the
+        // Anthropic key to the OpenAI transport and failing auth. Pin it here so
+        // every config rebuild keeps the correct native transport.
+        "models": {
+            "providers": {
+                "anthropic": {
+                    "baseUrl": "https://api.anthropic.com",
+                    "api": "anthropic-messages"
+                }
+            }
         }
     });
 

@@ -370,26 +370,35 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
 
 export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; recommended_isolated?: boolean; recommended_tier?: "guarded" | "balanced" | "unrestricted"; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;
 
+/// Capabilities an isolated agent must NOT get by default.
+///
+/// This list used to also strip `ext_network`, `browser`, `gog`, `coding`, `file_read`
+/// and `scheduled` in the name of "zero-trust" — which meant every isolated agent was
+/// created with no web search and no browser, and then complained (correctly) that it
+/// had neither. Isolation is an OS-level sandbox boundary, not a web-access policy:
+/// an isolated agent gets its OWN Chrome profile and its OWN JIT CDP proxy, so browsing
+/// from isolation is *more* contained than from the shared gateway, not less.
+///
+/// What stays off, and why it is a real constraint rather than a default:
+///   - `int_network`  — isolated containers sit on a dedicated `isolated-{id}` bridge
+///                      network (see docker::generate_isolated_compose) and genuinely
+///                      cannot reach the shared gateway's agent-to-agent surface.
+///   - `file_write`   — isolated agents are the only class that *may* hold write mounts,
+///                      so this is a deliberate opt-in rather than a starting state.
+///   - `autonomous` / `payments` / `spend_auto` — high-risk, always explicitly granted.
+const ISOLATED_DEFAULT_OFF = new Set([
+  "int_network",
+  "file_write",
+  "autonomous",
+  "payments",
+  "spend_auto",
+]);
+
 export function getPermissionsForRole(roleId: string, isolated: boolean): Permission[] {
   return DEFAULT_PERMISSIONS.map(p => {
     let enabled = p.enabled;
-    if (isolated) {
-      // For isolated agents, default network and global read to OFF for zero-trust
-      if (
-        p.id === "ext_network" || 
-        p.id === "int_network" || 
-        p.id === "file_read" || 
-        p.id === "browser" || 
-        p.id === "coding" ||
-        p.id === "gog" ||
-        p.id === "scheduled" ||
-        p.id === "file_write" ||
-        p.id === "autonomous" ||
-        p.id === "payments" ||
-        p.id === "spend_auto"
-      ) {
-        enabled = false;
-      }
+    if (isolated && ISOLATED_DEFAULT_OFF.has(p.id)) {
+      enabled = false;
     }
     return { ...p, enabled };
   });

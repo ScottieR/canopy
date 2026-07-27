@@ -38,10 +38,11 @@ lazy_static! {
 /// Returns the current list of available models for the frontend model picker.
 ///
 /// Reads from `MODEL_REGISTRY` which is initialised at startup with the hardcoded
-/// validated fallback list and then overwritten by the admin oracle fetch
-/// (localhost:3001/api/models). Every entry in the registry has already been validated
-/// via `validate_model_string`, so phantom names (e.g. "gemini-3.1-flash") can never
-/// appear here.
+/// validated fallback list and then refreshed from the admin oracle on startup,
+/// on explicit UI demand, and by the periodic background sync daemon.
+/// Every entry in the registry has already been validated via
+/// `validate_model_string`, so phantom names (e.g. "gemini-3.1-flash")
+/// can never appear here.
 #[tauri::command]
 pub fn get_available_models() -> Vec<crate::model_constants::ModelInfo> {
     crate::model_constants::MODEL_REGISTRY
@@ -1902,6 +1903,21 @@ pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::mode
         skills.push("memory-core".to_string());
     }
 
+    // An empty list is written verbatim and OVERRIDES OpenClaw's global
+    // `["gog","summarize"]` default, so the agent ends up with no tools at all — no
+    // search, no browser, no summarize. That is a legitimate state only if the user
+    // really did switch everything off; far more often it means the capability blob
+    // failed to load (see the struct-level serde default on AgentCapabilities). Log it
+    // loudly so it shows up in the diagnostics bundle instead of being silently shipped
+    // into openclaw.json.
+    if skills.is_empty() {
+        tracing::warn!(
+            "sync_agent_skills: agent {} resolved to ZERO skills — writing an empty \
+             skills array will strip search/browser/summarize. Check its capabilities_json.",
+            agent.id
+        );
+    }
+
     // Map Canopy integration IDs to OpenClaw plugin/channel names and append.
     for i in &agent.integrations {
         if i.starts_with("web_") {
@@ -2276,11 +2292,33 @@ pub async fn toggle_agent_isolation(
             );
         }
     } else {
-        // Stop isolated container
-        let _ = crate::docker::get_docker_compose_command()
-            .args(["-f", compose_path.to_str().unwrap(), "down"])
-            .output()
-            .await;
+        // Tear the isolated container down and VERIFY it is gone.
+        //
+        // This used to be a bare `let _ = compose down` whose exit status was never
+        // checked. Combined with `restart: unless-stopped` in the generated compose,
+        // a single failed teardown produced a permanent zombie: the container stayed
+        // alive, came back on every Docker daemon start, kept a stale openclaw.json
+        // (old skills, old keys) and its own Slack socket, and burned its 2 GB cap —
+        // all while the UI correctly showed the agent as shared-gateway and no app
+        // traffic ever reached it. Two agents were found in that state on 2026-07-24.
+        if let Err(error) = crate::docker::teardown_isolated_container(&agent_id).await {
+            // Report it rather than swallow it. The agent still joins the gateway
+            // below, but the user needs to know a container was left behind.
+            tracing::error!(
+                "toggle_agent_isolation: {} joined the shared gateway but its isolated \
+                 container could not be removed: {}. Run \
+                 scripts/reconcile_isolated_containers.sh --apply to clean up.",
+                agent_id,
+                error
+            );
+            let _ = db.log_audit(
+                &agent_id,
+                "isolated_teardown_failed",
+                Some("docker"),
+                &format!("Isolated container teardown failed: {}", error),
+                None,
+            );
+        }
 
         // Add back to shared gateway. Mirrors the hardened pattern in `set_agent_paused`:
         //   - workspace dir mkdir'd first (agents add fails silently without it)
@@ -3325,16 +3363,27 @@ pub async fn send_message_internal_with_context(
                 costs
             } else {
                 match model {
-                    "claude-sonnet-4-6" => (3.00, 15.00),
-                    "claude-haiku-4-5" => (0.25, 1.25),
-                    "claude-opus-4-6" => (15.00, 75.00),
+                    "claude-sonnet-5" => (3.00, 15.00),
+                    "claude-haiku-4-5" => (1.00, 5.00),
+                    "claude-opus-5" => (5.00, 25.00),
+                    "claude-fable-5" => (10.00, 50.00),
+                    "claude-opus-4-8" => (5.00, 25.00),
                     "claude-opus-4-7" => (5.00, 25.00),
+                    "claude-sonnet-4-6" => (3.00, 15.00),
+                    "claude-opus-4-6" => (15.00, 75.00),
+                    "gpt-5.6-sol" => (5.00, 30.00),
+                    "gpt-5.6-terra" => (2.50, 15.00),
+                    "gpt-5.6-luna" => (1.00, 6.00),
                     "gpt-4o-mini" => (0.15, 0.60),
                     "gpt-4o" => (2.50, 10.00),
-                    "gemini-2.0-flash" => (0.35, 1.05),
-                    "gemini-2.0-pro" => (3.50, 10.50),
-                    "gemini-3.5-flash" => (0.15, 0.60),
-                    "gemini-3.5-pro" => (1.25, 5.00),
+                    "gemini-3.6-flash" => (1.50, 7.50),
+                    "gemini-3.5-flash-lite" => (0.30, 2.50),
+                    "gemini-3.5-flash" => (1.50, 9.00),
+                    "gemini-3.1-pro-preview" => (2.00, 12.00),
+                    "gemini-3.1-flash-lite" => (0.25, 1.50),
+                    "gemini-2.5-flash" => (0.30, 2.50),
+                    "gemini-2.5-pro" => (1.25, 10.00),
+                    "grok-4.5" => (2.00, 6.00),
                     "grok-beta" => (5.00, 15.00),
                     _ => (1.00, 5.00),
                 }
@@ -4828,9 +4877,14 @@ fn generate_soul_md(personality: &AgentPersonality) -> String {
     soul
 }
 
-fn capability_status(enabled: bool, guidance: &str) -> String {
+/// Render one APP_CAPABILITIES.md line.
+///
+/// `label` is required: without it every line read `- **DISABLED** — Use web search when…`,
+/// an unlabelled status followed by instructions for the very thing being denied. Agents
+/// had to infer which capability each line referred to from the guidance prose.
+fn capability_status(label: &str, enabled: bool, guidance: &str) -> String {
     let status = if enabled { "ENABLED" } else { "DISABLED" };
-    format!("- **{}** — {}", status, guidance)
+    format!("- **{}: {}** — {}", label, status, guidance)
 }
 
 fn build_app_protocols_md() -> String {
@@ -4928,21 +4982,21 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         name = agent.personality.name,
         role = agent.role,
         isolation = if agent.isolated { "Dedicated isolated container" } else { "Shared gateway container" },
-        browser = capability_status(caps.browser, "Use the browser for live websites, authenticated flows, and visual verification. Always use the managed default profile (omit `profile` or pass \"openclaw\") — it already carries the user's saved logins. Never pass `profile: \"user\"`; that mode looks for a Chrome inside your container and always fails."),
-        gog = capability_status(caps.gog, "Use web search when recency, market conditions, public facts, or current availability matter. Do NOT use this to read emails, access Gmail, or interact with other integrations."),
-        vision = capability_status(caps.vision, "Use vision for screenshots, images, and visual UI understanding."),
-        canvas = capability_status(caps.canvas, "Use canvas for visual layout, markup, and artifact presentation."),
-        genui = capability_status(caps.genui, "Use GenUI when a mini-app, dashboard, approval card, or interactive artifact beats prose."),
-        coding = capability_status(caps.coding, "Use coding for structured transforms, analysis, validation, and local automation."),
-        file_read = capability_status(caps.file_read, "Read files before asking the user for information that is already available locally."),
-        file_write = capability_status(caps.file_write, "Write files only when an artifact, script, or durable note genuinely helps the user."),
-        memory_write = capability_status(caps.memory_write, "Capture durable learnings, not transcript summaries or duplicate noise."),
-        scheduled = capability_status(caps.scheduled, "Propose recurring checks when a repeated monitor would create leverage."),
-        autonomous = capability_status(caps.autonomous, "Execute routine internal loops without asking again; escalate for risky or external actions."),
-        ext_network = capability_status(caps.ext_network, "Use external network access for public APIs and websites when it materially improves the result."),
-        int_network = capability_status(caps.int_network, "Use internal coordination surfaces deliberately; do not assume other agents share your memory."),
-        payments = capability_status(caps.payments, "Never spend or request money casually; follow approval thresholds and user intent strictly."),
-        spend_auto = capability_status(caps.spend_auto, "Auto-approval is limited and should still be treated as high-trust behavior."),
+        browser = capability_status("Browser", caps.browser, "Use the browser for live websites, authenticated flows, and visual verification. Always use the managed default profile (omit `profile` or pass \"openclaw\") — it already carries the user's saved logins. Never pass `profile: \"user\"`; that mode looks for a Chrome inside your container and always fails."),
+        gog = capability_status("Web search", caps.gog, "Use web search when recency, market conditions, public facts, or current availability matter. Do NOT use this to read emails, access Gmail, or interact with other integrations."),
+        vision = capability_status("Vision", caps.vision, "Use vision for screenshots, images, and visual UI understanding."),
+        canvas = capability_status("Canvas", caps.canvas, "Use canvas for visual layout, markup, and artifact presentation."),
+        genui = capability_status("GenUI", caps.genui, "Use GenUI when a mini-app, dashboard, approval card, or interactive artifact beats prose."),
+        coding = capability_status("Code execution", caps.coding, "Use coding for structured transforms, analysis, validation, and local automation."),
+        file_read = capability_status("File read", caps.file_read, "Read files before asking the user for information that is already available locally."),
+        file_write = capability_status("File write", caps.file_write, "Write files only when an artifact, script, or durable note genuinely helps the user."),
+        memory_write = capability_status("Memory write", caps.memory_write, "Capture durable learnings, not transcript summaries or duplicate noise."),
+        scheduled = capability_status("Scheduled tasks", caps.scheduled, "Propose recurring checks when a repeated monitor would create leverage."),
+        autonomous = capability_status("Autonomous execution", caps.autonomous, "Execute routine internal loops without asking again; escalate for risky or external actions."),
+        ext_network = capability_status("External network", caps.ext_network, "Use external network access for public APIs and websites when it materially improves the result."),
+        int_network = capability_status("Internal network", caps.int_network, "Use internal coordination surfaces deliberately; do not assume other agents share your memory."),
+        payments = capability_status("Payments", caps.payments, "Never spend or request money casually; follow approval thresholds and user intent strictly."),
+        spend_auto = capability_status("Auto-approve spend", caps.spend_auto, "Auto-approval is limited and should still be treated as high-trust behavior."),
         integrations = integrations,
         mounted_folders = mounted_folders_section,
     )
@@ -6388,6 +6442,21 @@ async fn boot_sync_agents_internal(
     }
     let _guard = Guard;
 
+    // Reap zombie isolated containers BEFORE any agent is registered.
+    //
+    // `restart: unless-stopped` means a container whose teardown ever failed comes
+    // back on every Docker daemon start, with a frozen openclaw.json and whatever
+    // channel sockets it had. Ordering matters: if the same agent is about to be
+    // registered on the shared gateway, we must not leave a second brain answering
+    // for it on its old isolated port.
+    let reaped = crate::docker::reconcile_isolated_containers(db).await;
+    if reaped > 0 {
+        tracing::warn!(
+            "boot_sync_agents: reaped {} zombie isolated container(s) before registration",
+            reaped
+        );
+    }
+
     if let Ok(canopy_root) = canopy_data_root() {
         match harden_agent_workspace_layouts_for_root(&canopy_root, db) {
             Ok(summary) => {
@@ -7259,6 +7328,20 @@ async fn file_channels_match(
     let desired_google_enabled =
         !desired_gmail.is_empty() || !desired_calendar.is_empty() || !desired_drive.is_empty();
 
+    // ⚠️  This is a ONE-WAY comparison, deliberately.
+    //
+    // The patch script only ever turns the google plugin ON (`if (<desired>) enabled=true`),
+    // and `preflight_sanitize_and_merge_config` hard-enables it in the gateway baseline
+    // because the plugin also backs the `gog` web-search skill — not just Gmail/Calendar/
+    // Drive. So for any install with no Google account connected, `desired` is false while
+    // on-disk is true, and a plain `==` reported "config changed" forever: every call
+    // re-patched the file and restarted the gateway, dropping every agent's Socket Mode
+    // connection each time. Same failure shape as the `bluebubbles` loop below.
+    //
+    // A mismatch only matters when we actually need to flip the flag on, so treat
+    // "already enabled, nothing more to enable" as a match.
+    let google_matches = on_disk_google_enabled || !desired_google_enabled;
+
     let on_disk_bindings: Vec<serde_json::Value> = cfg
         .pointer("/bindings")
         .and_then(|v| v.as_array())
@@ -7280,7 +7363,7 @@ async fn file_channels_match(
         .unwrap_or(false);
 
     &on_disk_slack == desired_slack
-        && on_disk_google_enabled == desired_google_enabled
+        && google_matches
         && on_disk_bindings.as_slice() == desired_bindings
         && !on_disk_bluebubbles_enabled
 }

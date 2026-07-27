@@ -22,6 +22,7 @@ import { HeartbeatsManager } from "../../components/agents/HeartbeatsManager";
 import { WorkspaceFilesDrawer } from "./WorkspaceFilesDrawer";
 import { ThreadsRail } from "./ThreadsRail";
 import { LiveVoiceOverlay } from "./LiveVoiceOverlay";
+import { cancelAgentSpeech } from "../../utils/voicePlayback";
 // ProjectSpaceView removed — multi-agent collaboration now lives in ForumView
 
 // ─── Mini Apps Drawer ─────────────────────────────────────────────────────────
@@ -171,11 +172,9 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
     return () => document.removeEventListener("mousedown", onDown);
   }, [appsOpen]);
 
-  // Voice toggle — V1 uses the browser Web Speech API (single-turn: agent reply
-  // text → spoken). Persisted in sessionStorage so the choice survives agent
-  // switches within a session. ChatTab subscribes to `canopy:voice-toggle` to
-  // know when to speak; we also pre-seed the same storage key for the
-  // initial-mount read in ChatTab.
+  // Voice toggle — single-turn managed TTS for agent replies. Persisted in
+  // sessionStorage so the choice survives agent switches within a session.
+  // ChatTab subscribes to `canopy:voice-toggle` to know when to speak.
   const [voiceOn, setVoiceOn] = useState<boolean>(() => sessionStorage.getItem("canopy:voice-on") === "1");
   // Live voice — bidirectional duplex via OpenClaw realtime brain. Distinct
   // from the single-turn voice toggle above (TTS-only playback of agent
@@ -185,10 +184,7 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
     setVoiceOn(next);
     sessionStorage.setItem("canopy:voice-on", next ? "1" : "0");
     window.dispatchEvent(new CustomEvent("canopy:voice-toggle", { detail: { enabled: next } }));
-    // Stop any utterance mid-speech when toggling off.
-    if (!next && typeof window.speechSynthesis !== "undefined") {
-      window.speechSynthesis.cancel();
-    }
+    if (!next) cancelAgentSpeech();
   }, []);
 
   const flipCloak = async (enabled: boolean) => {
@@ -676,8 +672,8 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
           Sit just above the chat panel — small affordances for the things a
           user most often wants to do next with this agent. Mini-apps is a
           forward-looking slot for the generative-UI work coming in Phase 2.
-          Voice is a single-turn V1 (browser Web Speech API); the "Go live"
-          sub-option is the path to bidirectional Gemini Live audio. */}
+          Voice is the single-turn managed TTS path; the "Go live" sub-option
+          is the path to bidirectional Gemini Live audio. */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
         <button
           onClick={async () => {
@@ -821,9 +817,9 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
           Cloak {agent.visual_identity?.cloak_enabled !== false ? "on" : "off"}
         </button>
 
-        {/* Voice toggle — single-turn TTS playback of agent replies via the
-            browser Web Speech API. The "Go live" button next to it is a
-            different gesture: full bidirectional duplex voice. */}
+        {/* Voice toggle — single-turn managed TTS playback of agent replies.
+            The "Go live" button next to it is a different gesture: full
+            bidirectional duplex voice. */}
         <button
           onClick={() => flipVoice(!voiceOn)}
           title={

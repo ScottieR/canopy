@@ -99,7 +99,7 @@ fn sanitize_continuity(continuity: &Value) -> Value {
         .filter(|value| {
             matches!(
                 *value,
-                "provider_setup" | "integration_setup" | "diagnostics" | "onboarding"
+                "provider_setup" | "integration_setup" | "diagnostics" | "onboarding" | "persona_draft"
             )
         });
     let provider = continuity
@@ -115,6 +115,10 @@ fn sanitize_continuity(continuity: &Value) -> Value {
         "target_agent": target_agent,
         "provider": provider,
     })
+}
+
+fn continuity_topic(continuity: &Value) -> Option<&str> {
+    continuity.get("topic").and_then(Value::as_str)
 }
 
 // The server-funded first-run path receives much less than the provider-direct
@@ -348,6 +352,12 @@ pub fn configure_canopy_helper(
 }
 
 fn prompt(message: &str, context: &Value, continuity: &Value) -> String {
+    if continuity_topic(continuity) == Some("persona_draft") {
+        return format!(
+            "You are Eddie drafting a new Canopy agent persona. Follow the task exactly and return only the requested JSON object. Do not add prose, code fences, or commentary.\n\n{}",
+            message
+        );
+    }
     let context = sanitize_context(context);
     let continuity = sanitize_continuity(continuity);
     format!(
@@ -363,9 +373,18 @@ async fn call_openai_compatible(
     key: &str,
     model: &str,
     text: &str,
+    json_mode: bool,
 ) -> Result<String, String> {
+    let mut body = json!({
+        "model": model,
+        "messages": [{"role":"user", "content": text}],
+        "temperature": if json_mode { 0.1 } else { 0.2 }
+    });
+    if json_mode {
+        body["response_format"] = json!({ "type": "json_object" });
+    }
     let response = helper_http_client()?.post(base).bearer_auth(key)
-        .json(&json!({"model": model, "messages": [{"role":"user", "content": text}], "temperature": 0.2}))
+        .json(&body)
         .send().await.map_err(|e| e.to_string())?;
     let body = bounded_success_json(response).await?;
     body.pointer("/choices/0/message/content")
@@ -374,7 +393,7 @@ async fn call_openai_compatible(
         .ok_or_else(|| "Provider returned no reply".into())
 }
 
-async fn call_canopy_bootstrap(message: &str, context: &Value) -> Result<String, String> {
+async fn call_canopy_bootstrap(message: &str, context: &Value, continuity: &Value) -> Result<String, String> {
     if context
         .pointer("/onboarding/in_onboarding")
         .and_then(Value::as_bool)
@@ -391,7 +410,7 @@ async fn call_canopy_bootstrap(message: &str, context: &Value) -> Result<String,
         .json(&json!({
             "message": message,
             "context": sanitize_bootstrap_context(context),
-            "continuity": { "topic": "onboarding" },
+            "continuity": sanitize_continuity(continuity),
         }))
         .send()
         .await
@@ -418,6 +437,8 @@ pub async fn send_canopy_helper_message(
         return Err("Eddy is using local rule-based guidance until a provider is connected".into());
     }
     let provider = config.provider.unwrap_or_else(|| "openai".into());
+    let topic = continuity_topic(&continuity);
+    let persona_draft = topic == Some("persona_draft");
     let model = config.model.unwrap_or_else(|| {
         if config.mode == "local" {
             "llama3.2:3b".into()
@@ -426,7 +447,7 @@ pub async fn send_canopy_helper_message(
         }
     });
     let reply = if config.mode == BOOTSTRAP_MODE {
-        call_canopy_bootstrap(message.trim(), &context).await?
+        call_canopy_bootstrap(message.trim(), &context, &continuity).await?
     } else if config.mode == "local" {
         let user_prompt = prompt(message.trim(), &context, &continuity);
         let response = helper_http_client()?.post("http://127.0.0.1:11434/api/chat")
@@ -444,7 +465,16 @@ pub async fn send_canopy_helper_message(
             "anthropic" => {
                 let response = helper_http_client()?.post("https://api.anthropic.com/v1/messages")
                     .header("x-api-key", key).header("anthropic-version", "2023-06-01")
-                    .json(&json!({"model": model, "max_tokens": 900, "messages": [{"role":"user", "content": user_prompt}]}))
+                    .json(&json!({
+                        "model": model,
+                        "max_tokens": 900,
+                        "system": if persona_draft {
+                            Some("Return only valid JSON matching the user's requested schema. No prose, no markdown, no code fences.")
+                        } else {
+                            None::<&str>
+                        },
+                        "messages": [{"role":"user", "content": user_prompt}]
+                    }))
                     .send().await.map_err(|e| e.to_string())?;
                 let body = bounded_success_json(response).await?;
                 body.pointer("/content/0/text")
@@ -456,7 +486,14 @@ pub async fn send_canopy_helper_message(
                 let response = helper_http_client()?
                     .post(format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"))
                     .header("x-goog-api-key", key)
-                    .json(&json!({"contents": [{"parts": [{"text": user_prompt}]}]}))
+                    .json(&json!({
+                        "contents": [{"parts": [{"text": user_prompt}]}],
+                        "generationConfig": if persona_draft {
+                            json!({ "responseMimeType": "application/json", "temperature": 0.1 })
+                        } else {
+                            json!({ "temperature": 0.2 })
+                        }
+                    }))
                     .send().await.map_err(|e| e.to_string())?;
                 let body = bounded_success_json(response).await?;
                 body.pointer("/candidates/0/content/parts/0/text")
@@ -470,6 +507,7 @@ pub async fn send_canopy_helper_message(
                     &key,
                     &model,
                     &user_prompt,
+                    persona_draft,
                 )
                 .await?
             }
@@ -479,6 +517,7 @@ pub async fn send_canopy_helper_message(
                     &key,
                     &model,
                     &user_prompt,
+                    persona_draft,
                 )
                 .await?
             }
@@ -548,6 +587,29 @@ mod tests {
             200
         );
         assert!(!clean.to_string().contains("must disappear"));
+    }
+
+    #[test]
+    fn persona_draft_topic_is_allowlisted() {
+        let clean = sanitize_continuity(&json!({
+            "topic": "persona_draft",
+            "provider": "openai",
+            "target_agent": "Drafty"
+        }));
+        assert_eq!(clean.pointer("/topic"), Some(&json!("persona_draft")));
+        assert_eq!(clean.pointer("/provider"), Some(&json!("openai")));
+    }
+
+    #[test]
+    fn persona_draft_prompt_stays_structured() {
+        let prompt = prompt(
+            r#"{"task":"return json"}"#,
+            &json!({ "runtime_ready": true, "agents": [{ "name": "Atlas" }] }),
+            &json!({ "topic": "persona_draft" }),
+        );
+        assert!(prompt.contains("return only the requested JSON object"));
+        assert!(!prompt.contains("Minimized app context"));
+        assert!(prompt.contains(r#"{"task":"return json"}"#));
     }
 
     #[test]

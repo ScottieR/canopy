@@ -36,7 +36,7 @@
 ///
 /// Cross-reference: https://docs.openclaw.ai/concepts/models
 ///
-/// Last verified: July 14, 2026
+/// Last verified: July 25, 2026
 use serde::{Deserialize, Serialize};
 #[cfg(not(test))]
 use std::sync::OnceLock;
@@ -44,26 +44,45 @@ use std::sync::RwLock;
 
 // ─── Anthropic / Claude ───────────────────────────────────────────────────────
 
-/// Claude Sonnet — primary workhorse model. Fast, capable, cost-effective.
-/// OpenClaw identifier format: "anthropic/claude-sonnet-4-6"
-/// ⚠️  NOT "anthropic/claude-4-6-sonnet" — the version suffix comes LAST.
-pub const ANTHROPIC_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-4-6";
+/// Claude Sonnet 5 — best balance for most production workloads.
+pub const ANTHROPIC_CLAUDE_SONNET: &str = "anthropic/claude-sonnet-5";
 
 /// Claude Haiku — fastest/cheapest Anthropic option for lightweight tasks.
 pub const ANTHROPIC_CLAUDE_HAIKU: &str = "anthropic/claude-haiku-4-5";
 
-/// Claude Opus — highest capability, most expensive. Use for complex reasoning only.
-pub const ANTHROPIC_CLAUDE_OPUS: &str = "anthropic/claude-opus-4-6";
+/// Claude Opus 5 — advanced model for complex coding and enterprise work.
+pub const ANTHROPIC_CLAUDE_OPUS: &str = "anthropic/claude-opus-5";
 
-/// Claude Opus 4.7 — flagship Anthropic model.
+/// Claude Fable 5 — highest capability Anthropic model.
+pub const ANTHROPIC_CLAUDE_FABLE_5: &str = "anthropic/claude-fable-5";
+
+/// Claude Opus 4.8 — prior Opus generation still supported.
+pub const ANTHROPIC_CLAUDE_OPUS_48: &str = "anthropic/claude-opus-4-8";
+
+/// Claude Opus 4.7 — legacy upgrade target kept for compatibility checks.
 pub const ANTHROPIC_CLAUDE_OPUS_47: &str = "anthropic/claude-opus-4-7";
+
+/// Claude Sonnet 4.6 — previous workhorse model kept for migration handling.
+pub const ANTHROPIC_CLAUDE_SONNET_46: &str = "anthropic/claude-sonnet-4-6";
+
+/// Claude Opus 4.6 — previous Opus model kept for migration handling.
+pub const ANTHROPIC_CLAUDE_OPUS_46: &str = "anthropic/claude-opus-4-6";
 
 // ─── OpenAI / GPT ─────────────────────────────────────────────────────────────
 
-/// GPT-4o — OpenAI's flagship multimodal model.
+/// GPT-5.6 Sol — OpenAI's flagship frontier model.
+pub const OPENAI_GPT56_SOL: &str = "openai/gpt-5.6-sol";
+
+/// GPT-5.6 Terra — OpenAI's balance of intelligence and cost.
+pub const OPENAI_GPT56_TERRA: &str = "openai/gpt-5.6-terra";
+
+/// GPT-5.6 Luna — OpenAI's lowest-cost high-volume model.
+pub const OPENAI_GPT56_LUNA: &str = "openai/gpt-5.6-luna";
+
+/// GPT-4o — previous multimodal flagship kept for migration handling.
 pub const OPENAI_GPT4O: &str = "openai/gpt-4o";
 
-/// GPT-4o Mini — fast, cheap alternative for simple tasks.
+/// GPT-4o Mini — prior fast/cheap model kept for migration handling.
 pub const OPENAI_GPT4O_MINI: &str = "openai/gpt-4o-mini";
 
 /// o4-mini — OpenAI's fast reasoning model.
@@ -90,11 +109,14 @@ pub const GOOGLE_GEMINI_FLASH_LITE_25: &str = "google/gemini-2.5-flash-lite";
 /// Gemini 2.5 Pro — stable, GA flagship. Shutdown: June 17, 2026.
 pub const GOOGLE_GEMINI_PRO_25: &str = "google/gemini-2.5-pro";
 
+/// Gemini 3.6 Flash — latest stable GA Flash model.
+pub const GOOGLE_GEMINI_FLASH_36: &str = "google/gemini-3.6-flash";
+
 /// Gemini 3.5 Flash — stable, GA.
 pub const GOOGLE_GEMINI_FLASH_35: &str = "google/gemini-3.5-flash";
 
-/// Gemini 3.5 Pro — preview/GA flagship.
-pub const GOOGLE_GEMINI_PRO_35: &str = "google/gemini-3.5-pro";
+/// Gemini 3.5 Flash-Lite — latest stable low-latency Gemini model.
+pub const GOOGLE_GEMINI_FLASH_LITE_35: &str = "google/gemini-3.5-flash-lite";
 
 // ── Gemini 3.x — PREVIEW (no shutdown date announced) ───────────────────────
 //    Valid model IDs per deprecations page. LiteLLM support inside the
@@ -110,13 +132,16 @@ pub const GOOGLE_GEMINI_31_FLASH_LITE: &str = "google/gemini-3.1-flash-lite";
 /// Gemini 3.1 Pro Preview — successor to gemini-2.5-pro.
 pub const GOOGLE_GEMINI_31_PRO: &str = "google/gemini-3.1-pro-preview";
 
+/// Grok 4.5 — current xAI flagship.
+pub const XAI_GROK_45: &str = "xai/grok-4.5";
+
 // ─── Provider-level defaults ──────────────────────────────────────────────────
 
 /// Default model when an Anthropic API key is present.
 pub const DEFAULT_ANTHROPIC_MODEL: &str = ANTHROPIC_CLAUDE_SONNET;
 
 /// Default model when an OpenAI API key is present.
-pub const DEFAULT_OPENAI_MODEL: &str = OPENAI_GPT4O;
+pub const DEFAULT_OPENAI_MODEL: &str = OPENAI_GPT56_TERRA;
 
 /// Default model when a Gemini API key is present.
 /// gemini-3.1-pro-preview is the ONLY Gemini 3.x model confirmed to work inside the
@@ -153,13 +178,12 @@ pub struct ModelInfo {
 /// All entries are verified against real API model names — no phantom names.
 pub fn all_models() -> Vec<ModelInfo> {
     vec![
-        // Anthropic
         ModelInfo {
             id: ANTHROPIC_CLAUDE_SONNET.into(),
-            name: "Claude Sonnet 4.6".into(),
+            name: "Claude Sonnet 5".into(),
             provider: "Anthropic".into(),
             strategy: "heavy".into(),
-            description: "Fast & highly capable".into(),
+            description: "Best balance for most production workloads".into(),
         },
         ModelInfo {
             id: ANTHROPIC_CLAUDE_HAIKU.into(),
@@ -170,102 +194,74 @@ pub fn all_models() -> Vec<ModelInfo> {
         },
         ModelInfo {
             id: ANTHROPIC_CLAUDE_OPUS.into(),
-            name: "Claude Opus 4.6".into(),
+            name: "Claude Opus 5".into(),
             provider: "Anthropic".into(),
             strategy: "heavy".into(),
-            description: "Most capable Anthropic".into(),
+            description: "Advanced model for complex coding and enterprise work".into(),
         },
         ModelInfo {
-            id: ANTHROPIC_CLAUDE_OPUS_47.into(),
-            name: "Claude Opus 4.7".into(),
+            id: ANTHROPIC_CLAUDE_FABLE_5.into(),
+            name: "Claude Fable 5".into(),
             provider: "Anthropic".into(),
             strategy: "heavy".into(),
-            description: "Flagship Anthropic model".into(),
+            description: "Highest capability for demanding long-horizon work".into(),
         },
-        // OpenAI
         ModelInfo {
-            id: OPENAI_GPT4O.into(),
-            name: "GPT-4o".into(),
+            id: OPENAI_GPT56_SOL.into(),
+            name: "GPT-5.6 Sol".into(),
             provider: "OpenAI".into(),
             strategy: "heavy".into(),
-            description: "Flagship multimodal".into(),
+            description: "Frontier model for complex professional work".into(),
         },
         ModelInfo {
-            id: OPENAI_GPT4O_MINI.into(),
-            name: "GPT-4o Mini".into(),
-            provider: "OpenAI".into(),
-            strategy: "light".into(),
-            description: "Fast & affordable".into(),
-        },
-        ModelInfo {
-            id: OPENAI_O4_MINI.into(),
-            name: "o4-mini".into(),
+            id: OPENAI_GPT56_TERRA.into(),
+            name: "GPT-5.6 Terra".into(),
             provider: "OpenAI".into(),
             strategy: "heavy".into(),
-            description: "Fast reasoning model".into(),
+            description: "Balances intelligence and cost".into(),
         },
-        // ── Google Gemini 3.x — current line ─────────────────────────────────
-        // Source: https://ai.google.dev/gemini-api/docs/deprecations
         ModelInfo {
-            id: GOOGLE_GEMINI_3_FLASH.into(),
-            name: "Gemini 3 Flash".into(),
-            provider: "Google Gemini".into(),
+            id: OPENAI_GPT56_LUNA.into(),
+            name: "GPT-5.6 Luna".into(),
+            provider: "OpenAI".into(),
             strategy: "light".into(),
-            description: "Preview — successor to 2.5 Flash".into(),
+            description: "Optimized for cost-sensitive high-volume work".into(),
         },
         ModelInfo {
-            id: GOOGLE_GEMINI_31_FLASH_LITE.into(),
-            name: "Gemini 3.1 Flash Lite".into(),
-            provider: "Google Gemini".into(),
-            strategy: "light".into(),
-            description: "Stable — current lite model".into(),
+            id: XAI_GROK_45.into(),
+            name: "Grok 4.5".into(),
+            provider: "xAI".into(),
+            strategy: "heavy".into(),
+            description: "Latest xAI flagship".into(),
         },
         ModelInfo {
-            id: GOOGLE_GEMINI_31_PRO.into(),
-            name: "Gemini 3.1 Pro".into(),
+            id: GOOGLE_GEMINI_FLASH_36.into(),
+            name: "Gemini 3.6 Flash".into(),
             provider: "Google Gemini".into(),
             strategy: "heavy".into(),
-            description: "Preview — successor to 2.5 Pro".into(),
+            description: "Latest GA Flash model for agentic and coding work".into(),
         },
-        // ── Google Gemini 2.5 — Stable GA (shutdown not before June 2026) ─────
         ModelInfo {
-            id: GOOGLE_GEMINI_FLASH_25.into(),
-            name: "Gemini 2.5 Flash".into(),
+            id: GOOGLE_GEMINI_FLASH_LITE_35.into(),
+            name: "Gemini 3.5 Flash-Lite".into(),
             provider: "Google Gemini".into(),
             strategy: "light".into(),
-            description: "Stable — recommended default".into(),
+            description: "Fastest low-cost Gemini for subagents and extraction".into(),
         },
-        ModelInfo {
-            id: GOOGLE_GEMINI_FLASH_LITE_25.into(),
-            name: "Gemini 2.5 Flash Lite".into(),
-            provider: "Google Gemini".into(),
-            strategy: "light".into(),
-            description: "Stable — fastest/cheapest option".into(),
-        },
-        ModelInfo {
-            id: GOOGLE_GEMINI_PRO_25.into(),
-            name: "Gemini 2.5 Pro".into(),
-            provider: "Google Gemini".into(),
-            strategy: "heavy".into(),
-            description: "Stable — flagship model".into(),
-        },
-        // ── Google Gemini 3.5 ────────────────────────────────────────────────
         ModelInfo {
             id: GOOGLE_GEMINI_FLASH_35.into(),
             name: "Gemini 3.5 Flash".into(),
             provider: "Google Gemini".into(),
-            strategy: "light".into(),
-            description: "Stable — speed optimized flagship".into(),
+            strategy: "heavy".into(),
+            description: "Stable Flash line for agentic and coding tasks".into(),
         },
         ModelInfo {
-            id: GOOGLE_GEMINI_PRO_35.into(),
-            name: "Gemini 3.5 Pro".into(),
+            id: GOOGLE_GEMINI_31_PRO.into(),
+            name: "Gemini 3.1 Pro Preview".into(),
             provider: "Google Gemini".into(),
             strategy: "heavy".into(),
-            description: "Preview — flagship 3.5 model".into(),
+            description: "Preview fallback kept for OpenClaw compatibility".into(),
         },
-        // NOTE: gemini-2.0-flash and gemini-2.0-flash-lite are DEPRECATED (Feb 2025,
-        // shutdown June 1 2026). Do not add them back — use 2.5 series instead.
     ]
 }
 
@@ -509,7 +505,14 @@ const _: () = {
     assert_has_slash!(ANTHROPIC_CLAUDE_SONNET);
     assert_has_slash!(ANTHROPIC_CLAUDE_HAIKU);
     assert_has_slash!(ANTHROPIC_CLAUDE_OPUS);
+    assert_has_slash!(ANTHROPIC_CLAUDE_FABLE_5);
+    assert_has_slash!(ANTHROPIC_CLAUDE_OPUS_48);
     assert_has_slash!(ANTHROPIC_CLAUDE_OPUS_47);
+    assert_has_slash!(ANTHROPIC_CLAUDE_SONNET_46);
+    assert_has_slash!(ANTHROPIC_CLAUDE_OPUS_46);
+    assert_has_slash!(OPENAI_GPT56_SOL);
+    assert_has_slash!(OPENAI_GPT56_TERRA);
+    assert_has_slash!(OPENAI_GPT56_LUNA);
     assert_has_slash!(OPENAI_GPT4O);
     assert_has_slash!(OPENAI_GPT4O_MINI);
     assert_has_slash!(GOOGLE_GEMINI_FLASH_25);
@@ -518,8 +521,10 @@ const _: () = {
     assert_has_slash!(GOOGLE_GEMINI_3_FLASH);
     assert_has_slash!(GOOGLE_GEMINI_31_FLASH_LITE);
     assert_has_slash!(GOOGLE_GEMINI_31_PRO);
+    assert_has_slash!(GOOGLE_GEMINI_FLASH_36);
     assert_has_slash!(GOOGLE_GEMINI_FLASH_35);
-    assert_has_slash!(GOOGLE_GEMINI_PRO_35);
+    assert_has_slash!(GOOGLE_GEMINI_FLASH_LITE_35);
+    assert_has_slash!(XAI_GROK_45);
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -539,6 +544,14 @@ mod tests {
             ANTHROPIC_CLAUDE_SONNET,
             ANTHROPIC_CLAUDE_HAIKU,
             ANTHROPIC_CLAUDE_OPUS,
+            ANTHROPIC_CLAUDE_FABLE_5,
+            ANTHROPIC_CLAUDE_OPUS_48,
+            ANTHROPIC_CLAUDE_OPUS_47,
+            ANTHROPIC_CLAUDE_SONNET_46,
+            ANTHROPIC_CLAUDE_OPUS_46,
+            OPENAI_GPT56_SOL,
+            OPENAI_GPT56_TERRA,
+            OPENAI_GPT56_LUNA,
             OPENAI_GPT4O,
             OPENAI_GPT4O_MINI,
             OPENAI_O4_MINI,
@@ -548,9 +561,10 @@ mod tests {
             GOOGLE_GEMINI_3_FLASH,
             GOOGLE_GEMINI_31_FLASH_LITE,
             GOOGLE_GEMINI_31_PRO,
-            ANTHROPIC_CLAUDE_OPUS_47,
+            GOOGLE_GEMINI_FLASH_36,
             GOOGLE_GEMINI_FLASH_35,
-            GOOGLE_GEMINI_PRO_35,
+            GOOGLE_GEMINI_FLASH_LITE_35,
+            XAI_GROK_45,
         ] {
             assert!(
                 validate_model_string(constant).is_ok(),
@@ -563,30 +577,29 @@ mod tests {
     #[test]
     fn anthropic_model_string_has_correct_order() {
         // The version suffix must come AFTER the model family name.
-        // "claude-sonnet-4-6" ✓   vs   "claude-4-6-sonnet" ✗
+        // "claude-sonnet-5" ✓   vs   "claude-5-sonnet" ✗
         assert!(
-            ANTHROPIC_CLAUDE_SONNET.ends_with("sonnet-4-6"),
-            "Anthropic Sonnet model string '{}' has wrong suffix order — should end with 'sonnet-4-6'",
+            ANTHROPIC_CLAUDE_SONNET.ends_with("sonnet-5"),
+            "Anthropic Sonnet model string '{}' has wrong suffix order — should end with 'sonnet-5'",
             ANTHROPIC_CLAUDE_SONNET
         );
         assert!(
-            !ANTHROPIC_CLAUDE_SONNET.contains("claude-4-6-sonnet"),
-            "Detected the reversed model string 'claude-4-6-sonnet' — this is the old broken format"
+            !ANTHROPIC_CLAUDE_SONNET.contains("claude-5-sonnet"),
+            "Detected the reversed model string 'claude-5-sonnet' — this is the old broken format"
         );
     }
 
     #[test]
-    fn gemini_3x_constants_are_real_and_valid() {
-        // Gemini 3.x models ARE real — confirmed from Google Vertex AI docs April 2026.
-        // Gemini 3 Flash, 3.1 Flash-Lite, 3.1 Pro, and 3.1 Flash Image are all Preview.
+    fn latest_gemini_constants_are_real_and_valid() {
         for model in &[
-            GOOGLE_GEMINI_31_FLASH_LITE,
-            GOOGLE_GEMINI_3_FLASH,
+            GOOGLE_GEMINI_FLASH_36,
+            GOOGLE_GEMINI_FLASH_LITE_35,
+            GOOGLE_GEMINI_FLASH_35,
             GOOGLE_GEMINI_31_PRO,
         ] {
             assert!(
                 validate_model_string(model).is_ok(),
-                "Gemini 3.x model '{}' failed format validation",
+                "Gemini model '{}' failed format validation",
                 model
             );
             assert!(
@@ -624,46 +637,42 @@ mod tests {
     }
 
     #[test]
-    fn all_models_catalogue_has_stable_gemini_25_models() {
-        // Source: https://ai.google.dev/gemini-api/docs/deprecations
-        // gemini-2.5-flash, gemini-2.5-flash-lite, gemini-2.5-pro are all stable GA.
+    fn all_models_catalogue_has_latest_anthropic_models() {
         let models = all_models();
         assert!(
-            models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_25),
-            "Catalogue must include stable '{}'",
-            GOOGLE_GEMINI_FLASH_25
+            models.iter().any(|m| m.id == ANTHROPIC_CLAUDE_SONNET),
+            "Catalogue must include '{}'",
+            ANTHROPIC_CLAUDE_SONNET
         );
         assert!(
-            models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_LITE_25),
-            "Catalogue must include stable '{}'",
-            GOOGLE_GEMINI_FLASH_LITE_25
+            models.iter().any(|m| m.id == ANTHROPIC_CLAUDE_OPUS),
+            "Catalogue must include '{}'",
+            ANTHROPIC_CLAUDE_OPUS
         );
         assert!(
-            models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_25),
-            "Catalogue must include stable '{}'",
-            GOOGLE_GEMINI_PRO_25
+            models.iter().any(|m| m.id == ANTHROPIC_CLAUDE_FABLE_5),
+            "Catalogue must include '{}'",
+            ANTHROPIC_CLAUDE_FABLE_5
         );
     }
 
     #[test]
-    fn all_models_catalogue_has_gemini_3x_previews() {
-        // Source: https://ai.google.dev/gemini-api/docs/deprecations
-        // Gemini 3 Flash + 3.1 Pro are preview; 3.1 Flash Lite is now stable.
+    fn all_models_catalogue_has_latest_openai_models() {
         let models = all_models();
         assert!(
-            models.iter().any(|m| m.id == GOOGLE_GEMINI_3_FLASH),
+            models.iter().any(|m| m.id == OPENAI_GPT56_SOL),
             "Catalogue must include '{}'",
-            GOOGLE_GEMINI_3_FLASH
+            OPENAI_GPT56_SOL
         );
         assert!(
-            models.iter().any(|m| m.id == GOOGLE_GEMINI_31_FLASH_LITE),
+            models.iter().any(|m| m.id == OPENAI_GPT56_TERRA),
             "Catalogue must include '{}'",
-            GOOGLE_GEMINI_31_FLASH_LITE
+            OPENAI_GPT56_TERRA
         );
         assert!(
-            models.iter().any(|m| m.id == GOOGLE_GEMINI_31_PRO),
+            models.iter().any(|m| m.id == OPENAI_GPT56_LUNA),
             "Catalogue must include '{}'",
-            GOOGLE_GEMINI_31_PRO
+            OPENAI_GPT56_LUNA
         );
     }
 
@@ -746,10 +755,10 @@ mod tests {
 
     #[test]
     fn validate_accepts_all_known_providers() {
-        assert!(validate_model_string("anthropic/claude-sonnet-4-6").is_ok());
-        assert!(validate_model_string("openai/gpt-4o").is_ok());
-        assert!(validate_model_string("google/gemini-2.0-flash").is_ok());
-        assert!(validate_model_string("xai/grok-beta").is_ok());
+        assert!(validate_model_string("anthropic/claude-sonnet-5").is_ok());
+        assert!(validate_model_string("openai/gpt-5.6-sol").is_ok());
+        assert!(validate_model_string("google/gemini-3.6-flash").is_ok());
+        assert!(validate_model_string("xai/grok-4.5").is_ok());
         assert!(validate_model_string("ollama/llama3").is_ok());
     }
 
@@ -846,17 +855,22 @@ mod tests {
     }
 
     #[test]
-    fn all_models_catalogue_has_gemini_35_models() {
+    fn all_models_catalogue_has_latest_gemini_models() {
         let models = all_models();
+        assert!(
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_36),
+            "Catalogue must include '{}'",
+            GOOGLE_GEMINI_FLASH_36
+        );
         assert!(
             models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_35),
             "Catalogue must include stable '{}'",
             GOOGLE_GEMINI_FLASH_35
         );
         assert!(
-            models.iter().any(|m| m.id == GOOGLE_GEMINI_PRO_35),
+            models.iter().any(|m| m.id == GOOGLE_GEMINI_FLASH_LITE_35),
             "Catalogue must include '{}'",
-            GOOGLE_GEMINI_PRO_35
+            GOOGLE_GEMINI_FLASH_LITE_35
         );
     }
 }

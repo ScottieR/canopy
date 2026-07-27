@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildPersonaDraftMessage,
+  buildPersonaDraftRepairMessage,
   composePersonaPersonality,
   draftPersonaWithEddie,
   parsePersonaDraftReply,
@@ -52,6 +53,16 @@ describe("buildPersonaDraftMessage", () => {
   it("includes the sommelier guardrail example", () => {
     expect(buildPersonaDraftMessage("wine", ROLES.map(key => ({ key })))).toContain("sommelier is NOT a Media Advisor");
   });
+
+  it("can build a repair prompt for invalid structured replies", () => {
+    const message = buildPersonaDraftRepairMessage(
+      "Sure, maybe try a chef?",
+      ROLES.map(key => ({ key })),
+      ["Palette"],
+    );
+    expect(message).toContain("INVALID REPLY TO REPAIR");
+    expect(message).toContain("valid JSON object");
+  });
 });
 
 describe("composePersonaPersonality", () => {
@@ -69,15 +80,33 @@ describe("composePersonaPersonality", () => {
 });
 
 describe("draftPersonaWithEddie", () => {
-  it("uses the injected local helper boundary and fails closed", async () => {
+  it("uses the injected local helper boundary with the persona_draft topic and fails closed", async () => {
     const request = vi.fn().mockResolvedValue(
       '{"fits_existing":false,"title":"Garden Sommelier","name":"Vio","tagline":"t","soul_seed":"You are Vio.","blend":["Chef"]}',
     );
     const result = await draftPersonaWithEddie("wine", { Chef: {} }, [], request);
     expect(result?.title).toBe("Garden Sommelier");
     expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenCalledWith(
+      expect.any(String),
+      { active_view: "onboarding", onboarding: { in_onboarding: true } },
+      { topic: "persona_draft" },
+    );
 
     await expect(draftPersonaWithEddie("wine", { Chef: {} }, [], async () => { throw new Error("offline"); }))
       .resolves.toBeNull();
+  });
+
+  it("retries once with a repair prompt when the first reply is not parseable", async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce("Chef seems close, maybe that.")
+      .mockResolvedValueOnce(
+        '{"fits_existing":false,"title":"Garden Sommelier","name":"Vio","tagline":"t","soul_seed":"You are Vio.","blend":["Chef"]}',
+      );
+
+    const result = await draftPersonaWithEddie("wine", { Chef: {} }, [], request);
+    expect(result?.title).toBe("Garden Sommelier");
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(String(request.mock.calls[1][0])).toContain("INVALID REPLY TO REPAIR");
   });
 });

@@ -16,7 +16,14 @@ export type VoiceDefault = {
   voice: string;
   rate: number;
   sample: string;
+  voiceLabel: string;
+  style: string;
+  provider: "eleven_labs" | "openai_tts";
+  providerLabel: string;
+  fallbackProviderLabel: string;
 };
+
+export type VoiceProfile = Omit<VoiceDefault, "rate" | "sample">;
 
 // How sure the deterministic matcher is about the drafted role.
 // "high"  — at least one direct keyword match (score >= KEYWORD_SCORE).
@@ -123,16 +130,72 @@ export const DEFAULT_ROLE_NAMES: Record<string, string> = {
   Trainer: "Pace",
 };
 
+export const VOICE_PROFILE_LIBRARY: Record<string, VoiceProfile> = {
+  alloy: {
+    voice: "alloy",
+    voiceLabel: "Harbor",
+    style: "steady, welcoming, and easy to trust",
+    provider: "eleven_labs",
+    providerLabel: "ElevenLabs default",
+    fallbackProviderLabel: "Model provider fallback",
+  },
+  echo: {
+    voice: "echo",
+    voiceLabel: "Forge",
+    style: "crisp, direct, and quietly technical",
+    provider: "eleven_labs",
+    providerLabel: "ElevenLabs default",
+    fallbackProviderLabel: "Model provider fallback",
+  },
+  fable: {
+    voice: "fable",
+    voiceLabel: "Quill",
+    style: "warm, articulate, and editorial",
+    provider: "eleven_labs",
+    providerLabel: "ElevenLabs default",
+    fallbackProviderLabel: "Model provider fallback",
+  },
+  nova: {
+    voice: "nova",
+    voiceLabel: "Atlas",
+    style: "clear, curious, and bright",
+    provider: "eleven_labs",
+    providerLabel: "ElevenLabs default",
+    fallbackProviderLabel: "Model provider fallback",
+  },
+  onyx: {
+    voice: "onyx",
+    voiceLabel: "Marlowe",
+    style: "grounded, strategic, and authoritative",
+    provider: "eleven_labs",
+    providerLabel: "ElevenLabs default",
+    fallbackProviderLabel: "Model provider fallback",
+  },
+  shimmer: {
+    voice: "shimmer",
+    voiceLabel: "Lumen",
+    style: "precise, reassuring, and polished",
+    provider: "eleven_labs",
+    providerLabel: "ElevenLabs default",
+    fallbackProviderLabel: "Model provider fallback",
+  },
+};
+
+function withVoiceProfile(voice: string, rate: number, sample: string): VoiceDefault {
+  const profile = VOICE_PROFILE_LIBRARY[voice] || VOICE_PROFILE_LIBRARY.alloy;
+  return { ...profile, voice, rate, sample };
+}
+
 export const ROLE_VOICE_DEFAULTS: Record<string, VoiceDefault> = {
-  Assistant: { voice: "alloy", rate: 1.02, sample: "I can start by triaging your calendar, inbox, and loose ends before they stack up." },
-  Researcher: { voice: "nova", rate: 0.98, sample: "Give me the question, and I will bring back a concise, source-backed briefing." },
-  Coder: { voice: "echo", rate: 1.0, sample: "Point me at the bug or the repo, and I will help you ship a cleaner fix." },
-  Strategist: { voice: "onyx", rate: 0.96, sample: "I pressure-test decisions, surface tradeoffs, and turn ambiguity into a sharper plan." },
-  Accountant: { voice: "shimmer", rate: 0.94, sample: "I will track the numbers carefully and flag anything that deserves a second look." },
-  Editor: { voice: "fable", rate: 1.0, sample: "I tighten prose, preserve your voice, and make rough drafts read like finished work." },
-  Chef: { voice: "nova", rate: 1.03, sample: "I can turn dinner chaos into a simple plan, a grocery list, and meals you will actually want." },
-  "Travel Agent": { voice: "alloy", rate: 1.0, sample: "I line up the itinerary, the logistics, and the little details that make travel feel smooth." },
-  Trainer: { voice: "onyx", rate: 1.04, sample: "I can keep your plan practical, consistent, and honest about what will move the needle." },
+  Assistant: withVoiceProfile("alloy", 1.02, "I can start by triaging your calendar, inbox, and loose ends before they stack up."),
+  Researcher: withVoiceProfile("nova", 0.98, "Give me the question, and I will bring back a concise, source-backed briefing."),
+  Coder: withVoiceProfile("echo", 1.0, "Point me at the bug or the repo, and I will help you ship a cleaner fix."),
+  Strategist: withVoiceProfile("onyx", 0.96, "I pressure-test decisions, surface tradeoffs, and turn ambiguity into a sharper plan."),
+  Accountant: withVoiceProfile("shimmer", 0.94, "I will track the numbers carefully and flag anything that deserves a second look."),
+  Editor: withVoiceProfile("fable", 1.0, "I tighten prose, preserve your voice, and make rough drafts read like finished work."),
+  Chef: withVoiceProfile("nova", 1.03, "I can turn dinner chaos into a simple plan, a grocery list, and meals you will actually want."),
+  "Travel Agent": withVoiceProfile("alloy", 1.0, "I line up the itinerary, the logistics, and the little details that make travel feel smooth."),
+  Trainer: withVoiceProfile("onyx", 1.04, "I can keep your plan practical, consistent, and honest about what will move the needle."),
 };
 
 function tokenize(value: string): string[] {
@@ -205,6 +268,7 @@ export function composeStarterPrompt(
   basePrompt: string,
   seed?: string | null,
   recommendedConnections?: string[],
+  recommendedPermissions?: string[],
 ): string {
   const cleanSeed = (seed || "").trim();
   let prompt = basePrompt;
@@ -213,12 +277,14 @@ export function composeStarterPrompt(
     const bounded = cleanSeed.length > 600 ? `${cleanSeed.slice(0, 600)}…` : cleanSeed;
     prompt += `\n\nContext: the user described their situation as: "${bounded}". Make the deliverable specifically useful for that situation, not generic.`;
   }
-  // Conversational setup (four-beat consolidation): the agent itself proposes
-  // its next power-up after proving value — setup as a conversation with
-  // someone already working for you, not a dashboard of toggles.
-  const connections = (recommendedConnections || []).filter(Boolean).slice(0, 2);
-  if (connections.length > 0) {
-    prompt += `\n\nAfter you deliver the work above, add ONE short closing paragraph in your own voice: point out the single most valuable thing you could take on next if the user connected ${connections.join(" or ")}, and ask if they'd like you to walk them through connecting it. Keep it to two sentences, warm and concrete — no bullet lists.`;
+  // Conversational setup (four-beat consolidation): after proving value, the
+  // agent itself should ask for the next unlock in plain language.
+  const unlocks = [
+    ...(recommendedConnections || []).filter(Boolean),
+    ...(recommendedPermissions || []).filter(Boolean),
+  ].slice(0, 2);
+  if (unlocks.length > 0) {
+    prompt += `\n\nAfter you deliver the work above, add ONE short closing paragraph in your own voice: point out the single most valuable thing you could take on next if the user turned on ${unlocks.join(" or ")}, and ask if they'd like you to walk them through enabling it. Keep it to two sentences, warm and concrete — no bullet lists.`;
   }
   return prompt;
 }
@@ -296,8 +362,13 @@ export function generateAgentName(role: string | null, exclude?: string): string
 
 export function getRoleVoiceDefault(role: string): VoiceDefault {
   return ROLE_VOICE_DEFAULTS[role] || {
+    ...VOICE_PROFILE_LIBRARY.alloy,
     voice: "alloy",
     rate: 1,
     sample: "I am ready to help with the work you want off your plate.",
   };
+}
+
+export function getVoiceProfile(voiceId: string): VoiceProfile {
+  return VOICE_PROFILE_LIBRARY[voiceId] || VOICE_PROFILE_LIBRARY.alloy;
 }

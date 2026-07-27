@@ -519,24 +519,63 @@ mod tests {
 
     // ── Repair validates model string before writing ───────────────────────
 
+    /// True when a model id puts the family name BEFORE the version, e.g.
+    /// `anthropic/claude-sonnet-5` or `anthropic/claude-sonnet-4-6` — and false for
+    /// the reversed `anthropic/claude-4-6-sonnet`.
+    ///
+    /// Anthropic-shaped ids only (`<provider>/<product>-<family>-<version>`). Gemini
+    /// ids like `google/gemini-3.1-pro-preview` put the version second by design and
+    /// will return false — do not reuse this helper for them.
+    ///
+    /// Deliberately version-AGNOSTIC. This assertion used to hardcode
+    /// `ends_with("sonnet-4-6")` against the live `DEFAULT_ANTHROPIC_MODEL`, so bumping
+    /// the default to `claude-sonnet-5` broke it even though nothing was actually wrong
+    /// — the constant and its order test in `model_constants` were updated together and
+    /// this duplicate copy was missed. Assert the invariant, not today's version.
+    fn family_precedes_version(model_id: &str) -> bool {
+        let Some((_provider, model)) = model_id.split_once('/') else {
+            return false;
+        };
+        let segments: Vec<&str> = model.split('-').collect();
+
+        // Index of the first segment that starts a version, e.g. "5" or "4".
+        let Some(version_start) = segments
+            .iter()
+            .position(|segment| segment.chars().next().map_or(false, |c| c.is_ascii_digit()))
+        else {
+            return false; // no version segment at all
+        };
+
+        // "claude-sonnet-5"  → ["claude","sonnet","5"], version_start = 2 ✓
+        // "claude-4-6-sonnet"→ ["claude","4","6","sonnet"], version_start = 1 ✗
+        // At least a product name and a family name must precede the version, and the
+        // segment immediately before it must be alphabetic (the family).
+        version_start >= 2
+            && segments[version_start - 1]
+                .chars()
+                .all(|c| c.is_ascii_alphabetic())
+    }
+
     #[test]
     fn repair_would_reject_reversed_anthropic_model() {
-        // validate_model_string returns Ok for any well-formed "provider/model" string.
-        // The reversed "claude-4-6-sonnet" is technically parseable, so we rely on the
-        // suffix-order test in model_constants to guard against it.
-        let bad = "anthropic/claude-4-6-sonnet";
+        // validate_model_string returns Ok for any well-formed "provider/model" string,
+        // so the reversed form is parseable and has to be caught by suffix ORDER.
+        // Prove the rule has teeth before applying it to the live constant.
         assert!(
-            !bad.ends_with("sonnet-4-6"),
-            "The bad string '{}' should not match the correct suffix pattern",
-            bad
+            !family_precedes_version("anthropic/claude-4-6-sonnet"),
+            "the reversed model string should be rejected by the order rule"
         );
+        assert!(!family_precedes_version("anthropic/claude-5-sonnet"));
+        assert!(family_precedes_version("anthropic/claude-sonnet-4-6"));
+        assert!(family_precedes_version("anthropic/claude-sonnet-5"));
 
-        // The correct string passes validation and has the right suffix order
+        // The live default must pass validation and carry the right order.
         let good = model_constants::DEFAULT_ANTHROPIC_MODEL;
         assert!(model_constants::validate_model_string(good).is_ok());
         assert!(
-            good.ends_with("sonnet-4-6"),
-            "Correct string '{}' must end with 'sonnet-4-6'",
+            family_precedes_version(good),
+            "DEFAULT_ANTHROPIC_MODEL '{}' has the version before the family name — \
+             the reversed format OpenClaw silently rejects",
             good
         );
     }

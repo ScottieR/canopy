@@ -1,0 +1,159 @@
+name: Release Desktop App
+
+# Builds the signed universal macOS bundle when a version tag is pushed,
+# attaches artifacts to a GitHub Release, then publishes the updater
+# manifest to canopy-admin (which auto-deploys to Cloud Run).
+#
+# Release:  git tag v0.2.0 && git push origin v0.2.0
+# Rollback: see canopy-admin/scripts/rollback-release.mjs
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Setup Rust targets
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Run frontend tests
+        run: npm test -- --run
+
+      - name: Build universal macOS bundle
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          # Optional Apple code signing / notarization — activate by adding
+          # APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD, and
+          # APPLE_SIGNING_IDENTITY secrets, plus APPLE_API_ISSUER /
+          # APPLE_API_KEY / APPLE_API_KEY_PATH for notarytool.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Collect artifacts
+        id: artifacts
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          BUNDLE=src-tauri/target/universal-apple-darwin/release/bundle
+          mkdir -p release-artifacts
+          cp "$BUNDLE"/dmg/Canopy_"$VERSION"_universal.dmg release-artifacts/
+          cp "$BUNDLE"/macos/Canopy.app.tar.gz release-artifacts/Canopy_"$VERSION"_universal.app.tar.gz
+          cp "$BUNDLE"/macos/Canopy.app.tar.gz.sig release-artifacts/Canopy_"$VERSION"_universal.app.tar.gz.sig
+          ls -la release-artifacts
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.artifacts.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          gh release create "$TAG" \
+            --title "Canopy $VERSION" \
+            --notes "Canopy desktop $VERSION — see commit history for details." \
+            release-artifacts/* \
+            || gh release upload "$TAG" release-artifacts/* --clobber
+
+      - name: Checkout canopy-admin
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ScottieR/canopy-admin
+          token: ${{ secrets.CANOPY_ADMIN_TOKEN }}
+          path: canopy-admin-publish
+
+      - name: Publish updater manifest to canopy-admin
+        env:
+          VERSION: ${{ steps.artifacts.outputs.version }}
+        run: |
+          set -euo pipefail
+          SIG="$(cat release-artifacts/Canopy_"$VERSION"_universal.app.tar.gz.sig)"
+          URL="https://github.com/ScottieR/canopy/releases/download/v$VERSION/Canopy_${VERSION}_universal.app.tar.gz"
+          cd canopy-admin-publish
+          node - "$VERSION" "$SIG" "$URL" <<'EOF'
+          const fs = require('fs');
+          const [version, signature, url] = process.argv.slice(2);
+          const file = 'shared/releases.json';
+          const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+          data.releases = (data.releases || []).filter(r => r.version !== version);
+          const platforms = {
+            'darwin-aarch64': { signature, url },
+            'darwin-x86_64': { signature, url },
+          };
+          data.releases.push({
+            version,
+            notes: `Canopy ${version}`,
+            pub_date: new Date().toISOString(),
+            platforms,
+          });
+          const cmp = (a, b) => {
+            const p = v => String(v).split('.').map(n => parseInt(n, 10) || 0);
+            const [a1, a2, a3] = p(a), [b1, b2, b3] = p(b);
+            return (a1 - b1) || (a2 - b2) || (a3 - b3);
+          };
+          data.latest = data.releases.map(r => r.version).sort(cmp).reverse()[0] || null;
+          fs.writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+          console.log('releases.json updated, latest =', data.latest);
+          EOF
+          git config user.name "canopy-release-bot"
+          git config user.email "release-bot@canopy.local"
+          git add shared/releases.json
+          git commit -m "[RELEASE] Publish desktop v$VERSION updater manifest"
+          git push origin HEAD:main
+          git push origin HEAD:production
+
+      - name: Instant-publish to live server (optional)
+        if: ${{ secrets.ADMIN_API_KEY != '' }}
+        env:
+          ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
+          VERSION: ${{ steps.artifacts.outputs.version }}
+        run: |
+          set -euo pipefail
+          node - <<'EOF'
+          const fs = require('fs');
+          const version = process.env.VERSION;
+          const signature = fs.readFileSync(`release-artifacts/Canopy_${version}_universal.app.tar.gz.sig`, 'utf8');
+          const url = `https://github.com/ScottieR/canopy/releases/download/v${version}/Canopy_${version}_universal.app.tar.gz`;
+          const body = JSON.stringify({
+            version,
+            notes: `Canopy ${version}`,
+            platforms: {
+              'darwin-aarch64': { signature, url },
+              'darwin-x86_64': { signature, url },
+            },
+          });
+          fetch('https://canopy-admin-418538192879.us-central1.run.app/api/releases', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Admin-Key': process.env.ADMIN_API_KEY },
+            body,
+          }).then(async r => {
+            console.log(r.status, await r.text());
+            if (!r.ok) process.exit(1);
+          });
+          EOF

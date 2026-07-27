@@ -30,17 +30,29 @@ import {
   generateAgentName,
   getDiscoveryConfidenceCopy,
   getRoleDefaultName,
+  getVoiceProfile,
   getRoleVoiceDefault,
   inferRoleFromPrompt,
 } from "../utils/onboardingDiscovery";
+import {
+  composeSetupConversationPrompt,
+  getCollaboratorSuggestions,
+  getNextUnlockForRole,
+  getRosterGapSuggestions,
+  getSuggestedConnectionLabelsForRole,
+  getSuggestedPermissionLabelsForRole,
+} from "../utils/agentSetupRecommendations";
 import { getOnboardingIntegrationIds } from "../utils/onboardingIntegrations";
 import { getInitialOnboardingStep } from "../utils/onboardingFlow";
 import { useEngineStatus, startEngineProvisioning, describeEngineStage, getDeployGate, isEngineInFlight } from "../utils/engineStatus";
-import { speakPreview } from "../utils/voicePreview";
 import { DynamicPersonaDraft, composePersonaPersonality, draftPersonaWithEddie, isGenerativeDiscoveryEnabled } from "../utils/generativePersona";
 import { getAccessoryName, listAccessoryOptions } from "../utils/accessoryCatalog";
 import { buildScopeSection, syncTeamRosterToAgents } from "../utils/rosterScope";
 import { getHeartbeatSuggestionsForProfile, serializeHeartbeatFile } from "../utils/heartbeats";
+import {
+  formatRecommendedModel,
+  getRecommendedModel,
+} from "../utils/modelRecommendations";
 import { getAgentProviderSecretSlot, getManagedProviderId, syncAgentProviderCredentials } from "../security/providerCredentials";
 import { PasswordInput } from "../components/shared/PasswordInput";
 import rehypeSanitize from "rehype-sanitize";
@@ -76,18 +88,6 @@ const STARTER_TASKS: Record<string, { teaser: string; prompt: string }> = {
 const DEFAULT_STARTER_TASK = { teaser: "a first task picked to show their range",
   prompt: "Introduce yourself briefly, then show me what you can do: pick one small, genuinely useful task in your specialty and complete it right now. Produce something tangible — a document, plan, or template I can actually use." };
 const getStarterTask = (role: string | null) => (role && STARTER_TASKS[role]) || DEFAULT_STARTER_TASK;
-
-const DISCOVERY_CONNECTIONS: Record<string, string[]> = {
-  Assistant: ["Gmail", "Calendar", "Slack"],
-  Researcher: ["Browser", "Files", "Slack"],
-  Coder: ["GitHub", "Files", "Slack"],
-  Strategist: ["Browser", "Slack", "Files"],
-  Accountant: ["Files", "Payments"],
-  Editor: ["Files", "Slack"],
-  Chef: ["Photos", "Files"],
-  "Travel Agent": ["Calendar", "Gmail", "Browser"],
-  Trainer: ["Photos", "iMessage"],
-};
 
 // ─── Wizard progress — four beats (first-principles consolidation, July 18):
 // every visible stage is a moment, not a form. Meet Eddie → Meet your agent →
@@ -209,7 +209,6 @@ export function OnboardingWizard() {
   const [customIdentity, setCustomIdentity] = useState<{ baseModelUrl: string | null; accessories: string[]; dynamicColors?: any; habitatId?: number; color?: string; decor?: string[]; decorTransforms?: any }>({ baseModelUrl: null, accessories: [], decor: [] });
   const [selectedVoice, setSelectedVoice] = useState(draft?.selectedVoice || "alloy");
   const [selectedVoiceRate, setSelectedVoiceRate] = useState<number>(draft?.selectedVoiceRate || 1);
-  const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
   const [viewportSize, setViewportSize] = useState(() => ({
     width: typeof window !== "undefined" ? window.innerWidth : 1440,
     height: typeof window !== "undefined" ? window.innerHeight : 900,
@@ -445,6 +444,7 @@ export function OnboardingWizard() {
   const [googleTokens, setGoogleTokens] = useState<any>(null);
 
   const [deployedAgentId, setDeployedAgentId] = useState<string | null>(null);
+  const [postDeployConversationPrompt, setPostDeployConversationPrompt] = useState("");
   // Preflight model health (Part 1D field-test fix): never offer the starter
   // task into a dead key. null = not checked, "checking" = in flight.
   const [modelHealth, setModelHealth] = useState<null | "checking" | { status: string; detail?: string; provider: string; model: string }>(null);
@@ -510,6 +510,7 @@ export function OnboardingWizard() {
     setTwilioDraft({ accountSid: "", authToken: "", phoneNumber: "" });
     setGoogleTokens(null);
     setDeployedAgentId(null);
+    setPostDeployConversationPrompt("");
     setPairingCode("");
     setPairingError("");
     setCreateAgentError("");
@@ -777,26 +778,14 @@ export function OnboardingWizard() {
     return () => clearInterval(interval);
   }, []);
 
-  // Heavy roles get powerful models; light roles get fast models.
-  const HEAVY_ROLES = ["Strategist", "Analyst", "Researcher", "Engineer"];
-
   const getDynamicRecommendedModel = (role: string) => {
-    const isHeavy = HEAVY_ROLES.includes(role);
-    const strategy = isHeavy ? "heavy" : "light";
-    const match = availableModels.find((m: any) => m.strategy === strategy);
-    if (match) return { provider: match.provider, model: `${match.name} — ${match.description}`, id: match.id };
-    return { provider: "Google Gemini", model: "Gemini 3.5 Flash — Stable — speed optimized flagship", id: "google/gemini-3.5-flash" };
+    const match = getRecommendedModel(availableModels, role);
+    return { provider: match.provider, model: formatRecommendedModel(match), id: match.id };
   };
 
   const getProviderRecommendedModel = (role: string, targetProvider: string) => {
-    const isHeavy = HEAVY_ROLES.includes(role);
-    const strategy = isHeavy ? "heavy" : "light";
-    const providerName = targetProvider === "xAI Grok" ? "xAI" : targetProvider;
-    const options = availableModels.filter((m: any) => m.provider === providerName && m.strategy === strategy);
-    if (options.length > 0) return { model: `${options[0].name} — ${options[0].description}`, id: options[0].id };
-    const fallbacks = availableModels.filter((m: any) => m.provider === providerName);
-    if (fallbacks.length > 0) return { model: `${fallbacks[0].name} — ${fallbacks[0].description}`, id: fallbacks[0].id };
-    return { model: "Standard Model", id: "" };
+    const match = getRecommendedModel(availableModels, role, targetProvider);
+    return { model: formatRecommendedModel(match), id: match.id };
   };
 
   const startImportFlow = async () => {
@@ -870,7 +859,7 @@ export function OnboardingWizard() {
     setStep(0);
   };
   const discoveryExamples = DISCOVERY_EXAMPLES.filter(example => Boolean((agentTypeInfo as any)[example.role]));
-  const continueFromDiscovery = async () => {
+  const continueFromDiscovery = async (nextStep = 2) => {
     // Eddie-invented personas anchor on their blend's base template for
     // deterministic defaults, then override identity + personality.
     const persona = personaActive ? dynamicPersona : null;
@@ -906,7 +895,7 @@ export function OnboardingWizard() {
         console.warn("Failed to save user profile", e);
       }
     }
-    setStep(2);
+    setStep(nextStep);
   };
 
   useEffect(() => {
@@ -969,7 +958,10 @@ export function OnboardingWizard() {
   // discovery even though the blend anchor (e.g. Chef) powers the internals.
   const displayRole = personaMeta?.title || selectedRole;
   const hasDraftSource = !!selectedRole || !!discoveryInput.trim();
-  const draftRole = hasDraftSource ? (selectedRole || discoveryDraft.primaryRole) : null;
+  const helperSuggestedRole = !selectedRole && dynamicPersona?.fitsExisting
+    ? dynamicPersona.existingRole
+    : null;
+  const draftRole = hasDraftSource ? (selectedRole || helperSuggestedRole || discoveryDraft.primaryRole) : null;
   // When Eddie invented a persona, its blend anchor drives visuals/defaults
   // (deterministic base-template rule); explicit picks always win.
   const personaActive = !selectedRole && !!dynamicPersona && !dynamicPersona.fitsExisting;
@@ -977,11 +969,24 @@ export function OnboardingWizard() {
     ? dynamicPersona!.blend[0]
     : draftRole;
   const draftRoleInfo = effectiveDraftRole ? (agentTypeInfo as any)[effectiveDraftRole] : null;
-  const draftConnections = effectiveDraftRole ? (DISCOVERY_CONNECTIONS[effectiveDraftRole] || ["Files", "Slack"]) : [];
+  const draftConnections = effectiveDraftRole ? getSuggestedConnectionLabelsForRole(effectiveDraftRole) : [];
+  const draftPermissionLabels = effectiveDraftRole ? getSuggestedPermissionLabelsForRole(effectiveDraftRole) : [];
   const draftVoice = getRoleVoiceDefault(effectiveDraftRole || "Assistant");
+  const selectedVoiceProfile = getVoiceProfile(selectedVoice);
   const isCompactWindow = viewportSize.width < 1320;
   const isNarrowWindow = viewportSize.width < 1120;
   const isVeryNarrowWindow = viewportSize.width < 860;
+  const rosterGapRoles = useMemo(
+    () => getRosterGapSuggestions(agents, agentTypeInfo as any),
+    [agentTypeInfo, agents],
+  );
+  const collaboratorSuggestions = useMemo(
+    () => getCollaboratorSuggestions(
+      effectiveDraftRole,
+      agents.filter(agent => agent.role !== effectiveDraftRole),
+    ),
+    [agents, effectiveDraftRole],
+  );
   const discoveryHeartbeats = useMemo(
     () => draftRole
       ? getHeartbeatSuggestionsForProfile({
@@ -1034,13 +1039,17 @@ export function OnboardingWizard() {
       );
       if (personaRequestRef.current !== requestId) return; // stale
       setEddieThinking(false);
-      if (persona && !persona.fitsExisting) {
+      if (persona) {
         setDynamicPersona(persona);
-        if (persona.voice) setSelectedVoice(persona.voice);
-        if (persona.accessories.length > 0) {
-          setCustomIdentity(prev => ({ ...prev, accessories: persona.accessories }));
+        if (!persona.fitsExisting) {
+          if (persona.voice) setSelectedVoice(persona.voice);
+          if (persona.accessories.length > 0) {
+            setCustomIdentity(prev => ({ ...prev, accessories: persona.accessories }));
+          }
+          fireActivationEvent("eddie_persona_drafted", { title: persona.title });
+        } else if (persona.existingRole) {
+          fireActivationEvent("eddie_role_matched", { role: persona.existingRole });
         }
-        fireActivationEvent("eddie_persona_drafted", { title: persona.title });
       }
     }, 900);
     return () => {
@@ -1049,20 +1058,6 @@ export function OnboardingWizard() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [discoveryInput, selectedRole]);
-
-  const previewVoice = () => {
-    // Each voice id maps to a distinct system voice + pitch/rate personality —
-    // previously every option played the identical system default.
-    const started = speakPreview(
-      selectedVoice,
-      draftRole
-        ? getRoleVoiceDefault(draftRole).sample
-        : "I help you figure out which agents to create and what they should take off your plate.",
-      selectedVoiceRate,
-      { onend: () => setIsPreviewingVoice(false), onerror: () => setIsPreviewingVoice(false) },
-    );
-    if (started) setIsPreviewingVoice(true);
-  };
 
   useEffect(() => {
     if (!selectedRole || draft?.selectedVoice) return;
@@ -1206,6 +1201,29 @@ export function OnboardingWizard() {
             );
           })}
         </div>
+
+        {isAddAgentFlow && agents.length > 0 && rosterGapRoles.length > 0 && (
+          <div style={{ marginBottom: 20, padding: 16, borderRadius: 18, background: "rgba(60,102,99,0.05)", border: "1px solid rgba(60,102,99,0.12)" }}>
+            <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "#3c6663", marginBottom: 6 }}>
+              Fill A Gap In Your Team
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 12 }}>
+              Eddie thinks these roles would round out the crew you already have.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {rosterGapRoles.map(role => (
+                <button
+                  key={role}
+                  type="button"
+                  onClick={() => handleRoleSelect(role, discoveryInput)}
+                  style={{ padding: "7px 12px", borderRadius: 999, border: "1px solid rgba(60,102,99,0.18)", background: "var(--surface-card)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+                >
+                  Draft a {role}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Quiet secondary paths — one text row, not a button cluster. */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 18, fontSize: 12, color: "var(--text-sub)", flexWrap: "wrap" }}>
@@ -1371,28 +1389,45 @@ export function OnboardingWizard() {
               </div>
             )}
 
+            {isAddAgentFlow && collaboratorSuggestions.length > 0 && (
+              <div style={{ padding: "12px 14px", borderRadius: 16, background: "rgba(242,140,99,0.08)", border: "1px solid rgba(242,140,99,0.18)", fontSize: 12, color: "var(--text-sub)", lineHeight: 1.55, marginBottom: 14 }}>
+                <strong style={{ color: "var(--text-main)" }}>Would pair well with your current crew:</strong>{" "}
+                {collaboratorSuggestions.map((suggestion, index) => (
+                  <React.Fragment key={`${suggestion.name}-${suggestion.role}`}>
+                    {index > 0 ? " " : ""}
+                    <span style={{ color: "#C76A42", fontWeight: 700 }}>{suggestion.name}</span> ({suggestion.role}) to {suggestion.reason}.
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
+
             <div style={{ padding: 16, borderRadius: 18, background: "rgba(255,255,255,0.72)", border: "1px solid rgba(0,0,0,0.06)", marginBottom: 14 }}>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>Voice & Identity</div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 10, flexDirection: isVeryNarrowWindow ? "column" : "row" }}>
-                <select
-                  value={selectedVoice}
-                  onChange={e => setSelectedVoice(e.target.value)}
-                  style={{ flex: 1, width: isVeryNarrowWindow ? "100%" : undefined, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
-                >
-                  {["alloy", "echo", "fable", "nova", "onyx", "shimmer"].map(voice => (
-                    <option key={voice} value={voice}>{voice}</option>
+              <div style={{ display: "flex", gap: 12, alignItems: isVeryNarrowWindow ? "flex-start" : "center", justifyContent: "space-between", marginBottom: 10, flexDirection: isVeryNarrowWindow ? "column" : "row" }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+                    Eddie picked {draftVoice.voiceLabel}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                    A managed premium voice profile that feels {draftVoice.style}.
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {[draftVoice.providerLabel, draftVoice.fallbackProviderLabel].map(label => (
+                    <span
+                      key={label}
+                      style={{ padding: "6px 10px", borderRadius: 999, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 11, fontWeight: 700 }}
+                    >
+                      {label}
+                    </span>
                   ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={previewVoice}
-                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.2)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", minWidth: isVeryNarrowWindow ? 0 : 108, width: isVeryNarrowWindow ? "100%" : "auto" }}
-                >
-                  {isPreviewingVoice ? "Playing..." : "Preview voice"}
-                </button>
+                </div>
               </div>
               <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 10 }}>
                 {draftVoice.sample}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                Eddie assigns this automatically so you can get to the first conversation fast. Full voice tuning can happen later in the agent's settings.
               </div>
               {/* Accessory chips removed: raw ids leaked ("accessories set 1
                   item 17") and the portrait already carries the identity. */}
@@ -1434,6 +1469,16 @@ export function OnboardingWizard() {
                       ))}
                     </span>
                   </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 12 }}>
+                    <span style={{ color: "var(--text-sub)" }}>Likely first capabilities</span>
+                    <span style={{ display: "flex", flexWrap: "wrap", gap: 6, justifyContent: "flex-end" }}>
+                      {draftPermissionLabels.slice(0, 3).map(label => (
+                        <span key={label} style={{ padding: "3px 8px", borderRadius: 999, background: "rgba(107,107,174,0.08)", color: "#6B6BAE", fontSize: 11, fontWeight: 700 }}>
+                          {label}
+                        </span>
+                      ))}
+                    </span>
+                  </div>
                   {discoveryHeartbeats.map(task => (
                     <div key={task.id} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12 }}>
                       <span style={{ color: "var(--text-sub)" }}>{task.title}</span>
@@ -1443,12 +1488,40 @@ export function OnboardingWizard() {
                 </div>
               )}
             </div>
+            {isAddAgentFlow && (
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(0,0,0,0.06)" }}>
+                <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                  Already know this is the right fit? Keep Eddie&apos;s draft and jump straight to power-up.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { void continueFromDiscovery(3); }}
+                  style={{ padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.2)", background: "rgba(60,102,99,0.06)", color: "#3c6663", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
+                >
+                  Skip to power-up
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
       )}
     </div>
   );
+
+  const handoffToAgentConversation = (agentId: string, prompt?: string | null) => {
+    const cleanPrompt = (prompt || "").trim();
+    if (cleanPrompt) {
+      localStorage.setItem("canopy_starter_task", JSON.stringify({ agentId, prompt: cleanPrompt }));
+    }
+    localStorage.removeItem("canopy_onboarding_draft");
+    const store = useWorldStore.getState();
+    store.setSelectedAgent(agentId);
+    if (typeof (store as any).setArchitectTab === "function") {
+      (store as any).setArchitectTab("overview");
+    }
+    store.setActiveView("architect");
+  };
 
   const handleCreateAgent = async (opts?: { starterTask?: string }) => {
     if (!selectedRole || !agentName.trim()) return;
@@ -1527,11 +1600,11 @@ export function OnboardingWizard() {
             active_model: (() => {
               const recommended = getProviderRecommendedModel(selectedRole, llmProvider);
               if (recommended.id) return recommended.id;
-              if (llmProvider === "Anthropic") return "anthropic/claude-sonnet-4-6";
-              if (llmProvider === "OpenAI") return "openai/gpt-4o";
-              if (llmProvider === "Google Gemini") return "google/gemini-3.5-flash";
-              if (llmProvider === "xAI Grok") return "xai/grok-beta";
-              return "google/gemini-3.5-flash";
+              if (llmProvider === "Anthropic") return "anthropic/claude-sonnet-5";
+              if (llmProvider === "OpenAI") return "openai/gpt-5.6-terra";
+              if (llmProvider === "Google Gemini") return "google/gemini-3.6-flash";
+              if (llmProvider === "xAI Grok") return "xai/grok-4.5";
+              return "anthropic/claude-sonnet-5";
             })(),
             soul_template: roleInfo.soul_template,
             identity_template: finalPrompt,
@@ -1573,7 +1646,7 @@ export function OnboardingWizard() {
             config: {
               agent_id: newAgentData.id,
               stt_provider: "web_speech",
-              tts_provider: "web_speech",
+              tts_provider: "eleven_labs",
               tts_voice: selectedVoice,
               speaking_rate: selectedVoiceRate,
               auto_play: false,
@@ -1683,6 +1756,18 @@ export function OnboardingWizard() {
           },
           { githubRepos: pendingGithubRepos }
         );
+        const postDeployPrompt = composeSetupConversationPrompt({
+          agentName: newAgentData.name,
+          role: selectedRole,
+          userNeed: discoveryInput,
+          state: {
+            enabledIntegrations: initialIntegrations,
+            enabledPermissions: agentPermissions
+              .filter(permission => permission.enabled)
+              .map(permission => permission.id),
+            isolated,
+          },
+        });
 
         if (initialIntegrations.length > 0) {
           try {
@@ -1736,7 +1821,7 @@ export function OnboardingWizard() {
         // A0 activation: agent successfully deployed. Fire-once, see fireActivationEvent.
         fireActivationEvent("activation_a0_deployed");
 
-        return newAgentData;
+        return { agent: newAgentData, postDeployPrompt };
       } else {
         throw new Error("Tauri invoke not found");
       }
@@ -1749,13 +1834,8 @@ export function OnboardingWizard() {
     // ChatTab picks up the queued first task and sends it automatically.
     if (starterTask && !plugins.slack) {
       try {
-        const newAgent = await deployAgentCore(tempId);
-        localStorage.setItem("canopy_starter_task", JSON.stringify({ agentId: newAgent.id, prompt: starterTask }));
-        localStorage.removeItem('canopy_onboarding_draft');
-        const store = useWorldStore.getState();
-        store.setSelectedAgent(newAgent.id);
-        if (typeof (store as any).setArchitectTab === "function") (store as any).setArchitectTab("overview");
-        store.setActiveView("architect");
+        const { agent: newAgent } = await deployAgentCore(tempId);
+        handoffToAgentConversation(newAgent.id, starterTask);
       } catch (err) {
         console.error("Starter-task deployment failed:", err);
         setCreateAgentError(String(err));
@@ -1772,8 +1852,9 @@ export function OnboardingWizard() {
 
     if (plugins.slack) {
       try {
-        const newAgent = await deployAgentCore(tempId);
+        const { agent: newAgent, postDeployPrompt } = await deployAgentCore(tempId);
         setDeployedAgentId(newAgent.id);
+        setPostDeployConversationPrompt(postDeployPrompt);
         setStep(7);
       } catch (err) {
         console.error("Background Agent Deployment Failed:", err);
@@ -1787,20 +1868,20 @@ export function OnboardingWizard() {
         setIsCreatingAgent(false);
       }
     } else {
-      setActiveView("canopy");
-      setIsCreatingAgent(false);
-      setTimeout(async () => {
-        try {
-          await deployAgentCore(tempId);
-        } catch (err) {
-          console.error("Background Agent Deployment Failed:", err);
-          useWorldStore.setState(state => ({
-            agents: state.agents.map(a => a.id === tempId
-              ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" }
-              : a)
-          }));
-        }
-      }, 100);
+      try {
+        const { agent: newAgent, postDeployPrompt } = await deployAgentCore(tempId);
+        handoffToAgentConversation(newAgent.id, postDeployPrompt);
+      } catch (err) {
+        console.error("Background Agent Deployment Failed:", err);
+        setCreateAgentError(String(err));
+        useWorldStore.setState(state => ({
+          agents: state.agents.map(a => a.id === tempId
+            ? { ...a, status: "error", currentAction: "Deployment Failed: Docker Container Execution Failure" }
+            : a)
+        }));
+      } finally {
+        setIsCreatingAgent(false);
+      }
     }
   };
 
@@ -2091,25 +2172,23 @@ export function OnboardingWizard() {
             <div style={{ background: "var(--surface-base)", backdropFilter: "blur(4px)", padding: 20, borderRadius: 16, marginBottom: 24 }}>
               <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", marginBottom: 8 }}>Voice & visual identity</div>
               <div style={{ fontSize: 13, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 14 }}>
-                Eddie already picked a starting voice and accessories so this agent feels distinct right away.
+                Eddie already picked a managed premium voice and accessories so this agent feels distinct right away.
               </div>
-              <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-                <select
-                  value={selectedVoice}
-                  onChange={e => setSelectedVoice(e.target.value)}
-                  style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
-                >
-                  {["alloy", "echo", "fable", "nova", "onyx", "shimmer"].map(voice => (
-                    <option key={voice} value={voice}>{voice}</option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={previewVoice}
-                  style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.18)", background: "rgba(60,102,99,0.06)", color: "#3c6663", cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "inherit", minWidth: 112 }}
-                >
-                  {isPreviewingVoice ? "Playing..." : "Preview voice"}
-                </button>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+                    {selectedVoiceProfile.voiceLabel}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+                    {selectedVoiceProfile.providerLabel} with {selectedVoiceProfile.fallbackProviderLabel.toLowerCase()}.
+                  </div>
+                </div>
+                <div style={{ padding: "8px 12px", borderRadius: 12, background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 12, fontWeight: 700 }}>
+                  Feels {selectedVoiceProfile.style}
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5, marginBottom: 12 }}>
+                We keep voice automatic here so your first conversation starts faster instead of turning into another setup choice.
               </div>
               {/* The being, live: lobster + accessories + habitat, same preview
                   pipeline as the appearance step — never raw asset ids. */}
@@ -3790,7 +3869,7 @@ export function OnboardingWizard() {
                     // Workstream B: weave the user's own discovery words into the
                     // starter task so the first deliverable is domain-specific.
                     const deployOpts = starterEligible
-                      ? { starterTask: composeStarterPrompt(getStarterTask(selectedRole).prompt, discoveryInput, draftConnections) }
+                      ? { starterTask: composeStarterPrompt(getStarterTask(selectedRole).prompt, discoveryInput, draftConnections, draftPermissionLabels) }
                       : undefined;
                     // Workstream A: Deploy always has a working exit. If the
                     // background engine job hasn't finished, hold the intent and
@@ -3936,8 +4015,10 @@ export function OnboardingWizard() {
                   try {
                     await invoke("approve_slack_pairing", { code: pairingCode.trim(), agentId: deployedAgentId });
                     fireActivationEvent("channel_connected", { type: "slack" });
+                    const nextAgentId = deployedAgentId;
+                    const nextPrompt = postDeployConversationPrompt;
                     resetWizardState();
-                    setActiveView("canopy");
+                    if (nextAgentId) handoffToAgentConversation(nextAgentId, nextPrompt);
                   } catch (e) {
                     setPairingError(String(e));
                   } finally {
@@ -3961,8 +4042,11 @@ export function OnboardingWizard() {
             <button
               onClick={() => {
                 if (!channelChoice) fireActivationEvent("onboarding_channel_skipped");
+                const nextAgentId = deployedAgentId;
+                const nextPrompt = postDeployConversationPrompt;
                 resetWizardState();
-                setActiveView("canopy");
+                if (nextAgentId) handoffToAgentConversation(nextAgentId, nextPrompt);
+                else setActiveView("canopy");
               }}
               style={{ padding: "16px 24px", borderRadius: 16, background: channelChoice && channelChoice !== "slack" ? "linear-gradient(135deg, #3c6663, #609995)" : "transparent", color: channelChoice && channelChoice !== "slack" ? "var(--surface-card)" : "var(--text-sub)", border: "none", fontSize: 16, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
             >

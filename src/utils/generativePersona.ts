@@ -73,6 +73,19 @@ export function buildPersonaDraftMessage(
   ].join("\n\n");
 }
 
+export function buildPersonaDraftRepairMessage(
+  invalidReply: string,
+  roles: Array<{ key: string; description?: string }>,
+  accessoryNames: string[] = [],
+): string {
+  const boundedReply = invalidReply.trim().slice(0, 1800);
+  return [
+    buildPersonaDraftMessage("Repair the invalid persona draft reply below.", roles, accessoryNames),
+    `INVALID REPLY TO REPAIR:\n${boundedReply}`,
+    `Repair the reply into ONE valid JSON object that matches the schema exactly. Preserve intent where possible, but never invent role keys outside the list.`,
+  ].join("\n\n");
+}
+
 /** Tolerant JSON extraction: fences, preamble, trailing text all survive. */
 export function parsePersonaDraftReply(
   reply: string,
@@ -181,19 +194,35 @@ export async function draftPersonaWithEddie(
     const roles = Object.entries(roleInfo)
       .filter(([key]) => key !== "Custom")
       .map(([key, value]) => ({ key, description: value?.description }));
+    const accessoryNames = accessoryOptions.map(option => option.name);
+    const accessoryIds = accessoryOptions.map(option => option.id);
+    const helperContext = { active_view: "onboarding", onboarding: { in_onboarding: true } };
+    const helperContinuity = { topic: "persona_draft" };
     const message = buildPersonaDraftMessage(
       userPrompt,
       roles,
-      accessoryOptions.map(option => option.name),
+      accessoryNames,
     );
     const reply = await Promise.race([
-      requestImpl(message, { active_view: "onboarding", onboarding: { in_onboarding: true } }),
+      requestImpl(message, helperContext, helperContinuity),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Eddy timed out")), HELPER_TIMEOUT_MS)),
     ]);
-    return parsePersonaDraftReply(
+    const parsed = parsePersonaDraftReply(
       reply,
       roles.map(role => role.key),
-      accessoryOptions.map(option => option.id),
+      accessoryIds,
+    );
+    if (parsed) return parsed;
+
+    const repairMessage = buildPersonaDraftRepairMessage(reply, roles, accessoryNames);
+    const repairedReply = await Promise.race([
+      requestImpl(repairMessage, helperContext, helperContinuity),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Eddy repair timed out")), HELPER_TIMEOUT_MS)),
+    ]);
+    return parsePersonaDraftReply(
+      repairedReply,
+      roles.map(role => role.key),
+      accessoryIds,
     );
   } catch {
     return null;

@@ -825,8 +825,100 @@ impl Database {
             [],
         )?;
 
+        // Migration: backfill capability blobs that predate the capabilities column.
+        //
+        // `ALTER TABLE agents ADD COLUMN capabilities_json TEXT NOT NULL DEFAULT '{}'`
+        // above gave every pre-existing row the literal string `{}`. Combined with the
+        // (now fixed) field-level `#[serde(default)]` on AgentCapabilities, those agents
+        // deserialized to all-false — no `browser`, no `gog` — and `sync_agent_skills`
+        // then wrote `skills: []` into openclaw.json, so they had neither browser nor
+        // web search no matter what the UI showed.
+        //
+        // The struct-level serde default fixes reads going forward; this makes the stored
+        // row explicit so anything that parses the raw JSON without going through
+        // AgentCapabilities (the frontend, jit_server's capability grants) agrees. Merge
+        // semantics: keys already present win, missing keys are filled from Default. That
+        // also gives capabilities added after an agent was created a sane starting value
+        // instead of silently false.
+        Self::backfill_agent_capabilities(&conn);
+
         tracing::debug!("Database migrations completed");
         Ok(())
+    }
+
+    /// Fill in missing keys in each agent's `capabilities_json` from
+    /// `AgentCapabilities::default()`, leaving any explicitly stored value untouched.
+    /// Only rows that actually change are written, so this is a no-op on later boots.
+    fn backfill_agent_capabilities(conn: &rusqlite::Connection) {
+        let defaults = match serde_json::to_value(crate::models::AgentCapabilities::default()) {
+            Ok(serde_json::Value::Object(map)) => map,
+            _ => return,
+        };
+
+        let rows: Vec<(String, String)> = {
+            let mut stmt = match conn.prepare("SELECT id, capabilities_json FROM agents") {
+                Ok(stmt) => stmt,
+                Err(e) => {
+                    tracing::warn!("capability backfill: could not read agents: {}", e);
+                    return;
+                }
+            };
+            let mapped = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            });
+            match mapped {
+                Ok(iter) => iter.filter_map(Result::ok).collect(),
+                Err(e) => {
+                    tracing::warn!("capability backfill: could not scan agents: {}", e);
+                    return;
+                }
+            }
+        };
+
+        let mut patched = 0usize;
+        for (id, raw) in rows {
+            // A blob that isn't a JSON object at all (empty string, corrupt write) is
+            // replaced wholesale rather than skipped — leaving it would keep the agent
+            // in the all-false state this migration exists to undo.
+            let mut stored = match serde_json::from_str::<serde_json::Value>(&raw) {
+                Ok(serde_json::Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
+            };
+
+            let missing: Vec<&String> = defaults
+                .keys()
+                .filter(|key| !stored.contains_key(key.as_str()))
+                .collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let missing_names: Vec<String> = missing.iter().map(|k| (*k).clone()).collect();
+            for key in missing_names.iter() {
+                if let Some(value) = defaults.get(key) {
+                    stored.insert(key.clone(), value.clone());
+                }
+            }
+
+            let merged = serde_json::Value::Object(stored).to_string();
+            match conn.execute(
+                "UPDATE agents SET capabilities_json = ?1 WHERE id = ?2",
+                rusqlite::params![merged, id],
+            ) {
+                Ok(_) => {
+                    patched += 1;
+                    tracing::info!(
+                        "capability backfill: agent {} inherited defaults for [{}]",
+                        id,
+                        missing_names.join(", ")
+                    );
+                }
+                Err(e) => tracing::warn!("capability backfill: agent {} update failed: {}", id, e),
+            }
+        }
+
+        if patched > 0 {
+            tracing::info!("capability backfill: patched {} agent row(s)", patched);
+        }
     }
 
     // ─── Global Config Operations ────────────────────────────────────────────

@@ -2,9 +2,9 @@ import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ProvidersVault } from "./ProvidersVault";
 import { WebVault } from "./WebVault";
-import { PasswordInput } from "./shared/PasswordInput";
 import { ConfirmDisconnectModal } from "./shared/ConfirmDisconnectModal";
 import { Link, Calendar, HardDrive, Github, MessageCircle, Cloud, Database } from "lucide-react";
+import { getCustomOAuthProvidersFromScope, type CustomOAuthProvider } from "../utils/customOAuth";
 
 // ─── Disconnect modal config (per integration) ────────────────────────────────
 //
@@ -43,6 +43,14 @@ interface ServiceStatus {
   connected: boolean;
   label?: string; // e.g. workspace name, bot name, email address
 }
+
+type BridgeRecord = {
+  bridge_type?: string;
+  bridgeType?: string;
+  config?: {
+    scope?: unknown;
+  };
+};
 
 type Section = "providers" | "services";
 
@@ -210,6 +218,32 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
   const [disconnectBusy, setDisconnectBusy] = useState(false);
 
   const [connectors, setConnectors] = useState<any[]>([]);
+  const [customOAuthProvidersByAgent, setCustomOAuthProvidersByAgent] = useState<Record<string, CustomOAuthProvider[]>>({});
+
+  const loadCustomOAuthProviders = useCallback(async () => {
+    const entries = await Promise.all(
+      agents.map(async agent => {
+        try {
+          const bridges = await invoke<BridgeRecord[]>("list_bridges", { agentId: agent.id });
+          const customBridge = bridges.find(bridge => {
+            const bridgeType =
+              typeof bridge.bridge_type === "string"
+                ? bridge.bridge_type
+                : typeof bridge.bridgeType === "string"
+                  ? bridge.bridgeType
+                  : "";
+            return bridgeType.toLowerCase().includes("custom");
+          });
+          return [agent.id, getCustomOAuthProvidersFromScope(customBridge?.config?.scope)] as const;
+        } catch (error) {
+          console.error(`Failed to load custom OAuth bridges for ${agent.id}`, error);
+          return [agent.id, []] as const;
+        }
+      }),
+    );
+
+    setCustomOAuthProvidersByAgent(Object.fromEntries(entries));
+  }, [agents]);
 
   useEffect(() => {
     invoke<any[]>("get_connectors_config")
@@ -273,14 +307,18 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
 
   useEffect(() => { 
     checkStatuses(); 
-    const handleUpdate = () => checkStatuses();
+    void loadCustomOAuthProviders();
+    const handleUpdate = () => {
+      checkStatuses();
+      void loadCustomOAuthProviders();
+    };
     window.addEventListener("slack-updated", handleUpdate);
     window.addEventListener("refresh_integrations", handleUpdate);
     return () => {
       window.removeEventListener("slack-updated", handleUpdate);
       window.removeEventListener("refresh_integrations", handleUpdate);
     };
-  }, [checkStatuses]);
+  }, [checkStatuses, loadCustomOAuthProviders]);
 
   // Agents connected to each service
   const getConnectedAgentsWithMode = (integration: string) =>
@@ -306,9 +344,28 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
         } else {
           mode = "All Repositories";
         }
+      } else if (integration === "custom_oauth") {
+        const providers = customOAuthProvidersByAgent[a.id] || [];
+        if (providers.length > 0) {
+          mode = providers.map(provider => provider.providerName).join(", ");
+        }
       }
       return { id: a.id, name: a.name, mode };
     });
+
+  const customOAuthAgents = agents
+    .filter(agent => (customOAuthProvidersByAgent[agent.id] || []).length > 0)
+    .map(agent => ({
+      id: agent.id,
+      name: agent.name,
+      mode: (customOAuthProvidersByAgent[agent.id] || [])
+        .map(provider => provider.providerName)
+        .join(", "),
+    }));
+  const totalCustomOAuthProviders = Object.values(customOAuthProvidersByAgent).reduce(
+    (count, providers) => count + providers.length,
+    0,
+  );
 
   // ── Global connect for Gmail and Calendar has been removed in favor of strict per-agent isolation ──
 
@@ -460,6 +517,20 @@ export function IntegrationsView({ agents }: { agents: Array<{ id: string; name:
               description="Connect GitHub from the specific agent that should own the token and repo bindings."
               status={{ connected: getConnectedAgentsWithMode("github").length > 0 }}
               connectedAgents={getConnectedAgentsWithMode("github")}
+            />
+
+            <ServiceCard
+              icon={<Link size={20} color="#3c6663" />}
+              name="Custom OAuth"
+              description="Register agent-specific OAuth providers for services Canopy does not natively support yet."
+              status={{
+                connected: customOAuthAgents.length > 0,
+                label:
+                  totalCustomOAuthProviders > 0
+                    ? `${totalCustomOAuthProviders} provider${totalCustomOAuthProviders === 1 ? "" : "s"} configured`
+                    : undefined,
+              }}
+              connectedAgents={customOAuthAgents}
             />
 
             {connectors

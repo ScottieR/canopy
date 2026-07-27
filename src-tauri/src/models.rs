@@ -18,6 +18,17 @@ pub use model_constants::DEFAULT_ANTHROPIC_MODEL;
 pub use model_constants::DEFAULT_GEMINI_MODEL;
 pub use model_constants::DEFAULT_OPENAI_MODEL;
 
+fn normalize_dynamic_model_id(provider_prefix: &str, value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else if trimmed.contains('/') {
+        Some(trimmed.to_string())
+    } else {
+        Some(format!("{provider_prefix}/{trimmed}"))
+    }
+}
+
 /// Returns the best available model string for the given provider, consulting the
 /// admin-synced models.json before falling back to the validated constants in model_constants.
 ///
@@ -60,12 +71,12 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
                                 })
                             })
                             .and_then(|entry| entry.get("id").and_then(|v| v.as_str()))
-                            .map(|id| format!("google/{}", id)),
+                            .and_then(|id| normalize_dynamic_model_id("google", id)),
                         "openai" => {
                             if heavy.contains("gpt") {
-                                Some(format!("openai/{}", heavy))
+                                normalize_dynamic_model_id("openai", heavy)
                             } else if light.contains("gpt") {
-                                Some(format!("openai/{}", light))
+                                normalize_dynamic_model_id("openai", light)
                             } else {
                                 None
                             }
@@ -73,13 +84,19 @@ pub fn get_dynamic_default_model(provider: &str) -> String {
                         "anthropic" => {
                             // Only accept model names that look like the correct suffix order
                             // (e.g. "claude-sonnet-4-6"), not the reversed "claude-4-6-sonnet".
-                            let raw = if heavy.starts_with("claude") {
+                            let raw = if heavy.starts_with("anthropic/claude")
+                                || heavy.starts_with("claude")
+                            {
                                 heavy
+                            } else if light.starts_with("anthropic/claude")
+                                || light.starts_with("claude")
+                            {
+                                light
                             } else {
                                 ""
                             };
                             if !raw.is_empty() {
-                                Some(format!("anthropic/{}", raw))
+                                normalize_dynamic_model_id("anthropic", raw)
                             } else {
                                 None
                             }
@@ -162,56 +179,59 @@ pub struct AgentPersonality {
     pub identity_template: Option<String>,
 }
 
+/// ⚠️  `#[serde(default)]` MUST stay at the STRUCT level, never on individual fields.
+///
+/// Field-level `#[serde(default)]` fills a missing field with `bool::default()` (false)
+/// and IGNORES the `Default` impl below. That silently turned every agent whose
+/// `capabilities_json` was `{}` — which is what `ALTER TABLE agents ADD COLUMN
+/// capabilities_json TEXT NOT NULL DEFAULT '{}'` (see db.rs) gave every pre-existing
+/// row — into an agent with NO browser and NO web search. `from_str("{}")` *succeeds*,
+/// so the `unwrap_or_default()` in `db.rs::get_agent` never fired either.
+///
+/// Downstream that is worse than it sounds: `sync_agent_skills` writes an explicit
+/// `skills: []` into openclaw.json, which overrides OpenClaw's global
+/// `["gog","summarize"]` default, so search is lost outright rather than falling back.
+///
+/// Struct-level `#[serde(default)]` fills missing fields from `Self::default()`, so a
+/// partial or empty blob now inherits the intended defaults and newly added
+/// capabilities get a sane value on agents created before the field existed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AgentCapabilities {
-    #[serde(default)]
     pub ext_network: bool,
-    #[serde(default)]
     pub int_network: bool,
-    #[serde(default)]
     pub autonomous: bool,
-    #[serde(default)]
     pub scheduled: bool,
-    #[serde(default)]
     pub memory_write: bool,
-    #[serde(default)]
     pub file_read: bool,
-    #[serde(default)]
     pub file_write: bool,
-    #[serde(default)]
     pub payments: bool,
-    #[serde(default)]
     pub spend_auto: bool,
 
     // OpenClaw Skills
-    #[serde(default)]
     pub browser: bool,
-    #[serde(default)]
     pub proxy: bool,
-    #[serde(default)]
     pub vision: bool,
-    #[serde(default)]
     pub canvas: bool,
-    #[serde(default)]
     pub coding: bool,
-    #[serde(default)]
     pub gog: bool,
-    #[serde(default)]
     pub summarize: bool,
-    #[serde(default)]
     pub genui: bool,
-    #[serde(default)]
     pub computer_control: bool,
-    #[serde(default)]
     pub host_control: bool,
-    #[serde(default)]
     pub screen_record: bool,
 }
 
 impl Default for AgentCapabilities {
     fn default() -> Self {
         Self {
-            ext_network: false,
+            // `ext_network` is ADVISORY ONLY — it is not in the skills list and nothing
+            // enforces egress; it only renders a line in APP_CAPABILITIES.md. Defaulting
+            // it to false while `browser`/`gog` defaulted to true produced a file that
+            // said "web search ENABLED" under Web & Discovery and "DISABLED — Use
+            // external network access…" under Access Boundaries, and agents resolved the
+            // contradiction by reporting they had no web access at all.
+            ext_network: true,
             int_network: false,
             autonomous: false,
             scheduled: true,    // QOL: Standard cron features allowed by default
@@ -270,20 +290,30 @@ impl AgentStats {
             // Keys here are the bare model IDs (without provider prefix) as reported
             // by OpenClaw usage events. Keep in sync with model_constants.rs.
             match model {
-                // Anthropic — correct ID is "claude-sonnet-4-6" not "claude-4-6-sonnet"
-                "claude-sonnet-4-6" => (3.00, 15.00),
-                "claude-haiku-4-5" => (0.25, 1.25),
-                "claude-opus-4-6" => (15.00, 75.00),
+                "claude-sonnet-5" => (3.00, 15.00),
+                "claude-haiku-4-5" => (1.00, 5.00),
+                "claude-opus-5" => (5.00, 25.00),
+                "claude-fable-5" => (10.00, 50.00),
+                "claude-opus-4-8" => (5.00, 25.00),
                 "claude-opus-4-7" => (5.00, 25.00),
+                "claude-sonnet-4-6" => (3.00, 15.00),
+                "claude-opus-4-6" => (15.00, 75.00),
                 // OpenAI
+                "gpt-5.6-sol" => (5.00, 30.00),
+                "gpt-5.6-terra" => (2.50, 15.00),
+                "gpt-5.6-luna" => (1.00, 6.00),
                 "gpt-4o-mini" => (0.15, 0.60),
                 "gpt-4o" => (2.50, 10.00),
                 // Google
-                "gemini-2.0-flash" => (0.35, 1.05),
-                "gemini-2.0-pro" => (3.50, 10.50),
-                "gemini-3.5-flash" => (0.15, 0.60),
-                "gemini-3.5-pro" => (1.25, 5.00),
+                "gemini-3.6-flash" => (1.50, 7.50),
+                "gemini-3.5-flash-lite" => (0.30, 2.50),
+                "gemini-3.5-flash" => (1.50, 9.00),
+                "gemini-3.1-pro-preview" => (2.00, 12.00),
+                "gemini-3.1-flash-lite" => (0.25, 1.50),
+                "gemini-2.5-flash" => (0.30, 2.50),
+                "gemini-2.5-pro" => (1.25, 10.00),
                 // xAI
+                "grok-4.5" => (2.00, 6.00),
                 "grok-beta" => (5.00, 15.00),
                 // Unknown model — log and use conservative estimate
                 other => {

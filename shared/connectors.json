@@ -101,6 +101,17 @@
     "type": "oauth"
   },
   {
+    "id": "custom_oauth",
+    "name": "Custom OAuth",
+    "subtitle": "Register an agent-specific OAuth provider for services Canopy does not natively support yet.",
+    "icon": "link",
+    "isGlobal": false,
+    "isVisible": true,
+    "isSuggested": true,
+    "needsCompanion": true,
+    "type": "oauth"
+  },
+  {
     "id": "twilio",
     "name": "Twilio Voice & SMS",
     "subtitle": "Connect a Twilio phone number so this agent can make and receive calls or texts.",

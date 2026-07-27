@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
   "productName": "Canopy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.canopy.app",
   "bundle": {
     "icon": [
@@ -39,6 +39,13 @@
     }
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "canopy"
+        ]
+      }
+    },
     "shell": {
       "open": true
     },
@@ -46,7 +53,7 @@
       "endpoints": [
         "https://canopy-admin-418538192879.us-central1.run.app/api/updates/{{target}}/{{current_version}}"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZGQkYwRkFCRjg1ODI2NjAKUldSZ0psajRxdysvL3ljOHA0b1c1WHUzM3VqcktLTDRoUzJWY2RZbGtiWEFTUjZwMmdBVDBXYTEK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVCQjA4QUZDQjBBM0ZEQTUKUldTbC9hT3cvSXF3Ni9vcjZnNHJDOWNNbEw2YURxK1Q0MjAzY1ZmVXpZRm8rdU5BL29vaU9sbzkK"
     }
   }
 }

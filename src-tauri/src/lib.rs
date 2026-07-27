@@ -11,6 +11,7 @@ pub mod app_state;
 
 // Rate limiting for expensive operations
 pub mod computer_control;
+mod connection_requests;
 pub mod rate_limiter;
 
 mod activity_sniffer;
@@ -54,11 +55,99 @@ pub use payment::{
 
 use base64::Engine;
 use tauri::Manager;
+use tokio::time::{sleep, Duration};
 
 fn admin_api_base_url() -> &'static str {
     option_env!("CANOPY_API_URL")
         .filter(|value| !value.is_empty())
         .unwrap_or("http://localhost:3001")
+}
+
+const MODEL_REGISTRY_SYNC_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
+
+async fn sync_pricing_from_admin_oracle() -> Result<usize, String> {
+    tracing::info!("Attempting to fetch remote LLM pricing sync...");
+    let pricing_url = format!("{}/api/pricing", admin_api_base_url());
+    let resp = reqwest::get(&pricing_url)
+        .await
+        .map_err(|e| format!("Failed to reach admin oracle for pricing sync: {}", e))?;
+    let pricing_json = resp
+        .json::<std::collections::HashMap<String, serde_json::Value>>()
+        .await
+        .map_err(|e| format!("Failed to parse pricing sync payload: {}", e))?;
+
+    let count = pricing_json.len();
+    let mut registry = models::PRICING_REGISTRY.write().unwrap();
+    for (model_name, costs) in pricing_json {
+        let cost_in = costs.get("in").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let cost_out = costs.get("out").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        registry.insert(model_name, (cost_in, cost_out));
+    }
+    tracing::info!("Synced dynamic LLM pricing rules into registry.");
+    Ok(count)
+}
+
+async fn sync_models_from_admin_oracle() -> Result<usize, String> {
+    tracing::info!("Attempting to fetch model list from admin oracle...");
+    let models_url = format!("{}/api/models", admin_api_base_url());
+    let resp = reqwest::get(&models_url)
+        .await
+        .map_err(|e| format!("Failed to reach admin oracle for model list: {}", e))?;
+    let body = resp
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Failed to parse model list from admin oracle: {}", e))?;
+
+    let arr = body
+        .get("models")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Admin oracle /api/models missing 'models' array".to_string())?;
+
+    let fetched: Vec<model_constants::ModelInfo> = arr
+        .iter()
+        .filter_map(|m| {
+            Some(model_constants::ModelInfo {
+                id: m.get("id")?.as_str()?.to_string(),
+                name: m.get("name")?.as_str()?.to_string(),
+                provider: m.get("provider")?.as_str()?.to_string(),
+                strategy: m
+                    .get("strategy")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("heavy")
+                    .to_string(),
+                description: m
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .collect();
+
+    let count = fetched.len();
+    model_constants::update_model_registry(fetched);
+    Ok(count)
+}
+
+async fn sync_model_metadata_from_admin_oracle() {
+    if let Err(e) = sync_pricing_from_admin_oracle().await {
+        tracing::warn!("{} — retaining local pricing fallbacks.", e);
+    }
+
+    if let Err(e) = sync_models_from_admin_oracle().await {
+        tracing::warn!("{} — keeping current model registry.", e);
+    }
+}
+
+#[tauri::command]
+async fn refresh_available_models() -> Result<Vec<model_constants::ModelInfo>, String> {
+    sync_model_metadata_from_admin_oracle().await;
+    Ok(
+        model_constants::MODEL_REGISTRY
+            .read()
+            .expect("MODEL_REGISTRY poisoned")
+            .clone(),
+    )
 }
 
 // ─── Forum project folder sync ────────────────────────────────────────────────
@@ -693,6 +782,7 @@ pub fn run() {
                 }
             });
         })
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_fs::init())
@@ -705,6 +795,14 @@ pub fn run() {
 
     builder.setup(|app| {
             let handle = app.handle().clone();
+
+            #[cfg(any(target_os = "linux", windows))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                app.deep_link()
+                    .register_all()
+                    .map_err(|e| format!("Failed to register Canopy deep links: {}", e))?;
+            }
 
             // Initialize AppState with user context
             let app_state = app_state::AppState::new();
@@ -791,63 +889,13 @@ pub fn run() {
                 .await;
             });
 
-            // Sync pricing asynchronously from Admin Oracle
+            // Sync pricing + model registry on startup, then refresh every 12 hours so
+            // new provider releases show up without requiring an app restart.
             tauri::async_runtime::spawn(async move {
-                tracing::info!("Attempting to fetch remote LLM pricing sync...");
-                let pricing_url = format!("{}/api/pricing", admin_api_base_url());
-                if let Ok(resp) = reqwest::get(&pricing_url).await {
-                    if let Ok(pricing_json) = resp.json::<std::collections::HashMap<String, serde_json::Value>>().await {
-                        let mut registry = models::PRICING_REGISTRY.write().unwrap();
-                        for (model_name, costs) in pricing_json {
-                            let cost_in = costs.get("in").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            let cost_out = costs.get("out").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                            registry.insert(model_name, (cost_in, cost_out));
-                        }
-                        tracing::info!("Synced dynamic LLM pricing rules into registry.");
-                    }
-                } else {
-                    tracing::warn!("Failed to fetch pricing from admin oracle, retaining local fallbacks.");
-                }
-            });
-
-            // Sync model list asynchronously from Admin Oracle.
-            // The registry starts with the hardcoded validated fallback list (seeded above);
-            // this overwrites it once the oracle responds. Validation inside
-            // `update_model_registry` drops any phantom / malformed names before storing.
-            tauri::async_runtime::spawn(async move {
-                tracing::info!("Attempting to fetch model list from admin oracle...");
-                let models_url = format!("{}/api/models", admin_api_base_url());
-                match reqwest::get(&models_url).await {
-                    Ok(resp) => {
-                        match resp.json::<serde_json::Value>().await {
-                            Ok(body) => {
-                                // Admin oracle returns { "models": [ { id, name, provider, strategy, description, costIn, costOut } ] }
-                                if let Some(arr) = body.get("models").and_then(|v| v.as_array()) {
-                                    let fetched: Vec<model_constants::ModelInfo> = arr
-                                        .iter()
-                                        .filter_map(|m| {
-                                            Some(model_constants::ModelInfo {
-                                                id: m.get("id")?.as_str()?.to_string(),
-                                                name: m.get("name")?.as_str()?.to_string(),
-                                                provider: m.get("provider")?.as_str()?.to_string(),
-                                                strategy: m.get("strategy").and_then(|v| v.as_str()).unwrap_or("heavy").to_string(),
-                                                description: m.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                            })
-                                        })
-                                        .collect();
-                                    model_constants::update_model_registry(fetched);
-                                } else {
-                                    tracing::warn!("Admin oracle /api/models missing 'models' array — keeping fallback list");
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!("Failed to parse model list from admin oracle: {} — keeping fallback list", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to reach admin oracle for model list: {} — keeping fallback list", e);
-                    }
+                sync_model_metadata_from_admin_oracle().await;
+                loop {
+                    sleep(MODEL_REGISTRY_SYNC_INTERVAL).await;
+                    sync_model_metadata_from_admin_oracle().await;
                 }
             });
 
@@ -925,6 +973,7 @@ pub fn run() {
             openclaw::sync_gateway_channels,
             openclaw::sync_agent_slack_config,
             openclaw::get_available_models,
+            refresh_available_models,
             openclaw::get_connectors_config,
             openclaw::get_library_books,
             openclaw::get_openclaw_status_json,
@@ -1055,6 +1104,7 @@ pub fn run() {
             voice::cleanup_voice_cache,
             voice::transcribe_audio,
             voice::synthesize_speech,
+            voice::synthesize_agent_speech,
             // Live voice — bidirectional realtime audio bridge to OpenClaw's
             // realtime brain WS endpoint (OpenClaw v2026.4.24+).
             live_voice::start_live_voice_session,

@@ -4,6 +4,7 @@ import {
   generateAgentName,
   getDiscoveryConfidenceCopy,
   getRoleDefaultName,
+  getVoiceProfile,
   getRoleVoiceDefault,
   inferRoleFromPrompt,
 } from "./onboardingDiscovery";
@@ -135,12 +136,13 @@ describe("composeStarterPrompt", () => {
     expect(result).toContain("not generic");
   });
 
-  it("appends the agent's own connection ask (max 2), only when connections exist", () => {
-    const result = composeStarterPrompt(BASE, "bridal shop help", ["Calendar", "Gmail", "Slack"]);
+  it("appends the agent's own next-unlock ask (max 2), using connections and permissions", () => {
+    const result = composeStarterPrompt(BASE, "bridal shop help", ["Calendar", "Gmail", "Slack"], ["Browser access"]);
     expect(result).toContain("Calendar or Gmail");
     expect(result).not.toContain("Slack"); // capped at two
-    expect(result).toContain("walk them through connecting");
-    expect(composeStarterPrompt(BASE, "seed", [])).not.toContain("connecting");
+    expect(result).not.toContain("Browser access"); // still capped at two overall
+    expect(result).toContain("walk them through enabling");
+    expect(composeStarterPrompt(BASE, "seed", [], [])).not.toContain("enabling");
   });
 
   it("caps oversized seeds so pasted walls of text cannot drown the task", () => {
@@ -158,6 +160,18 @@ describe("role draft defaults", () => {
   });
 
   it("returns voice defaults for known roles", () => {
-    expect(getRoleVoiceDefault("Strategist")).toMatchObject({ voice: "onyx" });
+    expect(getRoleVoiceDefault("Strategist")).toMatchObject({
+      voice: "onyx",
+      provider: "eleven_labs",
+      providerLabel: "ElevenLabs default",
+    });
+  });
+
+  it("returns polished display metadata for hidden internal voice ids", () => {
+    expect(getVoiceProfile("nova")).toMatchObject({
+      voiceLabel: "Atlas",
+      provider: "eleven_labs",
+      fallbackProviderLabel: "OpenAI fallback",
+    });
   });
 });

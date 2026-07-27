@@ -14,6 +14,17 @@ import { PasswordInput } from "../../components/shared/PasswordInput";
 import { ConfirmDisconnectModal } from "../../components/shared/ConfirmDisconnectModal";
 import { HeartbeatsManager } from "../../components/agents/HeartbeatsManager";
 import { CONNECTOR_CATALOG, buildCompanionUrl, getConnectorSecretKey } from "../../utils/connectorCatalog";
+import { getCustomOAuthProvidersFromScope } from "../../utils/customOAuth";
+import {
+  getCollaboratorSuggestions,
+  getConnectionLabel,
+  getEnabledConnectionIds,
+  getNextUnlockForRole,
+  getSuggestedConnectionIdsForRole,
+  getSuggestedPermissionIdsForRole,
+  getPermissionLabel,
+} from "../../utils/agentSetupRecommendations";
+import { getHeartbeatSuggestionsForProfile } from "../../utils/heartbeats";
 import {
   ACCESS_TIERS,
   AccessTier,
@@ -23,6 +34,10 @@ import {
   summarizeTierChange,
   getRecommendedTierForAgent
 } from "./accessTiers";
+import {
+  formatRecommendedModel,
+  getRecommendedModel,
+} from "../../utils/modelRecommendations";
 
 // ─── Per-agent disconnect modal config ────────────────────────────────────────
 //
@@ -52,18 +67,27 @@ const AGENT_DISCONNECT_CONFIG: Record<AgentDisconnectKey, {
 };
 
 export const UPGRADE_MAP: Record<string, string> = {
-  "google/gemini-1.5-flash": "google/gemini-3.5-flash",
-  "google/gemini-2.0-flash": "google/gemini-3.5-flash",
-  "google/gemini-2.5-flash": "google/gemini-3.5-flash",
-  "google/gemini-3-flash-preview": "google/gemini-3.5-flash",
-  "google/gemini-2.5-flash-lite": "google/gemini-3.5-flash",
-  "google/gemini-3.1-flash-lite-preview": "google/gemini-3.5-flash",
-  "google/gemini-1.5-pro": "google/gemini-3.5-pro",
-  "google/gemini-2.0-pro": "google/gemini-3.5-pro",
-  "google/gemini-2.5-pro": "google/gemini-3.5-pro",
-  "google/gemini-3.1-pro-preview": "google/gemini-3.5-pro",
-  "anthropic/claude-opus-4-6": "anthropic/claude-opus-4-7",
-  "anthropic/claude-3-opus-20240229": "anthropic/claude-opus-4-7",
+  "google/gemini-1.5-flash": "google/gemini-3.6-flash",
+  "google/gemini-2.0-flash": "google/gemini-3.6-flash",
+  "google/gemini-2.5-flash": "google/gemini-3.6-flash",
+  "google/gemini-3-flash-preview": "google/gemini-3.6-flash",
+  "google/gemini-3.5-flash": "google/gemini-3.6-flash",
+  "google/gemini-2.5-flash-lite": "google/gemini-3.5-flash-lite",
+  "google/gemini-3.1-flash-lite-preview": "google/gemini-3.5-flash-lite",
+  "google/gemini-3.1-flash-lite": "google/gemini-3.5-flash-lite",
+  "google/gemini-1.5-pro": "google/gemini-3.6-flash",
+  "google/gemini-2.0-pro": "google/gemini-3.6-flash",
+  "google/gemini-2.5-pro": "google/gemini-3.6-flash",
+  "google/gemini-3.1-pro-preview": "google/gemini-3.6-flash",
+  "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
+  "anthropic/claude-opus-4-6": "anthropic/claude-opus-5",
+  "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
+  "anthropic/claude-opus-4-8": "anthropic/claude-opus-5",
+  "anthropic/claude-3-opus-20240229": "anthropic/claude-opus-5",
+  "openai/gpt-4o": "openai/gpt-5.6-terra",
+  "openai/gpt-4o-mini": "openai/gpt-5.6-luna",
+  "openai/o4-mini": "openai/gpt-5.6-terra",
+  "xai/grok-beta": "xai/grok-4.5",
 };
 
 function normalizeSecretValue(value: unknown): string {
@@ -95,7 +119,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     integrations: _agent.integrations || fallbackIntegrations,
     permissions: _agent.permissions || fallbackPermissions
   };
-  const { setActiveView } = useWorldStore();
+  const { setActiveView, agents } = useWorldStore();
 
   // Gateway connection statuses (read-only here)
   const [slackConnected, setSlackConnected] = useState(false);
@@ -215,6 +239,74 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         useWorldStore.getState().agents.map(a => a.id === agent.id ? { ...a, integrations: newIntegrations } as AgentData : a)
       );
     }
+  };
+
+  const enabledPermissionIds = useMemo(
+    () => agent.permissions.filter(permission => permission.enabled).map(permission => permission.id),
+    [agent.permissions],
+  );
+  const recommendedConnectionIds = useMemo(
+    () => getSuggestedConnectionIdsForRole(agent.role),
+    [agent.role],
+  );
+  const enabledConnectionIds = useMemo(
+    () => getEnabledConnectionIds({
+      enabledIntegrations: agent.integrations,
+      enabledPermissions: enabledPermissionIds,
+    }),
+    [agent.integrations, enabledPermissionIds],
+  );
+  const recommendedPermissionIds = useMemo(
+    () => getSuggestedPermissionIdsForRole(agent.role),
+    [agent.role],
+  );
+  const recommendedHeartbeats = useMemo(
+    () => getHeartbeatSuggestionsForProfile({
+      role: agent.role,
+      integrations: agent.integrations,
+      permissions: enabledPermissionIds,
+    }).slice(0, 3),
+    [agent.integrations, agent.role, enabledPermissionIds],
+  );
+  const collaboratorSuggestions = useMemo(
+    () => getCollaboratorSuggestions(
+      agent.role,
+      agents.filter(candidate => candidate.id !== agent.id),
+    ),
+    [agent.id, agent.role, agents],
+  );
+  const nextUnlock = useMemo(
+    () => getNextUnlockForRole(agent.role, {
+      enabledIntegrations: agent.integrations,
+      enabledPermissions: enabledPermissionIds,
+      isolated: agent.isolated,
+    }),
+    [agent.integrations, agent.isolated, agent.role, enabledPermissionIds],
+  );
+  const applyRecommendedPermission = async (permissionId: string) => {
+    const permission = agent.permissions.find(item => item.id === permissionId);
+    if (!permission || permission.enabled) return;
+    const action = async () => {
+      useWorldStore.getState().togglePermission(agent.id, permissionId);
+      setTimeout(async () => {
+        const currentAgent = useWorldStore.getState().agents.find(candidate => candidate.id === agent.id);
+        if (!currentAgent) return;
+        const capabilitiesObj: Record<string, boolean> = {};
+        currentAgent.permissions.forEach(item => {
+          capabilitiesObj[item.id] = item.enabled;
+        });
+        try {
+          await invoke("update_agent_capabilities", { agentId: agent.id, capabilities: capabilitiesObj });
+        } catch (error) {
+          console.error(error);
+        }
+      }, 100);
+    };
+    executeOrConfirmHighRisk(
+      PERMISSION_RISK_BAND[permissionId] === "high",
+      permission.label,
+      action,
+    );
   };
 
   // Per-agent Slack channel allowlist
@@ -467,16 +559,31 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
 
   // ── Cognitive Engines (LLM) ──
   const [brainModels, setBrainModels] = useState<any[]>([]);
-  useEffect(() => {
-    const fetchModels = () => {
-      invoke<any[]>("get_available_models")
-        .then(models => setBrainModels(models))
-        .catch(() => { /* gateway not yet up, will retry on next render */ });
-    };
-    fetchModels();
-    const interval = setInterval(fetchModels, 3000);
-    return () => clearInterval(interval);
+  const [isRefreshingModels, setIsRefreshingModels] = useState(false);
+  const fetchCachedModels = useCallback(() => {
+    return invoke<any[]>("get_available_models")
+      .then(models => setBrainModels(models))
+      .catch(() => { /* gateway not yet up, will retry on next render */ });
   }, []);
+
+  const refreshModelsNow = useCallback(async () => {
+    if (isRefreshingModels) return;
+    setIsRefreshingModels(true);
+    try {
+      const models = await invoke<any[]>("refresh_available_models");
+      setBrainModels(models);
+    } catch {
+      await fetchCachedModels();
+    } finally {
+      setIsRefreshingModels(false);
+    }
+  }, [fetchCachedModels, isRefreshingModels]);
+
+  useEffect(() => {
+    fetchCachedModels();
+    const interval = setInterval(fetchCachedModels, 3000);
+    return () => clearInterval(interval);
+  }, [fetchCachedModels]);
 
   const [keys, setKeys] = useState<{ [provider: string]: string }>({
     "OpenAI": "", "Anthropic": "", "Gemini": "", "Grok": ""
@@ -518,25 +625,18 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     }
   };
 
-  const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
   const getDynamicRecommendedModel = () => {
-    const isHeavy = HEAVY_ROLES_BRAIN.includes(agent.role);
     const availableProviders = Object.entries(keys)
       .filter(([_, v]) => v && v.trim().length > 0)
       .map(([k]) => k === "Gemini" ? "Google Gemini" : k);
 
-    let match = null;
-    if (availableProviders.length > 0 && brainModels && brainModels.length > 0) {
-      const prov = availableProviders[0];
-      const strategy = isHeavy ? "heavy" : "light";
-      match = brainModels.find((m: any) => m.provider === prov && m.strategy === strategy)
-           || brainModels.find((m: any) => m.provider === prov);
-    }
-    if (!match && brainModels && brainModels.length > 0) {
-      match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
-           || brainModels[0];
-    }
-    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.5 Flash"} — ${match?.description || "Stable — speed optimized flagship"}`, id: match?.id || "google/gemini-3.5-flash" };
+    const match = getRecommendedModel(
+      brainModels,
+      agent.role,
+      availableProviders.length > 0 ? availableProviders[0] : undefined,
+    );
+
+    return { provider: match.provider, model: formatRecommendedModel(match), id: match.id };
   };
 
   const defaultModelInfo = getDynamicRecommendedModel();
@@ -579,7 +679,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         }
 
         const modelToSave = typeof modelIdToSave === 'string' ? modelIdToSave : selectedModel;
-        const finalModel = modelToSave || defaultModelInfo?.id || "google/gemini-3.5-flash";
+        const finalModel = modelToSave || defaultModelInfo?.id || "anthropic/claude-sonnet-5";
 
         // Synchronize keys to auth-profiles.json for THIS agent only via
         // `sync_agent_api_keys`. The Rust side reads the keychain and applies the
@@ -672,6 +772,26 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     const obj: Record<string, boolean> = {};
     for (const c of connectors) {
       if (['slack', 'gmail', 'imessage', 'filesystem', 'github'].includes(c.id)) continue;
+      if (c.id === 'custom_oauth') {
+        try {
+          const bridges = await invoke("list_bridges", { agentId: agent.id });
+          const customBridge = Array.isArray(bridges)
+            ? bridges.find((bridge: any) => {
+                const bridgeType =
+                  typeof bridge?.bridge_type === "string"
+                    ? bridge.bridge_type
+                    : typeof bridge?.bridgeType === "string"
+                      ? bridge.bridgeType
+                      : "";
+                return bridgeType.toLowerCase().includes("custom");
+              })
+            : null;
+          obj[c.id] = getCustomOAuthProvidersFromScope(customBridge?.config?.scope).length > 0;
+        } catch {
+          obj[c.id] = false;
+        }
+        continue;
+      }
       const key = getConnectorSecretKey(c.id, agent.id);
       try {
         const tok = await invoke("get_secret_cmd", { key });
@@ -834,6 +954,137 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Skills & Access</h1>
       <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24, flexShrink: 0 }}>What {agent.name} can reach and what they're allowed to do.</p>
 
+      <div style={{ ...glass(0.55), padding: 18, borderRadius: 16, marginBottom: 18, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "#3c6663", marginBottom: 6 }}>
+              Role-Guided Setup
+            </div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)", marginBottom: 4 }}>
+              Eddie would power up {agent.name} like a {agent.role}.
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.55, maxWidth: 700 }}>
+              {nextUnlock
+                ? nextUnlock.kind === "workspace"
+                  ? `Next best unlock: ${nextUnlock.label} ${nextUnlock.reason}.`
+                  : `Next best unlock: ${nextUnlock.label} ${nextUnlock.reason}.`
+                : `${agent.name} already has the core setup Eddie would usually recommend for this role.`}
+            </div>
+          </div>
+          {nextUnlock?.kind === "workspace" && (
+            <button
+              type="button"
+              disabled={agent.isolated || isolationBusy}
+              onClick={() => { void setAgentIsolation(true); }}
+              style={{
+                padding: "10px 14px", borderRadius: 10, border: "1px solid #6B6BAE",
+                background: agent.isolated ? "rgba(107,107,174,0.1)" : "#6B6BAE",
+                color: agent.isolated ? "#6B6BAE" : "var(--surface-card)",
+                fontSize: 12, fontWeight: 700, cursor: agent.isolated || isolationBusy ? "default" : "pointer", fontFamily: "inherit",
+                opacity: agent.isolated || isolationBusy ? 0.7 : 1,
+              }}
+            >
+              {agent.isolated ? "Already isolated" : "Switch to isolated"}
+            </button>
+          )}
+          {nextUnlock?.kind === "permission" && (
+            <button
+              type="button"
+              disabled={enabledPermissionIds.includes(nextUnlock.id)}
+              onClick={() => { void applyRecommendedPermission(nextUnlock.id); }}
+              style={{
+                padding: "10px 14px", borderRadius: 10, border: "1px solid rgba(60,102,99,0.2)",
+                background: enabledPermissionIds.includes(nextUnlock.id) ? "rgba(60,102,99,0.08)" : "rgba(60,102,99,0.95)",
+                color: enabledPermissionIds.includes(nextUnlock.id) ? "#3c6663" : "var(--surface-card)",
+                fontSize: 12, fontWeight: 700, cursor: enabledPermissionIds.includes(nextUnlock.id) ? "default" : "pointer", fontFamily: "inherit",
+              }}
+            >
+              {enabledPermissionIds.includes(nextUnlock.id) ? "Already enabled" : `Enable ${nextUnlock.label}`}
+            </button>
+          )}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.78)", border: "1px solid rgba(0,0,0,0.06)" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>
+              Recommended Connections
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {recommendedConnectionIds.slice(0, 3).map(id => {
+                const active = nextUnlock?.kind === "connection" ? id !== nextUnlock.id : enabledConnectionIds.includes(id);
+                return (
+                  <span
+                    key={id}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: 999,
+                      background: active ? "rgba(33,131,128,0.12)" : "rgba(0,0,0,0.05)",
+                      color: active ? "#218380" : "var(--text-sub)",
+                      fontSize: 11,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {getConnectionLabel(id)}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.78)", border: "1px solid rgba(0,0,0,0.06)" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>
+              Recommended Capabilities
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {recommendedPermissionIds.slice(0, 3).map(id => (
+                <span
+                  key={id}
+                  style={{
+                    padding: "4px 8px",
+                    borderRadius: 999,
+                    background: enabledPermissionIds.includes(id) ? "rgba(107,107,174,0.12)" : "rgba(0,0,0,0.05)",
+                    color: enabledPermissionIds.includes(id) ? "#6B6BAE" : "var(--text-sub)",
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}
+                >
+                  {getPermissionLabel(id)}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ padding: 14, borderRadius: 12, background: "rgba(255,255,255,0.78)", border: "1px solid rgba(0,0,0,0.06)" }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--text-sub)", marginBottom: 8 }}>
+              Suggested Routines
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {recommendedHeartbeats.slice(0, 2).map(task => (
+                <div key={task.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 }}>
+                  <span style={{ color: "var(--text-main)", fontWeight: 600 }}>{task.title}</span>
+                  <span style={{ color: "var(--text-sub)" }}>{task.scheduleLabel}</span>
+                </div>
+              ))}
+              {recommendedHeartbeats.length === 0 && (
+                <span style={{ fontSize: 11, color: "var(--text-sub)" }}>Turn on more role-fit capabilities to unlock heartbeat suggestions.</span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {collaboratorSuggestions.length > 0 && (
+          <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.55 }}>
+            <strong style={{ color: "var(--text-main)" }}>Likely close collaborators:</strong>{" "}
+            {collaboratorSuggestions.map((suggestion, index) => (
+              <React.Fragment key={`${suggestion.name}-${suggestion.role}`}>
+                {index > 0 ? " " : ""}
+                <span style={{ color: "#C76A42", fontWeight: 700 }}>{suggestion.name}</span> ({suggestion.role}) to {suggestion.reason}.
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* ── Isolation ───────────────────────────────────────────────────────
           Lifted from the old Permissions tab. Lives at the top because it
           frames everything below — the agent's container scope is more
@@ -986,6 +1237,9 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             <select
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
+              onMouseDown={() => { void refreshModelsNow(); }}
+              onFocus={() => { void refreshModelsNow(); }}
+              onTouchStart={() => { void refreshModelsNow(); }}
               style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", cursor: "pointer", width: 220 }}
             >
               <option value="">Strategy: {defaultModelInfo.model}</option>
@@ -2579,7 +2833,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
               }
             }}
           >
-            {(dynamicSetupState[c.id] || (c.id === 'github' ? !!githubToken : dynamicStatuses[c.id])) && c.id !== 'twilio' && (
+            {(dynamicSetupState[c.id] || (c.id === 'github' ? !!githubToken : dynamicStatuses[c.id])) && c.id !== 'twilio' && c.id !== 'custom_oauth' && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-main)", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span>{(c.id === 'github' ? !!githubToken : dynamicStatuses[c.id]) ? `Update ${c.name} Personal Access Token` : `Enter ${c.name} Personal Access Token`}</span>

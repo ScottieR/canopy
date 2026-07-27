@@ -12,15 +12,13 @@ import type { GenerativeResult } from "../../types/generative";
 import { Toggle, ServiceRow, glass } from "../../App";
 import { PersonalityPreview, PersonalityPreviewHandle } from "./PersonalityPreview";
 import { UPGRADE_MAP } from "./ConnectionsTab";
+import { getRoleVoiceDefault, getVoiceProfile } from "../../utils/onboardingDiscovery";
+import {
+  formatRecommendedModel,
+  getRecommendedModel,
+} from "../../utils/modelRecommendations";
 
-const ROLE_VOICE_MAP: Record<string, string> = {
-  "Researcher": "nova",
-  "Assistant": "alloy",
-  "Coder": "echo",
-  "Financial": "shimmer",
-  "Strategist": "onyx",
-  "Analyst": "fable",
-};
+const CURATED_VOICE_IDS = ["alloy", "echo", "fable", "nova", "onyx", "shimmer"];
 
 export function PersonalityTab({ agent }: { agent: AgentData }) {
   const [bookSearchQuery, setBookSearchQuery] = useState("");
@@ -85,8 +83,9 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
       invoke("get_voice_config", { agentId: agent.id })
         .then((config: any) => {
           if (config && config.tts_voice === "default") {
-            const defaultVoice = ROLE_VOICE_MAP[agent.role] || "default";
-            config.tts_voice = defaultVoice;
+            const defaultVoice = getRoleVoiceDefault(agent.role);
+            config.tts_voice = defaultVoice.voice;
+            config.tts_provider = defaultVoice.provider;
             invoke("update_voice_config", { agentId: agent.id, config });
           }
           setVoiceConfig(config);
@@ -101,7 +100,7 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
 
   const updateVoice = async (newVoice: string) => {
     if (!voiceConfig) return;
-    const newConfig = { ...voiceConfig, tts_voice: newVoice };
+    const newConfig = { ...voiceConfig, tts_voice: newVoice, tts_provider: getVoiceProfile(newVoice).provider };
     setVoiceConfig(newConfig);
     try {
       await invoke("update_voice_config", { agentId: agent.id, config: newConfig });
@@ -147,37 +146,31 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
 
   // ── Model list for the Brain tab — sourced from Rust, not localhost:3001 ─────
   const [brainModels, setBrainModels] = useState<any[]>([]);
-  useEffect(() => {
-    const fetchModels = () => {
-      invoke<any[]>("get_available_models")
-        .then(models => setBrainModels(models))
-        .catch(() => { /* gateway not yet up, will retry on next render */ });
-    };
-    fetchModels();
-    const interval = setInterval(fetchModels, 3000);
-    return () => clearInterval(interval);
+  const fetchCachedModels = useCallback(() => {
+    return invoke<any[]>("get_available_models")
+      .then(models => setBrainModels(models))
+      .catch(() => { /* gateway not yet up, will retry on next render */ });
   }, []);
 
-  const HEAVY_ROLES_BRAIN = ["Strategist", "Analyst", "Researcher", "Engineer"];
+  useEffect(() => {
+    fetchCachedModels();
+    const interval = setInterval(fetchCachedModels, 3000);
+    return () => clearInterval(interval);
+  }, [fetchCachedModels]);
+
   const getDynamicRecommendedModel = () => {
-    const isHeavy = HEAVY_ROLES_BRAIN.includes(agent.role);
     // Prefer the provider for which a key is already set in this agent's Brain config
     const availableProviders = Object.entries(keys)
       .filter(([_, v]) => v && v.trim().length > 0)
       .map(([k]) => k === "Gemini" ? "Google Gemini" : k);
 
-    let match = null;
-    if (availableProviders.length > 0) {
-      const prov = availableProviders[0];
-      const strategy = isHeavy ? "heavy" : "light";
-      match = brainModels.find((m: any) => m.provider === prov && m.strategy === strategy)
-        || brainModels.find((m: any) => m.provider === prov);
-    }
-    if (!match) {
-      match = brainModels.find((m: any) => m.strategy === (isHeavy ? "heavy" : "light"))
-        || brainModels[0];
-    }
-    return { provider: match?.provider || "Google Gemini", model: `${match?.name || "Gemini 3.5 Flash"} — ${match?.description || "Stable — speed optimized flagship"}`, id: match?.id || "google/gemini-3.5-flash" };
+    const match = getRecommendedModel(
+      brainModels,
+      agent.role,
+      availableProviders.length > 0 ? availableProviders[0] : undefined,
+    );
+
+    return { provider: match.provider, model: formatRecommendedModel(match), id: match.id };
   };
 
   const [keys, setKeys] = useState<{ [provider: string]: string }>({
@@ -217,10 +210,10 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
         }
 
         // Model IDs from get_available_models() are already in "provider/model-name" format
-        // (e.g. "google/gemini-3.5-flash"). No prefix construction needed.
+        // (e.g. "google/gemini-3.6-flash"). No prefix construction needed.
         // Fallback to the Rust-side default if nothing is selected.
         const modelToSave = typeof modelIdToSave === 'string' ? modelIdToSave : selectedModel;
-        const finalModel = modelToSave || defaultModelInfo?.id || "google/gemini-3.5-flash";
+        const finalModel = modelToSave || defaultModelInfo?.id || "anthropic/claude-sonnet-5";
 
         // Synchronize only this agent's explicitly scoped credentials. Clearing a
         // key disconnects that provider instead of inheriting global state.
@@ -257,17 +250,17 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
           </div>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", margin: "0 0 4px 0" }}>Voice & Speech</h2>
-            <p style={{ fontSize: 13, color: "var(--text-sub)", margin: 0 }}>Select the AI voice personality for audio responses.</p>
+            <p style={{ fontSize: 13, color: "var(--text-sub)", margin: 0 }}>Fine-tune the managed premium voice profile for spoken responses.</p>
           </div>
         </div>
 
         <div style={{ background: "rgba(0,0,0,0.1)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Speaking Voice</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Sets the TTS provider voice profile.</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Canopy defaults to ElevenLabs and keeps an OpenAI fallback ready.</div>
           </div>
           <select
-            value={voiceConfig?.tts_voice || "default"}
+            value={CURATED_VOICE_IDS.includes(voiceConfig?.tts_voice) ? voiceConfig.tts_voice : getRoleVoiceDefault(agent.role).voice}
             onChange={(e) => updateVoice(e.target.value)}
             disabled={isVoiceLoading}
             style={{
@@ -277,15 +270,14 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
               fontSize: 13, minWidth: 150
             }}
           >
-            <option value="default">System Default</option>
-            <option value="alloy">Alloy (Neutral, versatile)</option>
-            <option value="echo">Echo (Warm, balanced)</option>
-            <option value="fable">Fable (British, expressive)</option>
-            <option value="onyx">Onyx (Deep, authoritative)</option>
-            <option value="nova">Nova (Energetic, professional)</option>
-            <option value="shimmer">Shimmer (Clear, bright)</option>
-            <option value="en-US-Neural2-F">Google Neural (Female)</option>
-            <option value="en-US-Neural2-J">Google Neural (Male)</option>
+            {CURATED_VOICE_IDS.map((voiceId) => {
+              const profile = getVoiceProfile(voiceId);
+              return (
+                <option key={voiceId} value={voiceId}>
+                  {profile.voiceLabel} ({profile.style})
+                </option>
+              );
+            })}
           </select>
         </div>
       </div>

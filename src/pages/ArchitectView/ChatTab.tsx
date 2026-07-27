@@ -15,6 +15,9 @@ import MDEditor from "@uiw/react-md-editor";
 import { invoke } from "@tauri-apps/api/core";
 import { PasswordInput } from "../../components/shared/PasswordInput";
 import { isolateGeneratedHtml } from "../../security/generatedHtml";
+import { buildCompanionUrl } from "../../utils/connectorCatalog";
+import { parseConnectionRequestTag } from "../../utils/customOAuth";
+import { cancelAgentSpeech, playAgentSpeech } from "../../utils/voicePlayback";
 
 // ─── Format-aware message parsing ────────────────────────────────────────────
 // Agents can return ---FORMAT--- html/markdown/genui ---CONTENT--- blocks in both
@@ -558,19 +561,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent.id]);
 
-  // Voice playback — single-turn V1 using the browser Web Speech API. We track
-  // the live preference in a ref so the most-recent-agent-message effect below
-  // doesn't have to re-bind every time the toggle flips. State source of truth
-  // is the same sessionStorage key the Home quick-actions button writes to.
+  // Voice playback — single-turn TTS routed through the Rust voice runtime.
+  // We track the live preference in a ref so the most-recent-agent-message
+  // effect below doesn't have to re-bind every time the toggle flips.
   const voiceOnRef = useRef<boolean>(sessionStorage.getItem("canopy:voice-on") === "1");
   useEffect(() => {
     const onToggle = (e: Event) => {
       const detail = (e as CustomEvent<{ enabled: boolean }>).detail;
       voiceOnRef.current = !!detail?.enabled;
-      // If the user just toggled OFF mid-utterance, cut speech immediately.
-      if (!voiceOnRef.current && typeof window.speechSynthesis !== "undefined") {
-        window.speechSynthesis.cancel();
-      }
+      if (!voiceOnRef.current) cancelAgentSpeech();
     };
     window.addEventListener("canopy:voice-toggle", onToggle as EventListener);
     return () => window.removeEventListener("canopy:voice-toggle", onToggle as EventListener);
@@ -582,7 +581,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const lastSpokenIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (!voiceOnRef.current) return;
-    if (typeof window.speechSynthesis === "undefined") return;
     // Find the most recent agent message. Don't speak ones already spoken.
     const lastAgentMsg = [...chatLog].reverse().find(m => m.sender === "agent");
     if (!lastAgentMsg || lastAgentMsg.id === lastSpokenIdRef.current) return;
@@ -593,35 +591,14 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
     if (t.includes("HEARTBEAT_OK") || t.includes('"lastMorningQuote"')) return;
 
     lastSpokenIdRef.current = lastAgentMsg.id;
-    try {
-      // Strip markdown that would otherwise be read aloud literally (e.g.
-      // "asterisk asterisk bold asterisk asterisk"). Cheap pass — keeps
-      // sentence punctuation and contractions intact.
-      const spoken = t
-        .replace(/`{1,3}[\s\S]*?`{1,3}/g, " (code block) ")
-        .replace(/\*\*([^*]+)\*\*/g, "$1")
-        .replace(/\*([^*]+)\*/g, "$1")
-        .replace(/_([^_]+)_/g, "$1")
-        .replace(/^#{1,6}\s+/gm, "")
-        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-        .replace(/\n+/g, ". ");
-      window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(spoken);
-      utter.rate = 1.05;
-      utter.pitch = 1.0;
-      window.speechSynthesis.speak(utter);
-    } catch (e) {
+    playAgentSpeech(agent.id, t).catch((e) => {
       console.warn("Voice playback failed:", e);
-    }
-  }, [chatLog]);
+    });
+  }, [agent.id, chatLog]);
 
   // Stop speaking when the user navigates away from this agent or unmounts.
   useEffect(() => {
-    return () => {
-      if (typeof window.speechSynthesis !== "undefined") {
-        window.speechSynthesis.cancel();
-      }
-    };
+    return () => cancelAgentSpeech();
   }, [agent.id]);
   const [loadingSessionIds, setLoadingSessionIds] = useState<string[]>([]);
   const [hoveredMsgId, setHoveredMsgId] = useState<string | null>(null);
@@ -815,6 +792,59 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const [existingCreds, setExistingCreds] = useState<{domain: string; username: string}[]>([]);
   const [selectedCreds, setSelectedCreds] = useState<string[]>([]);
   const [forceNewCred, setForceNewCred] = useState(false);
+
+  const launchConnectionCompanion = useCallback(
+    async (companionType: string, params: Record<string, string>) => {
+      try {
+        const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const titleBase = params.providerName || companionType.replace(/_/g, " ");
+        new WebviewWindow(`companion_${companionType}_${Date.now()}`, {
+          url: buildCompanionUrl(companionType, {
+            agentId: agent.id,
+            agentName: agent.name,
+            extraParams: params,
+          }),
+          title: `Setup ${titleBase}`,
+          width: 480,
+          height: 860,
+          x: window.screen.availWidth - 500,
+          y: 50,
+          alwaysOnTop: true,
+          decorations: true,
+        });
+      } catch (error) {
+        console.error("Failed to launch connection companion", error);
+      }
+    },
+    [agent.id, agent.name],
+  );
+
+  const extractSpecialRequests = useCallback((rawText: string) => {
+    let nextText = rawText;
+    let fallbackText: string | null = null;
+
+    const authMatch = nextText.match(/\[request_auth:\s*([^\]]+)\]/);
+    if (authMatch) {
+      setAuthDomain(authMatch[1].trim());
+      nextText = nextText.replace(authMatch[0], "").trim();
+      fallbackText = "I've sent a credential request to your WebVault.";
+    }
+
+    const connectionRequest = parseConnectionRequestTag(nextText);
+    if (connectionRequest) {
+      void launchConnectionCompanion(connectionRequest.companionType, connectionRequest.params);
+      nextText = nextText.replace(connectionRequest.fullMatch, "").trim();
+      const companionLabel =
+        connectionRequest.params.providerName ||
+        connectionRequest.companionType.replace(/_/g, " ");
+      fallbackText = `I opened a secure setup window for ${companionLabel}.`;
+    }
+
+    return {
+      text: nextText,
+      fallbackText,
+    };
+  }, [launchConnectionCompanion]);
 
   useEffect(() => {
     if (authDomain) {
@@ -1297,16 +1327,13 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
       let responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
 
-      const authMatch = responseText.match(/\[request_auth:\s*([^\]]+)\]/);
-      if (authMatch) {
-         setAuthDomain(authMatch[1].trim());
-         responseText = responseText.replace(authMatch[0], "").trim();
-      }
+      const specialRequests = extractSpecialRequests(responseText);
+      responseText = specialRequests.text;
 
       const agentMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: "agent",
-        text: responseText || "I've sent a credential request to your WebVault.",
+        text: responseText || specialRequests.fallbackText || "I've sent a secure connection request.",
         time: formatMessageTime(new Date()),
         ts: Date.now(),
       };
@@ -1411,13 +1438,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             return;
           }
 
-          const retryText = typeof retryResponse === 'object'
+          let retryText = typeof retryResponse === 'object'
             ? retryResponse?.response || retryResponse?.content || JSON.stringify(retryResponse)
             : String(retryResponse);
+          const retrySpecialRequests = extractSpecialRequests(retryText);
+          retryText = retrySpecialRequests.text;
           const retryAgentMsg: ChatMessage = {
             id: (Date.now() + 1).toString(),
             sender: "agent",
-            text: retryText || "I've sent a credential request to your WebVault.",
+            text: retryText || retrySpecialRequests.fallbackText || "I've sent a secure connection request.",
             time: formatMessageTime(new Date()),
             ts: Date.now(),
           };

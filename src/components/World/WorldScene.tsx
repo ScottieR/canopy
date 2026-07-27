@@ -8,6 +8,7 @@ import { useGLTF, Html } from "@react-three/drei";
 import * as THREE from "three";
 import React from "react";
 import { getAssetUrl } from "../../utils/assets";
+import { disposeClonedMaterials } from "./disposal";
 
 // Initiate early network fetching for high-priority onboarding assets so the 3D world loads instantly,
 // avoiding the piecemeal "pop-in" effect as React mounts individual components.
@@ -28,14 +29,84 @@ export class HabitatErrorBoundary extends React.Component<
   render() { return this.state.hasError ? this.props.fallback : this.props.children; }
 }
 
+/**
+ * Normalized habitat templates, keyed by resolved model URL.
+ *
+ * ⚠️  MEMORY: building a template clones every material AND every
+ * `material.map` (see `buildHabitatTemplate`). three.js never GC's those — they
+ * live until `.dispose()`. This work used to run per MOUNT, so the habitat picker
+ * in IdentityTab (9 tiles) leaked nine sets of cloned Meshy textures every time
+ * the tab was opened, and the main world leaked a set per tile per navigation.
+ *
+ * Now it runs at most once per habitat for the lifetime of the app: the template
+ * owns the cloned materials/textures, and each mounted tile is a cheap
+ * `template.clone()` that shares them by reference and therefore owns nothing to
+ * clean up. Peak cost is bounded by the number of distinct habitats (~11) rather
+ * than by how long the user browses.
+ *
+ * Do NOT render a template object directly — a three.js Object3D can only have
+ * one parent, so two tiles of the same habitat would fight over it. Always clone.
+ */
+interface HabitatTemplate {
+  object: THREE.Object3D;
+  navPoints: THREE.Vector3[];
+}
+
+const habitatTemplates = new Map<string, HabitatTemplate>();
+
+/** Test/teardown hook: release every cached habitat template. */
+export function disposeHabitatTemplates(): void {
+  for (const template of habitatTemplates.values()) {
+    // `disposeTextures: true` is correct here and ONLY here: the template cloned
+    // its own textures, so it owns them. The underlying useGLTF scene is untouched.
+    disposeClonedMaterials(template.object, { disposeTextures: true });
+  }
+  habitatTemplates.clear();
+}
+
+function getHabitatTemplate(scene: THREE.Object3D, cacheKey: string): HabitatTemplate {
+  const cached = habitatTemplates.get(cacheKey);
+  if (cached) return cached;
+
+  const template = buildHabitatTemplate(scene);
+  habitatTemplates.set(cacheKey, template);
+  return template;
+}
+
 export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }: { index?: number, habitatId?: number, modelUrl?: string, onNavMeshReady?: (points: THREE.Vector3[]) => void }) {
   const modelNum = habitatId || ((index % 9) + 1);
   const finalModelUrl = modelUrl || `/models/habitats/Habitat_${modelNum}.glb`;
   const { scene } = useGLTF(getAssetUrl(finalModelUrl));
   const navPointsRef = React.useRef<THREE.Vector3[]>([]);
 
-  // Clone the scene so we can instance it multiple times across the grid
-  const clonedScene = useMemo(() => {
+  // Normalize once per habitat (cached), then take a lightweight instance for
+  // this mount. The instance shares geometry/materials with the template, so
+  // unmounting it needs no disposal — there is nothing it owns.
+  const template = useMemo(
+    () => getHabitatTemplate(scene, finalModelUrl),
+    [scene, finalModelUrl],
+  );
+  const clonedScene = useMemo(() => template.object.clone(), [template]);
+  navPointsRef.current = template.navPoints;
+
+  React.useEffect(() => {
+    if (onNavMeshReady && navPointsRef.current.length > 0) {
+      onNavMeshReady(navPointsRef.current);
+    }
+  }, [clonedScene, onNavMeshReady]);
+
+  return <primitive object={clonedScene} />;
+}
+
+/**
+ * Do the expensive one-time work for a habitat: normalize scale, snap the top
+ * surface to Y=0, scan a walkable nav mesh, and swap in unlit materials.
+ *
+ * Called once per habitat URL via `getHabitatTemplate`.
+ */
+function buildHabitatTemplate(scene: THREE.Object3D): HabitatTemplate {
+  const navPointsRef = { current: [] as THREE.Vector3[] };
+  const clonedScene = (() => {
     const clone = scene.clone();
 
     // --- AUTOMATIC NORMALIZATION ---
@@ -126,15 +197,9 @@ export function TerrariumBase({ index = 0, habitatId, modelUrl, onNavMeshReady }
       }
     });
     return clone;
-  }, [scene]);
+  })();
 
-  React.useEffect(() => {
-    if (onNavMeshReady && navPointsRef.current.length > 0) {
-      onNavMeshReady(navPointsRef.current);
-    }
-  }, [clonedScene, onNavMeshReady]);
-
-  return <primitive object={clonedScene} />;
+  return { object: clonedScene, navPoints: navPointsRef.current };
 }
 
 export function ProjectForum({ space, position, onClick }: { space: any, position: THREE.Vector3, onClick: () => void }) {

@@ -34,10 +34,10 @@ const KEY_NAMES: [(&str, &str); 4] = [
 
 fn default_model(provider: &str) -> &'static str {
     match provider {
-        "anthropic" => "claude-sonnet-4-6",
-        "openai" => "gpt-4o",
-        "xai" => "grok-beta",
-        _ => "gemini-3.5-flash",
+        "anthropic" => "claude-sonnet-5",
+        "openai" => "gpt-5.6-terra",
+        "xai" => "grok-4.5",
+        _ => "gemini-3.6-flash",
     }
 }
 
