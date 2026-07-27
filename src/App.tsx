@@ -1700,14 +1700,18 @@ export default function App() {
 
   useEffect(() => {
     let unlisten: any;
+    let cancelled = false;
     const setup = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      unlisten = await listen<any>('jit_auth_requested', (event) => {
+      const stop = await listen<any>('jit_auth_requested', (event) => {
         setPendingJitAuth(event.payload);
       });
+      if (cancelled) stop();
+      else unlisten = stop;
     };
-    setup();
+    setup().catch((e) => console.error("jit_auth listener setup failed:", e));
     return () => {
+      cancelled = true;
       if (unlisten) unlisten();
     };
   }, []);
@@ -1718,9 +1722,10 @@ export default function App() {
   // shows the reconnect prompt rather than silently failing on the next message.
   useEffect(() => {
     let unlisten: any;
+    let cancelled = false;
     const setup = async () => {
       const { listen } = await import('@tauri-apps/api/event');
-      unlisten = await listen<{ status: string }>('gateway-health', (event) => {
+      const stop = await listen<{ status: string }>('gateway-health', (event) => {
         const { status } = event.payload;
         if (status === "offline" || status === "degraded") {
           // Only reset if we thought we were ready — avoids fighting with boot polling.
@@ -1735,9 +1740,12 @@ export default function App() {
           }
         }
       });
+      if (cancelled) stop();
+      else unlisten = stop;
     };
-    setup();
+    setup().catch((e) => console.error("gateway-health listener setup failed:", e));
     return () => {
+      cancelled = true;
       if (unlisten) unlisten();
     };
   }, []);
