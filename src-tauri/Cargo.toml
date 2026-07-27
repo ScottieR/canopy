@@ -35,7 +35,7 @@ anyhow = "1.0.103"
 thiserror = "1"
 rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
 notify = "6"                  # FSEvents file watcher (iMessage bridge)
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }  # WebSocket (Slack Socket Mode)
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }  # WebSocket (Slack Socket Mode)
 futures-util = "0.3"          # Stream/Sink traits for WebSocket
 url = "2"                     # URL parsing (Slack OAuth)
 urlencoding = "2"             # URL-encode OAuth params
