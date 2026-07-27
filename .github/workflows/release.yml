@@ -129,12 +129,15 @@ jobs:
           git push origin HEAD:production
 
       - name: Instant-publish to live server (optional)
-        if: ${{ secrets.ADMIN_API_KEY != '' }}
         env:
           ADMIN_API_KEY: ${{ secrets.ADMIN_API_KEY }}
           VERSION: ${{ steps.artifacts.outputs.version }}
         run: |
           set -euo pipefail
+          if [ -z "$ADMIN_API_KEY" ]; then
+            echo "ADMIN_API_KEY secret not set — skipping instant publish (manifest deploys with canopy-admin)."
+            exit 0
+          fi
           node - <<'EOF'
           const fs = require('fs');
           const version = process.env.VERSION;

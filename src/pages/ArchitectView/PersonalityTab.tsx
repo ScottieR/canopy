@@ -257,7 +257,7 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
         <div style={{ background: "rgba(0,0,0,0.1)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Speaking Voice</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Canopy defaults to ElevenLabs and keeps an OpenAI fallback ready.</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Canopy defaults to ElevenLabs and otherwise uses the agent's model provider TTS when that provider supports speech.</div>
           </div>
           <select
             value={CURATED_VOICE_IDS.includes(voiceConfig?.tts_voice) ? voiceConfig.tts_voice : getRoleVoiceDefault(agent.role).voice}

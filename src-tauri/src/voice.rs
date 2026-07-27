@@ -17,7 +17,7 @@ use crate::keychain::get_secret;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum STTProvider {
-    /// Legacy browser speech-recognition path.
+    /// Compatibility marker for older browser-STT configs.
     WebSpeech,
     /// Local Whisper.cpp (Tier 2 future)
     WhisperLocal,
@@ -27,7 +27,7 @@ pub enum STTProvider {
 
 impl Default for STTProvider {
     fn default() -> Self {
-        Self::WebSpeech
+        Self::WhisperCloud
     }
 }
 
@@ -35,7 +35,7 @@ impl Default for STTProvider {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TTSProvider {
-    /// Legacy browser speech-synthesis path.
+    /// Compatibility marker for older browser-TTS configs.
     WebSpeech,
     /// Local Piper (Tier 2 future)
     PiperLocal,
@@ -47,7 +47,7 @@ pub enum TTSProvider {
 
 impl Default for TTSProvider {
     fn default() -> Self {
-        Self::OpenAITTS
+        Self::ElevenLabs
     }
 }
 
@@ -514,7 +514,23 @@ pub async fn transcribe_audio(audio_path: String) -> Result<String, String> {
 /// Synthesize speech using local Piper (Tier 2 stub)
 #[tauri::command]
 pub async fn synthesize_speech(text: String, voice: String) -> Result<String, String> {
-    synthesize_with_openai(text, &voice, 1.0, None).await
+    let clean = text.trim();
+    if clean.is_empty() {
+        return Err("Speech text cannot be empty".into());
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+    for provider in native_tts_fallback_order(None) {
+        match synthesize_with_native_provider(provider, clean.to_string(), &voice, 1.0, None).await {
+            Ok(path) => return Ok(path),
+            Err(err) => failures.push(format!("{}: {}", native_tts_provider_label(provider), err)),
+        }
+    }
+
+    Err(format!(
+        "No managed TTS provider succeeded. {}",
+        failures.join(" | ")
+    ))
 }
 
 #[tauri::command]
@@ -1005,7 +1021,7 @@ mod tests {
     fn test_voice_config_serialization() {
         let config = VoiceConfig {
             agent_id: "agent-test".to_string(),
-            stt_provider: STTProvider::WebSpeech,
+            stt_provider: STTProvider::WhisperCloud,
             tts_provider: TTSProvider::OpenAITTS,
             tts_voice: "nova".to_string(),
             speaking_rate: 1.5,
@@ -1049,8 +1065,8 @@ mod tests {
     #[test]
     fn test_voice_config_defaults() {
         let config = VoiceConfig::new("agent-test".to_string());
-        assert_eq!(config.stt_provider, STTProvider::WebSpeech);
-        assert_eq!(config.tts_provider, TTSProvider::OpenAITTS);
+        assert_eq!(config.stt_provider, STTProvider::WhisperCloud);
+        assert_eq!(config.tts_provider, TTSProvider::ElevenLabs);
         assert_eq!(config.tts_voice, "alloy");
         assert!(!config.enabled);
     }
@@ -1059,6 +1075,18 @@ mod tests {
     fn openai_voice_resolution_uses_supported_defaults() {
         assert_eq!(resolve_openai_voice("nova"), "nova");
         assert_eq!(resolve_openai_voice("custom"), "alloy");
+        assert_eq!(
+            native_tts_provider_for_model(Some("google/gemini-3.6-flash")),
+            Some(NativeTtsProvider::Gemini)
+        );
+        assert_eq!(
+            native_tts_provider_for_model(Some("xai/grok-4.5")),
+            Some(NativeTtsProvider::XAI)
+        );
+        assert_eq!(
+            native_tts_fallback_order(Some(NativeTtsProvider::Gemini))[0],
+            NativeTtsProvider::Gemini
+        );
         assert!(resolve_elevenlabs_voice_id("alloy").is_none());
         assert_eq!(
             resolve_elevenlabs_voice_id("voice_123abc").as_deref(),

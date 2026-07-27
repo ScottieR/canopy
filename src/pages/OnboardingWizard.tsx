@@ -1641,15 +1641,15 @@ export function OnboardingWizard() {
         }
 
         try {
-          await invoke("update_voice_config", {
-            agentId: newAgentData.id,
-            config: {
-              agent_id: newAgentData.id,
-              stt_provider: "web_speech",
-              tts_provider: "eleven_labs",
-              tts_voice: selectedVoice,
-              speaking_rate: selectedVoiceRate,
-              auto_play: false,
+            await invoke("update_voice_config", {
+              agentId: newAgentData.id,
+              config: {
+                agent_id: newAgentData.id,
+                stt_provider: "whisper_cloud",
+                tts_provider: "eleven_labs",
+                tts_voice: selectedVoice,
+                speaking_rate: selectedVoiceRate,
+                auto_play: false,
               enabled: false,
             },
           });

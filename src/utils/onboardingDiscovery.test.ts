@@ -171,7 +171,7 @@ describe("role draft defaults", () => {
     expect(getVoiceProfile("nova")).toMatchObject({
       voiceLabel: "Atlas",
       provider: "eleven_labs",
-      fallbackProviderLabel: "OpenAI fallback",
+      fallbackProviderLabel: "Model provider fallback",
     });
   });
 });
