@@ -1634,6 +1634,77 @@ pub(crate) fn sync_shared_user_md_to_all_agents(
     sync_shared_user_md_to_all_agents_for_root(&canopy_root, db, content)
 }
 
+const ONBOARDING_FACTS_HEADER: &str = "## Learned during onboarding";
+const MAX_ONBOARDING_FACTS: usize = 24;
+
+/// Appends durable user facts captured during the onboarding interview
+/// (beat 1, DraftInterviewChat) into the SHARED canonical USER.md, then syncs
+/// it to every agent workspace. USER.md — not the individual SOUL — is where
+/// facts about the human belong: every current and future agent inherits them.
+/// Deduped and bounded so repeated onboardings never balloon the file.
+pub(crate) fn append_onboarding_user_facts_impl(
+    db: &crate::db::Database,
+    facts: &[String],
+) -> Result<(), String> {
+    let cleaned: Vec<String> = facts
+        .iter()
+        .map(|f| f.trim().replace('\n', " "))
+        .filter(|f| !f.is_empty() && f.len() <= 400)
+        .collect();
+    if cleaned.is_empty() {
+        return Ok(());
+    }
+
+    let canopy_root = canopy_data_root()?;
+    let mut content = ensure_shared_user_md_for_root(&canopy_root, db)?;
+
+    if !content.contains(ONBOARDING_FACTS_HEADER) {
+        content = format!("{}\n\n{}\n", content.trim_end(), ONBOARDING_FACTS_HEADER);
+    }
+
+    let existing_lower: Vec<String> = content
+        .lines()
+        .filter_map(|l| l.strip_prefix("- "))
+        .map(|l| l.trim().to_lowercase())
+        .collect();
+    let existing_count = existing_lower.len();
+
+    let mut appended = String::new();
+    for fact in cleaned {
+        if existing_lower.contains(&fact.to_lowercase()) {
+            continue;
+        }
+        if existing_count + appended.lines().count() >= MAX_ONBOARDING_FACTS {
+            break;
+        }
+        appended.push_str(&format!("- {}\n", fact));
+    }
+    if appended.is_empty() {
+        return Ok(());
+    }
+
+    // Insert new bullets directly under the onboarding header (before any
+    // later section), preserving everything else.
+    let insert_at = content
+        .find(ONBOARDING_FACTS_HEADER)
+        .map(|idx| idx + ONBOARDING_FACTS_HEADER.len())
+        .unwrap_or(content.len());
+    let (head, tail) = content.split_at(insert_at);
+    let updated = format!("{}\n{}{}", head.trim_end_matches('\n'), appended, tail.trim_start_matches('\n'));
+
+    sync_shared_user_md_to_all_agents(db, &updated)
+}
+
+/// Tauri command wrapper: called by the onboarding wizard at deploy with the
+/// facts the drafted agent learned in its beat-1 interview.
+#[tauri::command]
+pub async fn append_onboarding_user_facts(
+    db: tauri::State<'_, crate::db::Database>,
+    facts: Vec<String>,
+) -> Result<(), String> {
+    append_onboarding_user_facts_impl(&db, &facts)
+}
+
 fn sync_user_md_for_agent(db: &crate::db::Database, agent_id: &str) -> Result<(), String> {
     let canopy_root = canopy_data_root()?;
     let content = ensure_shared_user_md_for_root(&canopy_root, db)?;
@@ -4215,6 +4286,84 @@ fn get_creds_for_agent(agent_id: &str) -> std::collections::HashMap<String, Stri
     keys
 }
 
+/// True when the agent's key set contains a non-empty key for the given model's provider.
+fn agent_has_key_for_model(model: &str, keys: &std::collections::HashMap<String, String>) -> bool {
+    let key_name = match crate::model_constants::provider_prefix(model) {
+        Some("anthropic") => "ANTHROPIC_API_KEY",
+        Some("openai") => "OPENAI_API_KEY",
+        Some("google") => "GEMINI_API_KEY",
+        Some("xai") => "XAI_API_KEY",
+        _ => return false,
+    };
+    keys.get(key_name).is_some_and(|v| !v.trim().is_empty())
+}
+
+/// Decide which model to push to the gateway for an agent at boot.
+///
+/// Rules (each step logged when it changes the outcome — NEVER swap silently):
+///   1. Canonicalize via `resolve_model_string` (legacy IDs upgrade IN-PROVIDER via
+///      `successor_model_for` — this is the intended upgrade path, not a swap).
+///   2. Accept if present in the live registry ∪ hardcoded baseline
+///      (`registry_contains`), NOT the hardcoded list alone. The old check against
+///      `all_models()` rejected registry-only models and stale-catalog IDs, silently
+///      landing agents on whichever provider had a per-agent key (the July 2026
+///      "everything drifted to OpenAI" bug).
+///   3. Reject a model whose provider has no key in this agent's key set — keeping
+///      it produces the gateway's "FailoverError: No API key found for provider X"
+///      and a mute agent.
+///   4. On rejection, fall back by key availability and WARN with the original
+///      model and the reason so the swap is visible in logs and diagnostics.
+fn resolve_boot_model(
+    agent_id: &str,
+    active_model: &str,
+    keys: &std::collections::HashMap<String, String>,
+) -> String {
+    let h_a = keys
+        .get("ANTHROPIC_API_KEY")
+        .is_some_and(|v| !v.trim().is_empty());
+    let h_o = keys
+        .get("OPENAI_API_KEY")
+        .is_some_and(|v| !v.trim().is_empty());
+    let h_g = keys
+        .get("GEMINI_API_KEY")
+        .is_some_and(|v| !v.trim().is_empty());
+
+    let fall_back = |reason: &str| {
+        let fallback =
+            crate::model_constants::default_model_from_available_keys(h_a, h_o, h_g).to_string();
+        tracing::warn!(
+            "resolve_boot_model: agent {} model '{}' replaced with '{}' — {}. \
+             The agent's preferred model is NOT changed in the Canopy DB; fix the \
+             underlying issue (usually a missing provider key) to restore it.",
+            agent_id,
+            active_model,
+            fallback,
+            reason
+        );
+        fallback
+    };
+
+    let canonical = match crate::model_constants::resolve_model_string(active_model) {
+        Ok(c) => c,
+        Err(e) => return fall_back(&format!("invalid model string ({e})")),
+    };
+    if canonical != active_model {
+        tracing::info!(
+            "resolve_boot_model: agent {} model '{}' upgraded in-provider to successor '{}'",
+            agent_id,
+            active_model,
+            canonical
+        );
+    }
+    if !crate::model_constants::registry_contains(&canonical) {
+        return fall_back("model not present in the model registry or baseline catalogue");
+    }
+    if !agent_has_key_for_model(&canonical, keys) {
+        return fall_back("no API key available for this model's provider in the agent's key set");
+    }
+    canonical
+}
+
 fn agent_state_dirs(agent_id: &str) -> Vec<std::path::PathBuf> {
     let Some(data_dir) = dirs::data_dir() else {
         return Vec::new();
@@ -4313,6 +4462,79 @@ async fn write_auth_profiles(agent_id: &str, keys: &std::collections::HashMap<St
     }
 }
 
+/// Import legacy auth files into OpenClaw's per-agent sqlite auth store.
+///
+/// ⚠️  WHY THIS EXISTS (July 2026 "agent has a key but gateway says no key" bug):
+/// Current OpenClaw does NOT read `auth-profiles.json` at runtime. Secrets live in
+/// `~/.openclaw/agents/<id>/agent/openclaw-agent.sqlite`, and the legacy JSON files
+/// (`auth-profiles.json`, `auth-state.json`, per-agent `auth.json`) are only imported
+/// when `openclaw doctor --fix` runs. (Source: docs.openclaw.ai/concepts/model-failover
+/// §"Auth storage".) Canopy kept writing the legacy JSON and assumed it was live, so
+/// keys saved after the engine update never reached the runtime — the gateway raised
+/// "FailoverError: No API key found for provider google" for agent Boots even though
+/// its per-agent Gemini key was saved and visible in the UI.
+///
+/// So: every code path that writes auth-profiles.json MUST follow up with this import
+/// (once per affected container, not per agent — doctor scans all agent dirs).
+///
+/// Notes:
+/// - `docker exec` without `-i` keeps stdin closed, so any interactive doctor prompt
+///   receives EOF instead of hanging; the container-side `timeout` bounds the rest.
+/// - Failure is logged but non-fatal — the JSON write already succeeded and a later
+///   boot/repair can re-run the import.
+async fn import_auth_into_store(container_name: &str) {
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(65),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                "-e",
+                "NODE_OPTIONS=--v8-pool-size=1 --max-old-space-size=512",
+                container_name,
+                "timeout",
+                "-k",
+                "2",
+                "60",
+                "openclaw",
+                "doctor",
+                "--fix",
+            ])
+            .output(),
+    )
+    .await;
+
+    match result {
+        Ok(Ok(out)) if out.status.success() => {
+            tracing::info!(
+                "import_auth_into_store: doctor --fix imported auth into sqlite store ({})",
+                container_name
+            );
+        }
+        Ok(Ok(out)) => {
+            tracing::warn!(
+                "import_auth_into_store: doctor --fix exited non-zero on {}: {}",
+                container_name,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(
+                "import_auth_into_store: failed to exec doctor --fix on {}: {}",
+                container_name,
+                e
+            );
+        }
+        Err(_) => {
+            tracing::warn!(
+                "import_auth_into_store: doctor --fix timed out on {}",
+                container_name
+            );
+        }
+    }
+}
+
 // ─── Provider API key propagation ─────────────────────────────────────────────
 //
 // Two Tauri commands let the UI propagate API key changes to OpenClaw without
@@ -4342,7 +4564,10 @@ fn provider_to_per_agent_suffix(provider: &str) -> Option<&'static str> {
 /// Refresh auth-profiles.json for ONE specific agent. Called after the user changes a
 /// per-agent provider key. Never touches other agents.
 #[tauri::command]
-pub async fn sync_agent_api_keys(agent_id: String) -> Result<(), String> {
+pub async fn sync_agent_api_keys(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<(), String> {
     // Skip if the agent dir doesn't exist yet — same guard as `sync_credentials`,
     // prevents creating an empty agent dir before `agents add` has registered it.
     if !agent_state_dir_exists(&agent_id) {
@@ -4362,6 +4587,9 @@ pub async fn sync_agent_api_keys(agent_id: String) -> Result<(), String> {
         return Ok(());
     }
     write_auth_profiles(&agent_id, &creds).await;
+    // The JSON file is legacy-only — import it into the sqlite auth store so the
+    // running gateway actually uses the new key. See import_auth_into_store docs.
+    import_auth_into_store(&get_agent_container_name(&db, &agent_id)).await;
     Ok(())
 }
 
@@ -4380,6 +4608,7 @@ pub async fn sync_global_api_key(
 
     let agents = db.list_agents().map_err(|e| format!("DB error: {}", e))?;
     let mut updated: u32 = 0;
+    let mut touched_containers: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for agent in agents {
         // If this agent has its own per-agent key for `provider`, the global change
@@ -4407,7 +4636,14 @@ pub async fn sync_global_api_key(
         }
 
         write_auth_profiles(&agent.id, &creds).await;
+        touched_containers.insert(get_agent_container_name(&db, &agent.id));
         updated += 1;
+    }
+
+    // Import the refreshed legacy JSON into each affected container's sqlite auth
+    // store — once per container, since doctor scans every agent dir in it.
+    for container in &touched_containers {
+        import_auth_into_store(container).await;
     }
 
     tracing::info!(
@@ -4574,6 +4810,10 @@ pub async fn sync_credentials(
         "sync_credentials: wrote auth-profiles to both paths for agent {}",
         agent_id
     );
+
+    // auth-profiles.json is legacy-only in current OpenClaw — import it into the
+    // per-agent sqlite auth store so the key is actually used at runtime.
+    import_auth_into_store(&container_name).await;
     Ok(())
 }
 
@@ -5818,6 +6058,126 @@ console.log('config patched — model set to {model}');
     Ok(format!("✓ Repair complete.\n\n{}", log.trim_end()))
 }
 
+/// Build the `{primary, fallbacks}` model object for ONE agent, using that agent's
+/// own credentials.
+///
+/// ⚠️  A per-agent primary is STRICT in OpenClaw: `agents.list[i].model` does NOT
+/// inherit `agents.defaults.model.fallbacks`. An agent written as a bare
+/// `{primary: "..."}` therefore has no failover at all — the first 429 or billing
+/// error ends the turn instead of walking to the next model. Every write of a
+/// per-agent model must go through here.
+///
+/// The chain is derived from `get_creds_for_agent`, not the global keychain, because
+/// failover to a provider this agent has no key for would just trade one hard failure
+/// for another.
+fn agent_model_config(agent_id: &str, primary: &str) -> serde_json::Value {
+    let keys = get_creds_for_agent(agent_id);
+    let has = |k: &str| {
+        keys.get(k)
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    };
+
+    let fallbacks = crate::model_constants::default_fallback_chain(
+        primary,
+        has("ANTHROPIC_API_KEY"),
+        has("OPENAI_API_KEY"),
+        has("GEMINI_API_KEY"),
+    );
+
+    if fallbacks.is_empty() {
+        tracing::warn!(
+            "agent_model_config: agent {} has no usable fallback for primary '{}' — \
+             it holds a key for only one provider, so a quota or billing error on that \
+             provider will stop the agent. Add a second provider key to enable failover.",
+            agent_id,
+            primary
+        );
+    } else {
+        tracing::info!(
+            "agent_model_config: agent {} primary '{}' with fallbacks {:?}",
+            agent_id,
+            primary,
+            fallbacks
+        );
+    }
+
+    serde_json::json!({ "primary": primary, "fallbacks": fallbacks })
+}
+
+/// Patch `agents.list[i].model` in a container's openclaw.json to the full
+/// `{primary, fallbacks}` object, and register every model in the chain under
+/// `agents.defaults.models` so OpenClaw will actually load them.
+///
+/// Writing the file directly (rather than `openclaw agents edit --model`) is
+/// deliberate twice over: the CLI writes a BARE primary with no fallbacks, and a
+/// direct write triggers OpenClaw's file-watcher hot reload in under a second
+/// instead of a 10-15s container restart that loses in-memory state.
+///
+/// The payload travels as `process.argv[1]`, not interpolated into the script body —
+/// model ids are validated upstream, but building JS source out of runtime strings is
+/// a habit worth not having.
+async fn patch_agent_model_in_container(
+    container_name: &str,
+    agent_id: &str,
+    model_config: &serde_json::Value,
+) -> Result<(), String> {
+    let payload = serde_json::json!({ "id": agent_id, "model": model_config }).to_string();
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                container_name,
+                "node",
+                "-e",
+                AGENT_MODEL_PATCH_SCRIPT,
+                &payload,
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| "Timed out updating OpenClaw model config".to_string())?
+    .map_err(|e| format!("Failed to update OpenClaw model config: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "Model update failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Node script used by `patch_agent_model_in_container`. Module-level so the
+/// regression test below can assert on its contents.
+const AGENT_MODEL_PATCH_SCRIPT: &str = r#"const fs=require('fs');
+const p='/home/node/.openclaw/openclaw.json';
+const payload=JSON.parse(process.argv[1]);
+const c=JSON.parse(fs.readFileSync(p,'utf8'));
+c.agents=c.agents||{};
+c.agents.list=c.agents.list||[];
+const i=c.agents.list.findIndex(a=>a&&a.id===payload.id);
+if(i<0){console.log('agent '+payload.id+' not in agents.list — skipping model patch');process.exit(0);}
+c.agents.list[i].model={primary:payload.model.primary,fallbacks:payload.model.fallbacks};
+// Every model in the chain must exist in the defaults registry or OpenClaw will not
+// load it when failover reaches for it.
+c.agents.defaults=c.agents.defaults||{};
+c.agents.defaults.models=c.agents.defaults.models||{};
+for(const m of [payload.model.primary].concat(payload.model.fallbacks||[])){
+  c.agents.defaults.models[m]=c.agents.defaults.models[m]||{};
+}
+// NOTE: agents.defaults.model is deliberately NOT touched. It used to be overwritten
+// here with a bare {primary}, which wiped the gateway-wide fallbacks array that
+// preflight_sanitize_and_merge_config writes — so changing ONE agent's model silently
+// removed failover for EVERY agent sharing the gateway.
+fs.writeFileSync(p,JSON.stringify(c,null,2));
+console.log('model+fallbacks patched for '+payload.id);
+"#;
+
 #[tauri::command]
 pub async fn update_agent_model(
     db: tauri::State<'_, crate::db::Database>,
@@ -5826,54 +6186,10 @@ pub async fn update_agent_model(
 ) -> Result<(), String> {
     let model = crate::model_constants::resolve_model_string(&model)?;
 
-    // Write directly into openclaw.json via Node.js — this triggers OpenClaw's hot reload
-    // (file watcher detects the change and applies it without restarting the process).
-    // Do NOT use `docker restart` here: a full restart takes 10-15s and loses in-memory
-    // state. Hot reload propagates the model change in under a second.
-    // ⚠️  OpenClaw expects model as a nested object {primary: "provider/model-id"},
-    // NOT a flat string. This matches the working reference format at
-    // /Users/scottieryan/agents/sloane/config/openclaw.json:
-    //   "model": { "primary": "google/gemini-3.1-pro-preview" }
-    let node_script = format!(
-        r#"const fs=require('fs');
-const p='/home/node/.openclaw/openclaw.json';
-const data=JSON.parse(fs.readFileSync(p,'utf8'));
-// Set per-agent model override (nested {{primary}} format required by OpenClaw)
-data.agents=data.agents||{{}};
-data.agents.list=(data.agents.list||[]).map(a=>a.id==='{id}'?{{...a,model:{{primary:'{model}'}}}}:a);
-// Also update global default (nested format)
-data.agents.defaults=data.agents.defaults||{{}};
-data.agents.defaults.model={{primary:'{model}'}};
-// Ensure agents.defaults.models registry lists this model
-data.agents.defaults.models=data.agents.defaults.models||{{}};
-data.agents.defaults.models['{model}']={{}};
-fs.writeFileSync(p,JSON.stringify(data,null,2));
-console.log('model updated to {model}');
-"#,
-        id = agent_id,
-        model = model
-    );
-
     let container_name = get_agent_container_name(&db, &agent_id);
+    let model_config = agent_model_config(&agent_id, &model);
 
-    let output = get_docker_command()
-        .args([
-            "exec",
-            "-u",
-            "node",
-            &container_name,
-            "node",
-            "-e",
-            &node_script,
-        ])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to update OpenClaw model config: {}", e))?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Model update failed: {}", err));
-    }
+    patch_agent_model_in_container(&container_name, &agent_id, &model_config).await?;
 
     if let Ok(Some(mut agent)) = db.get_agent(&agent_id) {
         agent.personality.active_model = Some(model);
@@ -6569,6 +6885,10 @@ async fn boot_sync_agents_internal(
     let total = active_agents.len();
     let mut ok: u32 = 0;
     let mut errs: u32 = 0;
+    // Containers whose auth-profiles.json we (re)wrote this boot — each needs a
+    // one-shot `openclaw doctor --fix` afterwards to import the legacy JSON into
+    // the sqlite auth store the runtime actually reads.
+    let mut auth_containers: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for agent in &active_agents {
         let id = &agent.id;
@@ -6748,6 +7068,22 @@ async fn boot_sync_agents_internal(
                 add_args.push(&active_model);
 
                 let _ = get_docker_command().args(&add_args).output().await;
+
+                // Same reason as the fast path: `agents add --model` leaves a bare
+                // primary with no failover. Attach the per-agent fallback chain.
+                if let Err(error) = patch_agent_model_in_container(
+                    &container_name,
+                    id,
+                    &agent_model_config(id, &active_model),
+                )
+                .await
+                {
+                    tracing::warn!(
+                        "boot_sync_agents: could not attach fallbacks for {}: {}",
+                        id,
+                        error
+                    );
+                }
             }
 
             let _ = sync_user_md_for_agent(&db, id);
@@ -6770,6 +7106,7 @@ async fn boot_sync_agents_internal(
             // Write directly (bypass the host-dir guard — agent IS registered, dir exists in container)
             let keys_existing = get_creds_for_agent(id);
             write_auth_profiles(id, &keys_existing).await;
+            auth_containers.insert(get_agent_container_name(&db, id));
 
             // Sync the agent's model safely using agents edit.
             // DO NOT use `openclaw config set` here! `config set` triggers a forceful
@@ -6777,27 +7114,7 @@ async fn boot_sync_agents_internal(
             // Also, we MUST validate the model. If an invalid/deprecated model like
             // 'google/gemini-flash-latest' is pushed, LiteLLM enters an infinite crash loop.
             let active_model = agent.personality.active_model.clone().unwrap_or_default();
-            let model_to_set = crate::model_constants::resolve_model_string(&active_model)
-                .ok()
-                .filter(|m| {
-                    crate::model_constants::all_models()
-                        .iter()
-                        .any(|info| info.id == **m)
-                })
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    let h_a = !keys_existing
-                        .get("ANTHROPIC_API_KEY")
-                        .map_or(true, |v: &String| v.trim().is_empty());
-                    let h_o = !keys_existing
-                        .get("OPENAI_API_KEY")
-                        .map_or(true, |v: &String| v.trim().is_empty());
-                    let h_g = !keys_existing
-                        .get("GEMINI_API_KEY")
-                        .map_or(true, |v: &String| v.trim().is_empty());
-                    crate::model_constants::default_model_from_available_keys(h_a, h_o, h_g)
-                        .to_string()
-                });
+            let model_to_set = resolve_boot_model(id, &active_model, &keys_existing);
 
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(65),
@@ -6823,6 +7140,24 @@ async fn boot_sync_agents_internal(
                     .output(),
             )
             .await;
+
+            // `agents edit --model` writes a BARE primary, which OpenClaw treats as
+            // strict — no failover on 429/billing/overload. Re-patch it into the
+            // {primary, fallbacks} object form using this agent's own keys.
+            if let Err(error) = patch_agent_model_in_container(
+                "canopy-gateway",
+                id,
+                &agent_model_config(id, &model_to_set),
+            )
+            .await
+            {
+                tracing::warn!(
+                    "boot_sync_agents: fast path could not attach fallbacks for {}: {}",
+                    id,
+                    error
+                );
+            }
+
             tracing::info!(
                 "boot_sync_agents: fast path synced model '{}' for agent {}",
                 model_to_set,
@@ -6896,26 +7231,7 @@ async fn boot_sync_agents_internal(
 
         let active_model = agent.personality.active_model.clone().unwrap_or_default();
         let keys_existing = get_creds_for_agent(&id);
-        let model_to_set = crate::model_constants::resolve_model_string(&active_model)
-            .ok()
-            .filter(|m| {
-                crate::model_constants::all_models()
-                    .iter()
-                    .any(|info| info.id == **m)
-            })
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                let h_a = !keys_existing
-                    .get("ANTHROPIC_API_KEY")
-                    .map_or(true, |v: &String| v.trim().is_empty());
-                let h_o = !keys_existing
-                    .get("OPENAI_API_KEY")
-                    .map_or(true, |v: &String| v.trim().is_empty());
-                let h_g = !keys_existing
-                    .get("GEMINI_API_KEY")
-                    .map_or(true, |v: &String| v.trim().is_empty());
-                crate::model_constants::default_model_from_available_keys(h_a, h_o, h_g).to_string()
-            });
+        let model_to_set = resolve_boot_model(&id, &active_model, &keys_existing);
 
         let try_agents_add = |rust_timeout_secs: u64| {
             let workspace_path = workspace_path.clone();
@@ -7111,6 +7427,7 @@ async fn boot_sync_agents_internal(
 
         // Step 3: Write auth-profiles.json — load API keys from keychain and write.
         write_auth_profiles(id, &get_creds_for_agent(id)).await;
+        auth_containers.insert(container_name.clone());
 
         // Step 3b: Populate `agents.list[i].skills` from this agent's capabilities so
         // OpenClaw doesn't fall back to the bare ["gog","summarize"] global default.
@@ -7177,6 +7494,14 @@ async fn boot_sync_agents_internal(
     }
 
     tracing::info!("boot_sync_agents complete: {} ok, {} errors", ok, errs);
+
+    // Import the freshly written legacy auth JSON into each touched container's
+    // sqlite auth store (once per container — doctor scans all agent dirs in it).
+    // Without this, per-agent keys saved since the engine update are invisible to
+    // the runtime and agents fail with "No API key found for provider X".
+    for container in &auth_containers {
+        import_auth_into_store(container).await;
+    }
 
     // Post-boot diagnostic: log container PID/CPU/MEM so we can tell if a PID spiral
     // or memory pressure is starting after agents are registered and channels begin init.
@@ -7718,6 +8043,59 @@ mod tests {
 
     fn create_test_db() -> crate::db::Database {
         crate::db::Database::init_in_memory().unwrap()
+    }
+
+    // ── Per-agent model failover ──────────────────────────────────────────────
+
+    /// A per-agent primary is STRICT in OpenClaw — `agents.list[i].model` does not
+    /// inherit `agents.defaults.model.fallbacks`. The patch script must therefore
+    /// always write a `fallbacks` array alongside the primary, or the agent has no
+    /// failover and dies on the first 429.
+    #[test]
+    fn agent_model_patch_writes_fallbacks_alongside_primary() {
+        assert!(
+            AGENT_MODEL_PATCH_SCRIPT.contains("fallbacks:payload.model.fallbacks"),
+            "per-agent model patch must write a fallbacks array, not a bare primary"
+        );
+    }
+
+    /// Regression guard for the fleet-wide outage mode: this script used to also do
+    /// `data.agents.defaults.model={primary:'…'}`, which REPLACED the gateway-wide
+    /// model object and threw away the `fallbacks` array that
+    /// `preflight_sanitize_and_merge_config` writes. Changing one agent's model in the
+    /// UI therefore removed failover for every agent sharing the gateway, and the whole
+    /// fleet then hard-failed on the first provider quota error.
+    #[test]
+    fn agent_model_patch_never_touches_gateway_default_model() {
+        for forbidden in [
+            "defaults.model=",
+            "defaults.model =",
+            "defaults[\"model\"]",
+            "defaults['model']",
+        ] {
+            assert!(
+                !AGENT_MODEL_PATCH_SCRIPT.contains(forbidden),
+                "per-agent model patch must not assign agents.defaults.model \
+                 (found '{}') — that wipes gateway-wide fallbacks",
+                forbidden
+            );
+        }
+        // Writing into the defaults MODELS registry is required and must keep working.
+        assert!(
+            AGENT_MODEL_PATCH_SCRIPT.contains("c.agents.defaults.models[m]"),
+            "every model in the chain must be registered under agents.defaults.models"
+        );
+    }
+
+    /// The payload must arrive as an argv-delivered JSON blob rather than being
+    /// interpolated into the script body.
+    #[test]
+    fn agent_model_patch_reads_payload_from_argv() {
+        assert!(AGENT_MODEL_PATCH_SCRIPT.contains("JSON.parse(process.argv[1])"));
+        assert!(
+            !AGENT_MODEL_PATCH_SCRIPT.contains("{model}"),
+            "script must not carry format placeholders — payload travels via argv"
+        );
     }
 
     #[test]

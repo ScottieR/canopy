@@ -180,7 +180,17 @@ fn helper_http_client() -> Result<reqwest::Client, String> {
 async fn bounded_success_json(response: reqwest::Response) -> Result<Value, String> {
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("Provider request failed ({status})"));
+        // Include a bounded slice of the provider's error body — it names the
+        // actual problem (unknown model, malformed request, quota) and turning
+        // it into a generic status was making field failures undiagnosable.
+        let detail = response
+            .text()
+            .await
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        return Err(format!("Provider request failed ({status}): {detail}"));
     }
     if response
         .content_length()
@@ -356,6 +366,18 @@ pub fn configure_canopy_helper(
 }
 
 fn prompt(message: &str, context: &Value, continuity: &Value) -> String {
+    // Roleplay/agent-session requests must NOT get Eddy's persona — the same
+    // marker convention canopy-admin's bootstrap route honors
+    // (ROLEPLAY_MARKERS in server.js). Provider mode calls the model directly
+    // from this Mac, so the bypass must exist here too, or the drafted agent's
+    // voice gets tinted and structured-output turns break.
+    let trimmed = message.trim_start();
+    if trimmed.starts_with("ROLEPLAY TEST:") || trimmed.starts_with("AGENT SESSION:") {
+        return format!(
+            "You are a precise roleplay and structured-output engine. The message below contains its own complete instructions: a persona to embody and/or an exact output format. Follow them literally. Never mention Eddy, Canopy internals, drafts, or that you are roleplaying. When a JSON format is specified, reply with ONLY that JSON — no prose, no code fences.\n\n{}",
+            message
+        );
+    }
     if continuity_topic(continuity) == Some("persona_draft") {
         return format!(
             "You are Eddie drafting a new Canopy agent persona. Follow the task exactly and return only the requested JSON object. Do not add prose, code fences, or commentary.\n\n{}",

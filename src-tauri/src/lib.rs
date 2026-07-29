@@ -988,6 +988,7 @@ pub fn run() {
             openclaw::workspace_files::upload_workspace_file,
             openclaw::workspace_files::copy_file_to_workspace,
             openclaw::set_preferences_template,
+            openclaw::append_onboarding_user_facts,
             openclaw::fetch_apple_health_data,
             openclaw::system_assess,
             workspace_manager::get_agent_allowed_directories,
@@ -1108,6 +1109,7 @@ pub fn run() {
             voice::cleanup_voice_cache,
             voice::transcribe_audio,
             voice::synthesize_speech,
+            voice::synthesize_onboarding_voice_preview,
             voice::synthesize_agent_speech,
             // Live voice — bidirectional realtime audio bridge to OpenClaw's
             // realtime brain WS endpoint (OpenClaw v2026.4.24+).

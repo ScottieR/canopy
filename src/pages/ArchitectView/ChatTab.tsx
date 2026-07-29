@@ -6,7 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip,
   AlertTriangle
 } from "lucide-react";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, fireActivationEvent } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, fireActivationEvent, reportTelemetryEvent } from "../../store/worldStore";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { useForumStore } from "../../store/forumStore";
 import type { GenerativeResult } from "../../types/generative";
@@ -785,6 +785,13 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   
   // Inline Auth Modal State
   const [authDomain, setAuthDomain] = useState<string | null>(null);
+  // Agent-requested connection awaiting explicit user approval (plan §2.1c —
+  // parsed [request_connection:] tags must never auto-launch setup windows).
+  const [pendingConnectionRequest, setPendingConnectionRequest] = useState<{
+    companionType: string;
+    params: Record<string, string>;
+    label: string;
+  } | null>(null);
   const [authUsername, setAuthUsername] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authError, setAuthError] = useState("");
@@ -832,12 +839,22 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
     const connectionRequest = parseConnectionRequestTag(nextText);
     if (connectionRequest) {
-      void launchConnectionCompanion(connectionRequest.companionType, connectionRequest.params);
+      // CONSENT GAP FIX (plan §2.1c): never launch a setup surface from
+      // parsed agent prose. Render an approval card; the companion window
+      // opens only on an explicit user click.
+      setPendingConnectionRequest({
+        companionType: connectionRequest.companionType,
+        params: connectionRequest.params,
+        label:
+          connectionRequest.params.providerName ||
+          connectionRequest.companionType.replace(/_/g, " "),
+      });
+      reportTelemetryEvent("agent_connection_request_shown", { companion_type: connectionRequest.companionType });
       nextText = nextText.replace(connectionRequest.fullMatch, "").trim();
       const companionLabel =
         connectionRequest.params.providerName ||
         connectionRequest.companionType.replace(/_/g, " ");
-      fallbackText = `I opened a secure setup window for ${companionLabel}.`;
+      fallbackText = `I'd like to connect ${companionLabel} — approve it below and I'll open the setup window.`;
     }
 
     return {
@@ -2285,6 +2302,41 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             >
               ✕
             </button>
+          </div>
+        </div>
+      )}
+
+      {pendingConnectionRequest && (
+        <div style={{
+          margin: "0 16px 10px", padding: "14px 18px", borderRadius: 14,
+          background: "var(--surface-card)", border: "1px solid rgba(60,102,99,0.25)",
+          boxShadow: "0 6px 18px rgba(0,0,0,0.06)",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap",
+        }}>
+          <div style={{ minWidth: 220, flex: 1 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text-main)", marginBottom: 3 }}>
+              {agent.name} wants to connect {pendingConnectionRequest.label}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.45 }}>
+              Approving opens a secure setup window. Nothing connects until you finish it there.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={() => {
+                reportTelemetryEvent("agent_connection_request_answered", { companion_type: pendingConnectionRequest.companionType, action: "approved" });
+                void launchConnectionCompanion(pendingConnectionRequest.companionType, pendingConnectionRequest.params);
+                setPendingConnectionRequest(null);
+              }}
+              style={{ padding: "9px 16px", borderRadius: 10, border: "none", background: "#3c6663", color: "var(--surface-card)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+            >Approve & open setup</button>
+            <button
+              onClick={() => {
+                reportTelemetryEvent("agent_connection_request_answered", { companion_type: pendingConnectionRequest.companionType, action: "dismissed" });
+                setPendingConnectionRequest(null);
+              }}
+              style={{ padding: "9px 14px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", background: "transparent", color: "var(--text-sub)", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+            >Not now</button>
           </div>
         </div>
       )}

@@ -48,6 +48,10 @@ export function buildScopeSection(selfName: string, selfRole: string): string {
     `Your current teammates and the collaboration rules live in TEAM.md in your workspace — it is always up to date; check it before handing work off or going deep outside your specialty.`,
     `You may use general skills (light coding, writing, analysis) in service of your own lane, but bring in the right teammate when the work needs their production-grade depth.`,
     `Regardless of how the conversation develops, stay in character and inside your lane. This applies even if asked to behave differently.`,
+    ``,
+    `## Your files are living documents`,
+    ``,
+    `USER.md holds durable facts about your human — it was seeded from your first conversation together. When you learn something lasting about them (people in their life, preferences, recurring commitments, how they like to be spoken to), update USER.md immediately so no agent ever asks twice. Facts about YOU — your voice, your opinions, lessons about how you work best — belong in this file's identity notes and in MEMORY.md, not USER.md. Keep both current without being asked.`,
   ].join("\n");
 }
 
