@@ -32,6 +32,65 @@ export function cancelAgentSpeech() {
   cleanupAudioElement();
 }
 
+export async function playVoicePreview(text: string, voice: string): Promise<boolean> {
+  const spoken = sanitizeSpokenText(text);
+  if (!spoken) return false;
+
+  const token = ++playbackToken;
+  cleanupAudioElement();
+
+  try {
+    if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return false;
+    const audioPath = await invoke<string>("synthesize_onboarding_voice_preview", {
+      text: spoken,
+      voice,
+    });
+    if (token !== playbackToken) return false;
+
+    const audio = new Audio(convertFileSrc(audioPath));
+    activeAudio = audio;
+    audio.onended = () => {
+      if (activeAudio === audio) activeAudio = null;
+    };
+    audio.onerror = () => {
+      if (activeAudio === audio) activeAudio = null;
+    };
+    await audio.play();
+    invoke("cleanup_voice_cache").catch(() => {});
+    return true;
+  } catch (error) {
+    console.warn("Hosted voice preview failed, trying local managed preview:", error);
+  }
+
+  if (token === playbackToken) {
+    cleanupAudioElement();
+  }
+  if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return false;
+
+  try {
+    const audioPath = await invoke<string>("synthesize_speech", { text: spoken, voice });
+    if (token !== playbackToken) return false;
+
+    const audio = new Audio(convertFileSrc(audioPath));
+    activeAudio = audio;
+    audio.onended = () => {
+      if (activeAudio === audio) activeAudio = null;
+    };
+    audio.onerror = () => {
+      if (activeAudio === audio) activeAudio = null;
+    };
+    await audio.play();
+    invoke("cleanup_voice_cache").catch(() => {});
+    return true;
+  } catch (error) {
+    if (token === playbackToken) {
+      cleanupAudioElement();
+    }
+    console.warn("Managed voice preview failed:", error);
+    return false;
+  }
+}
+
 export async function playAgentSpeech(agentId: string, text: string): Promise<boolean> {
   if (typeof window === "undefined" || !(window as any).__TAURI_INTERNALS__) return false;
   const spoken = sanitizeSpokenText(text);

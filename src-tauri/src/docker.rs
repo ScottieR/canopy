@@ -370,7 +370,7 @@ process.on('unhandledRejection', (reason, promise) => {
     format!(
         r#"services:
   canopy-gateway:
-    image: ghcr.io/openclaw/openclaw:2026.5.26
+    image: ghcr.io/openclaw/openclaw:2026.7.1
     container_name: canopy-gateway
     restart: unless-stopped
     labels:
@@ -509,7 +509,7 @@ process.on('unhandledRejection', (reason, promise) => {
     format!(
         r#"services:
   canopy-isolated-{id}:
-    image: ghcr.io/openclaw/openclaw:2026.5.26
+    image: ghcr.io/openclaw/openclaw:2026.7.1
     container_name: canopy-isolated-{id}
     restart: unless-stopped
     labels:
@@ -1053,7 +1053,21 @@ fn preflight_sanitize_and_merge_config_with_keys(
         key_availability.has_gemini,
     );
 
-    cfg["agents"]["defaults"]["model"] = serde_json::json!({ "primary": default_model });
+    // Primary + fallback chain. OpenClaw walks `fallbacks` on quota/auth/overload
+    // failures with cooldowns and auto-recovery (see model_constants::
+    // default_fallback_chain). NOTE: this covers agents on the configured default;
+    // per-agent primaries set via `agents edit --model` are strict by OpenClaw
+    // policy unless given their own fallbacks — tracked as a follow-up.
+    let default_fallbacks = crate::model_constants::default_fallback_chain(
+        default_model,
+        key_availability.has_anthropic,
+        key_availability.has_openai,
+        key_availability.has_gemini,
+    );
+    cfg["agents"]["defaults"]["model"] = serde_json::json!({
+        "primary": default_model,
+        "fallbacks": default_fallbacks,
+    });
     cfg["agents"]["defaults"]["models"][default_model] = serde_json::json!({});
     cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize"]);
 
@@ -1878,7 +1892,7 @@ for (const file of files) {
                 "openclaw",
                 "plugins",
                 "install",
-                "@openclaw/slack@2026.5.26",
+                "@openclaw/slack@2026.7.1",
             ])
             .output()
             .await;

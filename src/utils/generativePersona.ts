@@ -63,13 +63,13 @@ export function buildPersonaDraftMessage(
     accessoryLines += line;
   }
   return [
-    `TASK: The user described work for a new agent. Decide if one of the existing roles below is a STRONG fit. If none is, invent a tailored persona.`,
+    `TASK: The user described work for a new agent. Decide if one of the existing roles below is a STRONG fit. Even when one role is a fit, still write a tailored identity and personality that is grounded in the user's exact request rather than generic role boilerplate. If none is a strong fit, invent a tailored persona.`,
     `USER NEED: "${boundedPrompt}"`,
     `EXISTING ROLES:\n${roleLines}`,
     `ACCESSORIES (index:name):\n${accessoryLines}`,
     `Reply with ONLY a JSON object, no prose, no code fences:`,
-    `{"fits_existing": bool, "existing_role": "RoleKey or null", "title": "2-3 word persona title", "name": "one warm first-name-style name, never a role word", "tagline": "one sentence, second person, what this persona handles for them", "soul_seed": "2-3 sentences of personality/expertise grounding, written as 'You are...'", "blend": ["1-3 existing RoleKeys, closest first"], "voice": "one of alloy|echo|fable|nova|onyx|shimmer or null", "accessory_indices": [3-4 ints matching the persona's vibe]}`,
-    `Rules: existing_role must be from the list or null. blend entries must be from the list. A role is a STRONG fit only if its core job matches — adjacent topics do not count (a wine sommelier is NOT a Media Advisor).`,
+    `{"fits_existing": bool, "existing_role": "RoleKey or null", "title": "2-3 word persona title tailored to the user's request", "name": "one warm first-name-style name, never a role word", "tagline": "one sentence, second person, what this persona handles for them", "soul_seed": "2-3 sentences of personality/expertise grounding, written as 'You are...'", "blend": ["1-3 existing RoleKeys, closest first"], "voice": "one of alloy|echo|fable|nova|onyx|shimmer or null", "accessory_indices": [3-4 ints matching the persona's vibe]}`,
+    `Rules: existing_role must be from the list or null. blend entries must be from the list. Return title, name, tagline, and soul_seed even when fits_existing is true. A role is a STRONG fit only if its core job matches — adjacent topics do not count (a wine sommelier is NOT a Media Advisor).`,
   ].join("\n\n");
 }
 
@@ -114,6 +114,10 @@ export function parsePersonaDraftReply(
   const existingRole =
     typeof raw.existing_role === "string" && valid.has(raw.existing_role) ? raw.existing_role : null;
   const fitsExisting = raw.fits_existing === true && existingRole !== null;
+  const title = clean(raw.title, 40);
+  const name = clean(raw.name, 24);
+  const tagline = clean(raw.tagline, 160);
+  const soulSeed = clean(raw.soul_seed, 600);
 
   // Indices → catalog ids, deduped, bounded.
   const accessories: string[] = Array.isArray(raw.accessory_indices)
@@ -128,20 +132,16 @@ export function parsePersonaDraftReply(
     return {
       fitsExisting: true,
       existingRole,
-      title: "",
-      name: "",
-      tagline: "",
-      soulSeed: "",
+      title,
+      name,
+      tagline,
+      soulSeed,
       blend: blend.length > 0 ? blend : [existingRole as string],
       voice: null,
       accessories,
     };
   }
 
-  const title = clean(raw.title, 40);
-  const name = clean(raw.name, 24);
-  const tagline = clean(raw.tagline, 160);
-  const soulSeed = clean(raw.soul_seed, 600);
   // An invented persona is only usable if it has an identity AND resolves to
   // at least one real base template (deterministic defaults rule).
   if (!title || !name || blend.length === 0) return null;
@@ -170,6 +170,38 @@ export function composePersonaPersonality(
     ? persona.soulSeed.trim()
     : `You are ${persona.name}, a ${persona.title}. ${persona.soulSeed || ""}`.trim();
   const need = userNeed.trim();
+  return need
+    ? `${opener}\n\n## Current user need\n\nThe user wants help with: ${need}`
+    : opener;
+}
+
+export function composeRequestDrivenPersonality({
+  persona,
+  agentName,
+  roleKey,
+  userNeed,
+}: {
+  persona?: DynamicPersonaDraft | null;
+  agentName: string;
+  roleKey: string;
+  userNeed: string;
+}): string {
+  if (persona?.soulSeed?.trim()) {
+    return composePersonaPersonality(persona, userNeed);
+  }
+
+  const safeName = agentName.trim() || persona?.name?.trim() || "Agent";
+  const label = (persona?.title?.trim() || roleKey || "agent").trim();
+  const need = userNeed.trim();
+  const opener = [
+    `You are ${safeName}, a ${label} created specifically for this user's request.`,
+    need
+      ? `Your job is to help with ${need}.`
+      : "Your job is to take ownership of the work they hand you.",
+    `Use the strengths of a ${roleKey} when helpful, but stay grounded in the user's actual goals instead of defaulting to generic ${roleKey.toLowerCase()} boilerplate.`,
+    "Be practical, specific, and proactive. Prefer concrete next steps, useful tradeoffs, and outputs the user can act on immediately.",
+  ].join(" ");
+
   return need
     ? `${opener}\n\n## Current user need\n\nThe user wants help with: ${need}`
     : opener;

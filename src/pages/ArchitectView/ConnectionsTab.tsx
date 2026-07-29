@@ -579,11 +579,32 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     }
   }, [fetchCachedModels, isRefreshingModels]);
 
+  // Refresh once when the tab mounts, then leave it alone.
+  //
+  // This used to poll `get_available_models` every 3 SECONDS for as long as the tab
+  // was open — an IPC round-trip 1,200 times an hour to read a list that changes twice
+  // a day (the registry syncs on a 12h timer, see MODEL_REGISTRY_SYNC_INTERVAL). The
+  // poll also never solved the problem it was presumably added for: it cannot update a
+  // native <select> popup that is already open.
+  //
+  // `refreshModelsNow` on mount forces a live oracle pull so the picker is correct the
+  // first time it is opened, and `lastModelRefresh` gives the user a visible answer to
+  // "is this list current?" plus a manual refresh affordance.
+  const [lastModelRefresh, setLastModelRefresh] = useState<number | null>(null);
   useEffect(() => {
-    fetchCachedModels();
-    const interval = setInterval(fetchCachedModels, 3000);
-    return () => clearInterval(interval);
-  }, [fetchCachedModels]);
+    void (async () => {
+      await fetchCachedModels();
+      await refreshModelsNow();
+      setLastModelRefresh(Date.now());
+    })();
+    // Intentionally mount-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const refreshModelsAndStamp = useCallback(async () => {
+    await refreshModelsNow();
+    setLastModelRefresh(Date.now());
+  }, [refreshModelsNow]);
 
   const [keys, setKeys] = useState<{ [provider: string]: string }>({
     "OpenAI": "", "Anthropic": "", "Gemini": "", "Grok": ""
@@ -1233,13 +1254,39 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             </div>
           </div>
           <div style={{ textAlign: "right", background: "rgba(33,131,128,0.1)", padding: "12px", borderRadius: 8, border: "1px solid rgba(33,131,128,0.2)", display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Model Choice</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "#218380", textTransform: "uppercase" }}>Model Choice</div>
+              {/*
+                A native <select> opens its popup SYNCHRONOUSLY on mousedown, using the
+                <option> children already in the DOM. The previous code fired an async
+                refresh from onMouseDown/onFocus/onTouchStart, so the response always
+                landed after the popup was on screen — and re-rendering <option>s does
+                not update an open native popup. The user therefore saw the PREVIOUS
+                list every single time, which read as "the dropdown never updates".
+                Refresh is now explicit and observable instead of invisible and futile.
+              */}
+              <button
+                type="button"
+                onClick={() => { void refreshModelsAndStamp(); }}
+                disabled={isRefreshingModels}
+                title={
+                  lastModelRefresh
+                    ? `Model list last refreshed ${new Date(lastModelRefresh).toLocaleTimeString()}`
+                    : "Refresh the model list from the provider catalog"
+                }
+                style={{
+                  fontSize: 10, padding: "2px 8px", borderRadius: 5,
+                  border: "1px solid rgba(33,131,128,0.3)", background: "transparent",
+                  color: "#218380", cursor: isRefreshingModels ? "default" : "pointer",
+                  opacity: isRefreshingModels ? 0.5 : 1, fontFamily: "inherit",
+                }}
+              >
+                {isRefreshingModels ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
             <select
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
-              onMouseDown={() => { void refreshModelsNow(); }}
-              onFocus={() => { void refreshModelsNow(); }}
-              onTouchStart={() => { void refreshModelsNow(); }}
               style={{ fontSize: 13, padding: "6px 10px", borderRadius: 6, border: "1px solid rgba(33,131,128,0.3)", outline: "none", background: "var(--surface-card)", color: "var(--text-main)", cursor: "pointer", width: 220 }}
             >
               <option value="">Strategy: {defaultModelInfo.model}</option>

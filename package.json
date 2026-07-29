@@ -2,7 +2,7 @@
   "name": "canopy",
   "private": true,
   "version": "0.2.0",
-  "description": "Shelter for your smartest ideas — the agent management OS",
+  "description": "Shelter for your smartest ideas \u2014 the agent management OS",
   "type": "module",
   "engines": {
     "node": ">=22.12.0"
@@ -57,6 +57,7 @@
     "test": "vitest",
     "typecheck": "tsc --noEmit",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest --coverage"
+    "test:coverage": "vitest --coverage",
+    "test:openclaw-contract": "bash tests/openclaw-contract/run.sh"
   }
 }

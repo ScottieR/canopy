@@ -284,6 +284,14 @@ pub fn init_model_registry() {
 /// Update the registry with a freshly fetched list, validating every entry first.
 /// Entries that fail `validate_model_string` are silently dropped so malformed names
 /// (e.g. bare model names without a provider prefix) can never make it into the UI.
+///
+/// ⚠️  The fetched list is MERGED with the hardcoded baseline (`all_models()`), it
+/// never replaces it. A stale admin oracle must not be able to remove current-gen
+/// models from the picker: in July 2026 the oracle was serving a claude-sonnet-4-6 /
+/// gpt-4o era catalog, and a "successful" sync downgraded the whole UI. Fetched
+/// entries are canonicalized first (so legacy IDs collapse onto their successors)
+/// and may refresh metadata for a baseline model, but every baseline ID always
+/// survives the merge.
 pub fn update_model_registry(fetched: Vec<ModelInfo>) {
     let valid: Vec<ModelInfo> = fetched
         .into_iter()
@@ -300,12 +308,49 @@ pub fn update_model_registry(fetched: Vec<ModelInfo>) {
         );
         return;
     }
-    let count = valid.len();
-    *MODEL_REGISTRY.write().expect("MODEL_REGISTRY poisoned") = valid;
+
+    // Start from the baseline; let fetched entries refresh metadata for known IDs
+    // (name/description/strategy may be updated server-side) and append genuinely
+    // new IDs. Canonicalization above means a stale entry like
+    // "anthropic/claude-sonnet-4-6" merges into "anthropic/claude-sonnet-5"
+    // instead of appearing as a phantom extra model.
+    let mut merged = all_models();
+    for m in valid {
+        if let Some(existing) = merged.iter_mut().find(|b| b.id == m.id) {
+            existing.strategy = m.strategy;
+            // Keep the baseline name/description when the fetched entry carries a
+            // stale display name for a canonicalized ID (e.g. "Claude Sonnet 4.6"
+            // arriving under the sonnet-5 ID after canonicalization).
+        } else {
+            merged.push(m);
+        }
+    }
+
+    let count = merged.len();
+    *MODEL_REGISTRY.write().expect("MODEL_REGISTRY poisoned") = merged;
     tracing::info!(
-        "update_model_registry: registry updated with {} models",
+        "update_model_registry: registry updated with {} models (baseline-merged)",
         count
     );
+}
+
+/// True when `model` (already canonicalized) is present in the live registry or the
+/// hardcoded baseline. Boot-sync and repair MUST use this instead of scanning
+/// `all_models()` directly so a registry refresh can introduce new models without a
+/// Rust release, while the baseline guarantees current-gen models are always accepted.
+pub fn registry_contains(model: &str) -> bool {
+    if all_models().iter().any(|m| m.id == model) {
+        return true;
+    }
+    MODEL_REGISTRY
+        .read()
+        .map(|reg| reg.iter().any(|m| m.id == model))
+        .unwrap_or(false)
+}
+
+/// Returns the provider prefix of a model string ("anthropic", "openai", "google", "xai").
+pub fn provider_prefix(model: &str) -> Option<&str> {
+    model.split('/').next().filter(|p| !p.is_empty())
 }
 
 // ─── Gateway / Docker networking ──────────────────────────────────────────────
@@ -400,8 +445,35 @@ pub fn agent_soul_path(agent_id: &str) -> String {
 const KNOWN_PROVIDERS: &[&str] = &["anthropic", "openai", "google", "xai", "ollama"];
 
 /// Returns the current canonical replacement for deprecated or legacy model IDs.
+///
+/// ⚠️  Every provider's legacy lineage MUST be mapped here. Before July 2026 only
+/// Gemini aliases were mapped; legacy Anthropic/OpenAI IDs (e.g. from the stale
+/// admin-oracle catalog) failed the boot-sync catalog check and were silently
+/// replaced via `default_model_from_available_keys` — which switched PROVIDERS,
+/// not just versions. Mapping successors in-provider is what keeps an agent on
+/// its intended provider across model generations.
 pub fn successor_model_for(model: &str) -> Option<&'static str> {
     match model.trim() {
+        // ── Anthropic legacy → current ──
+        "anthropic/claude-sonnet-4-6" => Some(ANTHROPIC_CLAUDE_SONNET),
+        "anthropic/claude-sonnet-4-5" => Some(ANTHROPIC_CLAUDE_SONNET),
+        "anthropic/claude-opus-4-8" => Some(ANTHROPIC_CLAUDE_OPUS),
+        "anthropic/claude-opus-4-7" => Some(ANTHROPIC_CLAUDE_OPUS),
+        "anthropic/claude-opus-4-6" => Some(ANTHROPIC_CLAUDE_OPUS),
+        "anthropic/claude-opus-4-5" => Some(ANTHROPIC_CLAUDE_OPUS),
+        "anthropic/claude-opus-4-1" => Some(ANTHROPIC_CLAUDE_OPUS),
+        "anthropic/claude-3-5-haiku" => Some(ANTHROPIC_CLAUDE_HAIKU),
+        // ── OpenAI legacy → current ──
+        "openai/gpt-4o" => Some(OPENAI_GPT56_TERRA),
+        "openai/gpt-4o-mini" => Some(OPENAI_GPT56_LUNA),
+        "openai/o4-mini" => Some(OPENAI_GPT56_TERRA),
+        "openai/gpt-4.1" => Some(OPENAI_GPT56_TERRA),
+        "openai/gpt-4.1-mini" => Some(OPENAI_GPT56_LUNA),
+        // ── xAI legacy → current ──
+        "xai/grok-beta" => Some(XAI_GROK_45),
+        "xai/grok-3" => Some(XAI_GROK_45),
+        "xai/grok-4" => Some(XAI_GROK_45),
+        // ── Google legacy → current ──
         "google/gemini-flash-latest" => Some(GOOGLE_GEMINI_FLASH_35),
         "google/gemini-2.0-flash" => Some(GOOGLE_GEMINI_FLASH_35),
         "google/gemini-2.0-flash-001" => Some(GOOGLE_GEMINI_FLASH_35),
@@ -480,6 +552,50 @@ pub fn default_model_from_available_keys(
         // No keys at all — return Anthropic so the UI can prompt for it
         DEFAULT_ANTHROPIC_MODEL
     }
+}
+
+/// Build the default model fallback chain for `agents.defaults.model.fallbacks`.
+///
+/// OpenClaw natively walks this chain on auth failures, rate limits (429/quota),
+/// billing disables, and overload — with per-profile cooldowns, sticky auto-
+/// fallback overrides, periodic primary re-probes, and user-visible
+/// "Model Fallback" notices (docs.openclaw.ai/concepts/model-failover). Canopy
+/// historically wrote only `model.primary`, so an exhausted key meant a mute
+/// agent. Order: same-provider cheaper sibling first (keeps persona/provider
+/// caches warm), then cross-provider equivalents in key-priority order. Only
+/// providers with keys are included; the primary itself is excluded; max 3.
+pub fn default_fallback_chain(
+    primary: &str,
+    has_anthropic: bool,
+    has_openai: bool,
+    has_gemini: bool,
+) -> Vec<&'static str> {
+    let primary_provider = provider_prefix(primary).unwrap_or("");
+    let mut chain: Vec<&'static str> = Vec::new();
+
+    // Same-provider cheaper sibling first.
+    match primary_provider {
+        "anthropic" if has_anthropic => chain.push(ANTHROPIC_CLAUDE_HAIKU),
+        "openai" if has_openai => chain.push(OPENAI_GPT56_LUNA),
+        "google" if has_gemini => chain.push(GOOGLE_GEMINI_FLASH_LITE_35),
+        _ => {}
+    }
+
+    // Cross-provider equivalents, key-priority order (Anthropic → OpenAI → Gemini).
+    if has_anthropic && primary_provider != "anthropic" {
+        chain.push(ANTHROPIC_CLAUDE_SONNET);
+    }
+    if has_openai && primary_provider != "openai" {
+        chain.push(OPENAI_GPT56_TERRA);
+    }
+    if has_gemini && primary_provider != "google" {
+        chain.push(GOOGLE_GEMINI_FLASH_36);
+    }
+
+    chain.retain(|m| *m != primary);
+    chain.dedup();
+    chain.truncate(3);
+    chain
 }
 
 // ─── Compile-time sanity checks ───────────────────────────────────────────────
@@ -674,6 +790,117 @@ mod tests {
             "Catalogue must include '{}'",
             OPENAI_GPT56_LUNA
         );
+    }
+
+    #[test]
+    fn fallback_chain_prefers_same_provider_then_cross_provider() {
+        // All keys: anthropic primary → haiku first, then cross-provider.
+        let chain = default_fallback_chain(ANTHROPIC_CLAUDE_SONNET, true, true, true);
+        assert_eq!(
+            chain,
+            vec![ANTHROPIC_CLAUDE_HAIKU, OPENAI_GPT56_TERRA, GOOGLE_GEMINI_FLASH_36]
+        );
+        // Every entry must be a valid, keyed, non-primary model.
+        for m in &chain {
+            assert!(validate_model_string(m).is_ok());
+            assert_ne!(*m, ANTHROPIC_CLAUDE_SONNET);
+        }
+    }
+
+    #[test]
+    fn fallback_chain_only_includes_keyed_providers() {
+        // Only a Gemini key: google primary gets its lite sibling and nothing else.
+        let chain = default_fallback_chain(DEFAULT_GEMINI_MODEL, false, false, true);
+        assert_eq!(chain, vec![GOOGLE_GEMINI_FLASH_LITE_35]);
+        // No keys at all → empty chain (strict primary), never a keyless provider.
+        assert!(default_fallback_chain(ANTHROPIC_CLAUDE_SONNET, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn fallback_chain_never_contains_primary_and_caps_at_three() {
+        // Haiku primary: the same-provider sibling IS the primary — must be removed.
+        let chain = default_fallback_chain(ANTHROPIC_CLAUDE_HAIKU, true, true, true);
+        assert!(!chain.contains(&ANTHROPIC_CLAUDE_HAIKU));
+        assert!(chain.len() <= 3);
+    }
+
+    #[test]
+    fn successor_mappings_stay_in_provider() {
+        // The whole point of successor_model_for: a legacy ID must upgrade to a
+        // model from the SAME provider. A cross-provider mapping here would
+        // recreate the July 2026 OpenAI-drift bug.
+        for legacy in &[
+            "anthropic/claude-sonnet-4-6",
+            "anthropic/claude-opus-4-7",
+            "anthropic/claude-opus-4-6",
+            "openai/gpt-4o",
+            "openai/gpt-4o-mini",
+            "openai/o4-mini",
+            "xai/grok-beta",
+            "google/gemini-2.0-flash",
+        ] {
+            let successor = successor_model_for(legacy)
+                .unwrap_or_else(|| panic!("legacy id '{legacy}' has no successor mapping"));
+            assert_eq!(
+                provider_prefix(legacy),
+                provider_prefix(successor),
+                "successor for '{legacy}' switched provider to '{successor}'"
+            );
+            assert!(
+                all_models().iter().any(|m| m.id == successor),
+                "successor '{successor}' for '{legacy}' is not in the current catalogue"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_anthropic_and_openai_ids_resolve_to_current_catalogue() {
+        assert_eq!(
+            resolve_model_string("anthropic/claude-sonnet-4-6").unwrap(),
+            ANTHROPIC_CLAUDE_SONNET
+        );
+        assert_eq!(
+            resolve_model_string("openai/gpt-4o").unwrap(),
+            OPENAI_GPT56_TERRA
+        );
+        assert_eq!(
+            resolve_model_string("xai/grok-beta").unwrap(),
+            XAI_GROK_45
+        );
+    }
+
+    #[test]
+    fn stale_oracle_fetch_cannot_remove_baseline_models() {
+        // Simulate the July 2026 stale-oracle payload: only old-generation IDs.
+        init_model_registry();
+        update_model_registry(vec![ModelInfo {
+            id: "anthropic/claude-sonnet-4-6".into(),
+            name: "Claude Sonnet 4.6".into(),
+            provider: "Anthropic".into(),
+            strategy: "heavy".into(),
+            description: "stale".into(),
+        }]);
+        let registry = MODEL_REGISTRY.read().unwrap();
+        // Every baseline model must survive the merge…
+        for baseline in all_models() {
+            assert!(
+                registry.iter().any(|m| m.id == baseline.id),
+                "baseline model '{}' was dropped by a stale oracle sync",
+                baseline.id
+            );
+        }
+        // …and the stale ID must have been canonicalized, not added as a phantom.
+        assert!(
+            !registry.iter().any(|m| m.id == "anthropic/claude-sonnet-4-6"),
+            "stale legacy ID leaked into the registry instead of canonicalizing"
+        );
+    }
+
+    #[test]
+    fn registry_contains_accepts_baseline_and_canonicalized_ids() {
+        assert!(registry_contains(ANTHROPIC_CLAUDE_SONNET));
+        assert!(registry_contains(OPENAI_GPT56_TERRA));
+        assert!(!registry_contains("anthropic/claude-nonexistent-9"));
     }
 
     #[test]

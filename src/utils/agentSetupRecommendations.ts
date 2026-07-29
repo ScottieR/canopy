@@ -5,7 +5,14 @@ export type TeammateLite = {
   description?: string;
 };
 
-export type RoleInfoLite = Record<string, { suggest_in_onboarding?: boolean }>;
+export type RoleInfoLite = Record<string, { suggest_in_onboarding?: boolean; description?: string }>;
+
+export type RosterGapSuggestion = {
+  role: string;
+  label: string;
+  prompt: string;
+  reason: string;
+};
 
 export type NextUnlock = {
   kind: "connection" | "permission" | "workspace";
@@ -144,6 +151,48 @@ const ROLE_PAIRINGS: Record<string, Array<{ role: string; reason: string }>> = {
   ],
 };
 
+const ROLE_INFERENCE_KEYWORDS: Record<string, string[]> = {
+  Assistant: ["assistant", "calendar", "inbox", "email", "schedule", "meeting", "logistics", "follow through", "coordination", "admin", "operations"],
+  Researcher: ["research", "briefing", "sources", "analysis", "analyze", "findings", "market", "trends"],
+  Coder: ["code", "coding", "repo", "github", "build", "bugs", "engineering", "software", "ship"],
+  Strategist: ["strategy", "strategist", "priorities", "planning", "positioning", "decisions", "roadmap", "founder", "business"],
+  Accountant: ["accountant", "budget", "expenses", "receipts", "bookkeeping", "finance", "payroll", "cashflow", "spend"],
+  Editor: ["editor", "editing", "writing", "copy", "drafts", "voice", "prose"],
+};
+
+const ROSTER_GAP_COPY: Record<string, Omit<RosterGapSuggestion, "role">> = {
+  Assistant: {
+    label: "Keep things from slipping",
+    prompt: "I need an agent who can own calendar follow-through, inbox cleanup, logistics, and the little operational loose ends that keep slipping.",
+    reason: "Eddie suggested this because nobody on your current team seems focused on day-to-day coordination, follow-through, and keeping loose ends from piling up.",
+  },
+  Researcher: {
+    label: "Turn questions into briefings",
+    prompt: "I need an agent who can gather sources, compare options, and turn open questions into crisp briefings for the rest of my team.",
+    reason: "Eddie suggested this because your team looks light on source gathering, synthesis, and turning ambiguity into evidence.",
+  },
+  Coder: {
+    label: "Ship the fixes",
+    prompt: "I need an agent who can help my team build, debug, and turn plans into working changes instead of just recommendations.",
+    reason: "Eddie suggested this because your team looks light on implementation capacity and shipping work.",
+  },
+  Strategist: {
+    label: "Pressure-test big decisions",
+    prompt: "I need an agent who can help me think through priorities, tradeoffs, positioning, and what matters most before we commit.",
+    reason: "Eddie suggested this because your team looks light on planning, prioritization, and bigger-picture judgment.",
+  },
+  Accountant: {
+    label: "Keep the numbers clean",
+    prompt: "I need an agent who can stay on top of spending, budgets, receipts, and the recurring financial cleanup that keeps a business healthy.",
+    reason: "Eddie suggested this because your team looks light on finance hygiene, spend visibility, and recurring money admin.",
+  },
+  Editor: {
+    label: "Polish the final output",
+    prompt: "I need an agent who can tighten writing, sharpen messaging, and help the team turn rough drafts into clear final output.",
+    reason: "Eddie suggested this because your team looks light on editing, refinement, and making outputs feel finished.",
+  },
+};
+
 export function getSuggestedConnectionIdsForRole(role: string): string[] {
   return ROLE_CONNECTION_IDS[role] || ROLE_CONNECTION_IDS.Custom;
 }
@@ -166,6 +215,68 @@ export function getSuggestedConnectionLabelsForRole(role: string): string[] {
 
 export function getSuggestedPermissionLabelsForRole(role: string): string[] {
   return getSuggestedPermissionIdsForRole(role).map(getPermissionLabel);
+}
+
+function tokenizeForRoleInference(value: string): string[] {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(Boolean);
+}
+
+export function inferRosterRole(
+  agent: TeammateLite,
+  roleInfo: RoleInfoLite,
+): string | null {
+  if (agent.role && agent.role !== "Custom" && roleInfo[agent.role]) {
+    return agent.role;
+  }
+
+  const haystack = `${agent.name} ${agent.role || ""} ${agent.description || ""}`.toLowerCase();
+  if (!haystack.trim()) return null;
+  const tokens = new Set(tokenizeForRoleInference(haystack));
+
+  let bestRole: string | null = null;
+  let bestScore = 0;
+
+  for (const role of Object.keys(roleInfo)) {
+    if (role === "Custom") continue;
+    const keywords = ROLE_INFERENCE_KEYWORDS[role] || [];
+    const descriptionTokens = tokenizeForRoleInference(roleInfo[role]?.description || "");
+    let score = 0;
+
+    for (const keyword of keywords) {
+      if (keyword.includes(" ")) {
+        if (haystack.includes(keyword)) score += 3;
+      } else if (tokens.has(keyword)) {
+        score += 2;
+      }
+    }
+
+    for (const token of descriptionTokens) {
+      if (tokens.has(token)) score += 1;
+    }
+
+    if (score > bestScore) {
+      bestRole = role;
+      bestScore = score;
+    }
+  }
+
+  return bestScore >= 3 ? bestRole : null;
+}
+
+export function getRosterCoverageRoles(
+  agents: TeammateLite[],
+  roleInfo: RoleInfoLite,
+): string[] {
+  return Array.from(new Set(
+    agents
+      .map(agent => inferRosterRole(agent, roleInfo))
+      .filter((role): role is string => Boolean(role)),
+  ));
 }
 
 export function getNextUnlockForRole(
@@ -262,7 +373,7 @@ export function getRosterGapSuggestions(
   roleInfo: RoleInfoLite,
   limit = 3,
 ): string[] {
-  const existingRoles = new Set(agents.map(agent => agent.role).filter(Boolean));
+  const existingRoles = new Set(getRosterCoverageRoles(agents, roleInfo));
   const availableRoles = Object.keys(roleInfo).filter(
     role => role !== "Custom" && roleInfo[role]?.suggest_in_onboarding !== false,
   );
@@ -273,6 +384,25 @@ export function getRosterGapSuggestions(
   ];
 
   return ordered.filter(role => !existingRoles.has(role)).slice(0, limit);
+}
+
+export function getRosterGapSuggestionDetails(
+  agents: TeammateLite[],
+  roleInfo: RoleInfoLite,
+  limit = 3,
+): RosterGapSuggestion[] {
+  return getRosterGapSuggestions(agents, roleInfo, limit)
+    .map(role => {
+      const copy = ROSTER_GAP_COPY[role];
+      if (!copy) return null;
+      return {
+        role,
+        label: copy.label,
+        prompt: copy.prompt,
+        reason: copy.reason,
+      };
+    })
+    .filter((item): item is RosterGapSuggestion => Boolean(item));
 }
 
 export function getCollaboratorSuggestions(

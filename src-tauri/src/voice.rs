@@ -2,6 +2,7 @@ use base64::Engine as _;
 use chrono::{DateTime, Duration, Utc};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -541,6 +542,92 @@ pub async fn synthesize_speech(text: String, voice: String) -> Result<String, St
 }
 
 #[tauri::command]
+pub async fn synthesize_onboarding_voice_preview(
+    text: String,
+    voice: String,
+) -> Result<String, String> {
+    let clean = text.trim();
+    if clean.is_empty() {
+        return Err("Speech text cannot be empty".into());
+    }
+    if clean.len() > 600 {
+        return Err("Speech text must be 600 characters or fewer".into());
+    }
+    if !is_builtin_canopy_voice(&voice) {
+        return Err("Unknown Canopy onboarding voice".into());
+    }
+
+    let endpoint = format!(
+        "{}/api/canopy-helper/voice-preview",
+        crate::admin_api_base_url().trim_end_matches('/')
+    );
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(45))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Failed to initialize hosted voice preview client".to_string())?;
+
+    let response = client
+        .post(endpoint)
+        .json(&json!({
+            "text": clean,
+            "voice": voice,
+            "context": {
+                "active_view": "onboarding",
+                "onboarding": { "in_onboarding": true }
+            }
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("Hosted voice preview request failed: {error}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let detail = response
+            .text()
+            .await
+            .unwrap_or_default()
+            .chars()
+            .take(240)
+            .collect::<String>();
+        return Err(format!(
+            "Hosted voice preview failed with HTTP {}: {}",
+            status, detail
+        ));
+    }
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > HOSTED_ONBOARDING_PREVIEW_MAX_BYTES as u64)
+    {
+        return Err("Hosted voice preview response was too large".into());
+    }
+
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| error.to_string())?;
+        if bytes.len().saturating_add(chunk.len()) > HOSTED_ONBOARDING_PREVIEW_MAX_BYTES {
+            return Err("Hosted voice preview response was too large".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    let payload: HostedVoicePreviewResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| "Hosted voice preview returned invalid JSON".to_string())?;
+    let ext = match payload.format.as_str() {
+        "mp3" => "mp3",
+        "wav" => "wav",
+        _ => return Err("Hosted voice preview returned an unsupported audio format".into()),
+    };
+    let audio_bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload.audio_base64)
+        .map_err(|error| format!("Failed to decode hosted voice preview audio: {error}"))?;
+    write_voice_cache_file("onboarding-preview", ext, &audio_bytes)
+}
+
+#[tauri::command]
 pub async fn synthesize_agent_speech(
     agent_id: String,
     text: String,
@@ -622,6 +709,7 @@ const ELEVENLABS_TTS_ENDPOINT: &str = "https://api.elevenlabs.io/v1/text-to-spee
 const OPENAI_TTS_MODEL: &str = "gpt-4o-mini-tts";
 const GEMINI_TTS_MODEL: &str = "gemini-3.1-flash-tts-preview";
 const ELEVENLABS_TTS_MODEL: &str = "eleven_multilingual_v2";
+const HOSTED_ONBOARDING_PREVIEW_MAX_BYTES: usize = 2_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeTtsProvider {
@@ -649,6 +737,13 @@ fn write_voice_cache_file(prefix: &str, ext: &str, bytes: &[u8]) -> Result<Strin
     path.to_str()
         .ok_or_else(|| "Invalid audio path".to_string())
         .map(|s| s.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostedVoicePreviewResponse {
+    audio_base64: String,
+    format: String,
 }
 
 fn get_agent_or_global_secret(

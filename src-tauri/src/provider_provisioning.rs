@@ -237,6 +237,7 @@ async fn create_xai_key(credential: &str, team_id: &str, name: &str) -> Result<S
 
 #[tauri::command]
 pub async fn provision_agent_provider_key(
+    db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     provider: String,
 ) -> Result<(), String> {
@@ -255,7 +256,7 @@ pub async fn provision_agent_provider_key(
     };
     let target = agent_secret_slot(&agent_id, normalized)?;
     crate::keychain::store_secret(&target, &created).map_err(|e| e.to_string())?;
-    crate::openclaw::sync_agent_api_keys(agent_id).await?;
+    crate::openclaw::sync_agent_api_keys(db, agent_id).await?;
     Ok(())
 }
 

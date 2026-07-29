@@ -4,7 +4,9 @@ import {
   composeSetupConversationPrompt,
   getEnabledConnectionIds,
   getNextUnlockForRole,
+  getRosterCoverageRoles,
   getRosterGapSuggestions,
+  getRosterGapSuggestionDetails,
   getCollaboratorSuggestions,
 } from "./agentSetupRecommendations";
 
@@ -58,11 +60,51 @@ describe("roster-aware suggestions", () => {
   it("surfaces missing core roles first", () => {
     const roles = getRosterGapSuggestions(
       [{ name: "Atlas", role: "Researcher" }],
-      { Assistant: {}, Researcher: {}, Coder: {}, Strategist: {}, Custom: {} },
+      {
+        Assistant: { description: "Calendar, email & logistics" },
+        Researcher: { description: "Deep dives and sources" },
+        Coder: { description: "Writes code and fixes bugs" },
+        Strategist: { description: "Decision memos and planning" },
+        Custom: {},
+      },
     );
 
     expect(roles[0]).toBe("Assistant");
     expect(roles).not.toContain("Researcher");
+  });
+
+  it("counts imported custom agents toward roster coverage when their description clearly matches a known role", () => {
+    const coverage = getRosterCoverageRoles(
+      [{ name: "Sloane", role: "Custom", description: "Calendar, inbox, scheduling, and logistics support" }],
+      {
+        Assistant: { description: "Calendar, email & logistics" },
+        Researcher: { description: "Deep dives and sources" },
+        Coder: { description: "Writes code and fixes bugs" },
+        Strategist: { description: "Decision memos and planning" },
+        Custom: {},
+      },
+    );
+
+    expect(coverage).toContain("Assistant");
+  });
+
+  it("returns hover-friendly why text for team-gap suggestions", () => {
+    const suggestions = getRosterGapSuggestionDetails(
+      [{ name: "Atlas", role: "Researcher" }],
+      {
+        Assistant: { description: "Calendar, email & logistics" },
+        Researcher: { description: "Deep dives and sources" },
+        Strategist: { description: "Decision memos and planning" },
+        Custom: {},
+      },
+      1,
+    );
+
+    expect(suggestions[0]).toMatchObject({
+      role: "Assistant",
+      label: "Keep things from slipping",
+    });
+    expect(suggestions[0]?.reason).toContain("nobody on your current team");
   });
 
   it("finds likely collaborator pairings for the drafted role", () => {

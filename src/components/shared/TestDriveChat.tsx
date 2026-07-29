@@ -12,6 +12,62 @@ const HELPER_TIMEOUT_MS = 20_000;
 
 type TestMessage = { role: "user" | "agent"; text: string };
 
+type PreviewFailure = {
+  title: string;
+  detail: string;
+};
+
+function describePreviewFailure(error: unknown, agentName: string): PreviewFailure {
+  const raw = String(error || "").trim();
+
+  if (/timed out/i.test(raw)) {
+    return {
+      title: "Preview timed out",
+      detail: `The draft preview did not get a reply within ${Math.round(HELPER_TIMEOUT_MS / 1000)} seconds.`,
+    };
+  }
+
+  if (/offline/i.test(raw) || /local rule-based guidance/i.test(raw)) {
+    return {
+      title: "Preview is offline",
+      detail: `${agentName} cannot answer here until a real AI provider or local model is connected.`,
+    };
+  }
+
+  if (/setup assistant is unavailable/i.test(raw) || /connection refused/i.test(raw) || /failed to fetch/i.test(raw) || /dns/i.test(raw)) {
+    return {
+      title: "Local helper server is unavailable",
+      detail: "Canopy could not reach the onboarding helper service running on this Mac.",
+    };
+  }
+
+  if (/canopy_helper_no_key/i.test(raw) || /No ANTHROPIC_API_KEY or GEMINI_API_KEY configured/i.test(raw)) {
+    return {
+      title: "Hosted preview is not configured",
+      detail: "The onboarding helper server is missing its hosted model credentials.",
+    };
+  }
+
+  if (/canopy_helper_llm_error/i.test(raw) || /Provider request failed/i.test(raw) || /returned no reply/i.test(raw)) {
+    return {
+      title: "Preview model rejected the request",
+      detail: "The helper reached a model, but the model request failed or came back empty.",
+    };
+  }
+
+  if (/provider key is missing/i.test(raw)) {
+    return {
+      title: "No helper provider is connected",
+      detail: "The preview tried to use a direct provider path, but no valid key was available.",
+    };
+  }
+
+  return {
+    title: "Live preview is unavailable",
+    detail: raw || "The draft preview failed for an unknown reason on this device.",
+  };
+}
+
 /** Keep the whole payload under the helper endpoint's 4000-char message cap. */
 export function buildTestDriveMessage(personality: string, agentName: string, userMessage: string): string {
   const boundedPersonality = personality.trim().slice(0, 2400);
@@ -33,6 +89,8 @@ export function TestDriveChat({
   const [messages, setMessages] = useState<TestMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [previewUnavailable, setPreviewUnavailable] = useState(false);
+  const [previewFailure, setPreviewFailure] = useState<PreviewFailure | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const userTurns = messages.filter(message => message.role === "user").length;
@@ -40,7 +98,7 @@ export function TestDriveChat({
 
   const send = async () => {
     const text = input.trim();
-    if (!text || busy || turnsLeft <= 0) return;
+    if (!text || busy || turnsLeft <= 0 || previewUnavailable) return;
     setInput("");
     setMessages(prev => [...prev, { role: "user", text }]);
     setBusy(true);
@@ -52,11 +110,16 @@ export function TestDriveChat({
         ),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Test drive timed out")), HELPER_TIMEOUT_MS)),
       ]);
+      setPreviewUnavailable(false);
+      setPreviewFailure(null);
       setMessages(prev => [...prev, { role: "agent", text: reply }]);
-    } catch {
+    } catch (error) {
+      const failure = describePreviewFailure(error, agentName || "This agent");
+      setPreviewUnavailable(true);
+      setPreviewFailure(failure);
       setMessages(prev => [...prev, {
         role: "agent",
-        text: `(Test line is unreachable right now — ${agentName} will be fully chatty once deployed. Keep tweaking; your changes are saved.)`,
+        text: `(${failure.title} — ${failure.detail} ${agentName} will still be fully chatty once deployed. Keep tweaking; your changes are saved.)`,
       }]);
     } finally {
       setBusy(false);
@@ -100,25 +163,48 @@ export function TestDriveChat({
           </div>
         )}
       </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => { if (e.key === "Enter") send(); }}
-          placeholder={turnsLeft > 0 ? `Message ${agentName || "your agent"}…` : "Test limit reached — deploy to keep talking"}
-          disabled={busy || turnsLeft <= 0}
-          style={{ flex: 1, padding: "11px 13px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
-        />
-        <button
-          type="button"
-          onClick={send}
-          disabled={busy || !input.trim() || turnsLeft <= 0}
-          style={{ padding: "11px 16px", borderRadius: 12, border: "none", background: busy || !input.trim() || turnsLeft <= 0 ? "var(--border-subtle)" : "linear-gradient(135deg, #3c6663, #609995)", color: "#fff", fontSize: 13, fontWeight: 700, cursor: busy || !input.trim() || turnsLeft <= 0 ? "default" : "pointer", fontFamily: "inherit" }}
-        >
-          Send
-        </button>
-      </div>
-      {userTurns > 0 && turnsLeft > 0 && (
+      {previewUnavailable ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 12px 0" }}>
+          <div style={{ fontSize: 12.5, color: "var(--text-sub)", lineHeight: 1.6, padding: "11px 12px", borderRadius: 12, background: "rgba(60,102,99,0.05)", border: "1px dashed rgba(60,102,99,0.2)" }}>
+            <strong style={{ color: "var(--text-main)" }}>{previewFailure?.title || "Live preview is temporarily offline."}</strong>{" "}
+            {previewFailure?.detail || `You can keep shaping ${agentName || "your agent"} here, and their real chat will be available after deploy.`}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => {
+                setPreviewUnavailable(false);
+                setPreviewFailure(null);
+                setMessages([]);
+                setInput("");
+              }}
+              style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid rgba(60,102,99,0.18)", background: "rgba(60,102,99,0.08)", color: "#3c6663", fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}
+            >
+              Try preview again
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") send(); }}
+            placeholder={turnsLeft > 0 ? `Message ${agentName || "your agent"}…` : "Test limit reached — deploy to keep talking"}
+            disabled={busy || turnsLeft <= 0}
+            style={{ flex: 1, padding: "11px 13px", borderRadius: 12, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, outline: "none", background: "var(--surface-card)", color: "var(--text-main)", fontFamily: "inherit" }}
+          />
+          <button
+            type="button"
+            onClick={send}
+            disabled={busy || !input.trim() || turnsLeft <= 0}
+            style={{ padding: "11px 16px", borderRadius: 12, border: "none", background: busy || !input.trim() || turnsLeft <= 0 ? "var(--border-subtle)" : "linear-gradient(135deg, #3c6663, #609995)", color: "#fff", fontSize: 13, fontWeight: 700, cursor: busy || !input.trim() || turnsLeft <= 0 ? "default" : "pointer", fontFamily: "inherit" }}
+          >
+            Send
+          </button>
+        </div>
+      )}
+      {userTurns > 0 && turnsLeft > 0 && !previewUnavailable && (
         <div style={{ fontSize: 10.5, color: "var(--text-sub)", opacity: 0.6, marginTop: 6 }}>
           {turnsLeft} test {turnsLeft === 1 ? "message" : "messages"} left before deploy
         </div>

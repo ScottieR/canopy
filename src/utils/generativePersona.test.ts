@@ -3,6 +3,7 @@ import {
   buildPersonaDraftMessage,
   buildPersonaDraftRepairMessage,
   composePersonaPersonality,
+  composeRequestDrivenPersonality,
   draftPersonaWithEddie,
   parsePersonaDraftReply,
 } from "./generativePersona";
@@ -23,9 +24,11 @@ describe("parsePersonaDraftReply", () => {
   });
 
   it("handles the fits-existing path", () => {
-    const persona = parsePersonaDraftReply('{"fits_existing":true,"existing_role":"Chef"}', ROLES, ACCESSORIES);
+    const persona = parsePersonaDraftReply('{"fits_existing":true,"existing_role":"Chef","title":"Dinner Sherpa","name":"Remy","tagline":"Weeknight meals handled.","soul_seed":"You are Remy, a calm food planner."}', ROLES, ACCESSORIES);
     expect(persona!.fitsExisting).toBe(true);
     expect(persona!.existingRole).toBe("Chef");
+    expect(persona!.title).toBe("Dinner Sherpa");
+    expect(persona!.soulSeed).toContain("Remy");
   });
 
   it("returns null for garbage, missing identity, or unusable blends", () => {
@@ -76,6 +79,21 @@ describe("composePersonaPersonality", () => {
     expect(text.startsWith("You are Vio")).toBe(true);
     expect(text).toContain("wine selections");
     expect(text).not.toContain("Media Advisor");
+  });
+});
+
+describe("composeRequestDrivenPersonality", () => {
+  it("falls back to request-first copy when Eddie only gives us a role anchor", () => {
+    const text = composeRequestDrivenPersonality({
+      persona: null,
+      agentName: "Miles",
+      roleKey: "Strategist",
+      userNeed: "real estate decisions across neighborhoods, pricing, and rental upside",
+    });
+    expect(text).toContain("real estate decisions");
+    expect(text).toContain("user's actual goals");
+    expect(text).not.toContain("MECE");
+    expect(text).not.toContain("blue-ocean");
   });
 });
 

@@ -250,14 +250,14 @@ export function PersonalityTab({ agent }: { agent: AgentData }) {
           </div>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text-main)", margin: "0 0 4px 0" }}>Voice & Speech</h2>
-            <p style={{ fontSize: 13, color: "var(--text-sub)", margin: 0 }}>Fine-tune the managed premium voice profile for spoken responses.</p>
+            <p style={{ fontSize: 13, color: "var(--text-sub)", margin: 0 }}>Fine-tune how this agent sounds when it speaks.</p>
           </div>
         </div>
 
         <div style={{ background: "rgba(0,0,0,0.1)", borderRadius: 12, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Speaking Voice</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Canopy defaults to ElevenLabs and otherwise uses the agent's model provider TTS when that provider supports speech.</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Canopy keeps spoken replies sounding polished and reliable behind the scenes.</div>
           </div>
           <select
             value={CURATED_VOICE_IDS.includes(voiceConfig?.tts_voice) ? voiceConfig.tts_voice : getRoleVoiceDefault(agent.role).voice}

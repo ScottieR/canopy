@@ -10,6 +10,8 @@ export type DiscoveryExample = {
   role: string;
   label: string;
   prompt: string;
+  category: "focused" | "holistic";
+  action: "draft_role" | "seed_prompt";
 };
 
 export type VoiceDefault = {
@@ -19,8 +21,7 @@ export type VoiceDefault = {
   voiceLabel: string;
   style: string;
   provider: "eleven_labs" | "openai_tts";
-  providerLabel: string;
-  fallbackProviderLabel: string;
+  selectionReason: string;
 };
 
 export type VoiceProfile = Omit<VoiceDefault, "rate" | "sample">;
@@ -68,11 +69,11 @@ export function isGenerativeDiscoveryEnabled(): boolean {
 }
 
 const ROLE_KEYWORDS: Record<string, string[]> = {
-  Assistant: ["calendar", "inbox", "email", "meeting", "schedule", "organize", "follow-up", "logistics", "assistant"],
+  Assistant: ["calendar", "inbox", "email", "meeting", "schedule", "organize", "follow-up", "logistics", "assistant", "family", "household", "errands", "school", "kids", "home"],
   Researcher: ["research", "analyze", "analysis", "briefing", "market", "trend", "compare", "findings", "sources"],
   Coder: ["code", "bug", "repo", "github", "build", "ship", "engineering", "software", "script", "app"],
-  Strategist: ["strategy", "decision", "plan", "roadmap", "competitive", "quarterly", "framework", "positioning"],
-  Accountant: ["budget", "expense", "spend", "invoice", "tax", "receipt", "finance", "financial", "bookkeeping"],
+  Strategist: ["strategy", "decision", "plan", "roadmap", "competitive", "quarterly", "framework", "positioning", "business", "launch", "founder", "company", "growth", "advice"],
+  Accountant: ["budget", "expense", "spend", "invoice", "tax", "receipt", "finance", "financial", "bookkeeping", "cashflow", "payroll", "margin"],
   Editor: ["edit", "writing", "copy", "draft", "voice", "essay", "revise", "prose", "blog"],
   Chef: ["meal", "cook", "recipe", "grocery", "dinner", "kitchen", "food", "menu"],
   "Travel Agent": ["travel", "trip", "itinerary", "flight", "hotel", "vacation", "booking"],
@@ -90,31 +91,71 @@ export const DISCOVERY_EXAMPLES: DiscoveryExample[] = [
     role: "Assistant",
     label: "Clear my mornings",
     prompt: "I keep losing time to inbox triage, meeting prep, and little logistics that should already be handled.",
+    category: "focused",
+    action: "seed_prompt",
   },
   {
     role: "Researcher",
     label: "Research for me",
     prompt: "I need someone to gather sources, compare options, and hand me crisp briefings instead of a pile of tabs.",
+    category: "focused",
+    action: "seed_prompt",
   },
   {
     role: "Coder",
     label: "Ship faster",
     prompt: "I want an agent that can help me fix bugs, write code, and stay on top of my repo backlog.",
+    category: "focused",
+    action: "seed_prompt",
   },
   {
     role: "Strategist",
     label: "Think through decisions",
     prompt: "I need help pressure-testing decisions, competitive moves, and quarterly priorities before I commit.",
+    category: "focused",
+    action: "seed_prompt",
   },
   {
     role: "Accountant",
     label: "Stay on budget",
     prompt: "I want help tracking spending, organizing receipts, and flagging anything unusual before it turns into cleanup.",
+    category: "focused",
+    action: "seed_prompt",
   },
   {
     role: "Editor",
     label: "Tighten my writing",
     prompt: "I need an agent that can make my writing sharper, keep my voice consistent, and catch clunky drafts fast.",
+    category: "focused",
+    action: "seed_prompt",
+  },
+  {
+    role: "Assistant",
+    label: "Manage my family chaos",
+    prompt: "My family calendar, school logistics, errands, appointments, and household loose ends keep slipping through the cracks.",
+    category: "holistic",
+    action: "seed_prompt",
+  },
+  {
+    role: "Strategist",
+    label: "Launch my new business",
+    prompt: "I am launching a new business and need an agent who can help me think through priorities, positioning, planning, and next steps across the whole effort.",
+    category: "holistic",
+    action: "seed_prompt",
+  },
+  {
+    role: "Accountant",
+    label: "Run my small business",
+    prompt: "I run a small business and need steady help across operations, spending, planning, and the recurring admin that keeps the business healthy.",
+    category: "holistic",
+    action: "seed_prompt",
+  },
+  {
+    role: "Strategist",
+    label: "Give me life advice",
+    prompt: "I want a steady thought partner who can help me think through life decisions, tradeoffs, priorities, and what to do next when things feel messy.",
+    category: "holistic",
+    action: "seed_prompt",
   },
 ];
 
@@ -136,48 +177,42 @@ export const VOICE_PROFILE_LIBRARY: Record<string, VoiceProfile> = {
     voiceLabel: "Harbor",
     style: "steady, welcoming, and easy to trust",
     provider: "eleven_labs",
-    providerLabel: "ElevenLabs default",
-    fallbackProviderLabel: "Model provider fallback",
+    selectionReason: "A calm, dependable voice for someone who keeps life moving.",
   },
   echo: {
     voice: "echo",
     voiceLabel: "Forge",
     style: "crisp, direct, and quietly technical",
     provider: "eleven_labs",
-    providerLabel: "ElevenLabs default",
-    fallbackProviderLabel: "Model provider fallback",
+    selectionReason: "A sharper voice for builders, operators, and technical work.",
   },
   fable: {
     voice: "fable",
     voiceLabel: "Quill",
     style: "warm, articulate, and editorial",
     provider: "eleven_labs",
-    providerLabel: "ElevenLabs default",
-    fallbackProviderLabel: "Model provider fallback",
+    selectionReason: "A thoughtful voice for writing, coaching, and refinement.",
   },
   nova: {
     voice: "nova",
     voiceLabel: "Atlas",
     style: "clear, curious, and bright",
     provider: "eleven_labs",
-    providerLabel: "ElevenLabs default",
-    fallbackProviderLabel: "Model provider fallback",
+    selectionReason: "An energetic voice for research, exploration, and momentum.",
   },
   onyx: {
     voice: "onyx",
     voiceLabel: "Marlowe",
     style: "grounded, strategic, and authoritative",
     provider: "eleven_labs",
-    providerLabel: "ElevenLabs default",
-    fallbackProviderLabel: "Model provider fallback",
+    selectionReason: "A grounded voice for strategy, judgment, and big-picture thinking.",
   },
   shimmer: {
     voice: "shimmer",
     voiceLabel: "Lumen",
     style: "precise, reassuring, and polished",
     provider: "eleven_labs",
-    providerLabel: "ElevenLabs default",
-    fallbackProviderLabel: "Model provider fallback",
+    selectionReason: "A polished voice for careful guidance, finance, and detail work.",
   },
 };
 

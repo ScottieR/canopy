@@ -36,6 +36,22 @@ describe("inferRoleFromPrompt", () => {
     expect(result.primaryRole).toBe("Coder");
   });
 
+  it("maps family and household chaos to Assistant", () => {
+    const result = inferRoleFromPrompt(
+      "I need help managing family schedules, school logistics, household errands, and all the little home details.",
+      ROLE_INFO,
+    );
+    expect(result.primaryRole).toBe("Assistant");
+  });
+
+  it("maps launching a business to Strategist", () => {
+    const result = inferRoleFromPrompt(
+      "I am launching a new business and need help with priorities, positioning, planning, and growth.",
+      ROLE_INFO,
+    );
+    expect(result.primaryRole).toBe("Strategist");
+  });
+
   it("falls back to the first available role when the prompt is empty", () => {
     const result = inferRoleFromPrompt("", ROLE_INFO);
     expect(result.primaryRole).toBe("Assistant");
@@ -163,7 +179,7 @@ describe("role draft defaults", () => {
     expect(getRoleVoiceDefault("Strategist")).toMatchObject({
       voice: "onyx",
       provider: "eleven_labs",
-      providerLabel: "ElevenLabs default",
+      selectionReason: "A grounded voice for strategy, judgment, and big-picture thinking.",
     });
   });
 
@@ -171,7 +187,7 @@ describe("role draft defaults", () => {
     expect(getVoiceProfile("nova")).toMatchObject({
       voiceLabel: "Atlas",
       provider: "eleven_labs",
-      fallbackProviderLabel: "Model provider fallback",
+      selectionReason: "An energetic voice for research, exploration, and momentum.",
     });
   });
 });
