@@ -145,6 +145,10 @@ pub mod limiters {
         /// OAuth token operations: 10 per minute per user (prevent brute force)
         pub static ref OAUTH_LIMITER: RateLimiter =
             RateLimiter::new(10, Duration::from_secs(60));
+
+        /// Follow Me screen captures: 20 per minute per agent (on-demand only in Phase 1)
+        pub static ref SCREEN_CAPTURE_LIMITER: RateLimiter =
+            RateLimiter::new(20, Duration::from_secs(60));
     }
 }
 

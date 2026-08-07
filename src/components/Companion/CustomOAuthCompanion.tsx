@@ -65,6 +65,8 @@ export function CustomOAuthCompanion() {
   const [tokenUrl, setTokenUrl] = useState(searchParams.get("tokenUrl") || "");
   const [clientId, setClientId] = useState(searchParams.get("clientId") || "");
   const [clientSecret, setClientSecret] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+  const [refreshToken, setRefreshToken] = useState("");
   const [scopesInput, setScopesInput] = useState(searchParams.get("scopes") || "");
   const [notes, setNotes] = useState(searchParams.get("notes") || "");
   const [accessMode, setAccessMode] = useState<CustomOAuthAccessMode>(
@@ -117,6 +119,8 @@ export function CustomOAuthCompanion() {
     setTokenUrl(provider.tokenUrl);
     setClientId(provider.clientId);
     setClientSecret("");
+    setAccessToken("");
+    setRefreshToken("");
     setScopesInput(provider.scopes.join(", "));
     setNotes(provider.notes || "");
     setAccessMode(provider.accessMode);
@@ -188,11 +192,31 @@ export function CustomOAuthCompanion() {
         clientSecret.trim().length > 0
           ? `agent_${agentId}_custom_oauth_${providerId}_client_secret`
           : existingProvider?.clientSecretKey;
+      const accessTokenKey =
+        accessToken.trim().length > 0
+          ? `agent_${agentId}_custom_oauth_${providerId}_access_token`
+          : existingProvider?.accessTokenKey;
+      const refreshTokenKey =
+        refreshToken.trim().length > 0
+          ? `agent_${agentId}_custom_oauth_${providerId}_refresh_token`
+          : existingProvider?.refreshTokenKey;
 
       if (clientSecret.trim().length > 0 && clientSecretKey) {
         await invoke("store_secret_cmd", {
           key: clientSecretKey,
           value: clientSecret.trim(),
+        });
+      }
+      if (accessToken.trim().length > 0 && accessTokenKey) {
+        await invoke("store_secret_cmd", {
+          key: accessTokenKey,
+          value: accessToken.trim(),
+        });
+      }
+      if (refreshToken.trim().length > 0 && refreshTokenKey) {
+        await invoke("store_secret_cmd", {
+          key: refreshTokenKey,
+          value: refreshToken.trim(),
         });
       }
 
@@ -204,6 +228,8 @@ export function CustomOAuthCompanion() {
         tokenUrl: tokenUrl.trim(),
         clientId: clientId.trim(),
         clientSecretKey,
+        accessTokenKey,
+        refreshTokenKey,
         scopes: parsedScopes,
         accessMode,
         status: "configured",
@@ -488,6 +514,30 @@ export function CustomOAuthCompanion() {
             </div>
           </div>
 
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#3c6663", marginBottom: 6 }}>Access Token (optional)</label>
+              <PasswordInput
+                value={accessToken}
+                onChange={event => setAccessToken(event.target.value)}
+                placeholder="Vault an existing access token here"
+                style={{ width: "100%", padding: "12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, boxSizing: "border-box", background: "#f9f9f9" }}
+              />
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#3c6663", marginBottom: 6 }}>Refresh Token (optional)</label>
+              <PasswordInput
+                value={refreshToken}
+                onChange={event => setRefreshToken(event.target.value)}
+                placeholder="Vault an existing refresh token here"
+                style={{ width: "100%", padding: "12px", borderRadius: 10, border: "1px solid rgba(0,0,0,0.1)", fontSize: 13, boxSizing: "border-box", background: "#f9f9f9" }}
+              />
+            </div>
+          </div>
+          <div style={{ marginTop: -8, fontSize: 11, color: "#636E72", lineHeight: 1.5 }}>
+            If the provider already issued tokens, paste them here instead of chat. They stay in Canopy&apos;s Keychain-backed vault and can be referenced by this agent&apos;s bridge without exposing them to the model.
+          </div>
+
           <div>
             <label style={{ display: "block", fontSize: 12, fontWeight: 700, color: "#3c6663", marginBottom: 6 }}>Scopes</label>
             <input
@@ -555,7 +605,7 @@ export function CustomOAuthCompanion() {
         >
           <KeyRound size={16} color="#3c6663" style={{ marginTop: 2, flexShrink: 0 }} />
           <div style={{ fontSize: 12, color: "#4A5568", lineHeight: 1.55 }}>
-            This companion saves a provider definition and any optional client secret securely. It does <strong>not</strong> fake a successful OAuth token exchange. That keeps the UI honest today and gives us a clean, agent-scoped place to plug the real handshake into next.
+            This companion saves the provider definition plus any optional client secret or already-issued access / refresh tokens securely. It does <strong>not</strong> fake a successful OAuth browser handshake, but it gives you a safe, agent-scoped place to finish setup without pasting secrets into chat or files.
           </div>
         </div>
 

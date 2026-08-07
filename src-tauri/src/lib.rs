@@ -40,6 +40,7 @@ pub mod models;
 pub mod openclaw;
 mod payment;
 mod provider_provisioning;
+pub mod screen_capture;
 mod security_scanner;
 mod share_publish;
 mod slack;
@@ -1007,6 +1008,9 @@ pub fn run() {
             browser_manager::stop_browser_stream,
             browser_manager::start_browser_interactive_auth,
             browser_manager::finish_browser_interactive_auth,
+            // Follow Me screen capture (Phase 1 — on-demand only)
+            screen_capture::get_screen_sources,
+            screen_capture::capture_screen_source,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,

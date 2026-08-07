@@ -7,6 +7,8 @@ export type CustomOAuthProvider = {
   tokenUrl: string;
   clientId: string;
   clientSecretKey?: string;
+  accessTokenKey?: string;
+  refreshTokenKey?: string;
   scopes: string[];
   accessMode: CustomOAuthAccessMode;
   status: "configured";
@@ -75,6 +77,14 @@ function normalizeProvider(input: unknown): CustomOAuthProvider | null {
     clientSecretKey:
       typeof value.clientSecretKey === "string" && value.clientSecretKey.trim()
         ? value.clientSecretKey.trim()
+        : undefined,
+    accessTokenKey:
+      typeof value.accessTokenKey === "string" && value.accessTokenKey.trim()
+        ? value.accessTokenKey.trim()
+        : undefined,
+    refreshTokenKey:
+      typeof value.refreshTokenKey === "string" && value.refreshTokenKey.trim()
+        ? value.refreshTokenKey.trim()
         : undefined,
     scopes: Array.isArray(value.scopes)
       ? value.scopes.filter((scope): scope is string => typeof scope === "string" && scope.trim().length > 0)

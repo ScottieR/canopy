@@ -15,6 +15,8 @@ function makeProvider(overrides: Partial<CustomOAuthProvider> = {}): CustomOAuth
     authUrl: "https://airbnb.com/oauth/authorize",
     tokenUrl: "https://airbnb.com/oauth/token",
     clientId: "client-123",
+    accessTokenKey: "agent_1_custom_oauth_airbnb_access_token",
+    refreshTokenKey: "agent_1_custom_oauth_airbnb_refresh_token",
     scopes: ["reservations.read"],
     accessMode: "read",
     status: "configured",

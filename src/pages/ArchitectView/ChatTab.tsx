@@ -4,7 +4,7 @@ import {
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, ChevronDown,
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, Paperclip,
-  AlertTriangle
+  AlertTriangle, Camera, Monitor
 } from "lucide-react";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, fireActivationEvent, reportTelemetryEvent } from "../../store/worldStore";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
@@ -17,6 +17,12 @@ import { PasswordInput } from "../../components/shared/PasswordInput";
 import { isolateGeneratedHtml } from "../../security/generatedHtml";
 import { buildCompanionUrl } from "../../utils/connectorCatalog";
 import { parseConnectionRequestTag } from "../../utils/customOAuth";
+import { extractVisibleUserMessageContent } from "../../utils/chatMessageContent";
+import {
+  detectInsecureCredentialAdvice,
+  recoverSecureConnectionRequest,
+  SECURE_CREDENTIAL_REDIRECT_MESSAGE,
+} from "../../security/credentialAdvice";
 import { cancelAgentSpeech, playAgentSpeech } from "../../utils/voicePlayback";
 
 // ─── Format-aware message parsing ────────────────────────────────────────────
@@ -142,7 +148,10 @@ function toUnixMs(value?: string | number | null): number {
 }
 
 function deriveConversationTitle(rawTitle?: string | null, firstUserMessage?: string | null): string {
-  const preferred = firstUserMessage?.trim() || rawTitle?.trim() || "Untitled conversation";
+  const sanitizedFirstUserMessage = extractVisibleUserMessageContent(firstUserMessage || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const preferred = sanitizedFirstUserMessage || rawTitle?.trim() || "Untitled conversation";
   const fallbackTitle = rawTitle?.trim();
   const titleSource =
     !fallbackTitle ||
@@ -620,6 +629,46 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [attachments, setAttachments] = useState<{name: string, dataUrl: string}[]>([]);
+
+  // ── Follow Me screen capture (Phase 1: on-demand only, see FOLLOW_ME_SPEC.md) ──────────
+  const followMeAvailable = !!agent.capabilities.screen_record && !!agent.capabilities.vision;
+  const [captureSources, setCaptureSources] = useState<{ id: string; title: string; app_bundle_id: string; kind: string }[] | null>(null);
+  const [captureLoading, setCaptureLoading] = useState(false);
+  const [captureError, setCaptureError] = useState<string | null>(null);
+  const [captureFlash, setCaptureFlash] = useState(false);
+
+  const handleOpenCapturePicker = async () => {
+    setCaptureError(null);
+    setCaptureSources([]);
+    setCaptureLoading(true);
+    try {
+      const sources = await invoke<{ id: string; title: string; app_bundle_id: string; kind: string }[]>(
+        "get_screen_sources",
+        { agentId: agent.id }
+      );
+      setCaptureSources(sources);
+    } catch (err) {
+      setCaptureError(String(err));
+    } finally {
+      setCaptureLoading(false);
+    }
+  };
+
+  const handleCaptureSource = async (sourceId: string) => {
+    setCaptureError(null);
+    setCaptureLoading(true);
+    try {
+      const dataUrl = await invoke<string>("capture_screen_source", { agentId: agent.id, sourceId });
+      setAttachments(prev => [...prev, { name: `follow-me-capture-${Date.now()}.png`, dataUrl }]);
+      setCaptureSources(null);
+      setCaptureFlash(true);
+      setTimeout(() => setCaptureFlash(false), 2000);
+    } catch (err) {
+      setCaptureError(String(err));
+    } finally {
+      setCaptureLoading(false);
+    }
+  };
   const [isAtBottom, setIsAtBottom] = useState(true);
   const isAtBottomRef = useRef(true);
   const stoppedSessionIdsRef = useRef<Set<string>>(new Set());
@@ -857,6 +906,30 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       fallbackText = `I'd like to connect ${companionLabel} — approve it below and I'll open the setup window.`;
     }
 
+    const insecureCredentialAdvice = detectInsecureCredentialAdvice(nextText);
+    if (insecureCredentialAdvice) {
+      const recoveredConnection = recoverSecureConnectionRequest(nextText);
+      if (recoveredConnection) {
+        setPendingConnectionRequest({
+          companionType: recoveredConnection.companionType,
+          params: recoveredConnection.params,
+          label: recoveredConnection.label,
+        });
+        reportTelemetryEvent("agent_connection_request_recovered_from_insecure_advice", {
+          companion_type: recoveredConnection.companionType,
+          pattern: insecureCredentialAdvice.kind,
+        });
+        nextText = recoveredConnection.message;
+        fallbackText = recoveredConnection.message;
+      } else {
+        nextText = SECURE_CREDENTIAL_REDIRECT_MESSAGE;
+        fallbackText = SECURE_CREDENTIAL_REDIRECT_MESSAGE;
+      }
+      reportTelemetryEvent("agent_insecure_credential_advice_blocked", {
+        pattern: insecureCredentialAdvice.kind,
+      });
+    }
+
     return {
       text: nextText,
       fallbackText,
@@ -1049,7 +1122,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             localMessages = resp.map(r => ({
               id: r.id,
               sender: r.role === "user" ? "user" : "agent",
-              text: r.content,
+              text: r.role === "user" ? extractVisibleUserMessageContent(r.content || "") : (r.content || ""),
               time: formatMessageTime(r.timestamp),
               ts: new Date(r.timestamp).getTime()
             }));
@@ -1068,11 +1141,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               if (allMessages.some((m: any) => m.id === msg.id)) return false;
               if (allMessages.some((m: any) => {
                 if (m.sender !== msg.sender) return false;
-                if (m.text === msg.text) return true;
+                const normalizedMessageText = (message: { sender: "user" | "agent"; text: string }) =>
+                  message.sender === "user"
+                    ? extractVisibleUserMessageContent(message.text)
+                    : message.text;
+                if (normalizedMessageText(m) === normalizedMessageText(msg)) return true;
                 const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
-                const strippedM = m.text.replace(tsRegex, '');
-                const strippedMsg = msg.text.replace(tsRegex, '');
-                return strippedM === strippedMsg || m.text.endsWith(msg.text);
+                const strippedM = normalizedMessageText(m).replace(tsRegex, '');
+                const strippedMsg = normalizedMessageText(msg).replace(tsRegex, '');
+                return strippedM === strippedMsg || normalizedMessageText(m).endsWith(normalizedMessageText(msg));
               })) return false;
               return true;
             });
@@ -1617,7 +1694,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   let startedAt = activeConv?.createdAt;
 
   if (!topic && firstUserMsg) {
-    const rawTitle = firstUserMsg.text.trim();
+    const rawTitle = extractVisibleUserMessageContent(firstUserMsg.text).replace(/\s+/g, " ").trim();
     topic = rawTitle.length > 40 ? rawTitle.slice(0, 40).trimEnd() + "…" : rawTitle;
     startedAt = firstUserMsg.ts || Date.now();
   }
@@ -1703,6 +1780,9 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             const msg = looksLikeAgentDelivery
               ? { ...rawMsg, sender: "agent" as const }
               : rawMsg;
+            const visibleUserText = msg.sender === "user"
+              ? extractVisibleUserMessageContent(msg.text)
+              : msg.text;
 
             return (
             <div
@@ -1783,7 +1863,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                           overflowWrap: "anywhere",
                         }}
                       >
-                        {msg.text}
+                        {visibleUserText}
                       </div>
                     );
                   }
@@ -2531,8 +2611,88 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         >
           <Paperclip size={18} />
         </button>
-        <input 
-          type="file" 
+        {followMeAvailable && (
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => {
+                if (captureSources !== null) {
+                  setCaptureSources(null);
+                } else {
+                  handleOpenCapturePicker();
+                }
+              }}
+              disabled={activeThreadLoading || !gatewayReady || agent.paused}
+              title="Follow Me — capture a window or screen"
+              style={{
+                padding: "14px", borderRadius: 14,
+                border: captureFlash ? "1px solid #3c6663" : "1px solid rgba(0,0,0,0.08)",
+                background: captureFlash ? "rgba(60,102,99,0.18)" : "var(--glass-light)",
+                color: "var(--text-main)",
+                cursor: (activeThreadLoading || !gatewayReady || agent.paused) ? "default" : "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                opacity: (activeThreadLoading || !gatewayReady || agent.paused) ? 0.6 : 1,
+                height: "46px",
+                boxShadow: captureFlash ? "0 0 0 3px rgba(60,102,99,0.25)" : "none",
+                transition: "all 0.15s ease",
+                position: "relative"
+              }}
+            >
+              <Camera size={18} />
+            </button>
+
+            {captureSources !== null && (
+              <div style={{
+                position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 280,
+                maxHeight: 320, overflowY: "auto", background: "var(--surface-card)",
+                border: "1px solid var(--border-subtle)", borderRadius: 12,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.18)", padding: 8, zIndex: 100
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 6px 8px 6px" }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-sub)" }}>Capture a window or screen</span>
+                  <button
+                    onClick={() => setCaptureSources(null)}
+                    style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 2, display: "flex" }}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                {captureLoading && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "8px 6px" }}>
+                    {captureSources.length === 0 ? "Finding windows and screens..." : "Capturing..."}
+                  </div>
+                )}
+                {captureError && (
+                  <div style={{ fontSize: 12, color: "var(--error-color, #e05252)", padding: "8px 6px" }}>
+                    {captureError}
+                  </div>
+                )}
+                {!captureLoading && !captureError && captureSources.length === 0 && (
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", padding: "8px 6px" }}>
+                    Nothing capturable right now — grant Screen Recording access in System Settings if this is unexpected.
+                  </div>
+                )}
+                {!captureLoading && captureSources.map(source => (
+                  <button
+                    key={source.id}
+                    onClick={() => handleCaptureSource(source.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 8, width: "100%",
+                      textAlign: "left", padding: "8px 6px", borderRadius: 8, border: "none",
+                      background: "transparent", cursor: "pointer", fontSize: 12.5, color: "var(--text-main)"
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = "var(--glass-light)")}
+                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                  >
+                    <Monitor size={14} style={{ flexShrink: 0, opacity: 0.6 }} />
+                    <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{source.title}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        <input
+          type="file"
           ref={fileInputRef} 
           style={{ display: "none" }} 
           multiple
