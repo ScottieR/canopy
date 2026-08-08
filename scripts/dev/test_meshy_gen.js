@@ -1,3 +1,7 @@
+// One-off local dev script — not invoked by any npm script or CI workflow.
+// ITEMS below point at ephemeral source images from a single past dev
+// session and will not exist on another machine; update the paths to your
+// own local source PNGs before running this manually.
 import fs from 'fs';
 import path from 'path';
 

@@ -1861,18 +1861,13 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
             <HardDrive size={14} style={{ flexShrink: 0, marginTop: 1, color: "var(--brand-main)" }} />
             <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
               <span style={{ fontSize: 11, lineHeight: "1.4" }}>
-                <strong>Note on Access:</strong> {driveAccessScope === "all" ? "Connecting Google Drive grants this agent full read/write access to your entire drive based on the toggle above. You can instruct the agent in its system prompt to restrict its operations to specific folders." : "Connecting Google Drive with Granular Access strictly limits the agent to only the specific files or folders you authorize using the Google Picker API."}
+                <strong>Note on Access:</strong> {driveAccessScope === "all" ? "Connecting Google Drive grants this agent full read/write access to your entire drive based on the toggle above. You can instruct the agent in its system prompt to restrict its operations to specific folders." : "Granular Access is not available in this desktop build yet. The future Google Picker flow will limit access to only the files or folders you approve, but for now use 'All Files' if you need to connect Drive."}
               </span>
               <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 4 }}>
                 <button
                   onClick={async () => {
                     if (driveAccessScope === "granular") {
-                      if (!import.meta.env.VITE_GOOGLE_API_KEY) {
-                         alert("Google Picker requires a Developer API Key in your environment variables (VITE_GOOGLE_API_KEY). Please add it to .env to use granular access.");
-                         return;
-                      }
-                      // Placeholder for loading Google Picker JS API
-                      alert("Google Picker API UI is not fully implemented yet. Please switch to 'All Files' or configure the API Key.");
+                      alert("Granular Google Drive access is not available in this desktop build yet. Please switch to 'All Files' to connect Drive for now.");
                       return;
                     }
 
@@ -1893,7 +1888,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
                   }}
                 >
                   <HardDrive size={12} />
-                  {gDriveConnected ? (driveAccessScope === "granular" ? "Select Files via Picker" : "Update Connection Scope") : "Connect Account"}
+                  {gDriveConnected ? (driveAccessScope === "granular" ? "Granular Access Coming Soon" : "Update Connection Scope") : (driveAccessScope === "granular" ? "Granular Access Coming Soon" : "Connect Account")}
                 </button>
               </div>
             </div>

@@ -438,22 +438,37 @@ pub async fn authenticate_mac_user(app_handle: tauri::AppHandle) -> Result<bool>
     {
         use std::process::Command;
 
-        let resource_path = app_handle.path().resource_dir()
-            .map(|p| p.join("mac_auth"))
-            .unwrap_or_else(|_| std::path::PathBuf::from("/Users/scottieryan/Documents/Claude/Projects/Agent Management/canopy/src-tauri/src/mac_auth"));
+        // Primary: the bundled resource in packaged/release builds (see
+        // `bundle.resources` in tauri.conf.json, which maps src/mac_auth -> mac_auth).
+        // Fallback: resolve relative to this crate's own source tree via
+        // CARGO_MANIFEST_DIR (set by Cargo at compile time to wherever this crate
+        // actually lives), so `cargo build`/`tauri dev` work on any machine or
+        // clone location rather than only the original dev path.
+        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/mac_auth");
 
-        let path = if resource_path.exists() {
-            resource_path
-        } else {
-            std::path::PathBuf::from("/Users/scottieryan/Documents/Claude/Projects/Agent Management/canopy/src-tauri/src/mac_auth")
+        let resource_path = app_handle
+            .path()
+            .resource_dir()
+            .ok()
+            .map(|p| p.join("mac_auth"));
+
+        let path = match resource_path {
+            Some(p) if p.exists() => p,
+            _ => dev_path,
         };
 
         // Try to compile it on the fly if the binary is missing but the source is present
         if !path.exists() {
-            let src_path = "/Users/scottieryan/Documents/Claude/Projects/Agent Management/canopy/src-tauri/src/mac_auth.swift";
-            if std::path::Path::new(src_path).exists() {
+            let src_path =
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/mac_auth.swift");
+            if src_path.exists() {
                 let compile_status = Command::new("swiftc")
-                    .args(["-O", "-o", &path.to_string_lossy(), src_path])
+                    .args([
+                        "-O",
+                        "-o",
+                        &path.to_string_lossy(),
+                        &src_path.to_string_lossy(),
+                    ])
                     .status();
                 if compile_status.is_err() || !compile_status.unwrap().success() {
                     return Err(CanopyError::Internal(
