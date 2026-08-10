@@ -1,7 +1,7 @@
 {
   "name": "canopy",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Shelter for your smartest ideas \u2014 the agent management OS",
   "type": "module",
   "engines": {

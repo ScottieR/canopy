@@ -43,6 +43,34 @@ struct PermissionRequest {
     justification: String,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct WebSearchRequest {
+    agent_id: String,
+    query: String,
+    #[serde(default)]
+    num_results: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct WebFetchRequest {
+    agent_id: String,
+    url: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct WebFetchAuthenticatedRequest {
+    agent_id: String,
+    url: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct WebResearchRequest {
+    agent_id: String,
+    topic: String,
+    #[serde(default)]
+    depth: Option<u8>,
+}
+
 fn bearer_token(headers: &str) -> Option<String> {
     headers.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -300,6 +328,67 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                 Err(_) => (
                                     400,
                                     r#"{"error":"Invalid permission request body"}"#.to_string(),
+                                ),
+                            }
+                        } else if path == "/web/search" {
+                            match serde_json::from_slice::<WebSearchRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) =
+                                        handle_web_search_request(app.clone(), req).await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
+                                }
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid web search request body"}"#.to_string(),
+                                ),
+                            }
+                        } else if path == "/web/fetch" {
+                            match serde_json::from_slice::<WebFetchRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) =
+                                        handle_web_fetch_request(app.clone(), req).await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
+                                }
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid web fetch request body"}"#.to_string(),
+                                ),
+                            }
+                        } else if path == "/web/fetch_authenticated" {
+                            match serde_json::from_slice::<WebFetchAuthenticatedRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) =
+                                        handle_web_fetch_authenticated_request(app.clone(), req).await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
+                                }
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid authenticated web fetch request body"}"#
+                                        .to_string(),
+                                ),
+                            }
+                        } else if path == "/web/research" {
+                            match serde_json::from_slice::<WebResearchRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) =
+                                        handle_web_research_request(app.clone(), req).await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
+                                }
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid web research request body"}"#.to_string(),
                                 ),
                             }
                         } else if path == "/files/list" {
@@ -667,6 +756,118 @@ async fn handle_permission_request(app: tauri::AppHandle, req: PermissionRequest
     }
 }
 
+// ─── Web tools (search / fetch / research) ─────────────────────────────────────
+//
+// Agent-callable via curl + the JIT bridge token, same shape as request_permission /
+// request_attention above. These are separate from OpenClaw's own built-in `browser`/
+// `gog` skills — see web_tools.rs for why. Each route independently re-checks the
+// agent's capability flags (never trust that PERMISSIONS.md alone kept the agent from
+// asking anyway).
+
+async fn handle_web_search_request(app: tauri::AppHandle, req: WebSearchRequest) -> (Value, u16) {
+    use tauri::Manager;
+    let db = app.state::<crate::db::Database>();
+    let agent = match db.get_agent(&req.agent_id) {
+        Ok(Some(a)) => a,
+        Ok(None) => return (json!({ "error": "agent not found" }), 404),
+        Err(e) => return (json!({ "error": format!("db error: {e}") }), 500),
+    };
+    if !agent.capabilities.web_search {
+        return (
+            json!({ "error": "web_search capability is not enabled for this agent" }),
+            403,
+        );
+    }
+    match crate::web_tools::web_search_impl(&req.query, req.num_results.unwrap_or(10)).await {
+        Ok(results) => (json!({ "results": results }), 200),
+        Err(e) => (json!({ "error": e }), 502),
+    }
+}
+
+async fn handle_web_fetch_request(app: tauri::AppHandle, req: WebFetchRequest) -> (Value, u16) {
+    use tauri::Manager;
+    let db = app.state::<crate::db::Database>();
+    let agent = match db.get_agent(&req.agent_id) {
+        Ok(Some(a)) => a,
+        Ok(None) => return (json!({ "error": "agent not found" }), 404),
+        Err(e) => return (json!({ "error": format!("db error: {e}") }), 500),
+    };
+    if !agent.capabilities.web_browse {
+        return (
+            json!({ "error": "web_browse capability is not enabled for this agent" }),
+            403,
+        );
+    }
+    let browser_manager = app.state::<crate::browser_manager::BrowserManager>();
+    match crate::web_tools::fetch_page_impl(&app, &browser_manager, &agent, true, &req.url).await {
+        Ok(page) => (
+            serde_json::to_value(page).unwrap_or_else(|_| json!({})),
+            200,
+        ),
+        Err(e) => (json!({ "error": e }), 502),
+    }
+}
+
+async fn handle_web_research_request(app: tauri::AppHandle, req: WebResearchRequest) -> (Value, u16) {
+    use tauri::Manager;
+    let db = app.state::<crate::db::Database>();
+    let agent = match db.get_agent(&req.agent_id) {
+        Ok(Some(a)) => a,
+        Ok(None) => return (json!({ "error": "agent not found" }), 404),
+        Err(e) => return (json!({ "error": format!("db error: {e}") }), 500),
+    };
+    if !agent.capabilities.web_search {
+        return (
+            json!({ "error": "web_search capability is not enabled for this agent" }),
+            403,
+        );
+    }
+    let browser_manager = app.state::<crate::browser_manager::BrowserManager>();
+    let can_browse = agent.capabilities.web_browse;
+    match crate::web_tools::research_impl(
+        &app,
+        &browser_manager,
+        &agent,
+        can_browse,
+        &req.topic,
+        req.depth.unwrap_or(1),
+    )
+    .await
+    {
+        Ok(packet) => (
+            serde_json::to_value(packet).unwrap_or_else(|_| json!({})),
+            200,
+        ),
+        Err(e) => (json!({ "error": e }), 502),
+    }
+}
+
+async fn handle_web_fetch_authenticated_request(
+    app: tauri::AppHandle,
+    req: WebFetchAuthenticatedRequest,
+) -> (Value, u16) {
+    use tauri::Manager;
+    let db = app.state::<crate::db::Database>();
+    let agent = match db.get_agent(&req.agent_id) {
+        Ok(Some(a)) => a,
+        Ok(None) => return (json!({ "error": "agent not found" }), 404),
+        Err(e) => return (json!({ "error": format!("db error: {e}") }), 500),
+    };
+    if !agent.capabilities.web_auth {
+        return (
+            json!({ "error": "web_auth capability is not enabled for this agent" }),
+            403,
+        );
+    }
+    match crate::web_tools::fetch_authenticated_page_impl(&req.url, &req.agent_id).await {
+        Ok(page) => (
+            serde_json::to_value(page).unwrap_or_else(|_| json!({})),
+            200,
+        ),
+        Err(e) => (json!({ "error": e }), 502),
+    }
+}
+
 /// Frontend resolves the agent's permission request with one of:
 /// "once" | "session" | "forever" | "deny".
 ///
@@ -688,12 +889,32 @@ pub async fn resolve_permission_request(
         other => return Err(format!("Unknown decision: {}", other)),
     };
 
+    // Tier 4 authenticated-fetch consent — handled for every scope (not just "forever"):
+    // "once"/"session" grant a temporary, in-memory pass; "forever" additionally persists
+    // to the agent's approved-domains file so it survives a restart. Unlike "domain:"
+    // above (the browser CDP allowlist), no cookies are ever touched until this resolves.
+    if scope != "deny" {
+        if let Some(domain) = permission_id.strip_prefix("webauth:") {
+            let cleaned = domain.trim().to_lowercase();
+            if !cleaned.is_empty() {
+                if scope == "forever" {
+                    crate::web_tools::approve_web_auth_domain_forever(&agent_id, &cleaned)?;
+                } else {
+                    crate::web_tools::grant_temporary_web_auth(&agent_id, &cleaned);
+                }
+            }
+        }
+    }
+
     if scope == "forever" {
         // Persist depending on permission shape:
         //  - "domain:foo.com"   → append to agent's allowlist
+        //  - "webauth:foo.com"  → handled above (every scope, not just forever)
         //  - integration name   → append to agent.integrations + sync_agent_skills
         //  - capability name    → flip the matching field on agent.capabilities
-        if let Some(domain) = permission_id.strip_prefix("domain:") {
+        if permission_id.starts_with("webauth:") {
+            // Already persisted above — nothing further to do for this permission shape.
+        } else if let Some(domain) = permission_id.strip_prefix("domain:") {
             let mut current: Vec<String> =
                 crate::browser_manager::get_agent_allowed_domains(agent_id.clone()).await?;
             let cleaned = domain.trim().to_lowercase();
@@ -723,6 +944,11 @@ pub async fn resolve_permission_request(
                 "coding" => agent.capabilities.coding = true,
                 "gog" => agent.capabilities.gog = true,
                 "summarize" => agent.capabilities.summarize = true,
+                "web_search" => agent.capabilities.web_search = true,
+                "web_browse" => agent.capabilities.web_browse = true,
+                "web_auth" => agent.capabilities.web_auth = true,
+                "web_sandbox_browser" => agent.capabilities.web_sandbox_browser = true,
+                "browser_control" => agent.capabilities.browser_control = true,
                 _ => {
                     handled = false;
                 }

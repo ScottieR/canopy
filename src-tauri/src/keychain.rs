@@ -151,6 +151,7 @@ fn validate_secret_key_for_ipc(key: &str) -> Result<()> {
             | "PRIVACY_API_KEY"
             | "LITHIC_SANDBOX_API_KEY"
             | "LITHIC_API_KEY"
+            | "BRAVE_SEARCH_API_KEY"
             | "SLACK_CLIENT_ID"
             | "SLACK_CLIENT_SECRET"
             | "GOOGLE_CLIENT_ID"

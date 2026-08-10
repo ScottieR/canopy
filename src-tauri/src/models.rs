@@ -220,6 +220,26 @@ pub struct AgentCapabilities {
     pub computer_control: bool,
     pub host_control: bool,
     pub screen_record: bool,
+
+    // Web tools (Tier 1/2/3 — separate from OpenClaw's built-in `browser`/`gog` skills;
+    // implemented in web_tools.rs and reached by the agent via the JIT bridge, not by
+    // OpenClaw itself). Default false: fetch_page makes outbound HTTP requests to
+    // arbitrary agent-chosen URLs, which is new attack surface worth an explicit opt-in.
+    // Do NOT add `#[serde(default)]` on these fields — see the struct-level warning above.
+    pub web_search: bool,
+    pub web_browse: bool,
+
+    // Tier 4: fetch_authenticated_page — reuses the user's real Chrome session cookies,
+    // strictly per-domain and only after explicit consent (see web_tools::fetch_authenticated_page_impl
+    // and the `webauth:<domain>` permission_id in jit_server::resolve_permission_request).
+    pub web_auth: bool,
+    // Tier 5: agent-owned sandboxed Chromium profile, isolated from the user's real
+    // Chrome. Scaffolded (capability flag + command signature); launch is a TODO stub.
+    pub web_sandbox_browser: bool,
+    // Tier 6: full live CDP control of the user's actual running Chrome. Scaffolded
+    // (capability flag + command signatures + system-prompt injection); CDP control is
+    // a TODO stub.
+    pub browser_control: bool,
 }
 
 impl Default for AgentCapabilities {
@@ -251,6 +271,11 @@ impl Default for AgentCapabilities {
             computer_control: false,
             host_control: false,
             screen_record: false,
+            web_search: false,
+            web_browse: false,
+            web_auth: false,
+            web_sandbox_browser: false,
+            browser_control: false,
         }
     }
 }

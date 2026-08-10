@@ -154,6 +154,24 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
     return () => { active = false; };
   }, [agent.id]);
 
+  // Tier 4 — domains the user has approved this agent to use their Chrome login for.
+  const [webAuthDomains, setWebAuthDomains] = useState<string[]>([]);
+  const webAuthEnabled = agent.permissions.find(p => p.id === "web_auth")?.enabled ?? false;
+  useEffect(() => {
+    let active = true;
+    if (!webAuthEnabled) { setWebAuthDomains([]); return; }
+    const fetchWebAuthDomains = async () => {
+      try {
+        const domains = await invoke<string[]>("list_web_auth_approved_domains", { agentId: agent.id });
+        if (active) setWebAuthDomains(domains || []);
+      } catch (e) {
+        console.error("Failed to fetch approved web-auth domains:", e);
+      }
+    };
+    fetchWebAuthDomains();
+    return () => { active = false; };
+  }, [agent.id, webAuthEnabled]);
+
   // Web Credentials
   const [webCredentials, setWebCredentials] = useState<Array<{ domain: string; username: string }>>([]);
   const [webCredSearch, setWebCredSearch] = useState("");
@@ -2471,6 +2489,45 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
           </ServiceRow>
         );
       })()}
+
+      {/* Tier 4 — Authenticated Browsing approved domains */}
+      {webAuthEnabled && (
+        <ServiceRow
+          icon={<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D4A04A" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>}
+          name="Approved logins for Authenticated Browsing"
+          subtitle="Domains this agent may reuse your Chrome session for. It gets nothing beyond what's listed here — new domains require your approval each time."
+          connected={true}
+          statusBadge={<span style={{ fontSize: 10, background: "var(--border-subtle)", color: "var(--text-sub)", padding: "1px 6px", borderRadius: 10, fontWeight: 600 }}>{webAuthDomains.length} approved</span>}
+        >
+          {webAuthDomains.length === 0 ? (
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>
+              No domains approved yet. When the agent needs a login-gated page, it will ask — you'll see a
+              permission prompt naming the exact domain before any cookies are shared.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {webAuthDomains.map(domain => (
+                <div key={domain} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 13, fontFamily: "var(--font-mono, monospace)", color: "var(--text-main)" }}>{domain}</div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await invoke("revoke_web_auth_approved_domain", { agentId: agent.id, domain });
+                        setWebAuthDomains(prev => prev.filter(d => d !== domain));
+                      } catch (e) {
+                        console.error("Failed to revoke web-auth domain:", e);
+                      }
+                    }}
+                    style={{ fontSize: 11, fontWeight: 600, color: "#C62828", background: "transparent", border: "1px solid rgba(198,40,40,0.3)", borderRadius: 6, padding: "4px 10px", cursor: "pointer" }}
+                  >
+                    Revoke
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </ServiceRow>
+      )}
 
       {/* Payments & Financials */}
       <ServiceRow
