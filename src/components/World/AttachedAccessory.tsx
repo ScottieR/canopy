@@ -3,6 +3,7 @@ import { useGLTF } from '@react-three/drei';
 import { createPortal } from '@react-three/fiber';
 import * as THREE from 'three';
 import { SkeletonUtils } from 'three-stdlib';
+import { getAssetUrl } from '../../utils/assets';
 
 export function AttachedAccessory({
   path,
@@ -16,7 +17,7 @@ export function AttachedAccessory({
   transformRef?: React.Ref<THREE.Group>;
 }) {
   const glbPath = path.replace('.png', '.glb');
-  const { scene } = useGLTF(glbPath.startsWith('http') ? glbPath : `${import.meta.env.VITE_API_URL || 'http://localhost:3001'}${glbPath.startsWith('/') ? '' : '/'}${glbPath}`);
+  const { scene } = useGLTF(getAssetUrl(glbPath));
 
   const clonedAcc = useMemo(() => {
     const clone = SkeletonUtils.clone(scene);

@@ -265,7 +265,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                   return (
                     <SafeBillboard
                       key={path}
-                      url={`${import.meta.env.VITE_API_URL || 'http://localhost:3001'}${path}`}
+                      url={getAssetUrl(path)}
                       position={[(i - ((stagedVisuals?.accessories?.length || 1) - 1) / 2) * 0.3, 0.6, 0]}
                     />
                   );
