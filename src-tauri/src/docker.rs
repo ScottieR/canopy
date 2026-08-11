@@ -52,16 +52,25 @@ pub struct DockerManager {
 impl DockerManager {
     /// Connect to Docker via OrbStack's socket
     pub async fn init() -> Result<Self> {
-        let mut docker = Docker::connect_with_socket_defaults().unwrap_or_else(|_| {
-            let home = dirs::home_dir().unwrap_or_default();
-            let orb_sock = home.join(".orbstack/run/docker.sock");
-            Docker::connect_with_socket(
-                &orb_sock.to_string_lossy(),
-                120,
-                bollard::API_DEFAULT_VERSION,
-            )
-            .unwrap()
-        });
+        let mut docker = match Docker::connect_with_socket_defaults() {
+            Ok(docker) => docker,
+            Err(_) => {
+                // Default socket discovery failed (e.g. OrbStack's socket isn't
+                // up yet at app launch — a real startup race, not hypothetical).
+                // Previously this fell through to a bare `.unwrap()`, which
+                // aborted the whole app (panic = "abort" in release) instead of
+                // letting the caller handle it like every other failure path
+                // here does. See GitHub issue #17.
+                let home = dirs::home_dir().unwrap_or_default();
+                let orb_sock = home.join(".orbstack/run/docker.sock");
+                Docker::connect_with_socket(
+                    &orb_sock.to_string_lossy(),
+                    120,
+                    bollard::API_DEFAULT_VERSION,
+                )
+                .context("Failed to connect to OrbStack via default or fallback socket")?
+            }
+        };
 
         if docker.ping().await.is_err() {
             let home = dirs::home_dir().unwrap_or_default();

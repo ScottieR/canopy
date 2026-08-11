@@ -137,9 +137,16 @@ fn files_broker_response(result: Result<serde_json::Value, String>) -> (u16, Str
 }
 
 pub async fn start_jit_server(app_handle: tauri::AppHandle) {
-    let listener = TcpListener::bind("0.0.0.0:18802")
-        .await
-        .expect("Failed to bind JIT port");
+    let listener = match TcpListener::bind("0.0.0.0:18802").await {
+        Ok(listener) => listener,
+        Err(e) => {
+            // Don't abort the whole app if the port is already held (e.g. by
+            // another running Canopy instance) — log and back off instead.
+            // See GitHub issue #17.
+            error!("Failed to bind JIT port 0.0.0.0:18802: {}", e);
+            return;
+        }
+    };
     info!("JIT Provisioning server listening on 0.0.0.0:18802");
 
     loop {
