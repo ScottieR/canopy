@@ -36,6 +36,18 @@ pub struct BrowserManager {
     /// piling `browser_stream_frame` Tauri events into the webview event queue —
     /// our prime suspect for the "white screen after idle" crash.
     stream_handles: Arc<Mutex<HashMap<String, (u32, tauri::async_runtime::JoinHandle<()>)>>>,
+    /// Tier 5 — one dedicated, persistent Chrome per agent that has `web_sandbox_browser`
+    /// enabled. Deliberately a THIRD map, not reused from `active_browsers`: those Chrome
+    /// instances are the shared/isolated automation browser OpenClaw's `browser`/`gog`
+    /// skills drive (key "shared-browser" for non-isolated agents, or the agent's own id
+    /// for isolated ones — see `effective_browsing_profile`), always start from a clean
+    /// slate, and live under `agent-browsers/{key}/`. Tier 5's browser is a distinct
+    /// resource on every axis: its own map entry (so stopping/reaping one never touches
+    /// the other), its own profile directory (`agent-sandbox-browsers/{agent_id}/`, see
+    /// `prepare_agent_sandbox_browser_profile`), and — like every Chrome this file spawns
+    /// — its own OS-assigned debugging port (`--remote-debugging-port=0`), so there is no
+    /// way for it to collide with another Chrome's port even accidentally.
+    sandbox_browsers: Arc<Mutex<HashMap<String, (Child, BrowserStatus)>>>,
 }
 
 impl BrowserManager {
@@ -44,6 +56,7 @@ impl BrowserManager {
             active_browsers: Arc::new(Mutex::new(HashMap::new())),
             interactive_browsers: Arc::new(Mutex::new(HashMap::new())),
             stream_handles: Arc::new(Mutex::new(HashMap::new())),
+            sandbox_browsers: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -309,6 +322,95 @@ impl BrowserManager {
         self.stop_interactive_browser(agent_id).await?;
         self.start_browser_with_options(app_handle, agent_id, true)
             .await
+    }
+
+    // ─── Tier 5: agent-owned sandboxed Chromium ────────────────────────────────
+
+    /// Starts (or reuses, if already running) this agent's dedicated sandboxed Chrome.
+    /// Unlike `start_browser`, this always passes `restore_last_session: true` — Tier
+    /// 5's whole point is that the agent stays logged into services it's been approved
+    /// for across Canopy restarts, not that every session starts from a clean slate.
+    pub async fn start_sandbox_browser(
+        &self,
+        agent_id: &str,
+    ) -> Result<BrowserStatus> {
+        {
+            let mut sandbox = self.sandbox_browsers.lock().await;
+            if let Some((child, status)) = sandbox.get_mut(agent_id) {
+                if matches!(child.try_wait(), Ok(None)) {
+                    return Ok(status.clone()); // already running — reuse the live session
+                }
+            }
+            sandbox.remove(agent_id); // reap a dead entry, if any
+        }
+
+        let profile = prepare_agent_sandbox_browser_profile(agent_id)?;
+        let chrome_path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        if !std::path::Path::new(chrome_path).exists() {
+            return Err(anyhow::anyhow!(
+                "Google Chrome not found at {}. Please install it to use the sandboxed agent browser.",
+                chrome_path
+            ));
+        }
+
+        let args = build_chrome_args(
+            &profile.profile_path,
+            &profile.pac_url,
+            BrowserMode::Automated,
+            Some("about:blank"),
+            true, // restore_last_session — see doc comment above
+        );
+        let (child, port, cdp_endpoint) = spawn_chrome_and_wait_for_cdp(chrome_path, args).await?;
+
+        let status = BrowserStatus {
+            agent_id: agent_id.to_string(),
+            port,
+            cdp_endpoint,
+            profile_path: profile.profile_path,
+            is_running: true,
+            mode: BrowserMode::Automated,
+        };
+
+        let mut sandbox = self.sandbox_browsers.lock().await;
+        sandbox.insert(agent_id.to_string(), (child, status.clone()));
+        Ok(status)
+    }
+
+    pub async fn stop_sandbox_browser(&self, agent_id: &str) -> Result<()> {
+        let mut sandbox = self.sandbox_browsers.lock().await;
+        if let Some((mut child, _)) = sandbox.remove(agent_id) {
+            let _ = child.kill().await;
+        }
+        drop(sandbox);
+
+        // Same graceful-then-forceful pattern as kill_leftover_processes, scoped to this
+        // agent's sandbox profile path specifically — cannot match `agent-browsers/{id}`
+        // (the automation browser's pattern) since "agent-sandbox-browsers" never
+        // contains "agent-browsers" as a contiguous substring.
+        let pattern = format!("agent-sandbox-browsers/{}", agent_id);
+        let _ = tokio::process::Command::new("pkill").args(["-f", &pattern]).output().await;
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = tokio::process::Command::new("pkill").args(["-9", "-f", &pattern]).output().await;
+        Ok(())
+    }
+
+    pub async fn get_sandbox_status(&self, agent_id: &str) -> Result<Option<BrowserStatus>> {
+        let sandbox = self.sandbox_browsers.lock().await;
+        Ok(sandbox.get(agent_id).map(|(_, status)| status.clone()))
+    }
+
+    /// Only for `agent_browser_*`: starts the sandbox browser if it isn't already
+    /// running, then returns its CDP endpoint for the caller to act on.
+    async fn ensure_sandbox_browser_cdp_endpoint(&self, agent_id: &str) -> Result<String, String> {
+        if let Some(status) = self.get_sandbox_status(agent_id).await.map_err(|e| e.to_string())? {
+            if status_is_connectable(&status) {
+                return Ok(status.cdp_endpoint);
+            }
+        }
+        self.start_sandbox_browser(agent_id)
+            .await
+            .map(|s| s.cdp_endpoint)
+            .map_err(|e| e.to_string())
     }
 
     /// Increment the subscriber refcount for an agent's visual stream. Starts the
@@ -591,6 +693,107 @@ pub async fn get_browser_status(
         .get_status(&profile_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ─── Tier 5: agent-owned sandboxed Chromium — Tauri commands ─────────────────────
+
+async fn require_sandbox_browser_capability(
+    db: &tauri::State<'_, crate::db::Database>,
+    agent_id: &str,
+) -> Result<(), String> {
+    let agent = db
+        .get_agent(agent_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "agent not found".to_string())?;
+    if !agent.capabilities.web_sandbox_browser {
+        return Err(
+            "this agent does not have the Sandboxed Browser (web_sandbox_browser) capability enabled"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn launch_agent_browser(
+    state: tauri::State<'_, BrowserManager>,
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<BrowserStatus, String> {
+    require_sandbox_browser_capability(&db, &agent_id).await?;
+    state.start_sandbox_browser(&agent_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn close_agent_browser(
+    state: tauri::State<'_, BrowserManager>,
+    agent_id: String,
+) -> Result<(), String> {
+    state.stop_sandbox_browser(&agent_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn agent_browser_navigate(
+    state: tauri::State<'_, BrowserManager>,
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    url: String,
+) -> Result<(), String> {
+    require_sandbox_browser_capability(&db, &agent_id).await?;
+    let parsed = url::Url::parse(url.trim()).map_err(|_| format!("'{url}' is not a valid URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("only http:// and https:// URLs are supported".to_string());
+    }
+    let cdp_endpoint = state.ensure_sandbox_browser_cdp_endpoint(&agent_id).await?;
+    crate::web_tools::cdp_navigate(&cdp_endpoint, &url).await
+}
+
+#[tauri::command]
+pub async fn agent_browser_get_content(
+    state: tauri::State<'_, BrowserManager>,
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<serde_json::Value, String> {
+    require_sandbox_browser_capability(&db, &agent_id).await?;
+    let cdp_endpoint = state.ensure_sandbox_browser_cdp_endpoint(&agent_id).await?;
+    let (title, text) = crate::web_tools::cdp_get_content(&cdp_endpoint).await?;
+    Ok(serde_json::json!({ "title": title, "text": text }))
+}
+
+#[tauri::command]
+pub async fn agent_browser_click(
+    state: tauri::State<'_, BrowserManager>,
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    selector: String,
+) -> Result<(), String> {
+    require_sandbox_browser_capability(&db, &agent_id).await?;
+    let cdp_endpoint = state.ensure_sandbox_browser_cdp_endpoint(&agent_id).await?;
+    crate::web_tools::cdp_click(&cdp_endpoint, &selector).await
+}
+
+#[tauri::command]
+pub async fn agent_browser_type(
+    state: tauri::State<'_, BrowserManager>,
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    selector: String,
+    text: String,
+) -> Result<(), String> {
+    require_sandbox_browser_capability(&db, &agent_id).await?;
+    let cdp_endpoint = state.ensure_sandbox_browser_cdp_endpoint(&agent_id).await?;
+    crate::web_tools::cdp_type(&cdp_endpoint, &selector, &text).await
+}
+
+#[tauri::command]
+pub async fn agent_browser_screenshot(
+    state: tauri::State<'_, BrowserManager>,
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<String, String> {
+    require_sandbox_browser_capability(&db, &agent_id).await?;
+    let cdp_endpoint = state.ensure_sandbox_browser_cdp_endpoint(&agent_id).await?;
+    crate::web_tools::cdp_screenshot(&cdp_endpoint).await
 }
 
 /// Called by BrowserTab on mount. Begins the 2 FPS visual-stream loop for this
@@ -2144,6 +2347,94 @@ fn prepare_agent_browser_profile(agent_id: &str) -> Result<PreparedBrowserProfil
         profile_path,
         pac_url,
     })
+}
+
+/// Tier 5's profile prep. Intentionally a separate directory namespace
+/// (`agent-sandbox-browsers/{agent_id}/`, not `agent-browsers/{agent_id}/`) so this
+/// Chrome's cookies/logins never overlap with — or get cleaned up alongside — the
+/// shared/isolated automation browser `prepare_agent_browser_profile` sets up. Still
+/// reuses `build_pac_script(None)` for the same always-on SSRF block (localhost,
+/// RFC1918, file://) the automation browser gets; Tier 5 just has no allowlist concept
+/// of its own (that's a `browser`-skill/OpenClaw feature, not part of this capability).
+fn prepare_agent_sandbox_browser_profile(agent_id: &str) -> Result<PreparedBrowserProfile> {
+    let data_dir = dirs::data_dir()
+        .context("Could not find data directory")?
+        .join("Canopy")
+        .join("agent-sandbox-browsers")
+        .join(agent_id);
+    std::fs::create_dir_all(&data_dir)?;
+    let profile_path = data_dir.to_string_lossy().to_string();
+
+    let pac_script = build_pac_script(None);
+    use base64::Engine;
+    let pac_base64 = base64::engine::general_purpose::STANDARD.encode(&pac_script);
+    let pac_url = format!("data:application/x-ns-proxy-autoconfig;base64,{}", pac_base64);
+
+    Ok(PreparedBrowserProfile {
+        profile_path,
+        pac_url,
+    })
+}
+
+/// Spawns `chrome_path` with `args` and waits (15s budget) for it to print its DevTools
+/// WebSocket URL to stderr, exactly as `start_browser_with_options` does inline for the
+/// automation browser. Factored out so Tier 5's `start_sandbox_browser` doesn't
+/// reimplement this parsing a second time; `start_browser_with_options` is left as-is
+/// (not refactored to call this) to avoid touching already-proven spawn logic while
+/// adding a new caller.
+async fn spawn_chrome_and_wait_for_cdp(
+    chrome_path: &str,
+    args: Vec<String>,
+) -> Result<(Child, u16, String)> {
+    let mut child = Command::new(chrome_path)
+        .args(args)
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn Chrome process")?;
+
+    let stderr = child.stderr.take().unwrap();
+    let mut reader = tokio::io::BufReader::new(stderr);
+    use tokio::io::AsyncBufReadExt;
+
+    let mut cdp_endpoint = String::new();
+    let mut port = 0u16;
+    let mut lines = reader.lines();
+
+    let find_url = async {
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line.contains("DevTools listening on ws://") {
+                if let Some(start) = line.find("ws://") {
+                    let url = line[start..].trim().to_string();
+                    if let Some(port_str) = url.split(':').nth(2).and_then(|s| s.split('/').next()) {
+                        if let Ok(p) = port_str.parse::<u16>() {
+                            port = p;
+                            cdp_endpoint = url;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    };
+
+    if tokio::time::timeout(std::time::Duration::from_secs(15), find_url)
+        .await
+        .is_err()
+    {
+        let _ = child.kill().await;
+        return Err(anyhow::anyhow!(
+            "Chrome didn't print its DevTools URL within 15s"
+        ));
+    }
+    if cdp_endpoint.is_empty() {
+        let _ = child.kill().await;
+        return Err(anyhow::anyhow!("Failed to parse Chrome's DevTools URL"));
+    }
+
+    // Drain the rest of stderr so we don't block Chrome — same as start_browser_with_options.
+    tauri::async_runtime::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+
+    Ok((child, port, cdp_endpoint))
 }
 
 fn build_chrome_args(

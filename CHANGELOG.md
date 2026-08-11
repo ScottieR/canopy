@@ -31,14 +31,30 @@ these tools via `curl` against `http://host.docker.internal:18802`.
   (`chrome_cookies.rs` implements Chromium's macOS cookie encryption: PBKDF2-HMAC-SHA1 +
   AES-128-CBC, keyed from the "Chrome Safe Storage" Keychain item). Approved-forever
   domains are listed and revocable in Agent Settings → Connections.
-- **Tier 5 — Sandboxed agent browser** (`web_sandbox_browser` capability, **scaffolded**):
-  capability flag, `launch_agent_browser` command, and intended profile-directory layout
-  are in place; the Playwright-backed sandboxed Chromium itself is a TODO.
-- **Tier 6 — Full Chrome control** (`browser_control` capability, **scaffolded**):
-  capability flag, `chrome_navigate`/`chrome_click`/`chrome_type`/`chrome_get_content`/
-  `chrome_screenshot` command signatures, and the required system-prompt injection
-  ("you are controlling the user's real Chrome browser...") are in place; live CDP
-  control of the user's actual running Chrome is a TODO.
+- **Tier 5 — Sandboxed agent browser** (`web_sandbox_browser` capability): a real,
+  dedicated, persistent Chrome per agent (`browser_manager.rs`, its own
+  `sandbox_browsers` map and `agent-sandbox-browsers/{agent_id}/` profile directory —
+  never the same instance, map, or directory as the shared/isolated automation browser
+  the `browser`/`gog` OpenClaw skills already drive). `launch_agent_browser`,
+  `close_agent_browser`, and `agent_browser_navigate`/`get_content`/`click`/`type`/
+  `screenshot` Tauri commands are implemented over raw CDP (no Playwright dependency —
+  reuses the same spawn/DevTools-URL-parsing pattern already proven for the automation
+  browser). Sessions persist across Canopy restarts (`restore_last_session: true`) so an
+  agent stays logged into services it's been approved for.
+- **Tier 6 — Full Chrome control** (`browser_control` capability): connects (does not
+  launch) to the user's actual running Chrome via its remote-debugging port
+  (`--remote-debugging-port`, configurable via `CANOPY_CHROME_DEBUG_PORT`, default 9222 —
+  Chrome's own convention, and well outside every port range Canopy itself already uses).
+  `chrome_navigate`/`chrome_click`/`chrome_type`/`chrome_get_content`/`chrome_screenshot`
+  are implemented; every single action — not just the first in a sequence — blocks on a
+  fresh Canopy confirmation sheet (`agent_chrome_control_confirmation_requested` →
+  `resolve_chrome_control_confirmation`), and `chrome_click`/`chrome_type` are hard-
+  refused on the fixed financial/medical blocklist (reads stay allowed).
+- **Known limitation (Tiers 5 & 6)**: both are wired up as Tauri commands the Canopy
+  frontend can call, but neither has a JIT bridge route yet — an agent running inside
+  the OpenClaw container cannot invoke them itself (no `curl`-reachable path) until that
+  routing is added. `PERMISSIONS.md` tells agents this explicitly rather than describing
+  a capability they can't actually reach.
 
 ### Security
 
@@ -47,8 +63,14 @@ these tools via `curl` against `http://host.docker.internal:18802`.
   instructions found inside it as commands.
 - Tier 4 never grants blanket Chrome-profile access — cookies are extracted strictly for
   the one domain the user approved, not subdomains, not the rest of the user's logins.
-- Tier 6 (once implemented) requires per-action-batch user confirmation and hard-blocks
-  click/type on financial-transaction pages even when `browser_control` is enabled.
+- Tier 6 requires a fresh per-action user confirmation (never a standing grant) and
+  hard-blocks click/type on financial-transaction pages even when `browser_control` is
+  enabled; reads (get_content/screenshot) are still confirmation-gated but not
+  domain-blocked.
+- Tier 5's sandbox profile directory and Tier 6's debug-port connection are both
+  structurally incapable of colliding with `browser_manager.rs`'s existing shared/
+  isolated automation browser: separate in-memory map, separate profile directory
+  namespace, and an independently OS-assigned (Tier 5) or user-owned (Tier 6) port.
 
 ### Changed
 

@@ -824,36 +824,162 @@ pub async fn fetch_authenticated_page_impl(url_str: &str, agent_id: &str) -> Res
     })
 }
 
-// ─── Tier 5: agent-owned sandboxed Chromium (STUB — scaffolding only) ───────────
+// ─── Shared CDP action primitives (Tier 5 sandboxed browser + Tier 6 real Chrome) ──
 //
-// TODO(web-tools-tier5): spin up a headless Chromium via a Playwright (or a plain CDP
-// client extended from `render_via_cdp` above) sidecar process, with its own persistent
-// profile directory under `~/Library/Application Support/Canopy/agent-sandbox-browsers/
-// {agent_id}/` — isolated from both the user's real Chrome (Tiers 4/6) and the shared or
-// isolated automation Chrome `browser_manager.rs` already runs for the `browser`/`gog`
-// OpenClaw skills. Per-service logins inside that profile would go through the same
-// consent flow as Tier 4 (user approves before any credential touches the profile).
-// Needs process lifecycle management mirroring `BrowserManager` (start/stop/reap on
-// agent delete) and a supervised sidecar Canopy launches, not just connects to.
+// Both browser_manager.rs's sandboxed-browser commands and the Tier 6 commands below
+// act on a page-level (or single-target "browser") CDP WebSocket the same way — connect,
+// issue one or two protocol calls, done. Kept here as `pub(crate)` so browser_manager.rs
+// calls the same primitives instead of re-implementing raw CDP JSON a second time.
 
-/// Returns the sandboxed-profile directory this agent WOULD use once Tier 5 lands, so
-/// the frontend/tests can already reason about the path without depending on a real
-/// browser process existing yet.
-pub fn agent_sandbox_browser_profile_dir(agent_id: &str) -> Option<std::path::PathBuf> {
-    dirs::data_dir().map(|d| d.join("Canopy").join("agent-sandbox-browsers").join(agent_id))
+pub(crate) async fn cdp_navigate(ws_url: &str, url: &str) -> Result<(), String> {
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(CDP_CONNECT_TIMEOUT_SECS),
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| "timed out connecting to Chrome".to_string())?
+    .map_err(|e| format!("could not connect to Chrome: {e}"))?;
+    cdp_call(&mut ws, 1, "Page.enable", serde_json::json!({})).await?;
+    cdp_call(&mut ws, 2, "Page.navigate", serde_json::json!({ "url": url })).await?;
+    Ok(())
 }
 
-// ─── Tier 6: full live CDP control of the user's real Chrome (STUB — scaffolding only) ──
+pub(crate) async fn cdp_get_content(ws_url: &str) -> Result<(String, String), String> {
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(CDP_CONNECT_TIMEOUT_SECS),
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| "timed out connecting to Chrome".to_string())?
+    .map_err(|e| format!("could not connect to Chrome: {e}"))?;
+    let result = cdp_call(
+        &mut ws,
+        1,
+        "Runtime.evaluate",
+        serde_json::json!({
+            "expression": "JSON.stringify({title: document.title, text: (document.body ? document.body.innerText : '')})",
+            "returnByValue": true
+        }),
+    )
+    .await?;
+    let raw = result
+        .pointer("/result/value")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Chrome returned no page data".to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("could not parse page data: {e}"))?;
+    Ok((
+        parsed.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        parsed.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+    ))
+}
+
+pub(crate) async fn cdp_click(ws_url: &str, selector: &str) -> Result<(), String> {
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(CDP_CONNECT_TIMEOUT_SECS),
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| "timed out connecting to Chrome".to_string())?
+    .map_err(|e| format!("could not connect to Chrome: {e}"))?;
+    let selector_json = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
+    let expr = format!(
+        "(() => {{ const el = document.querySelector({selector_json}); if (!el) return null; \
+         el.scrollIntoView({{block:'center', inline:'center'}}); const r = el.getBoundingClientRect(); \
+         return JSON.stringify({{x: r.x + r.width/2, y: r.y + r.height/2}}); }})()"
+    );
+    let result = cdp_call(
+        &mut ws,
+        1,
+        "Runtime.evaluate",
+        serde_json::json!({ "expression": expr, "returnByValue": true }),
+    )
+    .await?;
+    let raw = result
+        .pointer("/result/value")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| format!("no element matched selector '{selector}'"))?;
+    let point: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("could not parse element position: {e}"))?;
+    let x = point.get("x").and_then(|v| v.as_f64()).ok_or_else(|| "missing x".to_string())?;
+    let y = point.get("y").and_then(|v| v.as_f64()).ok_or_else(|| "missing y".to_string())?;
+    cdp_call(
+        &mut ws,
+        2,
+        "Input.dispatchMouseEvent",
+        serde_json::json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "clickCount": 1 }),
+    )
+    .await?;
+    cdp_call(
+        &mut ws,
+        3,
+        "Input.dispatchMouseEvent",
+        serde_json::json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "clickCount": 1 }),
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn cdp_type(ws_url: &str, selector: &str, text: &str) -> Result<(), String> {
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(CDP_CONNECT_TIMEOUT_SECS),
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| "timed out connecting to Chrome".to_string())?
+    .map_err(|e| format!("could not connect to Chrome: {e}"))?;
+    let selector_json = serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string());
+    let expr = format!(
+        "(() => {{ const el = document.querySelector({selector_json}); if (!el) return false; \
+         el.focus(); return true; }})()"
+    );
+    let result = cdp_call(
+        &mut ws,
+        1,
+        "Runtime.evaluate",
+        serde_json::json!({ "expression": expr, "returnByValue": true }),
+    )
+    .await?;
+    if result.pointer("/result/value").and_then(|v| v.as_bool()) != Some(true) {
+        return Err(format!("no element matched selector '{selector}'"));
+    }
+    cdp_call(&mut ws, 2, "Input.insertText", serde_json::json!({ "text": text })).await?;
+    Ok(())
+}
+
+pub(crate) async fn cdp_screenshot(ws_url: &str) -> Result<String, String> {
+    let (mut ws, _) = tokio::time::timeout(
+        Duration::from_secs(CDP_CONNECT_TIMEOUT_SECS),
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| "timed out connecting to Chrome".to_string())?
+    .map_err(|e| format!("could not connect to Chrome: {e}"))?;
+    let result = cdp_call(&mut ws, 1, "Page.captureScreenshot", serde_json::json!({ "format": "png" })).await?;
+    result
+        .get("data")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "Chrome did not return screenshot data".to_string())
+}
+
+/// Tier 5 (agent-owned sandboxed Chromium) is implemented in `browser_manager.rs` —
+/// `BrowserManager::start_sandbox_browser`/`stop_sandbox_browser` and the
+/// `launch_agent_browser`/`close_agent_browser`/`agent_browser_*` Tauri commands there —
+/// because it needs the same Chrome-process lifecycle management (spawn, reap, profile
+/// prep, DevTools-URL parsing) `BrowserManager` already owns for the shared/isolated
+/// automation browser. Extending that file avoids a second, competing "who owns this
+/// Chrome process" authority; see the module doc comment there for the full design.
+
+// ─── Tier 6: full live CDP control of the user's real Chrome ────────────────────
 //
-// TODO(web-tools-tier6): connect to the user's actual running Chrome via
-// `--remote-debugging-port=9222` (user launches Chrome with that flag, or a future
-// Canopy Settings helper does it for them). Reuse the `connect_async` + `cdp_call`
-// pattern from the Tier 2 escalation above rather than reinventing it. Every action batch
-// needs a Canopy confirmation sheet before executing (never auto-run a sequence — see
-// `require_browser_control` below, which only gates capability, not per-action consent),
-// plus a hard block on financial-transaction pages (reuse `FETCH_BLOCKLIST_DOMAINS`:
-// read allowed, click/type denied) and the system-prompt note already wired into
-// `write_permissions_md` (see openclaw.rs) whenever `browser_control` is enabled.
+// Unlike Tier 5, Canopy does not launch this Chrome — the user already has one running
+// (their everyday browser, real fingerprint, real logins) and exposes it via
+// `--remote-debugging-port` (configurable, default 9222 — Chrome's own convention).
+// Every action, including reads, requires a fresh per-call user confirmation (see
+// `request_chrome_control_confirmation` below) — this is deliberately NOT a one-time
+// capability grant like the rest of this file's permission model, because a single
+// approval to "control the user's real browser" would be a blank check.
 
 fn require_browser_control(agent: &crate::models::Agent) -> Result<(), String> {
     if !agent.capabilities.browser_control {
@@ -865,9 +991,179 @@ fn require_browser_control(agent: &crate::models::Agent) -> Result<(), String> {
     Ok(())
 }
 
-const TIER6_TODO: &str = "Tier 6 (live CDP control of the user's real Chrome) is scaffolded \
-    (capability flag, command signature, confirmation-sheet contract, system-prompt injection) \
-    but not yet wired up — see the TODO above `require_browser_control` in web_tools.rs.";
+const DEFAULT_CHROME_DEBUG_PORT: u16 = 9222;
+const CHROME_DISCOVERY_TIMEOUT_SECS: u64 = 3;
+const CHROME_CONTROL_CONFIRMATION_TIMEOUT_SECS: u64 = 120;
+
+/// Configurable per the task spec ("uses a configurable port (default 9222)"). No
+/// Settings UI field exists yet for this — TODO(web-tools-tier6-settings): add one:
+/// for now it's an env var override so it's genuinely configurable rather than a
+/// hardcoded constant, without inventing a new Settings section in this pass.
+fn chrome_debug_port() -> u16 {
+    std::env::var("CANOPY_CHROME_DEBUG_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_CHROME_DEBUG_PORT)
+}
+
+fn chrome_not_reachable_error(port: u16) -> String {
+    format!(
+        "Could not reach Chrome's remote debugging port {port}. Full Chrome Control (Tier 6) needs your \
+         actual Chrome running with remote debugging enabled — quit Chrome completely, then relaunch it \
+         with:\n\n  open -a \"Google Chrome\" --args --remote-debugging-port={port}\n\nThis only opens a \
+         port on localhost; nothing outside this Mac can reach it. If you use a different port, set the \
+         CANOPY_CHROME_DEBUG_PORT environment variable to match before starting Canopy."
+    )
+}
+
+async fn chrome_version_info(port: u16) -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(CHROME_DISCOVERY_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(format!("http://127.0.0.1:{port}/json/version"))
+        .send()
+        .await
+        .map_err(|_| chrome_not_reachable_error(port))?;
+    if !resp.status().is_success() {
+        return Err(chrome_not_reachable_error(port));
+    }
+    resp.json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Chrome responded but sent invalid JSON: {e}"))
+}
+
+#[derive(Debug, Clone)]
+struct ChromeTarget {
+    url: String,
+    ws_url: String,
+}
+
+async fn list_chrome_targets(port: u16) -> Result<Vec<ChromeTarget>, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(CHROME_DISCOVERY_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let raw = client
+        .get(format!("http://127.0.0.1:{port}/json/list"))
+        .send()
+        .await
+        .map_err(|_| chrome_not_reachable_error(port))?
+        .json::<Vec<serde_json::Value>>()
+        .await
+        .map_err(|e| format!("Chrome responded but sent an invalid target list: {e}"))?;
+    Ok(raw
+        .into_iter()
+        .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
+        .filter_map(|t| {
+            Some(ChromeTarget {
+                url: t.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                ws_url: t.get("webSocketDebuggerUrl")?.as_str()?.to_string(),
+            })
+        })
+        .collect())
+}
+
+/// The tab Tier 6 acts on: the first real (non-devtools/chrome-internal) page target, or
+/// a newly opened one at `fallback_url` if none exists yet.
+async fn active_or_new_chrome_target(port: u16, fallback_url: &str) -> Result<ChromeTarget, String> {
+    let targets = list_chrome_targets(port).await?;
+    if let Some(t) = targets
+        .into_iter()
+        .find(|t| !t.url.starts_with("devtools://") && !t.url.starts_with("chrome://"))
+    {
+        return Ok(t);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let created = client
+        .put(format!(
+            "http://127.0.0.1:{port}/json/new?{}",
+            urlencoding::encode(fallback_url)
+        ))
+        .send()
+        .await
+        .map_err(|e| format!("could not open a new Chrome tab: {e}"))?
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Chrome returned an invalid response creating a tab: {e}"))?;
+    let ws_url = created
+        .get("webSocketDebuggerUrl")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Chrome did not return a debugger URL for the new tab".to_string())?
+        .to_string();
+    Ok(ChromeTarget {
+        url: created.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        ws_url,
+    })
+}
+
+lazy_static::lazy_static! {
+    static ref PENDING_CHROME_CONTROL_CONFIRMATIONS: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+}
+
+/// Blocks (up to `CHROME_CONTROL_CONFIRMATION_TIMEOUT_SECS`) waiting for the user to
+/// approve or deny one Tier 6 action via the frontend's confirmation sheet. A timeout,
+/// a dropped channel, or an explicit deny all resolve to `false` — silence is never
+/// treated as approval.
+async fn request_chrome_control_confirmation(
+    app_handle: &tauri::AppHandle,
+    agent_id: &str,
+    action_description: &str,
+) -> Result<bool, String> {
+    use tauri::Emitter;
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    {
+        let mut pending = PENDING_CHROME_CONTROL_CONFIRMATIONS.lock().await;
+        pending.insert(request_id.clone(), tx);
+    }
+    let _ = app_handle.emit(
+        "agent_chrome_control_confirmation_requested",
+        serde_json::json!({
+            "request_id": request_id,
+            "agent_id": agent_id,
+            "action_description": action_description,
+        }),
+    );
+    let approved = tokio::time::timeout(Duration::from_secs(CHROME_CONTROL_CONFIRMATION_TIMEOUT_SECS), rx)
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(false);
+    if !approved {
+        PENDING_CHROME_CONTROL_CONFIRMATIONS.lock().await.remove(&request_id);
+    }
+    Ok(approved)
+}
+
+/// Frontend resolves a pending Tier 6 action-confirmation sheet with allow/deny.
+#[tauri::command]
+pub async fn resolve_chrome_control_confirmation(request_id: String, approved: bool) -> Result<(), String> {
+    let mut pending = PENDING_CHROME_CONTROL_CONFIRMATIONS.lock().await;
+    if let Some(tx) = pending.remove(&request_id) {
+        let _ = tx.send(approved);
+    }
+    Ok(())
+}
+
+async fn require_browser_control_and_reachable(
+    db: &tauri::State<'_, crate::db::Database>,
+    agent_id: &str,
+) -> Result<(crate::models::Agent, u16), String> {
+    let agent = db
+        .get_agent(agent_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "agent not found".to_string())?;
+    require_browser_control(&agent)?;
+    let port = chrome_debug_port();
+    chrome_version_info(port).await?;
+    Ok((agent, port))
+}
 
 // ─── Tauri commands (Canopy frontend surface) ────────────────────────────────────
 
@@ -920,107 +1216,112 @@ pub fn revoke_web_auth_approved_domain(agent_id: String, domain: String) -> Resu
     revoke_web_auth_domain(&agent_id, &domain)
 }
 
-/// Tier 5 stub — see the TODO above `agent_sandbox_browser_profile_dir`.
-#[tauri::command]
-pub async fn launch_agent_browser(
-    db: tauri::State<'_, crate::db::Database>,
-    agent_id: String,
-) -> Result<serde_json::Value, String> {
-    let agent = db
-        .get_agent(&agent_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "agent not found".to_string())?;
-    if !agent.capabilities.web_sandbox_browser {
-        return Err(
-            "this agent does not have the Sandboxed Browser (web_sandbox_browser) capability enabled"
-                .to_string(),
-        );
-    }
-    Err(format!(
-        "launch_agent_browser is not yet implemented — Tier 5 (agent-owned sandboxed Chromium via a \
-         Playwright sidecar) is scaffolded but not wired up. Intended profile directory: {}. See the \
-         TODO above agent_sandbox_browser_profile_dir in web_tools.rs.",
-        agent_sandbox_browser_profile_dir(&agent_id)
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "(unresolvable)".to_string())
-    ))
-}
-
-/// Tier 6 stub — see the TODO above `require_browser_control`.
 #[tauri::command]
 pub async fn chrome_navigate(
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     url: String,
 ) -> Result<(), String> {
-    let agent = db
-        .get_agent(&agent_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "agent not found".to_string())?;
-    require_browser_control(&agent)?;
-    let _ = url;
-    Err(format!("chrome_navigate is not yet implemented — {TIER6_TODO}"))
+    let (_, port) = require_browser_control_and_reachable(&db, &agent_id).await?;
+    let parsed = url::Url::parse(url.trim()).map_err(|_| format!("'{url}' is not a valid URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("only http:// and https:// URLs are supported".to_string());
+    }
+    if !request_chrome_control_confirmation(&app_handle, &agent_id, &format!("navigate your Chrome to {url}")).await? {
+        return Err("the user denied this Chrome control action".to_string());
+    }
+    let target = active_or_new_chrome_target(port, &url).await?;
+    cdp_navigate(&target.ws_url, &url).await
 }
 
-/// Tier 6 stub — see the TODO above `require_browser_control`.
 #[tauri::command]
 pub async fn chrome_click(
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     selector: String,
 ) -> Result<(), String> {
-    let agent = db
-        .get_agent(&agent_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "agent not found".to_string())?;
-    require_browser_control(&agent)?;
-    let _ = selector;
-    Err(format!("chrome_click is not yet implemented — {TIER6_TODO}"))
+    let (_, port) = require_browser_control_and_reachable(&db, &agent_id).await?;
+    let target = active_or_new_chrome_target(port, "about:blank").await?;
+    if let Some(blocked) = target_blocklist_hit(&target) {
+        return Err(blocked);
+    }
+    if !request_chrome_control_confirmation(
+        &app_handle,
+        &agent_id,
+        &format!("click \"{selector}\" on {}", target.url),
+    )
+    .await?
+    {
+        return Err("the user denied this Chrome control action".to_string());
+    }
+    cdp_click(&target.ws_url, &selector).await
 }
 
-/// Tier 6 stub — see the TODO above `require_browser_control`.
 #[tauri::command]
 pub async fn chrome_type(
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
     selector: String,
     text: String,
 ) -> Result<(), String> {
-    let agent = db
-        .get_agent(&agent_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "agent not found".to_string())?;
-    require_browser_control(&agent)?;
-    let _ = (selector, text);
-    Err(format!("chrome_type is not yet implemented — {TIER6_TODO}"))
+    let (_, port) = require_browser_control_and_reachable(&db, &agent_id).await?;
+    let target = active_or_new_chrome_target(port, "about:blank").await?;
+    if let Some(blocked) = target_blocklist_hit(&target) {
+        return Err(blocked);
+    }
+    if !request_chrome_control_confirmation(
+        &app_handle,
+        &agent_id,
+        &format!("type into \"{selector}\" on {}", target.url),
+    )
+    .await?
+    {
+        return Err("the user denied this Chrome control action".to_string());
+    }
+    cdp_type(&target.ws_url, &selector, &text).await
 }
 
-/// Tier 6 stub — see the TODO above `require_browser_control`.
 #[tauri::command]
 pub async fn chrome_get_content(
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
 ) -> Result<String, String> {
-    let agent = db
-        .get_agent(&agent_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "agent not found".to_string())?;
-    require_browser_control(&agent)?;
-    Err(format!("chrome_get_content is not yet implemented — {TIER6_TODO}"))
+    let (_, port) = require_browser_control_and_reachable(&db, &agent_id).await?;
+    let target = active_or_new_chrome_target(port, "about:blank").await?;
+    if !request_chrome_control_confirmation(&app_handle, &agent_id, &format!("read the page content of {}", target.url)).await? {
+        return Err("the user denied this Chrome control action".to_string());
+    }
+    let (title, text) = cdp_get_content(&target.ws_url).await?;
+    Ok(serde_json::json!({ "title": title, "url": target.url, "text": text }).to_string())
 }
 
-/// Tier 6 stub — see the TODO above `require_browser_control`.
 #[tauri::command]
 pub async fn chrome_screenshot(
+    app_handle: tauri::AppHandle,
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
 ) -> Result<String, String> {
-    let agent = db
-        .get_agent(&agent_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "agent not found".to_string())?;
-    require_browser_control(&agent)?;
-    Err(format!("chrome_screenshot is not yet implemented — {TIER6_TODO}"))
+    let (_, port) = require_browser_control_and_reachable(&db, &agent_id).await?;
+    let target = active_or_new_chrome_target(port, "about:blank").await?;
+    if !request_chrome_control_confirmation(&app_handle, &agent_id, &format!("take a screenshot of {}", target.url)).await? {
+        return Err("the user denied this Chrome control action".to_string());
+    }
+    cdp_screenshot(&target.ws_url).await
+}
+
+/// Financial-transaction pages are read-only even with `browser_control` enabled — this
+/// gates `chrome_click`/`chrome_type` only, never `chrome_get_content`/`chrome_screenshot`.
+fn target_blocklist_hit(target: &ChromeTarget) -> Option<String> {
+    let host = url::Url::parse(&target.url).ok()?.host_str()?.to_string();
+    let blocked = blocklisted_domain(&host)?;
+    Some(format!(
+        "'{host}' matches the fixed fetch blocklist ({blocked}, a financial/medical portal) — click/type \
+         is refused on this page even with browser_control enabled. You may still read it."
+    ))
 }
 
 #[tauri::command]
@@ -1135,5 +1436,29 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].title, "Rust (language)");
         assert_eq!(out[1].url, "https://duckduckgo.com/Rust_(disambiguation)");
+    }
+
+    #[test]
+    fn tier6_click_type_are_refused_on_blocklisted_pages_but_read_stays_allowed() {
+        let blocked = ChromeTarget {
+            url: "https://www.chase.com/login".to_string(),
+            ws_url: "ws://127.0.0.1:9222/devtools/page/abc".to_string(),
+        };
+        let hit = target_blocklist_hit(&blocked);
+        assert!(hit.is_some());
+        assert!(hit.unwrap().contains("chase.com"));
+
+        let safe = ChromeTarget {
+            url: "https://example.com/docs".to_string(),
+            ws_url: "ws://127.0.0.1:9222/devtools/page/def".to_string(),
+        };
+        assert!(target_blocklist_hit(&safe).is_none());
+    }
+
+    #[test]
+    fn chrome_not_reachable_error_names_the_port_and_the_fix() {
+        let msg = chrome_not_reachable_error(9222);
+        assert!(msg.contains("9222"));
+        assert!(msg.contains("--remote-debugging-port=9222"));
     }
 }

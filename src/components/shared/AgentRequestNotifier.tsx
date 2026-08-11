@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Eye, AlertTriangle, X, KeyRound } from "lucide-react";
 
 /**
- * Global listener + UI for two agent → user signals:
+ * Global listener + UI for agent → user signals:
  *
  *   1. **Attention requests** (`agent_attention_requested`)
  *      Fire-and-forget toasts. The agent says "please look at my browser" and the user
@@ -15,6 +15,16 @@ import { Eye, AlertTriangle, X, KeyRound } from "lucide-react";
  *      Blocking modal. The agent asks for a capability/integration/domain it doesn't
  *      have. The user picks one of: Once / This Session / Forever / Deny. The Tauri
  *      backend (`resolve_permission_request`) handles the persistence semantics.
+ *
+ *   3. **Chrome control confirmations** (`agent_chrome_control_confirmation_requested`)
+ *      Blocking modal, Tier 6 (Full Chrome Control) only. Unlike permission requests
+ *      this is NOT a one-time capability grant — every single navigate/click/type/read
+ *      action against the user's real, already-logged-in Chrome fires its own prompt,
+ *      because a standing "always allow" would be a blank check against a browser that
+ *      has no domain allowlist or blocklist of its own (beyond the fixed financial/
+ *      medical block on click/type). The Tauri backend
+ *      (`resolve_chrome_control_confirmation`) just unblocks the waiting Rust call;
+ *      there's no persistence to manage here.
  *
  * Mount this component once at the app root. It manages its own state.
  */
@@ -31,6 +41,12 @@ type PermissionPrompt = {
     agent_id: string;
     permission_id: string;
     justification: string;
+};
+
+type ChromeControlPrompt = {
+    request_id: string;
+    agent_id: string;
+    action_description: string;
 };
 
 type ConnectionPrompt = {
@@ -70,6 +86,7 @@ export function AgentRequestNotifier({
 }) {
     const [attentionToasts, setAttentionToasts] = useState<AttentionToast[]>([]);
     const [pendingPermission, setPendingPermission] = useState<PermissionPrompt | null>(null);
+    const [pendingChromeControl, setPendingChromeControl] = useState<ChromeControlPrompt | null>(null);
     const [pendingConnection, setPendingConnection] = useState<ConnectionPrompt | null>(null);
     const [pendingPaymentApproval, setPendingPaymentApproval] = useState<PaymentApproval | null>(null);
 
@@ -213,6 +230,62 @@ export function AgentRequestNotifier({
         };
     }, []);
 
+    // Subscribe to Tier 6 (Full Chrome Control) per-action confirmation requests. A new
+    // one can arrive while another is still pending (the agent could theoretically fire
+    // several action calls back to back) — queue them rather than dropping any, since a
+    // dropped confirmation request silently times out to "denied" on the Rust side after
+    // 120s, which would be a confusing failure mode for the agent to debug.
+    const [chromeControlQueue, setChromeControlQueue] = useState<ChromeControlPrompt[]>([]);
+    useEffect(() => {
+        let unlistenFn: (() => void) | undefined;
+        let isMounted = true;
+
+        async function setup() {
+            try {
+                const { listen } = await import("@tauri-apps/api/event");
+                if (!isMounted) return;
+
+                const unlisten = await listen<ChromeControlPrompt>("agent_chrome_control_confirmation_requested", (event) => {
+                    try {
+                        const payload = event?.payload;
+                        if (!payload || typeof payload.request_id !== "string" || typeof payload.agent_id !== "string" || typeof payload.action_description !== "string") {
+                            console.warn("agent_chrome_control_confirmation_requested: malformed payload, ignoring", payload);
+                            return;
+                        }
+                        setChromeControlQueue(prev => [...prev, payload]);
+                    } catch (err) {
+                        console.warn("agent_chrome_control_confirmation_requested handler error:", err);
+                    }
+                });
+
+                if (isMounted) {
+                    unlistenFn = unlisten;
+                } else {
+                    try { unlisten(); } catch (e) {}
+                }
+            } catch (e) {
+                console.warn("Chrome control listener setup failed", e);
+            }
+        }
+        setup();
+
+        return () => {
+            isMounted = false;
+            if (unlistenFn) {
+                try { unlistenFn(); } catch (e) {}
+                unlistenFn = undefined;
+            }
+        };
+    }, []);
+
+    // Surface one Chrome-control prompt at a time from the queue.
+    useEffect(() => {
+        if (!pendingChromeControl && chromeControlQueue.length > 0) {
+            setPendingChromeControl(chromeControlQueue[0]);
+            setChromeControlQueue(prev => prev.slice(1));
+        }
+    }, [pendingChromeControl, chromeControlQueue]);
+
     // Subscribe to connection-request events.
     useEffect(() => {
         let unlistenFn: (() => void) | undefined;
@@ -222,7 +295,7 @@ export function AgentRequestNotifier({
             try {
                 const { listen } = await import("@tauri-apps/api/event");
                 if (!isMounted) return;
-                
+
                 const unlisten = await listen<ConnectionPrompt>("RequestConnection", (event) => {
                     try {
                         const payload = event?.payload;
@@ -283,6 +356,19 @@ export function AgentRequestNotifier({
         }
         setPendingPermission(null);
     }, [pendingPermission]);
+
+    const handleChromeControlDecision = useCallback(async (approved: boolean) => {
+        if (!pendingChromeControl) return;
+        try {
+            await invoke("resolve_chrome_control_confirmation", {
+                requestId: pendingChromeControl.request_id,
+                approved,
+            });
+        } catch (e) {
+            console.error("resolve_chrome_control_confirmation failed:", e);
+        }
+        setPendingChromeControl(null);
+    }, [pendingChromeControl]);
 
     const handleConnectionDecision = useCallback(async (decision: "connect" | "deny") => {
         if (!pendingConnection) return;
@@ -423,6 +509,16 @@ export function AgentRequestNotifier({
                     onDecide={handlePaymentDecision}
                 />
             )}
+
+            {/* Modal for blocking Tier 6 (Full Chrome Control) per-action confirmations. */}
+            {pendingChromeControl && (
+                <ChromeControlModal
+                    prompt={pendingChromeControl}
+                    agentName={nameFor(pendingChromeControl.agent_id)}
+                    queueDepth={chromeControlQueue.length}
+                    onDecide={handleChromeControlDecision}
+                />
+            )}
         </>
     );
 }
@@ -506,6 +602,81 @@ function PermissionModal({
                 <div style={{ fontSize: 11, color: "#8a9a8a", lineHeight: 1.4 }}>
                     <strong>Allow once</strong> grants a single use. <strong>This session</strong> until the gateway restarts.
                     <strong> Forever</strong> persists to {agentName}'s permissions.
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function ChromeControlModal({
+    prompt,
+    agentName,
+    queueDepth,
+    onDecide,
+}: {
+    prompt: ChromeControlPrompt;
+    agentName: string;
+    queueDepth: number;
+    onDecide: (approved: boolean) => void;
+}) {
+    return (
+        <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+                position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                zIndex: 9500,
+            }}
+        >
+            <div style={{
+                background: "#1a1f1a", color: "#e8efe8",
+                border: "1px solid #2d3a2d", borderRadius: 12,
+                padding: 24, width: 480, maxWidth: "calc(100vw - 32px)",
+                boxShadow: "0 12px 48px rgba(0,0,0,0.5)",
+            }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
+                    <div style={{
+                        background: "#3a1a1a", borderRadius: "50%",
+                        width: 36, height: 36, flexShrink: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                        <AlertTriangle size={18} color="#e07050" />
+                    </div>
+                    <div>
+                        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
+                            {agentName} wants to control your Chrome
+                        </h2>
+                        <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#c8d0c8" }}>
+                            This is your real, already-logged-in browser — every action happens immediately and for real.
+                        </p>
+                    </div>
+                </div>
+
+                <div style={{
+                    background: "#0f130f", border: "1px solid #2a352a",
+                    borderRadius: 8, padding: 12, marginBottom: 18,
+                }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#8a9a8a", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                        Requested action
+                    </div>
+                    <div style={{ fontSize: 13, color: "#d0d8d0", lineHeight: 1.5, wordBreak: "break-word" }}>
+                        {prompt.action_description}
+                    </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                    <button onClick={() => onDecide(true)} style={btnStyle("#3c6663")}>
+                        Allow this action
+                    </button>
+                    <button onClick={() => onDecide(false)} style={btnStyle("#5a3030")}>
+                        Deny
+                    </button>
+                </div>
+
+                <div style={{ fontSize: 11, color: "#8a9a8a", lineHeight: 1.4 }}>
+                    This decision covers only this one action — {agentName} will ask again for the next step.
+                    {queueDepth > 0 && ` ${queueDepth} more request${queueDepth === 1 ? " is" : "s are"} waiting behind this one.`}
                 </div>
             </div>
         </div>

@@ -372,8 +372,8 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "web_search", label: "Web Search", description: "Structured web search (title/url/snippet results) for quick lookups, news, and current facts", enabled: false, category: "skills" },
   { id: "web_browse", label: "Web Browse & Research", description: "Fetch and read full web pages — including JS-rendered ones — and run multi-source deep research", enabled: false, category: "skills" },
   { id: "web_auth", label: "Authenticated Browsing", description: "Read pages that need login, reusing your Chrome session cookies for one approved domain at a time — never your whole profile", enabled: false, category: "skills" },
-  { id: "web_sandbox_browser", label: "Sandboxed Agent Browser", description: "Give the agent its own isolated Chromium profile with its own logins, separate from your real Chrome (not yet implemented)", enabled: false, category: "skills" },
-  { id: "browser_control", label: "Full Chrome Control", description: "Direct control of your real, already-logged-in Chrome via CDP — every action requires your approval (not yet implemented)", enabled: false, category: "execution" },
+  { id: "web_sandbox_browser", label: "Sandboxed Agent Browser", description: "Give the agent its own isolated, persistent Chromium profile with its own logins, separate from your real Chrome", enabled: false, category: "skills" },
+  { id: "browser_control", label: "Full Chrome Control", description: "Direct control of your real, already-logged-in Chrome via CDP — every action requires your approval", enabled: false, category: "execution" },
   { id: "summarize", label: "Summarization", description: "Condense large documents or web pages", enabled: true, category: "skills" },
   { id: "genui", label: "Generative UI", description: "Render interactive UI components", enabled: true, category: "skills" },
 ];

@@ -1021,13 +1021,21 @@ pub fn run() {
             web_tools::fetch_authenticated_page,
             web_tools::list_web_auth_approved_domains,
             web_tools::revoke_web_auth_approved_domain,
-            // Web tools (Tier 5/6 — sandboxed browser / full Chrome control; stubs)
-            web_tools::launch_agent_browser,
+            // Web tools (Tier 6 — full live CDP control of the user's real Chrome)
             web_tools::chrome_navigate,
             web_tools::chrome_click,
             web_tools::chrome_type,
             web_tools::chrome_get_content,
             web_tools::chrome_screenshot,
+            web_tools::resolve_chrome_control_confirmation,
+            // Browser manager (Tier 5 — agent-owned sandboxed Chromium)
+            browser_manager::launch_agent_browser,
+            browser_manager::close_agent_browser,
+            browser_manager::agent_browser_navigate,
+            browser_manager::agent_browser_get_content,
+            browser_manager::agent_browser_click,
+            browser_manager::agent_browser_type,
+            browser_manager::agent_browser_screenshot,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,

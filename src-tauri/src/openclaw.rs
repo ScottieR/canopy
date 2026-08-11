@@ -5232,8 +5232,8 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         web_search = capability_status("Web search (structured, JIT bridge)", caps.web_search, "POST to /web/search or /web/research over the JIT bridge for structured results with URLs and snippets — see PERMISSIONS.md for the exact call shape. Prefer this over `gog` when you need URLs to fetch afterward or a multi-source research packet."),
         web_browse = capability_status("Web fetch (JIT bridge)", caps.web_browse, "POST to /web/fetch over the JIT bridge to read a specific URL's full text (with automatic JS-rendering escalation), when you already have the link rather than needing to search for it."),
         web_auth = capability_status("Authenticated fetch (Tier 4)", caps.web_auth, "Request per-domain access via /request_permission (permission_id \"webauth:<domain>\") before POSTing to /web/fetch_authenticated. Never assume access — always request first, and never ask the user for their password directly."),
-        web_sandbox_browser = capability_status("Sandboxed agent browser (Tier 5)", caps.web_sandbox_browser, "Scaffolded only — launch_agent_browser currently always errors. Do not rely on it yet."),
-        browser_control = capability_status("Full Chrome control (Tier 6)", caps.browser_control, "Scaffolded only — chrome_navigate/click/type/get_content/screenshot currently always error. Do not rely on it yet. If it ever responds: you are controlling the user's real Chrome; every action is irreversible in real time, confirm your plan before sequences of actions, and financial-transaction pages are read-only even then."),
+        web_sandbox_browser = capability_status("Sandboxed agent browser (Tier 5)", caps.web_sandbox_browser, "Implemented as Tauri commands the Canopy app can call, but not yet exposed to you over the JIT bridge — you cannot invoke it yourself right now."),
+        browser_control = capability_status("Full Chrome control (Tier 6)", caps.browser_control, "Implemented as Tauri commands the Canopy app can call (each gated behind a per-action user confirmation sheet), but not yet exposed to you over the JIT bridge — you cannot invoke it yourself right now."),
         vision = capability_status("Vision", caps.vision, "Use vision for screenshots, images, and visual UI understanding."),
         canvas = capability_status("Canvas", caps.canvas, "Use canvas for visual layout, markup, and artifact presentation."),
         genui = capability_status("GenUI", caps.genui, "Use GenUI when a mini-app, dashboard, approval card, or interactive artifact beats prose."),
@@ -9296,21 +9296,27 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         }
         if caps.web_sandbox_browser {
             block.push_str(
-                "\n**Sandboxed agent browser (Tier 5)** — not yet available. `launch_agent_browser` is \
-                 wired up (capability-gated) but returns an error: the Playwright-backed sandboxed \
-                 Chromium profile hasn't been implemented yet. Don't rely on it.\n",
+                "\n**Sandboxed agent browser (Tier 5)** — implemented, but NOT YET callable by you \
+                 directly: `launch_agent_browser`/`close_agent_browser`/`agent_browser_navigate`/\
+                 `agent_browser_get_content`/`agent_browser_click`/`agent_browser_type`/\
+                 `agent_browser_screenshot` exist as Tauri commands the Canopy app itself can invoke \
+                 (e.g. a future in-app \"Agent Browser\" panel), but there is no JIT bridge route for \
+                 them yet — you have no curl-callable path to a Tier 5 browser today. Don't claim to \
+                 have used it.\n",
             );
         }
         if caps.browser_control {
             block.push_str(
-                "\n**Full Chrome control (Tier 6)** — not yet available. `chrome_navigate`, \
-                 `chrome_click`, `chrome_type`, `chrome_get_content`, and `chrome_screenshot` are \
-                 wired up (capability-gated) but each returns an error: live CDP control of the user's \
-                 actual Chrome hasn't been implemented yet. Don't rely on it.\n\n\
-                 **If this ever does respond**: you are controlling the user's real Chrome browser. \
-                 Every action is irreversible in real time. Confirm your plan with the user before \
-                 sequences of actions, not just the first step. Financial-transaction pages (banking, \
-                 payments) are read-only even then — you may look, but never click or type on them.\n",
+                "\n**Full Chrome control (Tier 6)** — implemented, but NOT YET callable by you directly: \
+                 `chrome_navigate`/`chrome_click`/`chrome_type`/`chrome_get_content`/`chrome_screenshot` \
+                 exist as Tauri commands the Canopy app itself can invoke, each gated behind a fresh \
+                 per-action user confirmation sheet, but there is no JIT bridge route for them yet — you \
+                 have no curl-callable path to the user's real Chrome today. Don't claim to have used it.\n\n\
+                 **If a JIT route for this is ever added**: you would be controlling the user's real \
+                 Chrome browser. Every action is irreversible in real time. Confirm your plan with the \
+                 user before sequences of actions, not just the first step. Financial-transaction pages \
+                 (banking, payments) are read-only even then — you may look, but never click or type on \
+                 them.\n",
             );
         }
         block
