@@ -9272,7 +9272,10 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
 
     // Tier 4 (authenticated fetch, per-domain consent), Tier 5 (agent-owned sandboxed
     // Chromium, stub), Tier 6 (full live CDP control of the user's real Chrome, stub).
-    let auth_browsing_block = if !caps.web_auth && !caps.web_sandbox_browser && !caps.browser_control {
+    let auth_browsing_block = if !caps.web_auth
+        && !caps.web_sandbox_browser
+        && !caps.browser_control
+    {
         "Disabled.".to_string()
     } else {
         let mut block = String::new();
@@ -9324,9 +9327,12 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         block
     };
 
-    let has_google_drive = integrations
-        .iter()
-        .any(|name| matches!(*name, "drive" | "drive_read" | "drive_write" | "drive_granular"));
+    let has_google_drive = integrations.iter().any(|name| {
+        matches!(
+            *name,
+            "drive" | "drive_read" | "drive_write" | "drive_granular"
+        )
+    });
     let google_drive_is_granular = integrations.contains(&"drive_granular");
 
     let mut custom_instructions = String::new();

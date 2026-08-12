@@ -364,7 +364,8 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                             match serde_json::from_slice::<WebFetchAuthenticatedRequest>(body) {
                                 Ok(req) => {
                                     let (response, status_code) =
-                                        handle_web_fetch_authenticated_request(app.clone(), req).await;
+                                        handle_web_fetch_authenticated_request(app.clone(), req)
+                                            .await;
                                     (
                                         status_code,
                                         serde_json::to_string(&response).unwrap_or_default(),
@@ -808,7 +809,10 @@ async fn handle_web_fetch_request(app: tauri::AppHandle, req: WebFetchRequest) -
     }
 }
 
-async fn handle_web_research_request(app: tauri::AppHandle, req: WebResearchRequest) -> (Value, u16) {
+async fn handle_web_research_request(
+    app: tauri::AppHandle,
+    req: WebResearchRequest,
+) -> (Value, u16) {
     use tauri::Manager;
     let db = app.state::<crate::db::Database>();
     let agent = match db.get_agent(&req.agent_id) {

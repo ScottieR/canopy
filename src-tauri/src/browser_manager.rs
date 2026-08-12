@@ -330,10 +330,7 @@ impl BrowserManager {
     /// Unlike `start_browser`, this always passes `restore_last_session: true` — Tier
     /// 5's whole point is that the agent stays logged into services it's been approved
     /// for across Canopy restarts, not that every session starts from a clean slate.
-    pub async fn start_sandbox_browser(
-        &self,
-        agent_id: &str,
-    ) -> Result<BrowserStatus> {
+    pub async fn start_sandbox_browser(&self, agent_id: &str) -> Result<BrowserStatus> {
         {
             let mut sandbox = self.sandbox_browsers.lock().await;
             if let Some((child, status)) = sandbox.get_mut(agent_id) {
@@ -388,9 +385,15 @@ impl BrowserManager {
         // (the automation browser's pattern) since "agent-sandbox-browsers" never
         // contains "agent-browsers" as a contiguous substring.
         let pattern = format!("agent-sandbox-browsers/{}", agent_id);
-        let _ = tokio::process::Command::new("pkill").args(["-f", &pattern]).output().await;
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-f", &pattern])
+            .output()
+            .await;
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        let _ = tokio::process::Command::new("pkill").args(["-9", "-f", &pattern]).output().await;
+        let _ = tokio::process::Command::new("pkill")
+            .args(["-9", "-f", &pattern])
+            .output()
+            .await;
         Ok(())
     }
 
@@ -402,7 +405,11 @@ impl BrowserManager {
     /// Only for `agent_browser_*`: starts the sandbox browser if it isn't already
     /// running, then returns its CDP endpoint for the caller to act on.
     async fn ensure_sandbox_browser_cdp_endpoint(&self, agent_id: &str) -> Result<String, String> {
-        if let Some(status) = self.get_sandbox_status(agent_id).await.map_err(|e| e.to_string())? {
+        if let Some(status) = self
+            .get_sandbox_status(agent_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
             if status_is_connectable(&status) {
                 return Ok(status.cdp_endpoint);
             }
@@ -721,7 +728,10 @@ pub async fn launch_agent_browser(
     agent_id: String,
 ) -> Result<BrowserStatus, String> {
     require_sandbox_browser_capability(&db, &agent_id).await?;
-    state.start_sandbox_browser(&agent_id).await.map_err(|e| e.to_string())
+    state
+        .start_sandbox_browser(&agent_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -729,7 +739,10 @@ pub async fn close_agent_browser(
     state: tauri::State<'_, BrowserManager>,
     agent_id: String,
 ) -> Result<(), String> {
-    state.stop_sandbox_browser(&agent_id).await.map_err(|e| e.to_string())
+    state
+        .stop_sandbox_browser(&agent_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2368,7 +2381,10 @@ fn prepare_agent_sandbox_browser_profile(agent_id: &str) -> Result<PreparedBrows
     let pac_script = build_pac_script(None);
     use base64::Engine;
     let pac_base64 = base64::engine::general_purpose::STANDARD.encode(&pac_script);
-    let pac_url = format!("data:application/x-ns-proxy-autoconfig;base64,{}", pac_base64);
+    let pac_url = format!(
+        "data:application/x-ns-proxy-autoconfig;base64,{}",
+        pac_base64
+    );
 
     Ok(PreparedBrowserProfile {
         profile_path,
@@ -2405,7 +2421,8 @@ async fn spawn_chrome_and_wait_for_cdp(
             if line.contains("DevTools listening on ws://") {
                 if let Some(start) = line.find("ws://") {
                     let url = line[start..].trim().to_string();
-                    if let Some(port_str) = url.split(':').nth(2).and_then(|s| s.split('/').next()) {
+                    if let Some(port_str) = url.split(':').nth(2).and_then(|s| s.split('/').next())
+                    {
                         if let Ok(p) = port_str.parse::<u16>() {
                             port = p;
                             cdp_endpoint = url;

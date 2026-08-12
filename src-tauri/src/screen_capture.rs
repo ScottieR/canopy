@@ -85,8 +85,8 @@ mod mac {
     fn get_shareable_content() -> std::result::Result<Retained<SCShareableContent>, String> {
         let (tx, rx) = mpsc::channel::<std::result::Result<Retained<SCShareableContent>, String>>();
 
-        let handler =
-            RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
+        let handler = RcBlock::new(
+            move |content: *mut SCShareableContent, error: *mut NSError| {
                 let result = if !content.is_null() {
                     // SAFETY: ScreenCaptureKit hands us a +1 object on success.
                     Ok(unsafe { Retained::retain(content) }.expect("non-null content"))
@@ -94,7 +94,8 @@ mod mac {
                     Err(describe_error(error))
                 };
                 let _ = tx.send(result);
-            });
+            },
+        );
 
         // SAFETY: `handler` outlives the call — ScreenCaptureKit invokes it synchronously
         // from its own queue before this function returns control to the caller (we block

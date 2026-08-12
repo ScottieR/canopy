@@ -1184,10 +1184,8 @@ async fn handle_connection(
                                                 .filter(|s| {
                                                     !forum_ids.iter().any(|fid| {
                                                         &s.id == fid
-                                                            || s.id.starts_with(&format!(
-                                                                "{}_",
-                                                                fid
-                                                            ))
+                                                            || s.id
+                                                                .starts_with(&format!("{}_", fid))
                                                     })
                                                 })
                                                 .collect::<Vec<_>>()
@@ -1198,12 +1196,9 @@ async fn handle_connection(
                                         payload: serde_json::json!(threads),
                                     };
                                     if let Ok(json_str) = serde_json::to_string(&res) {
-                                        let _ = send_encrypted(
-                                            &mut write,
-                                            &mut encryptor,
-                                            json_str,
-                                        )
-                                        .await;
+                                        let _ =
+                                            send_encrypted(&mut write, &mut encryptor, json_str)
+                                                .await;
                                     }
                                 }
                             }

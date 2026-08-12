@@ -47,7 +47,12 @@ fn chrome_safe_storage_key() -> Result<[u8; PBKDF2_KEY_LEN], String> {
         })?;
 
     let mut key = [0u8; PBKDF2_KEY_LEN];
-    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(password.as_bytes(), PBKDF2_SALT, PBKDF2_ITERATIONS, &mut key);
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(
+        password.as_bytes(),
+        PBKDF2_SALT,
+        PBKDF2_ITERATIONS,
+        &mut key,
+    );
     Ok(key)
 }
 
@@ -63,7 +68,8 @@ fn decrypt_cookie_value(key: &[u8; PBKDF2_KEY_LEN], encrypted: &[u8]) -> Result<
     let plain = decryptor
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .map_err(|e| format!("cookie decryption failed: {e}"))?;
-    String::from_utf8(plain.to_vec()).map_err(|e| format!("decrypted cookie was not valid UTF-8: {e}"))
+    String::from_utf8(plain.to_vec())
+        .map_err(|e| format!("decrypted cookie was not valid UTF-8: {e}"))
 }
 
 /// Reads all cookies Chrome has stored for `host` (exact match) or `.{host}` (Chrome's
@@ -87,7 +93,8 @@ pub fn read_cookies_for_host(host: &str) -> Result<Vec<ChromeCookie>, String> {
         .parent()
         .ok_or_else(|| "could not resolve Chrome profile directory".to_string())?;
 
-    let tmp_dir = std::env::temp_dir().join(format!("canopy-chrome-cookies-{}", uuid::Uuid::new_v4()));
+    let tmp_dir =
+        std::env::temp_dir().join(format!("canopy-chrome-cookies-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("could not create temp dir: {e}"))?;
     let tmp_db = tmp_dir.join("Cookies");
     let copy_result = std::fs::copy(&cookies_db, &tmp_db)
@@ -108,7 +115,10 @@ pub fn read_cookies_for_host(host: &str) -> Result<Vec<ChromeCookie>, String> {
     extraction
 }
 
-fn extract_cookies_from_db(db_path: &std::path::Path, host: &str) -> Result<Vec<ChromeCookie>, String> {
+fn extract_cookies_from_db(
+    db_path: &std::path::Path,
+    host: &str,
+) -> Result<Vec<ChromeCookie>, String> {
     let key = chrome_safe_storage_key()?;
     let conn = rusqlite::Connection::open(db_path)
         .map_err(|e| format!("could not open copied cookies database: {e}"))?;
@@ -172,7 +182,9 @@ mod tests {
         let pt_len = plaintext.len();
 
         let encryptor = cbc::Encryptor::<Aes128>::new(&key.into(), &CBC_IV.into());
-        let ct = encryptor.encrypt_padded_mut::<Pkcs7>(&mut buf, pt_len).unwrap();
+        let ct = encryptor
+            .encrypt_padded_mut::<Pkcs7>(&mut buf, pt_len)
+            .unwrap();
 
         let mut encrypted = b"v10".to_vec();
         encrypted.extend_from_slice(ct);
@@ -191,8 +203,14 @@ mod tests {
     #[test]
     fn cookie_header_joins_name_value_pairs() {
         let cookies = vec![
-            ChromeCookie { name: "a".into(), value: "1".into() },
-            ChromeCookie { name: "b".into(), value: "2".into() },
+            ChromeCookie {
+                name: "a".into(),
+                value: "1".into(),
+            },
+            ChromeCookie {
+                name: "b".into(),
+                value: "2".into(),
+            },
         ];
         assert_eq!(cookie_header(&cookies), "a=1; b=2");
     }

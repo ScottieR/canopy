@@ -101,7 +101,11 @@ fn blocklisted_domain(host: &str) -> Option<&'static str> {
 /// `reqwest` call, not a proxied one, so it needs to hold on its own.
 fn is_private_or_local(host: &str) -> bool {
     let host = host.trim().to_lowercase();
-    if host.is_empty() || host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local") {
+    if host.is_empty()
+        || host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+    {
         return true;
     }
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
@@ -198,7 +202,11 @@ async fn lightweight_fetch(url: &url::Url) -> Result<(String, String), String> {
     let final_url = resp.url().to_string();
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!("server returned HTTP {} for {}", status.as_u16(), url));
+        return Err(format!(
+            "server returned HTTP {} for {}",
+            status.as_u16(),
+            url
+        ));
     }
     let html = resp
         .text()
@@ -217,7 +225,9 @@ struct RenderedPage {
 }
 
 async fn cdp_call(
-    ws: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
     id: i64,
     method: &str,
     params: serde_json::Value,
@@ -242,10 +252,17 @@ async fn cdp_call(
                 if let Some(err) = resp.get("error") {
                     return Err(format!("CDP error for '{method}': {err}"));
                 }
-                return Ok(resp.get("result").cloned().unwrap_or(serde_json::Value::Null));
+                return Ok(resp
+                    .get("result")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null));
             }
             Ok(Some(Ok(_))) => continue, // ping/pong/binary frame — ignore
-            _ => return Err(format!("rendering browser connection lost waiting for '{method}'")),
+            _ => {
+                return Err(format!(
+                    "rendering browser connection lost waiting for '{method}'"
+                ))
+            }
         }
     }
 }
@@ -260,7 +277,13 @@ async fn render_via_cdp(cdp_endpoint: &str, url: &str) -> Result<RenderedPage, S
     .map_err(|e| format!("could not connect to rendering browser: {e}"))?;
 
     cdp_call(&mut ws, 1, "Page.enable", serde_json::json!({})).await?;
-    cdp_call(&mut ws, 2, "Page.navigate", serde_json::json!({ "url": url })).await?;
+    cdp_call(
+        &mut ws,
+        2,
+        "Page.navigate",
+        serde_json::json!({ "url": url }),
+    )
+    .await?;
 
     // Poll document.readyState rather than waiting on Page.loadEventFired — some SPA
     // routers never fire a clean load event after their initial client-side navigation.
@@ -305,8 +328,8 @@ async fn render_via_cdp(cdp_endpoint: &str, url: &str) -> Result<RenderedPage, S
         .pointer("/result/value")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "rendering browser returned no page data".to_string())?;
-    let parsed: serde_json::Value =
-        serde_json::from_str(raw).map_err(|e| format!("could not parse rendered page data: {e}"))?;
+    let parsed: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| format!("could not parse rendered page data: {e}"))?;
 
     Ok(RenderedPage {
         final_url: parsed
@@ -327,7 +350,11 @@ async fn render_via_cdp(cdp_endpoint: &str, url: &str) -> Result<RenderedPage, S
         links: parsed
             .get("links")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default(),
     })
 }
@@ -482,7 +509,10 @@ async fn brave_search(query: &str, n: usize, api_key: &str) -> Result<Vec<Search
         .map_err(|e| format!("Brave Search request failed: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("Brave Search returned HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "Brave Search returned HTTP {}",
+            resp.status().as_u16()
+        ));
     }
 
     let body: serde_json::Value = resp
@@ -508,7 +538,11 @@ async fn brave_search(query: &str, n: usize, api_key: &str) -> Result<Vec<Search
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_string();
-                    Some(SearchResult { title, url, snippet })
+                    Some(SearchResult {
+                        title,
+                        url,
+                        snippet,
+                    })
                 })
                 .collect()
         })
@@ -528,8 +562,14 @@ fn collect_related_topics(topics: &[serde_json::Value], out: &mut Vec<SearchResu
             collect_related_topics(nested, out, n);
             continue;
         }
-        let text = topic.get("Text").and_then(|v| v.as_str()).unwrap_or_default();
-        let url = topic.get("FirstURL").and_then(|v| v.as_str()).unwrap_or_default();
+        let text = topic
+            .get("Text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let url = topic
+            .get("FirstURL")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if !text.is_empty() && !url.is_empty() {
             let title = text.split(" - ").next().unwrap_or(text).to_string();
             out.push(SearchResult {
@@ -561,7 +601,10 @@ async fn duckduckgo_search(query: &str, n: usize) -> Result<Vec<SearchResult>, S
         .map_err(|e| format!("DuckDuckGo request failed: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(format!("DuckDuckGo returned HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "DuckDuckGo returned HTTP {}",
+            resp.status().as_u16()
+        ));
     }
 
     let body: serde_json::Value = resp
@@ -571,7 +614,10 @@ async fn duckduckgo_search(query: &str, n: usize) -> Result<Vec<SearchResult>, S
 
     let mut results = Vec::new();
 
-    let heading = body.get("Heading").and_then(|v| v.as_str()).unwrap_or_default();
+    let heading = body
+        .get("Heading")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let abstract_text = body
         .get("AbstractText")
         .and_then(|v| v.as_str())
@@ -582,7 +628,11 @@ async fn duckduckgo_search(query: &str, n: usize) -> Result<Vec<SearchResult>, S
         .unwrap_or_default();
     if !abstract_url.is_empty() && !abstract_text.is_empty() {
         results.push(SearchResult {
-            title: if heading.is_empty() { query.to_string() } else { heading.to_string() },
+            title: if heading.is_empty() {
+                query.to_string()
+            } else {
+                heading.to_string()
+            },
             url: abstract_url.to_string(),
             snippet: abstract_text.to_string(),
         });
@@ -653,7 +703,9 @@ pub async fn research_impl(
             if sources.len() >= 12 || !seen.insert(link.clone()) {
                 continue;
             }
-            if let Ok(mut page) = fetch_page_impl(app_handle, browser_manager, agent, true, &link).await {
+            if let Ok(mut page) =
+                fetch_page_impl(app_handle, browser_manager, agent, true, &link).await
+            {
                 let (capped, truncated) = cap_text(page.text, RESEARCH_PAGE_TEXT_CHARS);
                 page.text = capped;
                 page.truncated = page.truncated || truncated;
@@ -701,7 +753,8 @@ fn read_persisted_web_auth_domains(agent_id: &str) -> Vec<String> {
 /// Persists `domain` to the agent's approved-forever list. Called only when the user
 /// picks "Always for this agent" in the permission-request modal.
 pub fn approve_web_auth_domain_forever(agent_id: &str, domain: &str) -> Result<(), String> {
-    let dir = web_auth_dir(agent_id).ok_or_else(|| "could not resolve app data directory".to_string())?;
+    let dir =
+        web_auth_dir(agent_id).ok_or_else(|| "could not resolve app data directory".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut domains = read_persisted_web_auth_domains(agent_id);
     if !domains.iter().any(|d| d == domain) {
@@ -715,7 +768,8 @@ pub fn approve_web_auth_domain_forever(agent_id: &str, domain: &str) -> Result<(
 }
 
 pub fn revoke_web_auth_domain(agent_id: &str, domain: &str) -> Result<(), String> {
-    let dir = web_auth_dir(agent_id).ok_or_else(|| "could not resolve app data directory".to_string())?;
+    let dir =
+        web_auth_dir(agent_id).ok_or_else(|| "could not resolve app data directory".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let mut domains = read_persisted_web_auth_domains(agent_id);
     domains.retain(|d| d != domain);
@@ -748,14 +802,19 @@ pub fn grant_temporary_web_auth(agent_id: &str, domain: &str) {
 }
 
 pub fn is_web_auth_domain_approved(agent_id: &str, domain: &str) -> bool {
-    read_persisted_web_auth_domains(agent_id).iter().any(|d| d == domain)
+    read_persisted_web_auth_domains(agent_id)
+        .iter()
+        .any(|d| d == domain)
         || TEMP_WEB_AUTH_GRANTS
             .lock()
             .map(|g| g.contains(&(agent_id.to_string(), domain.to_string())))
             .unwrap_or(false)
 }
 
-pub async fn fetch_authenticated_page_impl(url_str: &str, agent_id: &str) -> Result<PageContent, String> {
+pub async fn fetch_authenticated_page_impl(
+    url_str: &str,
+    agent_id: &str,
+) -> Result<PageContent, String> {
     let parsed =
         url::Url::parse(url_str.trim()).map_err(|_| format!("'{url_str}' is not a valid URL"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -804,7 +863,11 @@ pub async fn fetch_authenticated_page_impl(url_str: &str, agent_id: &str) -> Res
     let final_url = resp.url().to_string();
     let status = resp.status();
     if !status.is_success() {
-        return Err(format!("server returned HTTP {} for {}", status.as_u16(), url_str));
+        return Err(format!(
+            "server returned HTTP {} for {}",
+            status.as_u16(),
+            url_str
+        ));
     }
     let html = resp
         .text()
@@ -840,7 +903,13 @@ pub(crate) async fn cdp_navigate(ws_url: &str, url: &str) -> Result<(), String> 
     .map_err(|_| "timed out connecting to Chrome".to_string())?
     .map_err(|e| format!("could not connect to Chrome: {e}"))?;
     cdp_call(&mut ws, 1, "Page.enable", serde_json::json!({})).await?;
-    cdp_call(&mut ws, 2, "Page.navigate", serde_json::json!({ "url": url })).await?;
+    cdp_call(
+        &mut ws,
+        2,
+        "Page.navigate",
+        serde_json::json!({ "url": url }),
+    )
+    .await?;
     Ok(())
 }
 
@@ -869,8 +938,16 @@ pub(crate) async fn cdp_get_content(ws_url: &str) -> Result<(String, String), St
     let parsed: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("could not parse page data: {e}"))?;
     Ok((
-        parsed.get("title").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-        parsed.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        parsed
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        parsed
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
     ))
 }
 
@@ -901,8 +978,14 @@ pub(crate) async fn cdp_click(ws_url: &str, selector: &str) -> Result<(), String
         .ok_or_else(|| format!("no element matched selector '{selector}'"))?;
     let point: serde_json::Value =
         serde_json::from_str(raw).map_err(|e| format!("could not parse element position: {e}"))?;
-    let x = point.get("x").and_then(|v| v.as_f64()).ok_or_else(|| "missing x".to_string())?;
-    let y = point.get("y").and_then(|v| v.as_f64()).ok_or_else(|| "missing y".to_string())?;
+    let x = point
+        .get("x")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| "missing x".to_string())?;
+    let y = point
+        .get("y")
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| "missing y".to_string())?;
     cdp_call(
         &mut ws,
         2,
@@ -943,7 +1026,13 @@ pub(crate) async fn cdp_type(ws_url: &str, selector: &str, text: &str) -> Result
     if result.pointer("/result/value").and_then(|v| v.as_bool()) != Some(true) {
         return Err(format!("no element matched selector '{selector}'"));
     }
-    cdp_call(&mut ws, 2, "Input.insertText", serde_json::json!({ "text": text })).await?;
+    cdp_call(
+        &mut ws,
+        2,
+        "Input.insertText",
+        serde_json::json!({ "text": text }),
+    )
+    .await?;
     Ok(())
 }
 
@@ -955,7 +1044,13 @@ pub(crate) async fn cdp_screenshot(ws_url: &str) -> Result<String, String> {
     .await
     .map_err(|_| "timed out connecting to Chrome".to_string())?
     .map_err(|e| format!("could not connect to Chrome: {e}"))?;
-    let result = cdp_call(&mut ws, 1, "Page.captureScreenshot", serde_json::json!({ "format": "png" })).await?;
+    let result = cdp_call(
+        &mut ws,
+        1,
+        "Page.captureScreenshot",
+        serde_json::json!({ "format": "png" }),
+    )
+    .await?;
     result
         .get("data")
         .and_then(|v| v.as_str())
@@ -1058,7 +1153,11 @@ async fn list_chrome_targets(port: u16) -> Result<Vec<ChromeTarget>, String> {
         .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
         .filter_map(|t| {
             Some(ChromeTarget {
-                url: t.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                url: t
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 ws_url: t.get("webSocketDebuggerUrl")?.as_str()?.to_string(),
             })
         })
@@ -1067,7 +1166,10 @@ async fn list_chrome_targets(port: u16) -> Result<Vec<ChromeTarget>, String> {
 
 /// The tab Tier 6 acts on: the first real (non-devtools/chrome-internal) page target, or
 /// a newly opened one at `fallback_url` if none exists yet.
-async fn active_or_new_chrome_target(port: u16, fallback_url: &str) -> Result<ChromeTarget, String> {
+async fn active_or_new_chrome_target(
+    port: u16,
+    fallback_url: &str,
+) -> Result<ChromeTarget, String> {
     let targets = list_chrome_targets(port).await?;
     if let Some(t) = targets
         .into_iter()
@@ -1096,7 +1198,11 @@ async fn active_or_new_chrome_target(port: u16, fallback_url: &str) -> Result<Ch
         .ok_or_else(|| "Chrome did not return a debugger URL for the new tab".to_string())?
         .to_string();
     Ok(ChromeTarget {
-        url: created.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        url: created
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
         ws_url,
     })
 }
@@ -1130,20 +1236,29 @@ async fn request_chrome_control_confirmation(
             "action_description": action_description,
         }),
     );
-    let approved = tokio::time::timeout(Duration::from_secs(CHROME_CONTROL_CONFIRMATION_TIMEOUT_SECS), rx)
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or(false);
+    let approved = tokio::time::timeout(
+        Duration::from_secs(CHROME_CONTROL_CONFIRMATION_TIMEOUT_SECS),
+        rx,
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or(false);
     if !approved {
-        PENDING_CHROME_CONTROL_CONFIRMATIONS.lock().await.remove(&request_id);
+        PENDING_CHROME_CONTROL_CONFIRMATIONS
+            .lock()
+            .await
+            .remove(&request_id);
     }
     Ok(approved)
 }
 
 /// Frontend resolves a pending Tier 6 action-confirmation sheet with allow/deny.
 #[tauri::command]
-pub async fn resolve_chrome_control_confirmation(request_id: String, approved: bool) -> Result<(), String> {
+pub async fn resolve_chrome_control_confirmation(
+    request_id: String,
+    approved: bool,
+) -> Result<(), String> {
     let mut pending = PENDING_CHROME_CONTROL_CONFIRMATIONS.lock().await;
     if let Some(tx) = pending.remove(&request_id) {
         let _ = tx.send(approved);
@@ -1168,7 +1283,10 @@ async fn require_browser_control_and_reachable(
 // ─── Tauri commands (Canopy frontend surface) ────────────────────────────────────
 
 #[tauri::command]
-pub async fn web_search(query: String, num_results: Option<u32>) -> Result<Vec<SearchResult>, String> {
+pub async fn web_search(
+    query: String,
+    num_results: Option<u32>,
+) -> Result<Vec<SearchResult>, String> {
     web_search_impl(&query, num_results.unwrap_or(10)).await
 }
 
@@ -1201,7 +1319,10 @@ pub async fn fetch_authenticated_page(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "agent not found".to_string())?;
     if !agent.capabilities.web_auth {
-        return Err("this agent does not have the Authenticated Browsing (web_auth) capability enabled".to_string());
+        return Err(
+            "this agent does not have the Authenticated Browsing (web_auth) capability enabled"
+                .to_string(),
+        );
     }
     fetch_authenticated_page_impl(&url, &agent_id).await
 }
@@ -1228,7 +1349,13 @@ pub async fn chrome_navigate(
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("only http:// and https:// URLs are supported".to_string());
     }
-    if !request_chrome_control_confirmation(&app_handle, &agent_id, &format!("navigate your Chrome to {url}")).await? {
+    if !request_chrome_control_confirmation(
+        &app_handle,
+        &agent_id,
+        &format!("navigate your Chrome to {url}"),
+    )
+    .await?
+    {
         return Err("the user denied this Chrome control action".to_string());
     }
     let target = active_or_new_chrome_target(port, &url).await?;
@@ -1292,7 +1419,13 @@ pub async fn chrome_get_content(
 ) -> Result<String, String> {
     let (_, port) = require_browser_control_and_reachable(&db, &agent_id).await?;
     let target = active_or_new_chrome_target(port, "about:blank").await?;
-    if !request_chrome_control_confirmation(&app_handle, &agent_id, &format!("read the page content of {}", target.url)).await? {
+    if !request_chrome_control_confirmation(
+        &app_handle,
+        &agent_id,
+        &format!("read the page content of {}", target.url),
+    )
+    .await?
+    {
         return Err("the user denied this Chrome control action".to_string());
     }
     let (title, text) = cdp_get_content(&target.ws_url).await?;
@@ -1307,7 +1440,13 @@ pub async fn chrome_screenshot(
 ) -> Result<String, String> {
     let (_, port) = require_browser_control_and_reachable(&db, &agent_id).await?;
     let target = active_or_new_chrome_target(port, "about:blank").await?;
-    if !request_chrome_control_confirmation(&app_handle, &agent_id, &format!("take a screenshot of {}", target.url)).await? {
+    if !request_chrome_control_confirmation(
+        &app_handle,
+        &agent_id,
+        &format!("take a screenshot of {}", target.url),
+    )
+    .await?
+    {
         return Err("the user denied this Chrome control action".to_string());
     }
     cdp_screenshot(&target.ws_url).await
@@ -1381,7 +1520,10 @@ mod tests {
 
     #[test]
     fn detects_js_rendered_shells() {
-        assert!(looks_js_rendered("<html><body><div id=\"root\"></div></body></html>", ""));
+        assert!(looks_js_rendered(
+            "<html><body><div id=\"root\"></div></body></html>",
+            ""
+        ));
         assert!(looks_js_rendered(
             "<html><body>Please enable JavaScript to view this site.</body></html>",
             "Please enable JavaScript to view this site."
@@ -1484,7 +1626,10 @@ mod network_integration_tests {
         let results = web_search_impl("Rust (programming language)", 3)
             .await
             .expect("real web_search_impl call against DuckDuckGo should succeed");
-        assert!(!results.is_empty(), "expected at least one real search result");
+        assert!(
+            !results.is_empty(),
+            "expected at least one real search result"
+        );
         assert!(!results[0].url.is_empty());
     }
 
