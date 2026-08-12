@@ -16,6 +16,7 @@ const invoke = async <T,>(cmd: string, args?: any): Promise<T> => {
 import { WorldScene, TerrariumBase } from "./components/World/WorldScene";
 import { KeeperPanel } from "./components/Keeper/KeeperPanel";
 import { getConnectorSecretKey } from "./utils/connectorCatalog";
+import { buildApiKeyCompanionRequest } from "./utils/connectionRequests";
 import { GLBAgent, Pedestal, SingleGLB } from "./components/World/GLBAgent";
 import type { GenerativeResult } from "./types/generative";
 import { ProvidersVault } from "./components/ProvidersVault";
@@ -1303,6 +1304,49 @@ export function CompanionGuide({ type }: { type: string }) {
       ]
     }
   };
+  // ─── Generic agent-requested API key flow ──────────────────────────────────
+  // Agents can drop the user into this companion for ANY provider via
+  // [request_connection: api_key?providerName=...&tokenUrl=...&instructions=...].
+  // The config is built from the (sanitized) deep-link params instead of the
+  // hardcoded map above, so "Unknown configuration" no longer greets valid
+  // agent requests. The pasted key goes straight to the Keychain via the
+  // bridge — it is never echoed back into agent-visible chat.
+  const apiKeyRequest = type === "api_key"
+    ? buildApiKeyCompanionRequest(Object.fromEntries(searchParams.entries()))
+    : null;
+  if (apiKeyRequest) {
+    const { providerName, secretName, tokenUrl, instructions, placeholder } = apiKeyRequest;
+    const apiKeySteps: CompanionStep[] = [];
+    if (tokenUrl) {
+      let tokenUrlHost = tokenUrl;
+      try { tokenUrlHost = new URL(tokenUrl).hostname; } catch { /* display raw */ }
+      apiKeySteps.push({
+        text: (
+          <span key="api-key-open">
+            First, click here to <a href="#" onClick={(e) => { e.preventDefault(); import('@tauri-apps/plugin-shell').then(({ open }) => open(tokenUrl)).catch(console.error); }} style={{ color: "#3c6663", fontWeight: 600, textDecoration: "none" }}>open {tokenUrlHost}</a> securely in your browser.
+            <span style={{ display: "block", marginTop: 6, fontSize: 11, color: "var(--text-sub)", fontFamily: "monospace", wordBreak: "break-all" }}>
+              {agentName} provided this link: {tokenUrl}
+            </span>
+          </span>
+        )
+      });
+    }
+    if (instructions) {
+      apiKeySteps.push({ text: instructions });
+    }
+    apiKeySteps.push({
+      text: `Copy your ${providerName} API key, paste it below, and hit Save. It's stored in your Mac's Keychain and handed to ${agentName} only through Canopy's secure bridge — never through chat.`,
+      input: { key: secretName, placeholder }
+    });
+
+    configMap.api_key = {
+      title: `${providerName} Setup`,
+      avatar: "/app-icon.png",
+      intro: `Hi! I'm Canopy's setup assistant. ${agentName} asked to connect ${providerName}, so let's grab an API key and lock it in securely.`,
+      steps: apiKeySteps,
+    };
+  }
+
   const config = configMap[type] || null;
 
   if (!config) return <div style={{ padding: 20 }}>Unknown configuration. You can close this window.</div>;
@@ -1438,7 +1482,7 @@ export function CompanionGuide({ type }: { type: string }) {
       setStatus("saving");
       try {
         const { invoke } = await import('@tauri-apps/api/core');
-        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive'))
+        const secureKey = (agentId && (type === 'slack' || type === 'gmail' || type === 'calendar' || type === 'drive' || type === 'api_key'))
           ? `agent_${agentId}_${currentStepData.input.key.replace(/-/g, '_')}`
           : agentId && ['apple_health', 'live_location', 'shortcuts', 'vision', 'notifications', 'homekit', 'bluetooth', 'figma'].includes(type)
             ? getConnectorSecretKey(type, agentId)
@@ -1455,7 +1499,14 @@ export function CompanionGuide({ type }: { type: string }) {
 
           try {
             const { emit } = await import('@tauri-apps/api/event');
-            await emit('companion-finished', { type, key: tokens[currentStepData.input.key] });
+            // For agent-requested api_key setups, emit only metadata — the raw
+            // secret must never ride on an event agents could observe.
+            await emit('companion-finished', type === 'api_key'
+              ? { type, providerName: searchParams.get('providerName') || '', secretKey: secureKey }
+              : { type, key: tokens[currentStepData.input.key] });
+            if (type === 'api_key') {
+              await emitRefreshIntegrations();
+            }
 
             // If it was Slack, finalize the connection by syncing all per-agent
             // gateway channels to openclaw.json. This respects the Zero-Trust mandate.
