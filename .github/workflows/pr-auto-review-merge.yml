@@ -9,12 +9,25 @@ name: PR Auto Review & Merge
 #       (release/publish workflows, credential/payment/cookie handling, this file
 #       itself)
 #   (c) Claude's structured review verdict is "approve" with zero blocking issues
+#   (d) Claude's risk_level is not "high" -- a change can be bug-free (verdict:
+#       approve) and still be too large/impactful to wave through unattended; risk_level
+#       is a separate axis from "did I find a specific bug"
 #
 # Anything else only ever gets a posted review/comment -- this workflow never merges
-# outside those three conditions all being true.
+# outside those four conditions all being true. A risk_level of "high" additionally
+# fires the alert-high-risk job regardless of verdict (see that job for what "alert"
+# means and how to wire up an optional Slack channel).
+#
+# The review also asks Claude to separate "is this correct and safe" (verdict/
+# blocking_issues, gates merge) from "is this the best approach" (improvement_
+# suggestions, never gates merge) -- non-blocking architecture/best-practice ideas get
+# filed as labelled GitHub issues for you to triage after the PR lands, not bundled
+# into the merge decision.
 #
 # Setup required (one-time): add an ANTHROPIC_API_KEY repo secret
-# (Settings -> Secrets and variables -> Actions -> New repository secret).
+# (Settings -> Secrets and variables -> Actions -> New repository secret). Optionally
+# also add a SLACK_WEBHOOK_URL secret to get high-risk alerts in Slack in addition to
+# the always-on GitHub notification (see alert-high-risk).
 #
 # Known gap: merges performed here use the default GITHUB_TOKEN, and GitHub does not
 # let the default token's own actions re-trigger `push`-triggered workflow runs (an
@@ -85,6 +98,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       verdict: ${{ steps.post.outputs.verdict }}
+      risk_level: ${{ steps.post.outputs.risk_level }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -99,22 +113,43 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
             Review this pull request's diff against ${{ github.event.pull_request.base.ref }}
-            as a senior engineer doing a real pre-merge review, not a rubber stamp. Look for:
-            correctness bugs, security issues (injection, SSRF, secret/credential handling,
-            auth bypass), missing error handling for realistic failure modes, and tests that
-            don't actually exercise the change. Ignore pure style nits.
+            as a senior engineer doing a real pre-merge review, not a rubber stamp. This has
+            two genuinely separate parts -- do both, and don't let one bleed into the other:
+
+            1. CORRECTNESS AND SAFETY (drives verdict/blocking_issues/risk_level). Look for
+               correctness bugs, security issues (injection, SSRF, secret/credential handling,
+               auth bypass), missing error handling for realistic failure modes, and tests
+               that don't actually exercise the change. `verdict` must be "changes_requested"
+               if there is any issue that could plausibly cause a security incident, data
+               loss, or a broken build -- reserve "approve" for changes you would actually be
+               comfortable auto-merging with no human looking at it first. Separately,
+               `risk_level` captures blast radius/impact even when you found nothing wrong:
+               a bug-free change to auth, payments, or the release pipeline is still "high"
+               risk because of what happens if you're wrong, not because of a specific finding.
+               Use "low" for narrow, easily-reversible changes (docs, tests, small bug fixes,
+               isolated new features behind a flag); "medium" for normal feature work touching
+               a few files; "high" for anything touching credential/payment/auth handling,
+               broad refactors, or changes you'd genuinely want a second pair of eyes on even
+               though you didn't find a specific bug.
+
+            2. APPROACH (drives improvement_suggestions, never gates merge). Separately from
+               "is this correct," consider "is this the best way to do it" -- is there a more
+               current library/API, a simpler design, an existing utility in this codebase
+               that duplicates what was just written, or a pattern that will bite later even
+               though it works today. These are opinions, not corrections: file them as
+               `improvement_suggestions` (each a short title + a 1-3 sentence rationale) for
+               the maintainer to accept or discard later, and do NOT let them affect verdict,
+               blocking_issues, or risk_level. Leave this array empty if you don't have a real
+               suggestion -- don't manufacture nitpicks to fill it.
 
             This repo is Canopy, a Tauri desktop app (Rust backend in src-tauri/, React/
             TypeScript frontend in src/) that manages AI agents, including macOS Keychain
             credential handling, payments, and browser automation -- weigh security issues in
-            those areas heavily. `verdict` must be "changes_requested" if there is any issue
-            that could plausibly cause a security incident, data loss, or a broken build --
-            reserve "approve" for changes you would actually be comfortable auto-merging with
-            no human looking at it first.
+            those areas heavily for both verdict and risk_level.
           claude_args: |
             --max-turns 12
             --model claude-opus-5
-            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","changes_requested"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}}},"required":["verdict","summary","blocking_issues"]}'
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","changes_requested"]},"risk_level":{"type":"string","enum":["low","medium","high"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}},"improvement_suggestions":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"rationale":{"type":"string"}},"required":["title","rationale"]}}},"required":["verdict","risk_level","summary","blocking_issues","improvement_suggestions"]}'
 
       - name: Post review + record verdict
         id: post
@@ -125,19 +160,40 @@ jobs:
         run: |
           set -euo pipefail
           VERDICT=$(echo "$OUTPUT" | jq -r '.verdict')
+          RISK=$(echo "$OUTPUT" | jq -r '.risk_level')
           SUMMARY=$(echo "$OUTPUT" | jq -r '.summary')
           BLOCKING=$(echo "$OUTPUT" | jq -r '.blocking_issues | if length > 0 then map("- " + .) | join("\n") else "(none)" end')
+          SUGGESTION_COUNT=$(echo "$OUTPUT" | jq -r '.improvement_suggestions | length')
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
-          BODY=$(printf '## Automated review (Claude)\n\n**Verdict: %s**\n\n%s\n\n**Blocking issues:**\n%s\n' "$VERDICT" "$SUMMARY" "$BLOCKING")
+          echo "risk_level=$RISK" >> "$GITHUB_OUTPUT"
+          # shellcheck disable=SC2016
+          BODY=$(printf '## Automated review (Claude)\n\n**Verdict: %s** | **Risk: %s**\n\n%s\n\n**Blocking issues:**\n%s\n\n%s improvement suggestion(s) filed as issues for later triage (see repo Issues, label `claude-suggestion`).\n' "$VERDICT" "$RISK" "$SUMMARY" "$BLOCKING" "$SUGGESTION_COUNT")
           if [ "$VERDICT" = "approve" ]; then
             gh pr review "$PR_NUMBER" --approve --body "$BODY" --repo "${{ github.repository }}"
           else
             gh pr review "$PR_NUMBER" --request-changes --body "$BODY" --repo "${{ github.repository }}"
           fi
 
+      - name: File improvement suggestions as issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          COUNT=$(echo "$OUTPUT" | jq -r '.improvement_suggestions | length')
+          for i in $(seq 0 $((COUNT - 1))); do
+            TITLE=$(echo "$OUTPUT" | jq -r ".improvement_suggestions[$i].title")
+            RATIONALE=$(echo "$OUTPUT" | jq -r ".improvement_suggestions[$i].rationale")
+            # shellcheck disable=SC2016
+            BODY=$(printf 'Suggested while reviewing #%s (%s).\n\n%s\n\nAccept: turn this into real work (assign, add to backlog, whatever fits). Discard: close this issue. Either way this never blocked the PR from merging.' "$PR_NUMBER" "$PR_TITLE" "$RATIONALE")
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --body "$BODY" --label "claude-suggestion" || true
+          done
+
   auto-merge:
     needs: [verify, sensitive-path-guard, review]
-    if: needs.sensitive-path-guard.outputs.is_sensitive == 'false' && needs.review.outputs.verdict == 'approve'
+    if: needs.sensitive-path-guard.outputs.is_sensitive == 'false' && needs.review.outputs.verdict == 'approve' && needs.review.outputs.risk_level != 'high'
     runs-on: ubuntu-latest
     steps:
       - name: Squash-merge and delete branch
@@ -146,6 +202,47 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           gh pr merge "$PR_NUMBER" --squash --delete-branch --repo "${{ github.repository }}"
+
+  alert-high-risk:
+    needs: [sensitive-path-guard, review]
+    if: needs.sensitive-path-guard.outputs.is_sensitive == 'false' && needs.review.outputs.risk_level == 'high'
+    runs-on: ubuntu-latest
+    steps:
+      # GitHub-native channel -- always fires, needs no setup. Assigning + @-mentioning
+      # guarantees a GitHub notification (email/mobile push, per the recipient's own
+      # GitHub notification settings) even though this workflow can't reach into the
+      # Claude app directly; there's no documented API for that from a third-party CI
+      # job, so this is the honest zero-setup equivalent rather than a guess at one.
+      - name: GitHub notification (assign + mention)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" --add-assignee "$REPO_OWNER" --repo "${{ github.repository }}" || true
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "@$REPO_OWNER high-risk PR -- flagged by the automated review, needs your eyes before it goes anywhere."
+
+      # Optional second channel: only fires if you've added a SLACK_WEBHOOK_URL repo
+      # secret (an incoming webhook URL from a Slack app -- api.slack.com/apps -> your
+      # app -> Incoming Webhooks). Checked at the shell level rather than in `if:` so
+      # the step never errors out just because the secret isn't set.
+      - name: Slack notification (optional)
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "SLACK_WEBHOOK_URL not set -- skipping Slack notification (GitHub notification above still fired)."
+            exit 0
+          fi
+          # shellcheck disable=SC2016
+          TEXT=$(printf 'High-risk PR needs review: *#%s %s*\n%s' "$PR_NUMBER" "$PR_TITLE" "$PR_URL")
+          PAYLOAD=$(jq -n --arg text "$TEXT" '{text: $text}')
+          curl -sf -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
   flag-sensitive:
     needs: sensitive-path-guard

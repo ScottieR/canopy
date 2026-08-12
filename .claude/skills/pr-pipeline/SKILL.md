@@ -10,11 +10,19 @@ review routine PRs, merge them, pull master locally, or clean up branches:
 
 1. **`.github/workflows/pr-auto-review-merge.yml`** — runs on every PR against `master`.
    Reuses `.github/workflows/security.yml` as the CI gate (via `workflow_call`), checks a
-   fixed sensitive-path guard, runs a Claude review (`anthropics/claude-code-action@v1`)
-   that returns a structured verdict, posts a GitHub PR review either way, and
-   squash-merges + deletes the branch only when **all three** of CI-passed /
-   path-guard-clear / verdict-approve are true. Otherwise it only ever posts a comment —
-   it never merges outside those three conditions.
+   fixed sensitive-path guard, and runs a Claude review (`anthropics/claude-code-action@v1`)
+   that returns a structured verdict covering two separate things:
+   - **Correctness/safety** (`verdict` + `blocking_issues` + `risk_level`) — this gates
+     the merge. Squash-merges + deletes the branch only when **all four** of CI-passed /
+     path-guard-clear / `verdict: approve` / `risk_level` not `high` are true. A PR can be
+     bug-free and still get held for `risk_level: high` alone (blast radius, not just "did
+     it find something") — see `alert-high-risk` below for what happens then.
+   - **Approach** (`improvement_suggestions`) — never gates the merge. Filed as GitHub
+     issues labelled `claude-suggestion` for you to triage whenever, completely decoupled
+     from whether the PR merged.
+
+   Anything short of the four merge conditions only ever gets a posted comment/review —
+   it never merges outside those conditions.
 2. **`scripts/worktree/new-task.sh <branch-name>`** — creates an isolated git worktree
    off `origin/master` under `~/Developer/Agent Management/canopy-worktrees/<branch>`.
 3. **`scripts/local-sync/`** — a launchd job (10-minute interval, installed via
@@ -62,8 +70,12 @@ the workflow's own job order):
 2. **Did the sensitive-path guard fire?** — look for a PR comment titled "Auto-merge
    skipped" naming the matched path(s). This is a fixed guard, not a per-PR setting —
    see "Adjusting what's always-needs-a-human" below if the user wants to change it.
-3. **Did Claude request changes?** — look for a PR review titled "Automated review
-   (Claude)" with verdict `changes_requested` and its `blocking_issues` list.
+3. **Did Claude request changes, or flag it high-risk?** — look for a PR review titled
+   "Automated review (Claude)"; it shows both `verdict` and `risk_level`. A PR with
+   `verdict: approve` but `risk_level: high` still won't auto-merge — that's intentional,
+   not a bug. If it's high-risk, the PR will also be assigned to the repo owner and
+   commented on by `alert-high-risk` — mention that to the user rather than making them
+   go find it themselves.
 
 If none of those explain it, the PR is probably just still running — check `gh run
 list` for an `in_progress` run.
@@ -79,7 +91,9 @@ gh secret list --repo ScottieR/canopy | grep ANTHROPIC_API_KEY
 ```
 If missing, tell the user to add it — this needs a real API key value, so don't try to
 set it yourself: `gh secret set ANTHROPIC_API_KEY --repo ScottieR/canopy` (it will
-prompt for the value, or read it from stdin).
+prompt for the value, or read it from stdin). Same rule for the optional
+`SLACK_WEBHOOK_URL` secret (adds a Slack alert alongside the always-on GitHub
+notification for `risk_level: high` PRs) — mention it exists, don't set it yourself.
 
 **2. The local-sync launchd job**:
 ```bash
@@ -101,6 +115,31 @@ Each line is one run of `sync-master.sh` + `cleanup-merged-worktrees.sh`, timest
 one outcome per line (`OK: ...`, `SKIP: ...`, `CLEANUP: ...`, `ERROR: ...`). Summarize
 recent activity for the user rather than dumping the raw log — e.g. "fast-forwarded
 master twice today, cleaned up one worktree for the branch that just merged."
+
+## Triaging suggested improvements
+
+Every non-sensitive-path review that runs also asks Claude "is this the best approach,"
+separately from "is this correct" — those ideas never block a merge, they land as GitHub
+issues labelled `claude-suggestion` so they don't get lost but also don't slow anything
+down. When the user asks what's been suggested, or wants to work through the backlog:
+
+```bash
+gh issue list --repo ScottieR/canopy --label claude-suggestion --state open
+gh issue view <number> --repo ScottieR/canopy
+```
+
+Walk the user through each one and ask accept or discard — there's no special status
+field, just use GitHub's own issue lifecycle:
+- **Accept** (turn it into real work): leave it open, optionally `gh issue edit <number>
+  --add-label planned` and/or `--milestone`/`--assignee` if the user wants to act on it
+  now or track it for later.
+- **Discard**: `gh issue close <number> --repo ScottieR/canopy --comment "<why>"` — a
+  one-line reason is worth keeping even for a discard, so a future you (or the user)
+  doesn't wonder why a seemingly-reasonable suggestion was dropped.
+
+Don't silently close things the user hasn't actually looked at — this triage step exists
+because "list every suggestion Claude has ever made and just do them" isn't the point;
+the point is a human decides which architectural opinions are actually worth the churn.
 
 ## Adjusting what's always-needs-a-human
 
