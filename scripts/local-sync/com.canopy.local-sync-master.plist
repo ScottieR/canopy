@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.canopy.local-sync-master</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__RUN_SCRIPT_PATH__</string>
+    </array>
+    <!-- Every 10 minutes. Runs run.sh, which calls sync-master.sh (fast-forward pull,
+         only on a clean master) then cleanup-merged-worktrees.sh (removes worktrees
+         whose branch was merged+deleted on origin). Both scripts are the safety net
+         (no-op unless provably safe), so a short interval just means "notice sooner,"
+         not "risk more." -->
+    <key>StartInterval</key>
+    <integer>600</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/tmp/canopy-local-sync.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/canopy-local-sync.err.log</string>
+</dict>
+</plist>

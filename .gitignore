@@ -14,4 +14,6 @@ scratch/target/
 *.timestamp-*.mjs
 public/models/lobsters/FlatIvyBase.glb
 public/models/lobsters/IvyBase.glb
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/skills/**
