@@ -798,7 +798,11 @@ mod tests {
         let chain = default_fallback_chain(ANTHROPIC_CLAUDE_SONNET, true, true, true);
         assert_eq!(
             chain,
-            vec![ANTHROPIC_CLAUDE_HAIKU, OPENAI_GPT56_TERRA, GOOGLE_GEMINI_FLASH_36]
+            vec![
+                ANTHROPIC_CLAUDE_HAIKU,
+                OPENAI_GPT56_TERRA,
+                GOOGLE_GEMINI_FLASH_36
+            ]
         );
         // Every entry must be a valid, keyed, non-primary model.
         for m in &chain {
@@ -863,10 +867,7 @@ mod tests {
             resolve_model_string("openai/gpt-4o").unwrap(),
             OPENAI_GPT56_TERRA
         );
-        assert_eq!(
-            resolve_model_string("xai/grok-beta").unwrap(),
-            XAI_GROK_45
-        );
+        assert_eq!(resolve_model_string("xai/grok-beta").unwrap(), XAI_GROK_45);
     }
 
     #[test]
@@ -891,7 +892,9 @@ mod tests {
         }
         // …and the stale ID must have been canonicalized, not added as a phantom.
         assert!(
-            !registry.iter().any(|m| m.id == "anthropic/claude-sonnet-4-6"),
+            !registry
+                .iter()
+                .any(|m| m.id == "anthropic/claude-sonnet-4-6"),
             "stale legacy ID leaked into the registry instead of canonicalizing"
         );
     }
