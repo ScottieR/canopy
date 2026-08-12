@@ -1462,3 +1462,45 @@ mod tests {
         assert!(msg.contains("--remote-debugging-port=9222"));
     }
 }
+
+/// Real-network integration tests — no UI, no Docker, no mocking. These hit the actual
+/// DuckDuckGo API and a stable public test domain, exercising the same code path an
+/// agent's `/web/search` and `/web/fetch` calls do. Deliberately separate from `mod
+/// tests` above (which is pure-logic, offline, and should never flake): these two can
+/// fail on a transient network blip in the CI runner, which is an accepted tradeoff for
+/// actually proving the plumbing works end to end rather than only unit-testing its
+/// pieces. If either flakes repeatedly in CI, that's a signal worth investigating (DNS
+/// egress, rate limiting), not a reason to silently swallow the failure.
+#[cfg(test)]
+mod network_integration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn web_search_returns_real_results_via_duckduckgo_fallback() {
+        // No BRAVE_SEARCH_API_KEY is configured in CI (keychain access itself typically
+        // fails outright on a headless Linux runner), so this exercises the DuckDuckGo
+        // fallback path specifically. "Rust (programming language)" reliably has a DDG
+        // instant-answer abstract, unlike arbitrary long-tail queries.
+        let results = web_search_impl("Rust (programming language)", 3)
+            .await
+            .expect("real web_search_impl call against DuckDuckGo should succeed");
+        assert!(!results.is_empty(), "expected at least one real search result");
+        assert!(!results[0].url.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fetch_page_pipeline_reads_a_real_stable_page() {
+        // example.com (RFC 2606) is explicitly reserved for use in documentation and
+        // testing and has had stable, unchanging content for decades — safe to depend
+        // on in a test that runs against the real internet.
+        let url = url::Url::parse("https://example.com").unwrap();
+        let (final_url, html) = lightweight_fetch(&url)
+            .await
+            .expect("real fetch against example.com should succeed");
+        assert!(final_url.starts_with("https://example.com"));
+
+        let (title, text) = extract_title_and_text(&html);
+        assert_eq!(title, "Example Domain");
+        assert!(text.contains("Example Domain"));
+    }
+}
