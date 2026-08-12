@@ -29,6 +29,7 @@ The result is a Tauri desktop application with a React/Three.js interface, a Rus
 - **Per-agent isolation** — model credentials, integrations, workspaces, and runtime configuration are explicitly scoped to an agent.
 - **Local execution plane** — OpenClaw gateways and Chroma memory run in Docker-compatible containers bound to loopback interfaces.
 - **Secure credential handling** — provider and integration secrets are stored in macOS Keychain, not source-controlled environment files.
+- **Secure connector recovery** — when an agent asks for credentials the wrong way, Canopy can redirect the user into an agent-scoped companion flow and vault custom OAuth metadata or already-issued tokens in Keychain instead of chat.
 - **Observable autonomy** — activity, approvals, budgets, browser sessions, and audit events are surfaced in one desktop interface.
 - **Multi-agent forums** — agents can be assembled for structured collaboration with trust and spend controls.
 - **Spatial identity** — agents and their habitats are rendered as a navigable 3D environment rather than a flat bot list.
@@ -211,6 +212,7 @@ Canopy follows three core rules:
 1. **No implicit credential inheritance.** An agent without an explicitly scoped integration credential remains disconnected.
 2. **The frontend never executes shell commands directly.** Privileged work crosses typed Tauri commands into the Rust layer.
 3. **High-risk capabilities are observable and bounded.** Computer control, external writes, and financial actions require explicit permissions and approval paths.
+4. **Secret handoffs stay out of prompts.** OAuth and connector setup should flow through Canopy's secure companion and bridge protocols (`[request_connection: ...]`, `[request_auth: ...]`), not plaintext chat, workspace files, or `.env` edits.
 
 CI scans the full Git history for secrets, audits JavaScript and Rust dependencies, type-checks the frontend, runs the Vitest suite, and builds the production bundle.
 

@@ -1110,6 +1110,99 @@ async fn handle_connection(
                                 }
                             }
                         }
+                        // list_threads: lets a full-access mobile client continue an
+                        // existing desktop conversation instead of only ever starting
+                        // its own device-scoped session. Mirrors ThreadsRail.tsx's
+                        // isForumScopedConversation filter so forum orchestration
+                        // sessions never show up as a "thread" to pick on mobile.
+                        // Companion (focused/learning) pairings are always pinned to
+                        // their own companion_{device}_{agent} session server-side
+                        // (see AuthorizedClient::session_id), so this is gated the
+                        // same way list_forums/list_inbox are.
+                        "list_threads" => {
+                            if !authorized_client.is_full_access() {
+                                let res = RpcResponse {
+                                    msg_type: "threads_list".to_string(),
+                                    payload: serde_json::json!([]),
+                                };
+                                if let Ok(json_str) = serde_json::to_string(&res) {
+                                    let _ =
+                                        send_encrypted(&mut write, &mut encryptor, json_str).await;
+                                }
+                                continue;
+                            }
+                            if let Some(payload) = req.payload {
+                                if let Some(agent_id) =
+                                    payload.get("agent_id").and_then(|v| v.as_str())
+                                {
+                                    if !authorized_client.can_access_agent(agent_id) {
+                                        let _ = send_encrypted(
+                                            &mut write,
+                                            &mut encryptor,
+                                            "{\"error\":\"agent_not_assigned\"}".to_string(),
+                                        )
+                                        .await;
+                                        continue;
+                                    }
+                                    let forum_ids: Vec<String> = {
+                                        let reader = state.mobile_state.read().await;
+                                        let forums = reader
+                                            .get("forums")
+                                            .or_else(|| reader.get("projects"))
+                                            .cloned()
+                                            .unwrap_or(serde_json::json!([]));
+                                        forums
+                                            .as_array()
+                                            .map(|arr| {
+                                                arr.iter()
+                                                    .filter(|f| {
+                                                        f.get("agents")
+                                                            .and_then(|a| a.as_array())
+                                                            .map(|agents| {
+                                                                agents.iter().any(|a| {
+                                                                    a.get("agentId")
+                                                                        .and_then(|v| v.as_str())
+                                                                        == Some(agent_id)
+                                                                })
+                                                            })
+                                                            .unwrap_or(false)
+                                                    })
+                                                    .filter_map(|f| {
+                                                        f.get("id")
+                                                            .and_then(|v| v.as_str())
+                                                            .map(|s| s.to_string())
+                                                    })
+                                                    .collect()
+                                            })
+                                            .unwrap_or_default()
+                                    };
+                                    let threads = db_state
+                                        .list_agent_conversation_summaries(agent_id, 50)
+                                        .map(|summaries| {
+                                            summaries
+                                                .into_iter()
+                                                .filter(|s| {
+                                                    !forum_ids.iter().any(|fid| {
+                                                        &s.id == fid
+                                                            || s.id
+                                                                .starts_with(&format!("{}_", fid))
+                                                    })
+                                                })
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .unwrap_or_default();
+                                    let res = RpcResponse {
+                                        msg_type: "threads_list".to_string(),
+                                        payload: serde_json::json!(threads),
+                                    };
+                                    if let Ok(json_str) = serde_json::to_string(&res) {
+                                        let _ =
+                                            send_encrypted(&mut write, &mut encryptor, json_str)
+                                                .await;
+                                    }
+                                }
+                            }
+                        }
                         "ping" => {
                             let res = RpcResponse {
                                 msg_type: "pong".to_string(),

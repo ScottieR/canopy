@@ -29,3 +29,7 @@ Reports about model output quality, prompt injection wholly contained within an 
 ## Handling secrets
 
 Canopy runtime credentials belong in the macOS Keychain-backed vault. Never commit provider keys, OAuth secrets, signing keys, GitHub tokens, production admin keys, database URLs, or populated `.env` files. If a real credential reaches Git history, revoke it first, remove it from every reachable ref, and contact GitHub Support when pull-request refs or cached views remain.
+
+Agents and onboarding flows must not collect raw secrets conversationally. Passwords, API keys, OAuth codes, access tokens, refresh tokens, client secrets, cookies, and `.env` contents should only move through the secure companion / bridge flows and the Keychain-backed vault, never through agent chat, workspace files, or memory files.
+
+For custom OAuth providers, the companion flow may store provider metadata plus already-issued access or refresh tokens in agent-scoped Keychain entries referenced by the bridge configuration. The agent should request the secure flow; it should never receive or persist the secret material directly.

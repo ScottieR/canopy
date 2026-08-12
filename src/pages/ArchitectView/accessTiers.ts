@@ -40,6 +40,9 @@ export const PERMISSION_RISK_BAND: Record<string, "low" | "medium" | "high"> = {
   browser: "medium",
   coding: "medium",
   gog: "medium",
+  web_search: "medium",
+  web_browse: "medium",
+  web_sandbox_browser: "medium",
   photos: "medium",
   computer_control: "medium",
 
@@ -52,6 +55,8 @@ export const PERMISSION_RISK_BAND: Record<string, "low" | "medium" | "high"> = {
   imessage: "high",
   screen_record: "high",
   host_control: "high",
+  web_auth: "high",
+  browser_control: "high",
 };
 
 // The full unified tier definitions. Listing a permission as `false` means "turn off
@@ -93,6 +98,11 @@ export const ACCESS_TIERS: AccessTier[] = [
       canvas: false,
       coding: false,
       gog: false,
+      web_search: false,
+      web_browse: false,
+      web_auth: false,
+      web_sandbox_browser: false,
+      browser_control: false,
     },
   },
   {
@@ -117,6 +127,14 @@ export const ACCESS_TIERS: AccessTier[] = [
       browser: true,
       coding: true,
       gog: true,
+      web_search: true,
+      web_browse: true,
+      // Off in Balanced: these touch the user's real logged-in Chrome session or hand
+      // the agent its own persistent credentials elsewhere. Unlike browser/gog/web_browse
+      // (sandboxed automation), Tier 4/5/6 carry real account-takeover blast radius.
+      web_auth: false,
+      web_sandbox_browser: false,
+      browser_control: false,
       canvas: true,
       computer_control: false,
       host_control: false,
@@ -147,6 +165,8 @@ export const ACCESS_TIERS: AccessTier[] = [
     enabled: {
       memory_write: true, file_read: true, vision: true, summarize: true,
       ext_network: true, int_network: true, browser: true, coding: true, gog: true, canvas: true,
+      web_search: true, web_browse: true,
+      web_auth: true, web_sandbox_browser: true, browser_control: true,
       computer_control: false, host_control: false, screen_record: false,
       autonomous: true, scheduled: true, file_write: true, payments: true, spend_auto: true,
       imessage: true, photos: true, proxy: true,

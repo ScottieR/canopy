@@ -22,6 +22,7 @@ mod bridge;
 mod browser_manager;
 mod canopy_helper;
 mod channels;
+mod chrome_cookies;
 pub mod db;
 mod dispatch;
 mod docker;
@@ -40,10 +41,12 @@ pub mod models;
 pub mod openclaw;
 mod payment;
 mod provider_provisioning;
+pub mod screen_capture;
 mod security_scanner;
 mod share_publish;
 mod slack;
 mod voice;
+mod web_tools;
 mod workspace_manager;
 
 pub use payment::{
@@ -1007,6 +1010,32 @@ pub fn run() {
             browser_manager::stop_browser_stream,
             browser_manager::start_browser_interactive_auth,
             browser_manager::finish_browser_interactive_auth,
+            // Follow Me screen capture (Phase 1 — on-demand only)
+            screen_capture::get_screen_sources,
+            screen_capture::capture_screen_source,
+            // Web tools (Tier 1/2/3 — search, fetch, deep research)
+            web_tools::web_search,
+            web_tools::fetch_page,
+            web_tools::research,
+            // Web tools (Tier 4 — authenticated fetch, per-domain consent)
+            web_tools::fetch_authenticated_page,
+            web_tools::list_web_auth_approved_domains,
+            web_tools::revoke_web_auth_approved_domain,
+            // Web tools (Tier 6 — full live CDP control of the user's real Chrome)
+            web_tools::chrome_navigate,
+            web_tools::chrome_click,
+            web_tools::chrome_type,
+            web_tools::chrome_get_content,
+            web_tools::chrome_screenshot,
+            web_tools::resolve_chrome_control_confirmation,
+            // Browser manager (Tier 5 — agent-owned sandboxed Chromium)
+            browser_manager::launch_agent_browser,
+            browser_manager::close_agent_browser,
+            browser_manager::agent_browser_navigate,
+            browser_manager::agent_browser_get_content,
+            browser_manager::agent_browser_click,
+            browser_manager::agent_browser_type,
+            browser_manager::agent_browser_screenshot,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,

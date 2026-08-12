@@ -1,6 +1,6 @@
 [package]
 name = "canopy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Shelter for your smartest ideas"
 authors = ["Scottie Ryan"]
 edition = "2021"
@@ -51,6 +51,22 @@ chacha20poly1305 = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
+scraper = "0.20"      # HTML parsing for fetch_page title/link extraction
+html2text = "0.12"    # HTML -> readable text for fetch_page / research
+pbkdf2 = "0.12"       # Tier 4: derive the Chrome "Safe Storage" cookie-encryption key
+sha1 = "0.10"         # Tier 4: PBKDF2-HMAC-SHA1, per Chromium's macOS os_crypt
+aes = "0.8"           # Tier 4: AES-128-CBC cookie value decryption
+cbc = "0.1"           # Tier 4: CBC mode + PKCS7 padding for the above
+
+# Follow Me screen capture (Phase 1) — ScreenCaptureKit bridge, macOS only.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-screen-capture-kit = { version = "0.3", features = ["SCShareableContent", "SCScreenshotManager", "SCStream", "block2"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSError"] }
+objc2-core-foundation = "0.3"
+objc2-core-graphics = "0.3"
+objc2-image-io = { version = "0.3", features = ["CGImageDestination"] }
+block2 = "0.6"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
@@ -63,7 +79,11 @@ panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
-strip = true
+# TEMP diagnostic (2026-08-06): was `true`. Flipped off to get a symbolicated
+# crash report for GitHub issue #17 (SIGABRT on tokio-rt-worker at launch) —
+# `strip = true` was hiding the panic site entirely from atos. Revert to
+# `true` once #17 is diagnosed/fixed; don't ship an unstripped release build.
+strip = false
 
 [features]
 default = []
