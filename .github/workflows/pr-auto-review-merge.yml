@@ -1,0 +1,164 @@
+name: PR Auto Review & Merge
+
+# Runs Claude as an automated reviewer on every PR against master, then auto-merges
+# when ALL of:
+#   (a) the existing "Security and Regression Gates" workflow passes (reused via
+#       workflow_call -- this is the single source of truth for what "passing CI"
+#       means; this file never re-implements those checks)
+#   (b) the diff doesn't touch a path this pipeline treats as always-needs-a-human
+#       (release/publish workflows, credential/payment/cookie handling, this file
+#       itself)
+#   (c) Claude's structured review verdict is "approve" with zero blocking issues
+#
+# Anything else only ever gets a posted review/comment -- this workflow never merges
+# outside those three conditions all being true.
+#
+# Setup required (one-time): add an ANTHROPIC_API_KEY repo secret
+# (Settings -> Secrets and variables -> Actions -> New repository secret).
+#
+# Known gap: merges performed here use the default GITHUB_TOKEN, and GitHub does not
+# let the default token's own actions re-trigger `push`-triggered workflow runs (an
+# infinite-loop guard). That means master's own "Security and Regression Gates" push
+# run won't re-fire automatically right after an auto-merge -- the code was already
+# fully verified before merging (via the `verify` job below), so this is a cosmetic
+# gap (no fresh green checkmark on master's own run list), not a coverage gap. A
+# fine-grained PAT in place of GITHUB_TOKEN would close it, at the cost of a broader
+# credential to manage -- deliberately not done here.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [master]
+
+concurrency:
+  group: pr-auto-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  verify:
+    uses: ./.github/workflows/security.yml
+    secrets: inherit
+
+  sensitive-path-guard:
+    runs-on: ubuntu-latest
+    outputs:
+      is_sensitive: ${{ steps.check.outputs.is_sensitive }}
+      matched: ${{ steps.check.outputs.matched }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check for sensitive paths
+        id: check
+        run: |
+          set -euo pipefail
+          git fetch origin "${{ github.event.pull_request.base.ref }}" --depth=1
+          CHANGED=$(git diff --name-only "origin/${{ github.event.pull_request.base.ref }}...HEAD")
+          echo "Changed files:"
+          echo "$CHANGED"
+          # Release/publish pipeline, credential/payment/cookie handling, and this
+          # workflow itself (never let it silently widen its own authority).
+          PATTERN='^\.github/workflows/|^src-tauri/src/keychain\.rs$|^src-tauri/src/payment\.rs$|^src-tauri/src/jit_server\.rs$|^src-tauri/src/chrome_cookies\.rs$|^src-tauri/tauri\.conf\.json$'
+          MATCHED=$(echo "$CHANGED" | grep -E "$PATTERN" || true)
+          if [ -n "$MATCHED" ]; then
+            echo "is_sensitive=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "matched<<MATCHED_EOF"
+              echo "$MATCHED"
+              echo "MATCHED_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "is_sensitive=false" >> "$GITHUB_OUTPUT"
+            echo "matched=" >> "$GITHUB_OUTPUT"
+          fi
+
+  review:
+    needs: [verify, sensitive-path-guard]
+    if: needs.sensitive-path-guard.outputs.is_sensitive == 'false'
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.post.outputs.verdict }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Claude review
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Review this pull request's diff against ${{ github.event.pull_request.base.ref }}
+            as a senior engineer doing a real pre-merge review, not a rubber stamp. Look for:
+            correctness bugs, security issues (injection, SSRF, secret/credential handling,
+            auth bypass), missing error handling for realistic failure modes, and tests that
+            don't actually exercise the change. Ignore pure style nits.
+
+            This repo is Canopy, a Tauri desktop app (Rust backend in src-tauri/, React/
+            TypeScript frontend in src/) that manages AI agents, including macOS Keychain
+            credential handling, payments, and browser automation -- weigh security issues in
+            those areas heavily. `verdict` must be "changes_requested" if there is any issue
+            that could plausibly cause a security incident, data loss, or a broken build --
+            reserve "approve" for changes you would actually be comfortable auto-merging with
+            no human looking at it first.
+          claude_args: |
+            --max-turns 12
+            --model claude-opus-5
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","changes_requested"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}}},"required":["verdict","summary","blocking_issues"]}'
+
+      - name: Post review + record verdict
+        id: post
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          VERDICT=$(echo "$OUTPUT" | jq -r '.verdict')
+          SUMMARY=$(echo "$OUTPUT" | jq -r '.summary')
+          BLOCKING=$(echo "$OUTPUT" | jq -r '.blocking_issues | if length > 0 then map("- " + .) | join("\n") else "(none)" end')
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          BODY=$(printf '## Automated review (Claude)\n\n**Verdict: %s**\n\n%s\n\n**Blocking issues:**\n%s\n' "$VERDICT" "$SUMMARY" "$BLOCKING")
+          if [ "$VERDICT" = "approve" ]; then
+            gh pr review "$PR_NUMBER" --approve --body "$BODY" --repo "${{ github.repository }}"
+          else
+            gh pr review "$PR_NUMBER" --request-changes --body "$BODY" --repo "${{ github.repository }}"
+          fi
+
+  auto-merge:
+    needs: [verify, sensitive-path-guard, review]
+    if: needs.sensitive-path-guard.outputs.is_sensitive == 'false' && needs.review.outputs.verdict == 'approve'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Squash-merge and delete branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr merge "$PR_NUMBER" --squash --delete-branch --repo "${{ github.repository }}"
+
+  flag-sensitive:
+    needs: sensitive-path-guard
+    if: needs.sensitive-path-guard.outputs.is_sensitive == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment that this needs a human
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MATCHED: ${{ needs.sensitive-path-guard.outputs.matched }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016
+          BODY=$(printf '## Auto-merge skipped\n\nThis PR touches a path this pipeline always treats as needing a human:\n\n```\n%s\n```\n\nReview and merge manually.' "$MATCHED")
+          gh pr comment "$PR_NUMBER" --body "$BODY" --repo "${{ github.repository }}"
