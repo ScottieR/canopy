@@ -35,7 +35,11 @@ function resolveImageUrl(path: string): string {
   if (!path) return "";
   if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("data:")) return path;
   if (path.startsWith("/accessories") || path.startsWith("/models") || path.startsWith("/agents")) {
-    const base = (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_URL) || "http://localhost:3001";
+    // Kept as an inline duplicate of utils/assets.ts's getAssetUrl (this file
+    // stays dependency-free on purpose) — must be updated alongside it.
+    // VITE_ASSET_BASE_URL points at object storage in production; see #19.
+    const env = (typeof import.meta !== "undefined" && (import.meta as any).env) || {};
+    const base = env.VITE_ASSET_BASE_URL || env.VITE_API_URL || "http://localhost:3001";
     return `${base}${path}`;
   }
   return path;
