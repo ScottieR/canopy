@@ -71,7 +71,7 @@ block2 = "0.6"
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tokio-test = "0.4"
-mockall = "0.12"
+mockall = "0.15"
 tempfile = "3"
 
 [profile.release]
