@@ -37,6 +37,12 @@ name: PR Auto Review & Merge
 # gap (no fresh green checkmark on master's own run list), not a coverage gap. A
 # fine-grained PAT in place of GITHUB_TOKEN would close it, at the cost of a broader
 # credential to manage -- deliberately not done here.
+#
+# Every job below has an explicit timeout-minutes. Without one, GitHub's default is
+# 360 minutes -- observed directly: sensitive-path-guard (normally ~1 minute) hung on
+# its Checkout step for 10+ minutes twice in a row with no GitHub Actions incident
+# reported, and would otherwise have tied up the runner for six hours before anyone
+# noticed. Short timeouts mean a wedged job fails fast and can be retried instead.
 
 on:
   pull_request:
@@ -58,6 +64,7 @@ jobs:
 
   sensitive-path-guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       is_sensitive: ${{ steps.check.outputs.is_sensitive }}
       matched: ${{ steps.check.outputs.matched }}
@@ -96,6 +103,7 @@ jobs:
     needs: [verify, sensitive-path-guard]
     if: needs.sensitive-path-guard.outputs.is_sensitive == 'false'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       verdict: ${{ steps.post.outputs.verdict }}
       risk_level: ${{ steps.post.outputs.risk_level }}
@@ -195,6 +203,7 @@ jobs:
     needs: [verify, sensitive-path-guard, review]
     if: needs.sensitive-path-guard.outputs.is_sensitive == 'false' && needs.review.outputs.verdict == 'approve' && needs.review.outputs.risk_level != 'high'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Squash-merge and delete branch
         env:
@@ -207,6 +216,7 @@ jobs:
     needs: [sensitive-path-guard, review]
     if: needs.sensitive-path-guard.outputs.is_sensitive == 'false' && needs.review.outputs.risk_level == 'high'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       # GitHub-native channel -- always fires, needs no setup. Assigning + @-mentioning
       # guarantees a GitHub notification (email/mobile push, per the recipient's own
@@ -248,6 +258,7 @@ jobs:
     needs: sensitive-path-guard
     if: needs.sensitive-path-guard.outputs.is_sensitive == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - name: Comment that this needs a human
         env:
