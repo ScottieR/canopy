@@ -24,6 +24,13 @@ const HEAVY_ROLES = new Set([
   "Business Strategist",
 ]);
 
+// Ranked WISHLISTS, not guarantees: selection only ever picks ids that exist in
+// the catalog passed in (get_available_models, which is filtered to models the
+// shipped OpenClaw image supports). Ids the image can't resolve yet (e.g.
+// gemini-3.6-flash on 2026.7.1) are fine here — they're skipped today and
+// become the preferred pick automatically once an image bump supports them.
+// FALLBACK_MODELS below is different: those are returned verbatim when the
+// catalog is empty, so they MUST be container-supported ids.
 const PROVIDER_PREFERENCES: Record<string, Record<"ultra" | "heavy" | "light", string[]>> = {
   "Anthropic": {
     ultra: [
@@ -104,19 +111,24 @@ const FALLBACK_MODELS: Record<string, ModelInfo> = {
     strategy: "heavy",
     description: "Best balance for most production work",
   },
+  // These literals are returned when the catalog is empty or missing the
+  // provider, so they must be models the shipped OpenClaw image can resolve
+  // (see model_constants.rs container support gating) — NOT just the newest
+  // the provider serves. gpt-5.6-terra and gemini-3.6-flash are unknown to
+  // OpenClaw 2026.7.1 and fail every message with "Unknown model".
   "OpenAI": {
-    id: "openai/gpt-5.6-terra",
-    name: "GPT-5.6 Terra",
+    id: "openai/gpt-5.6-sol",
+    name: "GPT-5.6 Sol",
     provider: "OpenAI",
     strategy: "heavy",
-    description: "Balances intelligence and cost",
+    description: "Frontier model for complex professional work",
   },
   "Google Gemini": {
-    id: "google/gemini-3.6-flash",
-    name: "Gemini 3.6 Flash",
+    id: "google/gemini-3.5-flash",
+    name: "Gemini 3.5 Flash",
     provider: "Google Gemini",
     strategy: "heavy",
-    description: "Latest GA Flash model for agentic work",
+    description: "Stable Flash line for agentic and coding tasks",
   },
   "xAI": {
     id: "xai/grok-4.5",

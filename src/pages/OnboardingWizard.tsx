@@ -2230,9 +2230,12 @@ export function OnboardingWizard() {
             active_model: (() => {
               const recommended = getProviderRecommendedModel(selectedRole, llmProvider);
               if (recommended.id) return recommended.id;
+              // Last-resort defaults must be resolvable on the shipped OpenClaw
+              // image (see model_constants.rs container support gating) — terra
+              // and gemini-3.6-flash are unknown to image 2026.7.1.
               if (llmProvider === "Anthropic") return "anthropic/claude-sonnet-5";
-              if (llmProvider === "OpenAI") return "openai/gpt-5.6-terra";
-              if (llmProvider === "Google Gemini") return "google/gemini-3.6-flash";
+              if (llmProvider === "OpenAI") return "openai/gpt-5.6-sol";
+              if (llmProvider === "Google Gemini") return "google/gemini-3.5-flash";
               if (llmProvider === "xAI Grok") return "xai/grok-4.5";
               return "anthropic/claude-sonnet-5";
             })(),

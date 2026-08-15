@@ -1077,7 +1077,16 @@ fn preflight_sanitize_and_merge_config_with_keys(
         "primary": default_model,
         "fallbacks": default_fallbacks,
     });
-    cfg["agents"]["defaults"]["models"][default_model] = serde_json::json!({});
+    // Register EVERY model in the chain, not just the primary. OpenClaw only loads
+    // models it knows about — an unregistered fallback fails with "Unknown model"
+    // at the exact moment failover reaches for it, turning a single provider
+    // hiccup into "All models failed" (this is what muted every agent in Aug 2026
+    // when the chain walked to an unregistered gemini model).
+    for chain_model in std::iter::once(&default_model).chain(default_fallbacks.iter()) {
+        if cfg["agents"]["defaults"]["models"].get(*chain_model).is_none() {
+            cfg["agents"]["defaults"]["models"][*chain_model] = serde_json::json!({});
+        }
+    }
     cfg["agents"]["defaults"]["skills"] = serde_json::json!(["gog", "summarize"]);
 
     // ── 4. Build Required Baseline ─────────────────────────────────────────────
@@ -1096,11 +1105,50 @@ fn preflight_sanitize_and_merge_config_with_keys(
         // every lookup to its hardcoded "openai-responses" default, sending the
         // Anthropic key to the OpenAI transport and failing auth. Pin it here so
         // every config rebuild keeps the correct native transport.
+        //
+        // claude-sonnet-5 also gets a FULL inline model definition. A model that is
+        // referenced in config but absent from the catalog gets a synthesized row
+        // with NO `cost` object, and OpenClaw 2026.7.1's applyAnthropicSonnet5Cost
+        // reads `model.cost.input` unguarded — crashing the entire CLI ("Cannot
+        // read properties of undefined (reading 'input')") for any command that
+        // normalizes model rows (`models list`, `models auth login`, `configure`).
+        // The runtime overrides sonnet-5 cost with its own pricing table whenever
+        // the values differ, so the numbers here only need to exist, not be exact.
         "models": {
             "providers": {
                 "anthropic": {
                     "baseUrl": "https://api.anthropic.com",
-                    "api": "anthropic-messages"
+                    "api": "anthropic-messages",
+                    "models": [
+                        {
+                            "id": "claude-sonnet-5",
+                            "name": "Claude Sonnet 5",
+                            "input": ["text", "image"],
+                            "contextWindow": 200000,
+                            "maxTokens": 64000,
+                            "reasoning": true,
+                            "cost": {
+                                "input": 3.0,
+                                "output": 15.0,
+                                "cacheRead": 0.3,
+                                "cacheWrite": 3.75
+                            }
+                        },
+                        {
+                            "id": "claude-opus-5",
+                            "name": "Claude Opus 5",
+                            "input": ["text", "image"],
+                            "contextWindow": 200000,
+                            "maxTokens": 64000,
+                            "reasoning": true,
+                            "cost": {
+                                "input": 5.0,
+                                "output": 25.0,
+                                "cacheRead": 0.5,
+                                "cacheWrite": 6.25
+                            }
+                        }
+                    ]
                 }
             }
         }
@@ -1131,6 +1179,15 @@ fn preflight_sanitize_and_merge_config_with_keys(
             serde_json::json!(false);
 
         cfg["agents"]["list"] = serde_json::json!([]);
+        // Bindings MUST be cleared together with agents.list. OpenClaw 2026.7.1
+        // validates the whole config on every mutation, so a binding referencing an
+        // agent that is not (yet) in agents.list makes EVERY subsequent
+        // `openclaw agents add` fail with "bindings.N.agentId: Unknown agent id" —
+        // boot_sync can then never re-register a single agent and the app is dead
+        // until someone hand-edits the config (this is what emptied the fleet in
+        // Aug 2026). sync_gateway_channels rebuilds bindings from the Canopy DB
+        // right after boot sync, so dropping them here loses nothing.
+        cfg["bindings"] = serde_json::json!([]);
     } else if let Some(agent_id) = isolated_agent_id {
         // Isolated containers previously received NO browser config at all — the
         // plugin stayed disabled and there was no cdpUrl, so isolated agents
@@ -1565,11 +1622,18 @@ pub async fn start_gateway_internal(
                 if let Ok(content) = std::fs::read_to_string(&config_path) {
                     if let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
                         cfg["agents"]["list"] = serde_json::json!([]);
+                        // Bindings referencing agents missing from agents.list fail
+                        // OpenClaw's config validation on EVERY mutation, which makes
+                        // the `openclaw agents add` calls in boot_sync error out with
+                        // "bindings.N.agentId: Unknown agent id" — clearing the list
+                        // without the bindings bricks re-registration. They're rebuilt
+                        // from the Canopy DB by sync_gateway_channels after boot sync.
+                        cfg["bindings"] = serde_json::json!([]);
                         if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
                             if let Err(e) = std::fs::write(&config_path, &updated) {
                                 tracing::warn!("start_gateway: could not clear agents.list: {}", e);
                             } else {
-                                tracing::info!("start_gateway: cleared agents.list in openclaw.json (agent dirs wiped)");
+                                tracing::info!("start_gateway: cleared agents.list + bindings in openclaw.json (agent dirs wiped)");
                             }
                         }
                     }
@@ -2035,6 +2099,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn compose_image_tag_matches_model_support_gating() {
+        // The model picker hides models the shipped OpenClaw image can't resolve
+        // (model_constants::CONTAINER_SUPPORTED_MODELS). That allowlist is only
+        // valid for the image it was audited against — bumping the image here
+        // without updating OPENCLAW_IMAGE_TAG (and re-auditing the list, see the
+        // "Updating when bumping the OpenClaw image" comment in model_constants.rs)
+        // silently re-exposes unsupported models in the picker.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let expected = format!(
+            "ghcr.io/openclaw/openclaw:{}",
+            crate::model_constants::OPENCLAW_IMAGE_TAG
+        );
+        let shared = generate_compose_file(&dir.path().to_path_buf());
+        assert!(
+            shared.contains(&expected),
+            "shared compose image must match model_constants::OPENCLAW_IMAGE_TAG ({expected})"
+        );
+        let isolated = generate_isolated_compose("agent-x", &dir.path().to_path_buf(), 18805);
+        assert!(
+            isolated.contains(&expected),
+            "isolated compose image must match model_constants::OPENCLAW_IMAGE_TAG ({expected})"
+        );
+    }
+
+    #[test]
     fn shared_compose_never_mounts_agent_custom_directories() {
         let dir = tempfile::tempdir().expect("tempdir");
         let compose = generate_compose_file(&dir.path().to_path_buf());
@@ -2216,6 +2305,121 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("none"),
             "without a supported embeddings key, memory search should fall back to keyword-only mode"
+        );
+    }
+
+    #[test]
+    fn gateway_preflight_registers_every_fallback_model_and_sonnet5_cost() {
+        // Regression (Aug 2026): preflight wrote defaults.model.fallbacks but only
+        // registered the PRIMARY in agents.defaults.models. When failover walked the
+        // chain, the unregistered fallback died with "Unknown model" and every agent
+        // went mute. Also: a config-referenced model missing from the catalog gets a
+        // synthesized row with no `cost`, which crashes OpenClaw 2026.7.1's
+        // applyAnthropicSonnet5Cost — so claude-sonnet-5 must ship a full inline
+        // provider model definition including cost.
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            None,
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: true,
+                has_openai: false,
+                has_gemini: true,
+            },
+        );
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
+        )
+        .expect("valid json");
+
+        let primary = cfg
+            .pointer("/agents/defaults/model/primary")
+            .and_then(|v| v.as_str())
+            .expect("primary set");
+        let fallbacks: Vec<String> = cfg
+            .pointer("/agents/defaults/model/fallbacks")
+            .and_then(|v| v.as_array())
+            .expect("fallbacks array")
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert!(!fallbacks.is_empty(), "keys for two providers must produce a chain");
+
+        let registered = cfg
+            .pointer("/agents/defaults/models")
+            .and_then(|v| v.as_object())
+            .expect("defaults.models object");
+        for model in std::iter::once(primary.to_string()).chain(fallbacks) {
+            assert!(
+                registered.contains_key(&model),
+                "chain model '{}' must be registered in agents.defaults.models",
+                model
+            );
+        }
+
+        let sonnet_def = cfg
+            .pointer("/models/providers/anthropic/models")
+            .and_then(|v| v.as_array())
+            .and_then(|models| {
+                models
+                    .iter()
+                    .find(|m| m.get("id").and_then(|i| i.as_str()) == Some("claude-sonnet-5"))
+            })
+            .expect("claude-sonnet-5 inline provider definition");
+        assert!(
+            sonnet_def.pointer("/cost/input").is_some(),
+            "sonnet-5 definition must carry a cost object (missing cost crashes the OpenClaw CLI)"
+        );
+    }
+
+    #[test]
+    fn gateway_preflight_clears_bindings_with_agents_list() {
+        // Regression (Aug 2026): preflight cleared agents.list but carried the old
+        // bindings forward. OpenClaw validates the whole config on every mutation,
+        // so a binding pointing at an agent not in agents.list made every
+        // `openclaw agents add` fail ("bindings.N.agentId: Unknown agent id") and
+        // boot_sync could never re-register the fleet.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let seeded = serde_json::json!({
+            "agents": { "list": [{"id": "agent-x"}] },
+            "bindings": [
+                { "agentId": "agent-x", "match": { "channel": "slack", "accountId": "agent-x" } }
+            ]
+        });
+        std::fs::write(
+            dir.path().join("openclaw.json"),
+            serde_json::to_string_pretty(&seeded).unwrap(),
+        )
+        .expect("seed config");
+
+        preflight_sanitize_and_merge_config_with_keys(
+            dir.path(),
+            None,
+            "test-token",
+            ProviderKeyAvailability {
+                has_anthropic: true,
+                has_openai: false,
+                has_gemini: true,
+            },
+        );
+
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("openclaw.json")).expect("config written"),
+        )
+        .expect("valid json");
+
+        assert_eq!(
+            cfg.pointer("/agents/list"),
+            Some(&serde_json::json!([])),
+            "gateway preflight clears agents.list"
+        );
+        assert_eq!(
+            cfg.pointer("/bindings"),
+            Some(&serde_json::json!([])),
+            "bindings must be cleared with agents.list or agents add fails validation"
         );
     }
 

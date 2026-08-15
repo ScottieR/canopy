@@ -66,27 +66,32 @@ const AGENT_DISCONNECT_CONFIG: Record<AgentDisconnectKey, {
   },
 };
 
+// Every target here must be resolvable on the shipped OpenClaw image (mirrors
+// model_constants.rs container support gating) — an "upgrade" onto a model the
+// container doesn't know (e.g. gemini-3.6-flash on image 2026.7.1) turns a
+// working agent into one that fails every message with "Unknown model".
 export const UPGRADE_MAP: Record<string, string> = {
-  "google/gemini-1.5-flash": "google/gemini-3.6-flash",
-  "google/gemini-2.0-flash": "google/gemini-3.6-flash",
-  "google/gemini-2.5-flash": "google/gemini-3.6-flash",
-  "google/gemini-3-flash-preview": "google/gemini-3.6-flash",
-  "google/gemini-3.5-flash": "google/gemini-3.6-flash",
-  "google/gemini-2.5-flash-lite": "google/gemini-3.5-flash-lite",
-  "google/gemini-3.1-flash-lite-preview": "google/gemini-3.5-flash-lite",
-  "google/gemini-3.1-flash-lite": "google/gemini-3.5-flash-lite",
-  "google/gemini-1.5-pro": "google/gemini-3.6-flash",
-  "google/gemini-2.0-pro": "google/gemini-3.6-flash",
-  "google/gemini-2.5-pro": "google/gemini-3.6-flash",
-  "google/gemini-3.1-pro-preview": "google/gemini-3.6-flash",
+  "google/gemini-1.5-flash": "google/gemini-3.5-flash",
+  "google/gemini-2.0-flash": "google/gemini-3.5-flash",
+  "google/gemini-2.5-flash": "google/gemini-3.5-flash",
+  "google/gemini-3-flash-preview": "google/gemini-3.5-flash",
+  "google/gemini-2.5-flash-lite": "google/gemini-3.1-flash-lite",
+  "google/gemini-3.5-flash-lite": "google/gemini-3.1-flash-lite",
+  "google/gemini-3.1-flash-lite-preview": "google/gemini-3.1-flash-lite",
+  "google/gemini-1.5-pro": "google/gemini-3.1-pro-preview",
+  "google/gemini-2.0-pro": "google/gemini-3.1-pro-preview",
+  "google/gemini-2.5-pro": "google/gemini-3.1-pro-preview",
+  "google/gemini-3.6-flash": "google/gemini-3.5-flash",
   "anthropic/claude-sonnet-4-6": "anthropic/claude-sonnet-5",
   "anthropic/claude-opus-4-6": "anthropic/claude-opus-5",
   "anthropic/claude-opus-4-7": "anthropic/claude-opus-5",
   "anthropic/claude-opus-4-8": "anthropic/claude-opus-5",
   "anthropic/claude-3-opus-20240229": "anthropic/claude-opus-5",
-  "openai/gpt-4o": "openai/gpt-5.6-terra",
-  "openai/gpt-4o-mini": "openai/gpt-5.6-luna",
-  "openai/o4-mini": "openai/gpt-5.6-terra",
+  "openai/gpt-4o": "openai/gpt-5.6-sol",
+  "openai/gpt-4o-mini": "openai/gpt-5.6-sol",
+  "openai/o4-mini": "openai/gpt-5.6-sol",
+  "openai/gpt-5.6-terra": "openai/gpt-5.6-sol",
+  "openai/gpt-5.6-luna": "openai/gpt-5.6-sol",
   "xai/grok-beta": "xai/grok-4.5",
 };
 

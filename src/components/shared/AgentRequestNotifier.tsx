@@ -55,6 +55,21 @@ type ConnectionPrompt = {
     rationale: string;
 };
 
+type AuthFailurePrompt = {
+    /** Null when the failure was spotted in gateway logs rather than a specific send. */
+    agent_id: string | null;
+    /** Canopy provider id: "anthropic" | "openai" | "gemini" | "grok". */
+    provider: string;
+    detail: string;
+};
+
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+    anthropic: "Anthropic",
+    openai: "OpenAI",
+    gemini: "Google Gemini",
+    grok: "xAI (Grok)",
+};
+
 type PaymentApproval = {
     approval: {
         id: string;
@@ -89,6 +104,7 @@ export function AgentRequestNotifier({
     const [pendingChromeControl, setPendingChromeControl] = useState<ChromeControlPrompt | null>(null);
     const [pendingConnection, setPendingConnection] = useState<ConnectionPrompt | null>(null);
     const [pendingPaymentApproval, setPendingPaymentApproval] = useState<PaymentApproval | null>(null);
+    const [pendingAuthFailure, setPendingAuthFailure] = useState<AuthFailurePrompt | null>(null);
 
     const nameFor = useCallback((agentId: string) => {
         return agents?.find(a => a.id === agentId)?.name ?? agentId;
@@ -174,6 +190,52 @@ export function AgentRequestNotifier({
                 }
             } catch (e) {
                 console.warn("Payment approval listener setup failed", e);
+            }
+        }
+        setup();
+
+        return () => {
+            isMounted = false;
+            if (unlistenFn) {
+                try { unlistenFn(); } catch (e) {}
+                unlistenFn = undefined;
+            }
+        };
+    }, []);
+
+    // Subscribe to provider auth-failure events. The Rust side debounces per
+    // provider (5 min), and `prev ?? payload` here means a failure that arrives
+    // while another is displayed is dropped rather than stacked — one broken key
+    // should produce one modal.
+    useEffect(() => {
+        let unlistenFn: (() => void) | undefined;
+        let isMounted = true;
+
+        async function setup() {
+            try {
+                const { listen } = await import("@tauri-apps/api/event");
+                if (!isMounted) return;
+
+                const unlisten = await listen<AuthFailurePrompt>("agent_provider_auth_failed", (event) => {
+                    try {
+                        const payload = event?.payload;
+                        if (!payload || typeof payload.provider !== "string" || typeof payload.detail !== "string") {
+                            console.warn("agent_provider_auth_failed: malformed payload, ignoring", payload);
+                            return;
+                        }
+                        setPendingAuthFailure(prev => prev ?? payload);
+                    } catch (err) {
+                        console.warn("agent_provider_auth_failed handler error:", err);
+                    }
+                });
+
+                if (isMounted) {
+                    unlistenFn = unlisten;
+                } else {
+                    try { unlisten(); } catch (e) {}
+                }
+            } catch (e) {
+                console.warn("Auth failure listener setup failed", e);
             }
         }
         setup();
@@ -384,6 +446,24 @@ export function AgentRequestNotifier({
         setPendingConnection(null);
     }, [pendingConnection]);
 
+    const handleAuthFailureDecision = useCallback(async (decision: "open_keys" | "dismiss") => {
+        if (!pendingAuthFailure) return;
+        if (decision === "open_keys") {
+            try {
+                // IntegrationsView defaults to its "services" section; this flag makes
+                // it open on "AI Providers" (ProvidersVault) instead. Read-and-cleared
+                // on mount, plus a live event for the already-mounted case.
+                sessionStorage.setItem("canopy:integrations-open-section", "providers");
+                window.dispatchEvent(new CustomEvent("canopy:integrations-open-section", { detail: "providers" }));
+                const { useWorldStore } = await import("../../store/worldStore");
+                useWorldStore.getState().setActiveView("vault");
+            } catch (e) {
+                console.error("Failed to navigate to provider keys", e);
+            }
+        }
+        setPendingAuthFailure(null);
+    }, [pendingAuthFailure]);
+
     const handlePaymentDecision = useCallback(async (decision: "approve" | "deny") => {
         if (!pendingPaymentApproval) return;
         try {
@@ -510,6 +590,15 @@ export function AgentRequestNotifier({
                 />
             )}
 
+            {/* Modal for provider auth failures (dead/expired API key). */}
+            {pendingAuthFailure && (
+                <ProviderAuthFailureModal
+                    prompt={pendingAuthFailure}
+                    agentName={pendingAuthFailure.agent_id ? nameFor(pendingAuthFailure.agent_id) : null}
+                    onDecide={handleAuthFailureDecision}
+                />
+            )}
+
             {/* Modal for blocking Tier 6 (Full Chrome Control) per-action confirmations. */}
             {pendingChromeControl && (
                 <ChromeControlModal
@@ -520,6 +609,87 @@ export function AgentRequestNotifier({
                 />
             )}
         </>
+    );
+}
+
+export function ProviderAuthFailureModal({
+    prompt,
+    agentName,
+    onDecide,
+}: {
+    prompt: AuthFailurePrompt;
+    agentName: string | null;
+    onDecide: (decision: "open_keys" | "dismiss") => void;
+}) {
+    const providerName = PROVIDER_DISPLAY_NAMES[prompt.provider] ?? prompt.provider;
+    const who = agentName ? `${agentName} couldn't` : "Your agents couldn't";
+
+    return (
+        <div
+            role="dialog"
+            aria-modal="true"
+            style={{
+                position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                zIndex: 9500,
+            }}
+        >
+            <div style={{
+                background: "#1a1f1a", color: "#e8efe8",
+                border: "1px solid #2d3a2d", borderRadius: 12,
+                padding: 24, width: 480, maxWidth: "calc(100vw - 32px)",
+                boxShadow: "0 12px 48px rgba(0,0,0,0.5)",
+            }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
+                    <div style={{
+                        background: "#3a2a1a", borderRadius: "50%",
+                        width: 36, height: 36, flexShrink: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                        <KeyRound size={18} color="#f0a060" />
+                    </div>
+                    <div>
+                        <h2 style={{ margin: 0, fontSize: 17, fontWeight: 600 }}>
+                            {providerName} sign-in failed
+                        </h2>
+                        <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#c8d0c8" }}>
+                            {who} authenticate with <strong>{providerName}</strong>. The saved API key
+                            looks missing, invalid, or expired — messages will fail until it's fixed.
+                        </p>
+                    </div>
+                </div>
+
+                <div style={{
+                    background: "#0f130f", border: "1px solid #2a352a",
+                    borderRadius: 8, padding: 12, marginBottom: 18,
+                }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#8a9a8a", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+                        Gateway error
+                    </div>
+                    <div style={{
+                        fontSize: 12, color: "#d0d8d0", lineHeight: 1.5,
+                        fontFamily: "monospace", wordBreak: "break-word",
+                        maxHeight: 120, overflowY: "auto",
+                    }}>
+                        {prompt.detail}
+                    </div>
+                </div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+                    <button onClick={() => onDecide("open_keys")} style={btnStyle("#3c6663")}>
+                        Open provider keys
+                    </button>
+                    <button onClick={() => onDecide("dismiss")} style={btnStyle("#2a3a2a")}>
+                        Dismiss
+                    </button>
+                </div>
+
+                <div style={{ fontSize: 11, color: "#8a9a8a", lineHeight: 1.4 }}>
+                    Keys live in <strong>Integrations → AI Providers</strong>. Agents fall back to
+                    their other configured providers in the meantime, when they have one.
+                </div>
+            </div>
+        </div>
     );
 }
 

@@ -43,12 +43,20 @@ lazy_static! {
 /// Every entry in the registry has already been validated via
 /// `validate_model_string`, so phantom names (e.g. "gemini-3.1-flash")
 /// can never appear here.
+/// The picker additionally hides models the shipped OpenClaw container image
+/// cannot resolve (`model_supported_by_container`): offering one produces an
+/// agent that fails every message with "FailoverError: Unknown model". The
+/// registry itself keeps the full catalogue so canonicalization and future
+/// image bumps don't lose entries — only the UI surface is filtered.
 #[tauri::command]
 pub fn get_available_models() -> Vec<crate::model_constants::ModelInfo> {
     crate::model_constants::MODEL_REGISTRY
         .read()
         .expect("MODEL_REGISTRY poisoned")
-        .clone()
+        .iter()
+        .filter(|m| crate::model_constants::model_supported_by_container(&m.id))
+        .cloned()
+        .collect()
 }
 
 /// Prevents concurrent / double-fired boot_sync_agents calls.
@@ -2742,6 +2750,111 @@ pub async fn delete_agent(
     Ok(())
 }
 
+// ─── Provider auth-failure detection ─────────────────────────────────────────
+//
+// OpenClaw reports dead provider credentials as FailoverError text inside message
+// responses and gateway logs ("Couldn't sign in to anthropic. Your saved login
+// looks expired…", "No API key found for provider \"google\"…"). Before Aug 2026
+// these only landed in log files, so a broken key produced silently mute agents.
+// Detection here feeds the `agent_provider_auth_failed` Tauri event, which the
+// frontend surfaces as a blocking modal deep-linking to the provider key vault.
+
+/// Returns the Canopy provider id ("anthropic" | "openai" | "gemini" | "grok")
+/// when `text` is a gateway auth failure, `None` otherwise. Only call this on
+/// error-shaped text (gateway log lines, "Error:"/"OpenClaw:" responses) — an
+/// agent merely *quoting* an auth error in normal prose must not trip a modal.
+fn detect_provider_auth_failure(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase();
+    let auth_shaped = lower.contains("couldn't sign in to")
+        || lower.contains("couldn\u{2019}t sign in to")
+        || lower.contains("no api key found for provider")
+        || lower.contains("saved login looks expired")
+        || (lower.contains("failovererror") && lower.contains("(auth)"));
+    if !auth_shaped {
+        return None;
+    }
+    // Prefer the provider named in the auth phrase itself — a FallbackSummaryError
+    // can mention several providers where only one failed auth (the others may be
+    // rate limits or unknown models).
+    for anchor in ["sign in to ", "for provider \"", "for provider "] {
+        if let Some(idx) = lower.find(anchor) {
+            let tail = &lower[idx + anchor.len()..];
+            for (name, id) in [
+                ("anthropic", "anthropic"),
+                ("openai", "openai"),
+                ("google", "gemini"),
+                ("gemini", "gemini"),
+                ("xai", "grok"),
+                ("grok", "grok"),
+            ] {
+                if tail.starts_with(name) {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    // Fallback: first known provider mentioned anywhere in the text.
+    for (name, id) in [
+        ("anthropic", "anthropic"),
+        ("openai", "openai"),
+        ("google", "gemini"),
+        ("gemini", "gemini"),
+        ("xai", "grok"),
+        ("grok", "grok"),
+    ] {
+        if lower.contains(name) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// Emit `agent_provider_auth_failed`, debounced per provider so seven agents
+/// failing on the same dead key produce one modal, not a stack of seven.
+fn emit_provider_auth_failure(
+    app: &tauri::AppHandle,
+    agent_id: Option<&str>,
+    provider: &str,
+    detail: &str,
+) {
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+    static DEBOUNCE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, Instant>>> =
+        OnceLock::new();
+    const WINDOW: Duration = Duration::from_secs(300);
+
+    let map = DEBOUNCE.get_or_init(Default::default);
+    {
+        let mut guard = match map.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(last) = guard.get(provider) {
+            if last.elapsed() < WINDOW {
+                return;
+            }
+        }
+        guard.insert(provider.to_string(), Instant::now());
+    }
+
+    // Keep the detail readable in a modal — the raw FallbackSummaryError repeats
+    // the same store path several times.
+    let detail_trimmed: String = detail.chars().take(600).collect();
+    tracing::warn!(
+        "provider auth failure detected (provider={}, agent={:?}) — emitting agent_provider_auth_failed",
+        provider,
+        agent_id
+    );
+    let _ = app.emit(
+        "agent_provider_auth_failed",
+        serde_json::json!({
+            "agent_id": agent_id,
+            "provider": provider,
+            "detail": detail_trimmed,
+        }),
+    );
+}
+
 fn cleanup_agent_text(s: &str) -> String {
     if let Some(start) = s.find("<final>") {
         if let Some(end_offset) = s[start..].find("</final>") {
@@ -3304,6 +3417,16 @@ pub async fn send_message_internal_with_context(
         });
 
     response_text = cleanup_agent_text(&response_text);
+
+    // Surface dead provider credentials to the user. Only error-shaped responses
+    // are scanned ("Error: …" comes from the body's error/errorMessage fields,
+    // "OpenClaw: …" from misconfiguration) so an agent quoting an auth error in
+    // ordinary prose can't trigger the modal.
+    if response_text.starts_with("Error:") || response_text.starts_with("OpenClaw:") {
+        if let Some(provider) = detect_provider_auth_failure(&response_text) {
+            emit_provider_auth_failure(app, Some(agent_id), provider, &response_text);
+        }
+    }
 
     // OpenClaw emits "OpenClaw: <error>" lines when the agent is misconfigured.
     // Return these as errors so the UI can offer the repair flow.
@@ -4358,6 +4481,29 @@ fn resolve_boot_model(
     if !crate::model_constants::registry_contains(&canonical) {
         return fall_back("model not present in the model registry or baseline catalogue");
     }
+    // A model the shipped OpenClaw image can't resolve fails every message with
+    // "Unknown model" — swap to a supported model from the SAME provider (keeps
+    // the agent on its chosen provider; e.g. gemini-3.6-flash → gemini-3.5-flash
+    // on image 2026.7.1) and log loudly, mirroring the key-based fallback below.
+    // The key check afterwards runs against the (possibly replaced) model.
+    let canonical = if crate::model_constants::model_supported_by_container(&canonical) {
+        canonical
+    } else if let Some(replacement) =
+        crate::model_constants::container_supported_replacement(&canonical)
+    {
+        tracing::warn!(
+            "resolve_boot_model: agent {} model '{}' is not supported by OpenClaw image {} — \
+             using same-provider '{}' for this boot. The agent's preferred model is NOT \
+             changed in the Canopy DB; it is restored automatically once the image supports it.",
+            agent_id,
+            canonical,
+            crate::model_constants::OPENCLAW_IMAGE_TAG,
+            replacement
+        );
+        replacement.to_string()
+    } else {
+        return fall_back("model not supported by the shipped OpenClaw container image");
+    };
     if !agent_has_key_for_model(&canonical, keys) {
         return fall_back("no API key available for this model's provider in the agent's key set");
     }
@@ -6195,6 +6341,21 @@ pub async fn update_agent_model(
     model: String,
 ) -> Result<(), String> {
     let model = crate::model_constants::resolve_model_string(&model)?;
+    // The picker only offers container-supported models, but this command is also
+    // reachable from older UI states and scripts — refuse to write a model the
+    // shipped OpenClaw image can't resolve (it would fail every message with
+    // "Unknown model"), naming the same-provider alternative when one exists.
+    if !crate::model_constants::model_supported_by_container(&model) {
+        let hint = crate::model_constants::container_supported_replacement(&model)
+            .map(|r| format!(" Try '{}' instead.", r))
+            .unwrap_or_default();
+        return Err(format!(
+            "Model '{}' is not supported by the OpenClaw image this build ships ({}).{}",
+            model,
+            crate::model_constants::OPENCLAW_IMAGE_TAG,
+            hint
+        ));
+    }
 
     let container_name = get_agent_container_name(&db, &agent_id);
     let model_config = agent_model_config(&agent_id, &model);
@@ -6415,12 +6576,12 @@ async fn wait_for_gateway_ready(
     loop {
         attempt += 1;
 
-        // 1. Check container state
+        // 1. Check container state (+ healthcheck verdict when the image defines one)
         let state_out = get_docker_command()
             .args([
                 "inspect",
                 "-f",
-                "{{.State.Running}}|{{.State.Status}}",
+                "{{.State.Running}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}",
                 "canopy-gateway",
             ])
             .output()
@@ -6429,8 +6590,10 @@ async fn wait_for_gateway_ready(
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
             .unwrap_or_default();
 
+        let mut state_parts = state_out.splitn(3, '|');
         let running = state_out.starts_with("true");
-        let status = state_out.splitn(2, '|').nth(1).unwrap_or("unknown");
+        let status = state_parts.nth(1).unwrap_or("unknown");
+        let health = state_parts.next().unwrap_or("");
 
         if !running {
             tracing::info!(
@@ -6499,8 +6662,24 @@ async fn wait_for_gateway_ready(
                     }
                 }
             }
+        } else if health == "healthy" {
+            // 2a. Docker's own healthcheck says the gateway is serving. This check
+            // must come BEFORE the log scan: the log scan greps only the last 500
+            // lines for "[gateway] ready", a line emitted once at process start.
+            // On a container that has been up for days, verbose channel logs have
+            // long since pushed it out of the tail, so the log scan alone spins
+            // until the deadline and boot sync never registers a single agent
+            // (this is exactly what left agents.list empty in Aug 2026 after
+            // preflight cleared it against a 7-day-old healthy container).
+            tracing::info!(
+                "boot_sync_agents: container healthcheck reports healthy after {} probe(s) — proceeding to agents add",
+                attempt
+            );
+            return Ok(());
         } else {
-            // 2. Container is running — scan logs for "[gateway] ready".
+            // 2b. Container is running but not (yet) reported healthy — scan logs
+            // for "[gateway] ready" (fresh containers pass this well before the
+            // first healthcheck verdict lands).
             //
             // We deliberately avoid HTTP probing here. After the gateway becomes "ready"
             // it immediately begins "starting channels and sidecars" (Slack, browser, voice,
@@ -6531,6 +6710,33 @@ async fn wait_for_gateway_ready(
                 ),
                 _ => String::new(),
             };
+
+            // Surface fresh provider auth failures from the gateway log. Lines are
+            // timestamp-gated to the last 10 minutes: the tail can carry errors
+            // that are days old (a quiet gateway barely logs), and a modal about a
+            // long-resolved failure is worse than none. Unparseable lines are
+            // skipped rather than assumed fresh.
+            if let Some(app) = app_handle.as_ref() {
+                for line in log_text.lines() {
+                    if detect_provider_auth_failure(line).is_none() {
+                        continue;
+                    }
+                    let fresh = line
+                        .split_whitespace()
+                        .next()
+                        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
+                        .map(|ts| {
+                            chrono::Utc::now().signed_duration_since(ts)
+                                < chrono::Duration::minutes(10)
+                        })
+                        .unwrap_or(false);
+                    if fresh {
+                        if let Some(provider) = detect_provider_auth_failure(line) {
+                            emit_provider_auth_failure(app, None, provider, line);
+                        }
+                    }
+                }
+            }
 
             // Log a snippet of what the gateway is saying so it appears in Tauri console
             if attempt % 5 == 0 && !log_text.is_empty() {
@@ -8046,6 +8252,47 @@ mod tests {
     use super::*;
     use crate::model_constants;
     use chrono::Utc;
+
+    // ── Provider auth-failure detection ───────────────────────────────────
+
+    #[test]
+    fn detects_anthropic_sign_in_failure_from_gateway_error() {
+        // Verbatim shape from the Aug 2026 incident logs.
+        let text = "Error: FailoverError: Couldn't sign in to anthropic. Your saved login \
+                    looks expired or no longer works. Run `openclaw models auth login \
+                    --provider anthropic` or `openclaw configure`. (No API key found for \
+                    provider \"anthropic\". Auth store: /home/node/.openclaw/agents/agent-atlas/agent/openclaw-agent.sqlite)";
+        assert_eq!(detect_provider_auth_failure(text), Some("anthropic"));
+    }
+
+    #[test]
+    fn detects_google_key_failure_and_maps_to_gemini_vault_id() {
+        let text = "Error: FailoverError: No API key found for provider \"google\". \
+                    Configure auth for this agent (openclaw agents add <id>).";
+        assert_eq!(detect_provider_auth_failure(text), Some("gemini"));
+    }
+
+    #[test]
+    fn auth_detection_names_the_auth_failing_provider_not_bystanders() {
+        // A FallbackSummaryError can mention several providers where only one
+        // failed auth — the others failed for different reasons (model_not_found).
+        let text = "Error: FallbackSummaryError: All models failed (3): \
+                    anthropic/claude-sonnet-5: Couldn't sign in to anthropic. (auth) | \
+                    google/gemini-3.6-flash: Unknown model: google/gemini-3.6-flash (model_not_found)";
+        assert_eq!(detect_provider_auth_failure(text), Some("anthropic"));
+    }
+
+    #[test]
+    fn ordinary_prose_mentioning_providers_is_not_an_auth_failure() {
+        assert_eq!(
+            detect_provider_auth_failure("I compared anthropic and google models for you today."),
+            None
+        );
+        assert_eq!(
+            detect_provider_auth_failure("Error: request timed out talking to the gateway"),
+            None
+        );
+    }
 
     lazy_static::lazy_static! {
         static ref CANOPY_DATA_DIR_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::new(());

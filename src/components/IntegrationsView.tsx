@@ -197,8 +197,33 @@ function ServiceCard({ icon, name, description, status, connectedAgents, onConne
 // ─── Main IntegrationsView ────────────────────────────────────────────────────
 
 export function IntegrationsView({ agents }: { agents: Array<{ id: string; name: string; integrations: string[] }> }) {
-  const [section, setSection] = useState<Section>("services");
+  // Deep links (e.g. the provider auth-failure modal) ask for a specific section
+  // via sessionStorage before navigating here — read-and-clear it so a later
+  // manual visit starts on the normal default again.
+  const [section, setSection] = useState<Section>(() => {
+    try {
+      const requested = sessionStorage.getItem("canopy:integrations-open-section");
+      if (requested === "providers" || requested === "services") {
+        sessionStorage.removeItem("canopy:integrations-open-section");
+        return requested;
+      }
+    } catch (e) { /* sessionStorage unavailable — fall through */ }
+    return "services";
+  });
   const [searchQuery, setSearchQuery] = useState("");
+
+  // Same deep link while this view is already mounted.
+  useEffect(() => {
+    const onOpenSection = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail === "providers" || detail === "services") {
+        try { sessionStorage.removeItem("canopy:integrations-open-section"); } catch (err) {}
+        setSection(detail);
+      }
+    };
+    window.addEventListener("canopy:integrations-open-section", onOpenSection);
+    return () => window.removeEventListener("canopy:integrations-open-section", onOpenSection);
+  }, []);
   const [slackChannelsMap, setSlackChannelsMap] = useState<Record<string, string[]>>({});
 
   const [gmailStatus, setGmailStatus] = useState<ServiceStatus>({ connected: false });

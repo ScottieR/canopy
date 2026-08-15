@@ -81,3 +81,52 @@ describe("PaymentApprovalModal", () => {
   });
 
 });
+
+describe("ProviderAuthFailureModal", () => {
+  it("names the agent and provider, shows the gateway error, and deep-links to keys", async () => {
+    const { ProviderAuthFailureModal } = await import("./AgentRequestNotifier");
+    const onDecide = vi.fn();
+
+    render(
+      <ProviderAuthFailureModal
+        prompt={{
+          agent_id: "agent-atlas",
+          provider: "anthropic",
+          detail: "FailoverError: Couldn't sign in to anthropic. Your saved login looks expired.",
+        }}
+        agentName="Atlas"
+        onDecide={onDecide}
+      />,
+    );
+
+    expect(screen.getByText("Anthropic sign-in failed")).toBeInTheDocument();
+    expect(screen.getByText(/Atlas couldn't/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn't sign in to anthropic/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open provider keys" }));
+    expect(onDecide).toHaveBeenCalledWith("open_keys");
+  });
+
+  it("falls back to a fleet-wide message when no agent is known and dismisses", async () => {
+    const { ProviderAuthFailureModal } = await import("./AgentRequestNotifier");
+    const onDecide = vi.fn();
+
+    render(
+      <ProviderAuthFailureModal
+        prompt={{
+          agent_id: null,
+          provider: "gemini",
+          detail: "No API key found for provider \"google\".",
+        }}
+        agentName={null}
+        onDecide={onDecide}
+      />,
+    );
+
+    expect(screen.getByText("Google Gemini sign-in failed")).toBeInTheDocument();
+    expect(screen.getByText(/Your agents couldn't/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(onDecide).toHaveBeenCalledWith("dismiss");
+  });
+});

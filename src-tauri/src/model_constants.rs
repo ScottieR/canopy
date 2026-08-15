@@ -141,7 +141,10 @@ pub const XAI_GROK_45: &str = "xai/grok-4.5";
 pub const DEFAULT_ANTHROPIC_MODEL: &str = ANTHROPIC_CLAUDE_SONNET;
 
 /// Default model when an OpenAI API key is present.
-pub const DEFAULT_OPENAI_MODEL: &str = OPENAI_GPT56_TERRA;
+/// gpt-5.6-sol is the only GPT-5.6 model present in the OpenClaw 2026.7.1
+/// container bundle (terra/luna are absent and fail with "Unknown model") —
+/// see the container support gating section below before changing this.
+pub const DEFAULT_OPENAI_MODEL: &str = OPENAI_GPT56_SOL;
 
 /// Default model when a Gemini API key is present.
 /// gemini-3.1-pro-preview is the ONLY Gemini 3.x model confirmed to work inside the
@@ -351,6 +354,65 @@ pub fn registry_contains(model: &str) -> bool {
 /// Returns the provider prefix of a model string ("anthropic", "openai", "google", "xai").
 pub fn provider_prefix(model: &str) -> Option<&str> {
     model.split('/').next().filter(|p| !p.is_empty())
+}
+
+// ─── OpenClaw container support gating ───────────────────────────────────────
+//
+// The catalogue above is what the *providers* serve; what the *container* can
+// actually resolve is a subset that depends on the OpenClaw image version.
+// A model missing from the container's resolver fails at runtime with
+// "FailoverError: Unknown model" — the agent appears configured but is mute
+// (this muted the whole fleet in Aug 2026 when gemini-3.6-flash was offered
+// and picked). The picker must therefore only show container-supported models.
+//
+// ## Updating when bumping the OpenClaw image
+// 1. Update OPENCLAW_IMAGE_TAG below to match docker.rs's compose templates
+//    (a docker.rs test asserts they stay in sync).
+// 2. Re-verify each catalogue model inside the new container:
+//      docker exec canopy-gateway sh -lc 'grep -l "\"<model-id>\"" /app/dist/provider-catalog-*.js /app/dist/provider-models-*.js /app/dist/default-models-*.js'
+//    Anthropic models absent from the catalog still work because preflight
+//    writes inline `models.providers.anthropic.models` definitions (docker.rs);
+//    other providers have no such pin, so catalog absence = unsupported.
+// 3. Update CONTAINER_SUPPORTED_MODELS and the in-provider replacements in
+//    `container_supported_replacement`.
+
+/// The OpenClaw image tag Canopy ships. Must match the compose templates in
+/// docker.rs — bumping the image without revisiting the support list below is
+/// how unsupported models sneak back into the picker.
+pub const OPENCLAW_IMAGE_TAG: &str = "2026.7.1";
+
+/// Catalogue models verified to resolve on OPENCLAW_IMAGE_TAG (Aug 2026 audit:
+/// container catalog grep + live send verification for sonnet-5/haiku/3.5-flash).
+const CONTAINER_SUPPORTED_MODELS: &[&str] = &[
+    ANTHROPIC_CLAUDE_SONNET,   // inline provider def written by preflight
+    ANTHROPIC_CLAUDE_HAIKU,    // in container catalog
+    ANTHROPIC_CLAUDE_OPUS,     // inline provider def written by preflight
+    ANTHROPIC_CLAUDE_FABLE_5,  // in container catalog
+    OPENAI_GPT56_SOL,          // in container default-models
+    GOOGLE_GEMINI_FLASH_35,    // in container catalog
+    GOOGLE_GEMINI_31_FLASH_LITE, // in container catalog
+    GOOGLE_GEMINI_31_PRO,      // in container catalog
+];
+
+/// True when the container's OpenClaw runtime can resolve `model`.
+pub fn model_supported_by_container(model: &str) -> bool {
+    CONTAINER_SUPPORTED_MODELS.contains(&model)
+}
+
+/// In-provider stand-in for a model the current container can't resolve, used
+/// at boot so an agent whose preferred model outruns the image stays on its
+/// chosen provider instead of drifting cross-provider. Returns None when the
+/// provider has no supported model on this image.
+pub fn container_supported_replacement(model: &str) -> Option<&'static str> {
+    if model_supported_by_container(model) {
+        return None;
+    }
+    match provider_prefix(model) {
+        Some("anthropic") => Some(ANTHROPIC_CLAUDE_SONNET),
+        Some("openai") => Some(OPENAI_GPT56_SOL),
+        Some("google") => Some(GOOGLE_GEMINI_FLASH_35),
+        _ => None,
+    }
 }
 
 // ─── Gateway / Docker networking ──────────────────────────────────────────────
@@ -574,10 +636,19 @@ pub fn default_fallback_chain(
     let mut chain: Vec<&'static str> = Vec::new();
 
     // Same-provider cheaper sibling first.
+    //
+    // ⚠️  Every model in this chain must be resolvable by the OpenClaw runtime in the
+    // container, or failover dies with "FailoverError: Unknownown model" at the exact
+    // moment it's needed (verified Aug 2026: gemini-3.6-flash and gemini-3.5-flash-lite
+    // are absent from the OpenClaw 2026.7.1 provider catalog, which turned a transient
+    // Anthropic auth failure into "All models failed" for every agent). Gemini slots
+    // therefore use GOOGLE_GEMINI_FLASH_35 — present in the container catalog — not the
+    // newest Flash. Re-verify against the shipped image before changing these
+    // (`grep gemini-<ver> /app/dist/provider-catalog-*.js` inside the container).
     match primary_provider {
         "anthropic" if has_anthropic => chain.push(ANTHROPIC_CLAUDE_HAIKU),
-        "openai" if has_openai => chain.push(OPENAI_GPT56_LUNA),
-        "google" if has_gemini => chain.push(GOOGLE_GEMINI_FLASH_LITE_35),
+        "openai" if has_openai => chain.push(OPENAI_GPT56_SOL),
+        "google" if has_gemini => chain.push(GOOGLE_GEMINI_FLASH_35),
         _ => {}
     }
 
@@ -586,10 +657,10 @@ pub fn default_fallback_chain(
         chain.push(ANTHROPIC_CLAUDE_SONNET);
     }
     if has_openai && primary_provider != "openai" {
-        chain.push(OPENAI_GPT56_TERRA);
+        chain.push(OPENAI_GPT56_SOL);
     }
     if has_gemini && primary_provider != "google" {
-        chain.push(GOOGLE_GEMINI_FLASH_36);
+        chain.push(GOOGLE_GEMINI_FLASH_35);
     }
 
     chain.retain(|m| *m != primary);
@@ -798,7 +869,7 @@ mod tests {
         let chain = default_fallback_chain(ANTHROPIC_CLAUDE_SONNET, true, true, true);
         assert_eq!(
             chain,
-            vec![ANTHROPIC_CLAUDE_HAIKU, OPENAI_GPT56_TERRA, GOOGLE_GEMINI_FLASH_36]
+            vec![ANTHROPIC_CLAUDE_HAIKU, OPENAI_GPT56_SOL, GOOGLE_GEMINI_FLASH_35]
         );
         // Every entry must be a valid, keyed, non-primary model.
         for m in &chain {
@@ -809,11 +880,77 @@ mod tests {
 
     #[test]
     fn fallback_chain_only_includes_keyed_providers() {
-        // Only a Gemini key: google primary gets its lite sibling and nothing else.
+        // Only a Gemini key: google primary gets its cheaper sibling and nothing else.
         let chain = default_fallback_chain(DEFAULT_GEMINI_MODEL, false, false, true);
-        assert_eq!(chain, vec![GOOGLE_GEMINI_FLASH_LITE_35]);
+        assert_eq!(chain, vec![GOOGLE_GEMINI_FLASH_35]);
         // No keys at all → empty chain (strict primary), never a keyless provider.
         assert!(default_fallback_chain(ANTHROPIC_CLAUDE_SONNET, false, false, false).is_empty());
+    }
+
+    #[test]
+    fn fallback_chain_only_uses_container_verified_models() {
+        // Failover fires when the primary is already failing — a chain entry the
+        // container's OpenClaw can't resolve turns one provider outage into
+        // "All models failed" (Aug 2026: gemini-3.6-flash was absent from the
+        // OpenClaw 2026.7.1 catalog and killed every agent whose Anthropic auth
+        // hiccuped). Keep this list in sync with the shipped container image.
+        for primary in &[
+            ANTHROPIC_CLAUDE_SONNET,
+            OPENAI_GPT56_SOL,
+            DEFAULT_GEMINI_MODEL,
+        ] {
+            for m in default_fallback_chain(primary, true, true, true) {
+                assert!(
+                    model_supported_by_container(m),
+                    "fallback chain entry '{}' is not supported by OpenClaw image {}",
+                    m,
+                    OPENCLAW_IMAGE_TAG
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn key_based_defaults_are_container_supported() {
+        // fall_back paths in resolve_boot_model return these directly — an
+        // unsupported default would resurrect the "Unknown model" mute-agent bug.
+        for (a, o, g) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            let m = default_model_from_available_keys(a, o, g);
+            assert!(
+                model_supported_by_container(m),
+                "key-based default '{}' is not supported by OpenClaw image {}",
+                m,
+                OPENCLAW_IMAGE_TAG
+            );
+        }
+    }
+
+    #[test]
+    fn container_replacement_stays_in_provider_and_is_supported() {
+        assert_eq!(
+            container_supported_replacement("google/gemini-3.6-flash"),
+            Some(GOOGLE_GEMINI_FLASH_35)
+        );
+        assert_eq!(
+            container_supported_replacement("openai/gpt-5.6-terra"),
+            Some(OPENAI_GPT56_SOL)
+        );
+        // Supported models need no replacement.
+        assert_eq!(container_supported_replacement(GOOGLE_GEMINI_FLASH_35), None);
+        // Every replacement must itself be supported and provider-preserving.
+        for unsupported in ["google/gemini-3.5-flash-lite", "openai/gpt-5.6-luna", "xai/grok-4.5"] {
+            if let Some(r) = container_supported_replacement(unsupported) {
+                assert!(model_supported_by_container(r));
+                assert_eq!(provider_prefix(unsupported), provider_prefix(r));
+            }
+        }
+        // xai has no supported model on 2026.7.1 — must return None, not a wrong provider.
+        assert_eq!(container_supported_replacement("xai/grok-4.5"), None);
     }
 
     #[test]
