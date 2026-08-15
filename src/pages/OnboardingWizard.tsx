@@ -432,6 +432,10 @@ export function OnboardingWizard() {
   const [showAllIntegrations, setShowAllIntegrations] = useState(false);
   const [moreIntegrationsSearch, setMoreIntegrationsSearch] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [anthropicKey, setAnthropicKey] = useState("");
+  const [showAnthropicKeyStep, setShowAnthropicKeyStep] = useState(false);
+  const [anthropicKeyError, setAnthropicKeyError] = useState("");
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [personalityPrompt, setPersonalityPrompt] = useState(() => {
     if (draft?.personalityPrompt) {
       return draft.personalityPrompt;
@@ -2140,11 +2144,18 @@ export function OnboardingWizard() {
   );
 
   const handoffToAgentConversation = (agentId: string, prompt?: string | null) => {
+    setSelectedAgentId(agentId);
+    setShowAnthropicKeyStep(true);
+    localStorage.setItem("canopy_pending_handoff", JSON.stringify({ agentId, prompt: prompt || "" }));
+  };
+
+  const completeHandoffToAgentConversation = (agentId: string, prompt?: string | null) => {
     const cleanPrompt = (prompt || "").trim();
     if (cleanPrompt) {
       localStorage.setItem("canopy_starter_task", JSON.stringify({ agentId, prompt: cleanPrompt }));
     }
     localStorage.removeItem("canopy_onboarding_draft");
+    localStorage.removeItem("canopy_pending_handoff");
     const store = useWorldStore.getState();
     store.setSelectedAgent(agentId);
     if (typeof (store as any).setArchitectTab === "function") {
@@ -2495,9 +2506,11 @@ export function OnboardingWizard() {
     if (plugins.slack) {
       try {
         const { agent: newAgent, postDeployPrompt } = await deployAgentCore(tempId);
+        setSelectedAgentId(newAgent.id);
+        setShowAnthropicKeyStep(true);
         setDeployedAgentId(newAgent.id);
         setPostDeployConversationPrompt(postDeployPrompt);
-        setStep(7);
+        setStep(6);
       } catch (err) {
         console.error("Background Agent Deployment Failed:", err);
         setCreateAgentError(String(err));
@@ -2512,6 +2525,8 @@ export function OnboardingWizard() {
     } else {
       try {
         const { agent: newAgent, postDeployPrompt } = await deployAgentCore(tempId);
+        setSelectedAgentId(newAgent.id);
+        setShowAnthropicKeyStep(true);
         if (channelChoice === "mobile") {
           // The user chose their phone as the channel during the power-up
           // conversation — honor it: land on the pairing screen post-deploy.
@@ -4553,7 +4568,143 @@ export function OnboardingWizard() {
       )}
 
       {/* Step 5: Celebration */}
-      {step === 6 && (
+      {showAnthropicKeyStep && selectedAgentId && (
+        <div style={{ textAlign: "center", maxWidth: 500 }}>
+          <h1 style={{ fontSize: 36, fontWeight: 700, color: "var(--text-main)", marginBottom: 12 }}>Connect Your AI Model</h1>
+          <p style={{ fontSize: 15, color: "var(--text-sub)", marginBottom: 32, lineHeight: 1.6 }}>
+            To use agents with multiple providers, we need your Anthropic API key as a fallback. This ensures your agent works seamlessly even if their primary provider is unavailable.
+          </p>
+
+          <div style={{
+            background: "var(--surface-card)",
+            borderRadius: 14,
+            border: "1px solid var(--border-subtle)",
+            padding: 24,
+            marginBottom: 24,
+          }}>
+            <div style={{ textAlign: "left", marginBottom: 16 }}>
+              <label style={{
+                display: "block",
+                fontSize: 13,
+                fontWeight: 600,
+                color: "var(--text-main)",
+                marginBottom: 8,
+              }}>
+                Anthropic API Key
+              </label>
+              <PasswordInput
+                value={anthropicKey}
+                onChange={(e) => {
+                  setAnthropicKey(e.target.value);
+                  setAnthropicKeyError("");
+                }}
+                placeholder="sk-ant-..."
+                style={{
+                  width: "100%",
+                  padding: "10px 14px",
+                  borderRadius: 8,
+                  border: anthropicKeyError ? "1px solid #E57373" : "1px solid var(--border-subtle)",
+                  fontFamily: "monospace",
+                  fontSize: 13,
+                  boxSizing: "border-box",
+                }}
+              />
+              {anthropicKeyError && (
+                <div style={{ fontSize: 12, color: "#E57373", marginTop: 8 }}>
+                  {anthropicKeyError}
+                </div>
+              )}
+            </div>
+
+            <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.6, marginBottom: 16 }}>
+              Don't have an Anthropic key?{" "}
+              <span style={{ color: "#3c6663", fontWeight: 600, cursor: "pointer" }} onClick={async () => {
+                const { open } = await import('@tauri-apps/plugin-shell');
+                await open("https://console.anthropic.com/account/keys");
+              }}>
+                Get your key →
+              </span>
+            </div>
+
+            <button
+              onClick={async () => {
+                if (!anthropicKey.trim()) {
+                  setAnthropicKeyError("Please enter your Anthropic API key");
+                  return;
+                }
+
+                try {
+                  const slot = getAgentProviderSecretSlot(selectedAgentId, "Anthropic");
+                  await invoke('set_keychain_item', {
+                    key: slot,
+                    value: anthropicKey
+                  });
+
+                  await syncAgentProviderCredentials(invoke, selectedAgentId);
+
+                  const pending = localStorage.getItem("canopy_pending_handoff");
+                  if (pending) {
+                    const { agentId, prompt } = JSON.parse(pending);
+                    completeHandoffToAgentConversation(agentId, prompt);
+                  } else {
+                    setShowAnthropicKeyStep(false);
+                    if (step === 6) {
+                      setShowAnthropicKeyStep(false);
+                    }
+                  }
+                } catch (e) {
+                  setAnthropicKeyError("Failed to save API key: " + String(e));
+                }
+              }}
+              style={{
+                width: "100%",
+                padding: "12px 16px",
+                borderRadius: 8,
+                border: "none",
+                background: "#3c6663",
+                color: "var(--surface-card)",
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: "pointer",
+                marginBottom: 12,
+              }}
+            >
+              Save and Continue
+            </button>
+
+            <button
+              onClick={() => {
+                const pending = localStorage.getItem("canopy_pending_handoff");
+                if (pending) {
+                  const { agentId, prompt } = JSON.parse(pending);
+                  completeHandoffToAgentConversation(agentId, prompt);
+                } else {
+                  setShowAnthropicKeyStep(false);
+                }
+              }}
+              style={{
+                width: "100%",
+                padding: "12px 16px",
+                borderRadius: 8,
+                border: "1px solid var(--border-subtle)",
+                background: "transparent",
+                color: "var(--text-sub)",
+                fontSize: 14,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Skip for Now
+            </button>
+          </div>
+
+          <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+            Your API key is stored securely in your system keychain and never shared.
+          </div>
+        </div>
+      )}
+
+      {step === 6 && !showAnthropicKeyStep && (
         <div style={{ textAlign: "center", maxWidth: 500 }}>
           <div style={{
             marginBottom: 36, animation: "bounce 1s ease-in-out infinite",

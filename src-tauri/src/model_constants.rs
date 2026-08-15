@@ -1000,10 +1000,7 @@ mod tests {
             resolve_model_string("openai/gpt-4o").unwrap(),
             OPENAI_GPT56_TERRA
         );
-        assert_eq!(
-            resolve_model_string("xai/grok-beta").unwrap(),
-            XAI_GROK_45
-        );
+        assert_eq!(resolve_model_string("xai/grok-beta").unwrap(), XAI_GROK_45);
     }
 
     #[test]
@@ -1028,7 +1025,9 @@ mod tests {
         }
         // …and the stale ID must have been canonicalized, not added as a phantom.
         assert!(
-            !registry.iter().any(|m| m.id == "anthropic/claude-sonnet-4-6"),
+            !registry
+                .iter()
+                .any(|m| m.id == "anthropic/claude-sonnet-4-6"),
             "stale legacy ID leaked into the registry instead of canonicalizing"
         );
     }

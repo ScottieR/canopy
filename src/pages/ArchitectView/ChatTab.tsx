@@ -24,6 +24,9 @@ import {
   SECURE_CREDENTIAL_REDIRECT_MESSAGE,
 } from "../../security/credentialAdvice";
 import { cancelAgentSpeech, playAgentSpeech } from "../../utils/voicePlayback";
+import { useAuthErrorHandler } from "../../hooks/useAuthErrorHandler";
+import { AuthErrorDialog } from "../../components/AuthErrorDialog";
+import { getAgentProviderSecretSlot, syncAgentProviderCredentials } from "../../security/providerCredentials";
 
 // ─── Format-aware message parsing ────────────────────────────────────────────
 // Agents can return ---FORMAT--- html/markdown/genui ---CONTENT--- blocks in both
@@ -472,6 +475,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   // reference it. Order matters — those effects use chatLog/setChatLog in
   // their dep arrays and bodies, and a use-before-declare crashes the build.
   const [chatLog, setChatLog] = useState<ChatMessage[]>(capLog(agent.chatLog));
+  const { authError: apiAuthError, showAuthDialog, handleAuthError, clearAuthError } = useAuthErrorHandler();
 
   // Load draft when switching agents
   useEffect(() => {
@@ -502,6 +506,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   // (used in handleSendMessage's error recovery; was referenced without being
   // declared — pre-existing compile error fixed June 9, 2026).
   const lastBootSync = useRef<number>(0);
+  const pendingRetryMessageRef = useRef<{ text: string; attachments: any[]; sessionId?: string | null } | null>(null);
   useEffect(() => {
     if (lastSeenConvIdRef.current !== agent.activeConversationId) {
       lastSeenConvIdRef.current = agent.activeConversationId;
@@ -1508,6 +1513,14 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             };
           }),
         }));
+        return;
+      }
+
+      const detectedAuthError = handleAuthError(error);
+      console.log('[AUTH_DEBUG] Error caught:', { error: String(error), detectedAuthError });
+      if (detectedAuthError) {
+        console.log('[AUTH_DEBUG] Auth error detected, showing dialog');
+        pendingRetryMessageRef.current = { text: baseText, attachments: activeAttachments, sessionId: activeSessionId };
         return;
       }
 
@@ -2996,6 +3009,58 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       )}
 
       {/* Waking Up Overlay removed to prevent blocking user input. Status is visible in the header. */}
+
+      {showAuthDialog && apiAuthError && (
+        <AuthErrorDialog
+          error={`We need your ${capitalizeProvider(apiAuthError.provider)} API key to use this agent.`}
+          provider={apiAuthError.provider}
+          onRetry={async (apiKey: string) => {
+            try {
+              console.log('[AUTH_DEBUG] Storing API key for agent:', agent.id);
+              const slot = getAgentProviderSecretSlot(agent.id, capitalizeProvider(apiAuthError.provider));
+              console.log('[AUTH_DEBUG] Keychain slot:', slot);
+
+              await invoke('set_keychain_item', {
+                key: slot,
+                value: apiKey
+              });
+              console.log('[AUTH_DEBUG] Key stored successfully');
+
+              console.log('[AUTH_DEBUG] Syncing credentials to agent');
+              await syncAgentProviderCredentials(invoke, agent.id);
+              console.log('[AUTH_DEBUG] Credentials synced');
+
+              clearAuthError();
+
+              console.log('[AUTH_DEBUG] Retrying original message');
+              const pendingMsg = pendingRetryMessageRef.current;
+              if (pendingMsg) {
+                const sessionId = (pendingMsg.sessionId === null || pendingMsg.sessionId === undefined) ? undefined : pendingMsg.sessionId;
+                await handleSendMessage(pendingMsg.text, pendingMsg.attachments, sessionId);
+                pendingRetryMessageRef.current = null;
+                setMessage("");
+                setAttachments([]);
+              } else {
+                console.log('[AUTH_DEBUG] No pending message to retry');
+              }
+            } catch (retryError) {
+              console.error('[AUTH_DEBUG] Retry failed:', retryError);
+              handleAuthError(retryError);
+            }
+          }}
+          onCancel={clearAuthError}
+        />
+      )}
     </div>
   );
 }
+
+const capitalizeProvider = (provider: string): "Anthropic" | "OpenAI" | "Google Gemini" | "xAI Grok" => {
+  const map: Record<string, "Anthropic" | "OpenAI" | "Google Gemini" | "xAI Grok"> = {
+    'anthropic': 'Anthropic',
+    'openai': 'OpenAI',
+    'gemini': 'Google Gemini',
+    'xai': 'xAI Grok',
+  };
+  return map[provider] || 'Anthropic';
+};

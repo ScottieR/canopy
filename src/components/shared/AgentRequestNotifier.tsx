@@ -223,6 +223,13 @@ export function AgentRequestNotifier({
                             console.warn("agent_provider_auth_failed: malformed payload, ignoring", payload);
                             return;
                         }
+                        // ChatTab's inline AuthErrorDialog (useAuthErrorHandler) covers
+                        // the same failure with in-context recovery — if it fired in the
+                        // last minute, don't stack a second dialog on top of it.
+                        try {
+                            const inlineAt = Number(sessionStorage.getItem("canopy:auth-error-inline-at") || 0);
+                            if (Date.now() - inlineAt < 60_000) return;
+                        } catch (e) {}
                         setPendingAuthFailure(prev => prev ?? payload);
                     } catch (err) {
                         console.warn("agent_provider_auth_failed handler error:", err);
@@ -598,6 +605,7 @@ export function AgentRequestNotifier({
                     onDecide={handleAuthFailureDecision}
                 />
             )}
+
 
             {/* Modal for blocking Tier 6 (Full Chrome Control) per-action confirmations. */}
             {pendingChromeControl && (

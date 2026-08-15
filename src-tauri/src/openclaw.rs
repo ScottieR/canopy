@@ -1698,7 +1698,12 @@ pub(crate) fn append_onboarding_user_facts_impl(
         .map(|idx| idx + ONBOARDING_FACTS_HEADER.len())
         .unwrap_or(content.len());
     let (head, tail) = content.split_at(insert_at);
-    let updated = format!("{}\n{}{}", head.trim_end_matches('\n'), appended, tail.trim_start_matches('\n'));
+    let updated = format!(
+        "{}\n{}{}",
+        head.trim_end_matches('\n'),
+        appended,
+        tail.trim_start_matches('\n')
+    );
 
     sync_shared_user_md_to_all_agents(db, &updated)
 }
@@ -4754,7 +4759,8 @@ pub async fn sync_global_api_key(
 
     let agents = db.list_agents().map_err(|e| format!("DB error: {}", e))?;
     let mut updated: u32 = 0;
-    let mut touched_containers: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut touched_containers: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
 
     for agent in agents {
         // If this agent has its own per-agent key for `provider`, the global change
@@ -6228,11 +6234,7 @@ console.log('config patched — model set to {model}');
 /// for another.
 fn agent_model_config(agent_id: &str, primary: &str) -> serde_json::Value {
     let keys = get_creds_for_agent(agent_id);
-    let has = |k: &str| {
-        keys.get(k)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    };
+    let has = |k: &str| keys.get(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
 
     let fallbacks = crate::model_constants::default_fallback_chain(
         primary,
@@ -9517,7 +9519,10 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
 
     // Tier 4 (authenticated fetch, per-domain consent), Tier 5 (agent-owned sandboxed
     // Chromium, stub), Tier 6 (full live CDP control of the user's real Chrome, stub).
-    let auth_browsing_block = if !caps.web_auth && !caps.web_sandbox_browser && !caps.browser_control {
+    let auth_browsing_block = if !caps.web_auth
+        && !caps.web_sandbox_browser
+        && !caps.browser_control
+    {
         "Disabled.".to_string()
     } else {
         let mut block = String::new();
@@ -9569,9 +9574,12 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         block
     };
 
-    let has_google_drive = integrations
-        .iter()
-        .any(|name| matches!(*name, "drive" | "drive_read" | "drive_write" | "drive_granular"));
+    let has_google_drive = integrations.iter().any(|name| {
+        matches!(
+            *name,
+            "drive" | "drive_read" | "drive_write" | "drive_granular"
+        )
+    });
     let google_drive_is_granular = integrations.contains(&"drive_granular");
 
     let mut custom_instructions = String::new();
