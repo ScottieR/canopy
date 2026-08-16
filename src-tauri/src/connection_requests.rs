@@ -74,6 +74,32 @@ pub fn build_external_connection_prompt(
     agent_name: Option<&str>,
 ) -> Option<ExternalConnectionPrompt> {
     let request = parse_connection_request_tag(text)?;
+    let deep_link_url = build_companion_deep_link(
+        &request.companion_type,
+        agent_id,
+        agent_name,
+        &request.params,
+    );
+    Some(assemble_prompt(text, request, deep_link_url, "Open in Canopy"))
+}
+
+/// Same assembly as [`build_external_connection_prompt`], but pointing the button at an
+/// arbitrary URL instead of a `canopy://` deep link — used for the web-hosted token
+/// capture flow, where the desktop app doesn't need to be reachable at all.
+pub fn build_external_connection_prompt_with_url(
+    text: &str,
+    button_url: &str,
+) -> Option<ExternalConnectionPrompt> {
+    let request = parse_connection_request_tag(text)?;
+    Some(assemble_prompt(text, request, button_url.to_string(), "Connect"))
+}
+
+fn assemble_prompt(
+    text: &str,
+    request: ConnectionRequestTag,
+    link_url: String,
+    open_verb: &str,
+) -> ExternalConnectionPrompt {
     let body_text = strip_request_tag(text, &request.full_match);
     let display_name = connection_display_name(&request.companion_type, &request.params);
     let button_text = match request.params.get("providerName").map(String::as_str) {
@@ -82,27 +108,21 @@ pub fn build_external_connection_prompt(
         }
         _ => format!("Open {}", display_name),
     };
-    let deep_link_url = build_companion_deep_link(
-        &request.companion_type,
-        agent_id,
-        agent_name,
-        &request.params,
-    );
     let body_text = if body_text.is_empty() {
         format!("I need you to finish the {} setup in Canopy.", display_name)
     } else {
         body_text
     };
-    let plain_text_message = format!("{body_text}\n\nOpen in Canopy: {deep_link_url}");
+    let plain_text_message = format!("{body_text}\n\n{open_verb}: {link_url}");
 
-    Some(ExternalConnectionPrompt {
+    ExternalConnectionPrompt {
         companion_type: request.companion_type,
         params: request.params,
         body_text,
         button_text,
-        deep_link_url,
+        deep_link_url: link_url,
         plain_text_message,
-    })
+    }
 }
 
 fn strip_request_tag(text: &str, full_match: &str) -> String {
