@@ -384,14 +384,14 @@ pub const OPENCLAW_IMAGE_TAG: &str = "2026.7.1";
 /// Catalogue models verified to resolve on OPENCLAW_IMAGE_TAG (Aug 2026 audit:
 /// container catalog grep + live send verification for sonnet-5/haiku/3.5-flash).
 const CONTAINER_SUPPORTED_MODELS: &[&str] = &[
-    ANTHROPIC_CLAUDE_SONNET,   // inline provider def written by preflight
-    ANTHROPIC_CLAUDE_HAIKU,    // in container catalog
-    ANTHROPIC_CLAUDE_OPUS,     // inline provider def written by preflight
-    ANTHROPIC_CLAUDE_FABLE_5,  // in container catalog
-    OPENAI_GPT56_SOL,          // in container default-models
-    GOOGLE_GEMINI_FLASH_35,    // in container catalog
+    ANTHROPIC_CLAUDE_SONNET,     // inline provider def written by preflight
+    ANTHROPIC_CLAUDE_HAIKU,      // in container catalog
+    ANTHROPIC_CLAUDE_OPUS,       // inline provider def written by preflight
+    ANTHROPIC_CLAUDE_FABLE_5,    // in container catalog
+    OPENAI_GPT56_SOL,            // in container default-models
+    GOOGLE_GEMINI_FLASH_35,      // in container catalog
     GOOGLE_GEMINI_31_FLASH_LITE, // in container catalog
-    GOOGLE_GEMINI_31_PRO,      // in container catalog
+    GOOGLE_GEMINI_31_PRO,        // in container catalog
 ];
 
 /// True when the container's OpenClaw runtime can resolve `model`.
@@ -417,19 +417,25 @@ pub fn container_supported_replacement(model: &str) -> Option<&'static str> {
 
 // ─── Gateway / Docker networking ──────────────────────────────────────────────
 
-/// The host-side port that Canopy connects to.
-/// Docker-compose maps:  HOST 18799  →  CONTAINER 18789
-/// All Rust code must use GATEWAY_HOST_PORT / GATEWAY_URL when talking to the gateway
-/// from the host. GATEWAY_CONTAINER_PORT is only relevant for configs written *inside*
-/// the container (e.g. healthcheck URLs in docker-compose.yml).
-pub const GATEWAY_HOST_PORT: u16 = 18799;
+/// The host-side port that Canopy connects to (flavor-dependent:
+/// prod 18799, dev 18797 — see `flavor.rs`).
+/// Docker-compose maps:  HOST gateway_host_port()  →  CONTAINER 18789
+/// All Rust code must use gateway_host_port() / gateway_url() when talking to the
+/// gateway from the host. GATEWAY_CONTAINER_PORT is only relevant for configs written
+/// *inside* the container (e.g. healthcheck URLs in docker-compose.yml).
+pub fn gateway_host_port() -> u16 {
+    crate::flavor::flavor().gateway_host_port
+}
 
-/// The container-internal port OpenClaw listens on.
+/// The container-internal port OpenClaw listens on (identical in both flavors —
+/// each flavor's gateway lives in its own container).
 /// Do NOT use this in host-side HTTP clients or AllowedOrigins checks.
 pub const GATEWAY_CONTAINER_PORT: u16 = 18789;
 
 /// Full gateway base URL for use from the Tauri host process.
-pub const GATEWAY_URL: &str = "http://localhost:18799";
+pub fn gateway_url() -> String {
+    crate::flavor::gateway_url()
+}
 
 /// Internal bearer token for Canopy ↔ Gateway communication.
 ///
@@ -869,7 +875,11 @@ mod tests {
         let chain = default_fallback_chain(ANTHROPIC_CLAUDE_SONNET, true, true, true);
         assert_eq!(
             chain,
-            vec![ANTHROPIC_CLAUDE_HAIKU, OPENAI_GPT56_SOL, GOOGLE_GEMINI_FLASH_35]
+            vec![
+                ANTHROPIC_CLAUDE_HAIKU,
+                OPENAI_GPT56_SOL,
+                GOOGLE_GEMINI_FLASH_35
+            ]
         );
         // Every entry must be a valid, keyed, non-primary model.
         for m in &chain {
@@ -941,9 +951,16 @@ mod tests {
             Some(OPENAI_GPT56_SOL)
         );
         // Supported models need no replacement.
-        assert_eq!(container_supported_replacement(GOOGLE_GEMINI_FLASH_35), None);
+        assert_eq!(
+            container_supported_replacement(GOOGLE_GEMINI_FLASH_35),
+            None
+        );
         // Every replacement must itself be supported and provider-preserving.
-        for unsupported in ["google/gemini-3.5-flash-lite", "openai/gpt-5.6-luna", "xai/grok-4.5"] {
+        for unsupported in [
+            "google/gemini-3.5-flash-lite",
+            "openai/gpt-5.6-luna",
+            "xai/grok-4.5",
+        ] {
             if let Some(r) = container_supported_replacement(unsupported) {
                 assert!(model_supported_by_container(r));
                 assert_eq!(provider_prefix(unsupported), provider_prefix(r));
@@ -1129,28 +1146,28 @@ mod tests {
 
     #[test]
     fn gateway_url_uses_host_port_not_container_port() {
-        // GATEWAY_URL must use the HOST-side port (18799), not the container-internal
+        // gateway_url() must use the HOST-side port, not the container-internal
         // port (18789). Getting these backwards causes every API call to fail.
+        // Holds for both flavors, not just the active one.
+        for flavor in [&crate::flavor::PROD, &crate::flavor::DEV] {
+            assert_ne!(
+                flavor.gateway_host_port, GATEWAY_CONTAINER_PORT,
+                "{}: host and container ports must be distinct",
+                flavor.name
+            );
+        }
         assert!(
-            GATEWAY_URL.contains(&GATEWAY_HOST_PORT.to_string()),
-            "GATEWAY_URL '{}' must use host port {} (not container port {})",
-            GATEWAY_URL,
-            GATEWAY_HOST_PORT,
+            gateway_url().contains(&gateway_host_port().to_string()),
+            "gateway_url() '{}' must use host port {} (not container port {})",
+            gateway_url(),
+            gateway_host_port(),
             GATEWAY_CONTAINER_PORT
         );
         assert!(
-            !GATEWAY_URL.contains(&GATEWAY_CONTAINER_PORT.to_string()),
-            "GATEWAY_URL '{}' must NOT use container-internal port {}",
-            GATEWAY_URL,
+            !gateway_url().contains(&GATEWAY_CONTAINER_PORT.to_string()),
+            "gateway_url() '{}' must NOT use container-internal port {}",
+            gateway_url(),
             GATEWAY_CONTAINER_PORT
-        );
-    }
-
-    #[test]
-    fn host_and_container_ports_are_different() {
-        assert_ne!(
-            GATEWAY_HOST_PORT, GATEWAY_CONTAINER_PORT,
-            "Host and container ports must be distinct — docker-compose maps 18799:18789"
         );
     }
 

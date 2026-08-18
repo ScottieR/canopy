@@ -26,7 +26,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::model_constants::{gateway_internal_token, GATEWAY_HOST_PORT};
+use crate::model_constants::{gateway_host_port, gateway_internal_token};
 
 // ─── State ────────────────────────────────────────────────────────────────
 
@@ -129,11 +129,11 @@ pub async fn start_live_voice_session(
     );
 
     // OpenClaw v2026.4.24+ exposes the realtime brain over WS at this path.
-    // The host port is 18799 (mapped to container 18789). We bear-token-auth
+    // The host port is flavor-dependent (mapped to container 18789). We bear-token-auth
     // with the same internal token the rest of the gateway uses.
     let ws_url = format!(
         "ws://localhost:{}/v1/realtime?agent={}",
-        GATEWAY_HOST_PORT,
+        gateway_host_port(),
         urlencoding::encode(&agent_id)
     );
 

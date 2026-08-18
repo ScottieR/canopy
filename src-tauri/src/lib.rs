@@ -29,6 +29,7 @@ mod docker;
 mod durable_content;
 mod engine_install;
 mod feedback;
+pub mod flavor;
 mod google;
 mod health_monitor;
 mod imessage;
@@ -59,6 +60,30 @@ pub use payment::{
 use base64::Engine;
 use tauri::Manager;
 use tokio::time::{sleep, Duration};
+
+/// Flavor info for the frontend (DEV badge, port/scheme routing).
+#[derive(serde::Serialize, Clone)]
+struct FlavorInfo {
+    name: &'static str,
+    gateway_host_port: u16,
+    gateway_url: String,
+    jit_port: u16,
+    deep_link_scheme: &'static str,
+    is_dev: bool,
+}
+
+#[tauri::command]
+fn get_flavor() -> FlavorInfo {
+    let f = flavor::flavor();
+    FlavorInfo {
+        name: f.name,
+        gateway_host_port: f.gateway_host_port,
+        gateway_url: flavor::gateway_url(),
+        jit_port: f.jit_port,
+        deep_link_scheme: f.deep_link_scheme,
+        is_dev: f.name == "dev",
+    }
+}
 
 fn admin_api_base_url() -> &'static str {
     option_env!("CANOPY_API_URL")
@@ -808,7 +833,11 @@ pub fn run() {
 
             // Initialize AppState with user context
             let app_state = app_state::AppState::new();
-            tracing::info!("AppState initialized for user: {}", app_state.user_id);
+            tracing::info!(
+                "AppState initialized for user: {} (flavor: {})",
+                app_state.user_id,
+                app_state.flavor.name
+            );
             handle.manage(app_state);
 
             // Initialize SQLite database
@@ -910,6 +939,8 @@ pub fn run() {
         })
         // Agent management commands
         .invoke_handler(tauri::generate_handler![
+            // Flavor (prod/dev isolation)
+            get_flavor,
             // Docker / OrbStack
             docker::check_orbstack_installed,
             docker::check_docker_installed,

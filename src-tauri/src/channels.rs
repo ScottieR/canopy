@@ -114,7 +114,7 @@ console.log('channel '+ch+' patched');
                 "exec",
                 "-u",
                 "node",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "node",
                 "-e",
                 &patch_script,
@@ -148,7 +148,7 @@ async fn restart_gateway_soft() {
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         get_docker_command()
-            .args(["restart", "canopy-gateway"])
+            .args(["restart", crate::flavor::gateway_container()])
             .output(),
     )
     .await;
@@ -861,7 +861,7 @@ mod github_token_validation_tests {
     async fn test_e2e_github_container_provisioning() {
         // Skip if canopy-gateway is not running to avoid breaking CI
         let out = get_docker_command()
-            .args(["exec", "canopy-gateway", "echo", "ping"])
+            .args(["exec", crate::flavor::gateway_container(), "echo", "ping"])
             .output()
             .await
             .unwrap();
@@ -890,7 +890,7 @@ mod github_token_validation_tests {
         let check_gh_script = get_docker_command()
             .args([
                 "exec",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "cat",
                 "/home/node/.openclaw/workspace/agent-test/bin/gh",
             ])
@@ -906,7 +906,13 @@ mod github_token_validation_tests {
 
         // Verify the gh CLI is installed and accessible
         let check_gh = get_docker_command()
-            .args(["exec", "canopy-gateway", "sh", "-c", "command -v gh"])
+            .args([
+                "exec",
+                crate::flavor::gateway_container(),
+                "sh",
+                "-c",
+                "command -v gh",
+            ])
             .output()
             .await
             .unwrap();

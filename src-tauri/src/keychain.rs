@@ -3,14 +3,19 @@ use keyring::Entry;
 use std::collections::HashMap;
 use tauri::Manager;
 
-const SERVICE_NAME: &str = "com.canopy.app";
+/// Keychain service name is flavor-dependent (`com.canopy.app` vs
+/// `com.canopy.app.dev`) so a dev session can never touch — or wipe — the
+/// production credential vault.
+fn service_name() -> &'static str {
+    crate::flavor::flavor().keychain_service
+}
 const VAULT_KEY: &str = "canopy_vault_v2";
 
 /// Secure credential storage via macOS Keychain.
 /// Agents never see raw tokens — the bridge layer injects them.
 
 fn get_vault() -> HashMap<String, String> {
-    let entry = match Entry::new(SERVICE_NAME, VAULT_KEY) {
+    let entry = match Entry::new(service_name(), VAULT_KEY) {
         Ok(e) => e,
         Err(_) => return HashMap::new(),
     };
@@ -23,7 +28,7 @@ fn get_vault() -> HashMap<String, String> {
 
 fn save_vault(vault: &HashMap<String, String>) -> Result<()> {
     let entry =
-        Entry::new(SERVICE_NAME, VAULT_KEY).map_err(|e| CanopyError::Keychain(e.to_string()))?;
+        Entry::new(service_name(), VAULT_KEY).map_err(|e| CanopyError::Keychain(e.to_string()))?;
     let json_str = serde_json::to_string(vault)?;
     entry
         .set_password(&json_str)

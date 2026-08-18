@@ -203,8 +203,8 @@ impl Database {
     /// Initialize the database, creating tables and migrations as needed
     pub fn init<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) -> SqlResult<Self> {
         // Determine database path
-        let data_dir = if let Some(dir) = dirs::data_dir() {
-            dir.join("Canopy")
+        let data_dir = if let Some(dir) = crate::flavor::canopy_data_dir() {
+            dir
         } else {
             // Fallback to app data directory
             app_handle

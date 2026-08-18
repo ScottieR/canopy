@@ -1006,7 +1006,7 @@ console.log('slack config patched');
 
     let container_name = agent_id
         .map(|id| crate::openclaw::get_agent_container_name(db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -1092,7 +1092,7 @@ console.log('slack disabled in config');
     let container_name = agent_id
         .as_deref()
         .map(|id| crate::openclaw::get_agent_container_name(&db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(8),
@@ -1205,14 +1205,16 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
     } else {
         let active_agents = db.list_agents().unwrap_or_default();
         let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
-        let changed =
-            crate::openclaw::sync_container_channels_internal("canopy-gateway", &gateway_agents)
-                .await?;
+        let changed = crate::openclaw::sync_container_channels_internal(
+            crate::flavor::gateway_container(),
+            &gateway_agents,
+        )
+        .await?;
         if changed {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
                 crate::openclaw::get_docker_command()
-                    .args(["restart", "canopy-gateway"])
+                    .args(["restart", crate::flavor::gateway_container()])
                     .output(),
             )
             .await;
@@ -1258,7 +1260,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
                 "exec",
                 "-u",
                 "node",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "node",
                 "-e",
                 patch_script,
@@ -1270,7 +1272,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         crate::openclaw::get_docker_command()
-            .args(["restart", "canopy-gateway"])
+            .args(["restart", crate::flavor::gateway_container()])
             .output(),
     )
     .await;
@@ -1410,11 +1412,12 @@ mod tests {
         );
 
         assert_eq!(payload["channel"], "C123");
+        let scheme = crate::flavor::flavor().deep_link_scheme;
         assert!(
             payload["text"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("canopy://companion?"),
+                .contains(&format!("{}://companion?", scheme)),
             "fallback text should contain a Canopy deep link"
         );
         assert_eq!(
@@ -1423,7 +1426,10 @@ mod tests {
         );
         assert_eq!(
             payload["blocks"][1]["elements"][0]["url"],
-            "canopy://companion?companion=custom_oauth&agentId=agent-1&agentName=Bridge+Bot&providerName=Airbnb&scopes=reservations.read"
+            format!(
+                "{}://companion?companion=custom_oauth&agentId=agent-1&agentName=Bridge+Bot&providerName=Airbnb&scopes=reservations.read",
+                scheme
+            )
         );
     }
 

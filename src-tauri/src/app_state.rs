@@ -18,6 +18,9 @@ pub struct AppState {
 
     /// Whether the app is running in development mode (enables debug features)
     pub dev_mode: bool,
+
+    /// Active prod/dev flavor — container names, ports, keychain service, data dir
+    pub flavor: &'static crate::flavor::Flavor,
 }
 
 impl AppState {
@@ -31,6 +34,7 @@ impl AppState {
             is_admin: false,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             dev_mode: cfg!(debug_assertions),
+            flavor: crate::flavor::flavor(),
         }
     }
 

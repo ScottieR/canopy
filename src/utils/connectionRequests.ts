@@ -1,3 +1,5 @@
+import { getCachedFlavor } from "./flavor";
+
 export type ConnectionRequestTag = {
   fullMatch: string;
   companionType: string;
@@ -114,7 +116,8 @@ export function buildCompanionDeepLink(
     });
   }
 
-  return `canopy://${CANOPY_COMPANION_HOST}?${params.toString()}`;
+  const scheme = getCachedFlavor()?.deep_link_scheme ?? "canopy";
+  return `${scheme}://${CANOPY_COMPANION_HOST}?${params.toString()}`;
 }
 
 export function parseCompanionDeepLink(urlString: string): CompanionDeepLinkRequest | null {
@@ -125,7 +128,12 @@ export function parseCompanionDeepLink(urlString: string): CompanionDeepLinkRequ
     return null;
   }
 
-  if (url.protocol !== "canopy:" || url.hostname !== CANOPY_COMPANION_HOST) {
+  // Accept both flavors' schemes: whichever app the OS routed the link to
+  // should honor it (prod and dev register different schemes).
+  if (
+    (url.protocol !== "canopy:" && url.protocol !== "canopy-dev:") ||
+    url.hostname !== CANOPY_COMPANION_HOST
+  ) {
     return null;
   }
 
