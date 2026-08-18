@@ -156,6 +156,20 @@ fn decrypt_delivered_secret(
     nonce_b64: &str,
     ephemeral_public_key_b64: &str,
 ) -> Result<String, String> {
+    let our_secret = get_or_create_instance_secret()?;
+    decrypt_delivered_secret_with(&our_secret, ciphertext_b64, nonce_b64, ephemeral_public_key_b64)
+}
+
+/// Same as [`decrypt_delivered_secret`] but takes the instance secret as a parameter
+/// instead of reading it from the Keychain — split out so tests can exercise the
+/// actual crypto without a real (slow, occasionally interactive-prompting on an
+/// unsigned dev build) Keychain round trip.
+fn decrypt_delivered_secret_with(
+    our_secret: &StaticSecret,
+    ciphertext_b64: &str,
+    nonce_b64: &str,
+    ephemeral_public_key_b64: &str,
+) -> Result<String, String> {
     use base64::Engine;
     let engine = base64::engine::general_purpose::STANDARD;
 
@@ -167,7 +181,6 @@ fn decrypt_delivered_secret(
         .map_err(|_| "ephemeral public key must be 32 bytes".to_string())?;
     let ephemeral_public = PublicKey::from(ephemeral_arr);
 
-    let our_secret = get_or_create_instance_secret()?;
     let shared = our_secret.diffie_hellman(&ephemeral_public);
 
     let hk = Hkdf::<Sha256>::new(None, shared.as_bytes());
@@ -467,12 +480,9 @@ mod tests {
     fn ecies_roundtrip_recovers_plaintext() {
         // Simulates what the `/connect/{token}` page does client-side: ECDH with an
         // ephemeral keypair against our published public key, HKDF, then AEAD-encrypt.
-        let our_secret = get_or_create_instance_secret();
-        // get_or_create touches the real Keychain; skip cleanly where it's unavailable
-        // (e.g. sandboxed CI runners without Keychain access).
-        let Ok(our_secret) = our_secret else {
-            return;
-        };
+        // Uses a synthetic instance secret (not the real Keychain) so this test is fast
+        // and deterministic — see decrypt_delivered_secret_with's doc comment.
+        let our_secret = StaticSecret::random_from_rng(OsRng);
         let our_public = PublicKey::from(&our_secret);
 
         let ephemeral_secret = StaticSecret::random_from_rng(OsRng);
@@ -491,7 +501,8 @@ mod tests {
 
         use base64::Engine;
         let engine = base64::engine::general_purpose::STANDARD;
-        let decrypted = decrypt_delivered_secret(
+        let decrypted = decrypt_delivered_secret_with(
+            &our_secret,
             &engine.encode(&ciphertext),
             &engine.encode(nonce_bytes),
             &engine.encode(ephemeral_public.as_bytes()),
