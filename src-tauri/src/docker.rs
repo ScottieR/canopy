@@ -1316,9 +1316,7 @@ pub async fn start_gateway_internal(
         }
     }
 
-    let data_dir = dirs::data_dir()
-        .ok_or("Could not find data directory")?
-        .join("Canopy");
+    let data_dir = canopy_data_dir().ok_or("Could not find data directory")?;
 
     let state_dir = data_dir.join("openclaw-state");
     std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
@@ -1984,9 +1982,7 @@ pub async fn stop_gateway() -> Result<String, String> {
         .check("local-user")
         .map_err(|e| e.to_string())?;
 
-    let data_dir = dirs::data_dir()
-        .ok_or("Could not find data directory")?
-        .join("Canopy");
+    let data_dir = canopy_data_dir().ok_or("Could not find data directory")?;
 
     let compose_path = data_dir.join("docker-compose.yml");
 
