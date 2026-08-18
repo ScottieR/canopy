@@ -731,8 +731,12 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         // a per-agent override correctly falls back to the global key instead of
         // dropping the provider entirely (which is what the older `sync_credentials`
         // path would do when given an empty `mappedKeys` value). No other agents are
-        // touched.
-        await invoke("sync_agent_api_keys", { agentId: agent.id });
+        // touched. `allowFallbackOverwrite` is required here — this is the one place
+        // the user deliberately edits (possibly clears) per-agent keys, so the
+        // global fallback IS allowed to replace the runtime key; everywhere else the
+        // Rust side's fallback-clobber guard keeps a global key from silently
+        // overwriting an agent's unique runtime key.
+        await invoke("sync_agent_api_keys", { agentId: agent.id, allowFallbackOverwrite: true });
         await invoke("update_agent_personality", {
           agentId: agent.id,
           personality: { ...agent.personality, active_model: finalModel }
