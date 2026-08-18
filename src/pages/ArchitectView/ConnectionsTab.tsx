@@ -144,6 +144,38 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
   const [folderAccessError, setFolderAccessError] = useState("");
   const [pluginSetupTarget, setPluginSetupTarget] = useState<string | null>(null);
 
+  // Keychain vault readability. When macOS denies the vault read (SecurityAgent
+  // prompt declined, keychain locked), every get_secret_cmd on this page fails —
+  // without this flag the page renders a keyless agent, indistinguishable from
+  // "no keys saved". The keys are still in the keychain; only the read failed.
+  const [keychainDenied, setKeychainDenied] = useState(false);
+  const [keychainRetrying, setKeychainRetrying] = useState(false);
+
+  const checkKeychainStatus = useCallback(async () => {
+    try {
+      const s = await invoke<{ status: string; detail?: string | null }>("keychain_status_cmd");
+      setKeychainDenied(s.status === "denied");
+      return s.status !== "denied";
+    } catch {
+      return true; // command unavailable — don't block the page
+    }
+  }, []);
+
+  useEffect(() => { void checkKeychainStatus(); }, [checkKeychainStatus]);
+
+  const retryKeychainAccess = async () => {
+    setKeychainRetrying(true);
+    try {
+      // Re-invoking the status command re-reads the vault, which re-triggers the
+      // macOS SecurityAgent prompt. On success, reload so every secret-backed
+      // field on this page repopulates from the vault.
+      const ok = await checkKeychainStatus();
+      if (ok) window.location.reload();
+    } finally {
+      setKeychainRetrying(false);
+    }
+  };
+
   // Fetch allowed directories for the agent
   useEffect(() => {
     let active = true;
@@ -997,6 +1029,27 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
 
       <h1 style={{ fontSize: 28, fontWeight: 700, color: "var(--text-main)", margin: "0 0 8px 0", flexShrink: 0 }}>Skills & Access</h1>
       <p style={{ fontSize: 14, color: "var(--text-sub)", marginBottom: 24, flexShrink: 0 }}>What {agent.name} can reach and what they're allowed to do.</p>
+
+      {keychainDenied && (
+        <div style={{ padding: 16, borderRadius: 12, border: "1px solid rgba(214,86,86,0.4)", background: "rgba(214,86,86,0.08)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 18, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13, color: "var(--text-main)", lineHeight: 1.55, flex: 1, minWidth: 260 }}>
+            <strong>Keychain access denied.</strong> macOS blocked Canopy from reading its vault, so {agent.name}'s saved keys can't be shown right now — they are still stored securely and nothing was deleted. Key changes are paused until access is restored.
+          </div>
+          <button
+            type="button"
+            onClick={() => { void retryKeychainAccess(); }}
+            disabled={keychainRetrying}
+            style={{
+              padding: "10px 16px", borderRadius: 10, border: "none",
+              background: "#d65656", color: "white", fontSize: 12, fontWeight: 700,
+              cursor: keychainRetrying ? "default" : "pointer", fontFamily: "inherit",
+              opacity: keychainRetrying ? 0.7 : 1, whiteSpace: "nowrap",
+            }}
+          >
+            {keychainRetrying ? "Retrying…" : "Retry keychain access"}
+          </button>
+        </div>
+      )}
 
       <div style={{ ...glass(0.55), padding: 18, borderRadius: 16, marginBottom: 18, display: "flex", flexDirection: "column", gap: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
