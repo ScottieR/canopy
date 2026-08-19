@@ -3671,6 +3671,56 @@ impl Database {
         Ok(records)
     }
 
+    /// Aggregate token_usage_history over the trailing `days` window, grouped
+    /// by (agent_id, model, provider). Pass `agent_id` to scope to one agent;
+    /// None returns rows for every agent. Ordered by cost descending so the
+    /// most expensive combination comes first.
+    pub fn get_agent_usage_totals(
+        &self,
+        agent_id: Option<&str>,
+        days: u32,
+    ) -> SqlResult<Vec<crate::models::AgentUsageTotal>> {
+        let conn = self.conn.lock().unwrap();
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let mut query = String::from(
+            "SELECT agent_id, model, provider,
+                    SUM(tokens_in), SUM(tokens_out), SUM(cost_usd), COUNT(*)
+             FROM token_usage_history
+             WHERE timestamp >= ?1",
+        );
+        let mut sql_params: Vec<&dyn rusqlite::ToSql> = vec![&cutoff_str];
+        if let Some(ref a_id) = agent_id {
+            query.push_str(" AND agent_id = ?2");
+            sql_params.push(a_id);
+        }
+        query.push_str(
+            " GROUP BY agent_id, model, provider
+              ORDER BY SUM(cost_usd) DESC",
+        );
+
+        let mut stmt = conn.prepare(&query)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(sql_params), |row| {
+            Ok(crate::models::AgentUsageTotal {
+                agent_id: row.get(0)?,
+                model: row.get(1)?,
+                provider: row.get(2)?,
+                tokens_in: row.get::<_, i64>(3)? as u64,
+                tokens_out: row.get::<_, i64>(4)? as u64,
+                cost_usd: row.get(5)?,
+                call_count: row.get::<_, i64>(6)? as u64,
+            })
+        })?;
+
+        let mut totals = Vec::new();
+        for row in rows {
+            totals.push(row?);
+        }
+        Ok(totals)
+    }
+
     pub fn get_system_warnings(&self) -> SqlResult<Vec<crate::models::SystemWarning>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -4658,5 +4708,144 @@ mod tests {
             db.get_agent_mini_apps_json("agent_atlas").unwrap().unwrap(),
             apps
         );
+    }
+
+    // ── Token usage metering ──────────────────────────────────────────────
+
+    // token_usage_history.agent_id has a FOREIGN KEY to agents(id), so usage
+    // tests need a real agent row first.
+    fn insert_test_agent(db: &Database, id: &str) {
+        let agent = Agent {
+            id: id.to_string(),
+            name: format!("Agent {}", id),
+            role: "analyst".to_string(),
+            emoji: "🤖".to_string(),
+            color: "#FF0000".to_string(),
+            status: AgentStatus::Active,
+            isolated: false,
+            paused: false,
+            container_id: None,
+            personality: AgentPersonality {
+                name: "Curious".to_string(),
+                communication_style: "direct".to_string(),
+                expertise: vec![],
+                guardrails: vec![],
+                custom_instructions: String::new(),
+                active_model: None,
+                soul_template: None,
+                identity_template: None,
+            },
+            capabilities: AgentCapabilities::default(),
+            integrations: vec![],
+            visual_identity: None,
+            memories: vec![],
+            created_at: Utc::now(),
+            stats: AgentStats::default(),
+        };
+        db.insert_agent(&agent).unwrap();
+    }
+
+    fn usage_record(
+        id: &str,
+        agent_id: &str,
+        model: &str,
+        provider: &str,
+        tokens_in: u64,
+        tokens_out: u64,
+        cost_usd: f64,
+        days_ago: i64,
+    ) -> crate::models::TokenUsageRecord {
+        crate::models::TokenUsageRecord {
+            id: id.to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id: Some(format!("conv_{}", agent_id)),
+            timestamp: (Utc::now() - chrono::Duration::days(days_ago)).to_rfc3339(),
+            model: model.to_string(),
+            provider: provider.to_string(),
+            tokens_in,
+            tokens_out,
+            cost_usd,
+        }
+    }
+
+    #[test]
+    fn test_token_usage_record_round_trip() {
+        let db = create_test_db();
+        insert_test_agent(&db, "agent-a");
+        let record = usage_record("u1", "agent-a", "claude-sonnet-5", "anthropic", 1000, 50, 0.0075, 0);
+        db.insert_token_usage_record(&record).unwrap();
+
+        let rows = db
+            .get_token_usage_history(Some("agent-a"), None, None, 7)
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "u1");
+        assert_eq!(rows[0].tokens_in, 1000);
+        assert_eq!(rows[0].tokens_out, 50);
+        assert!((rows[0].cost_usd - 0.0075).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_agent_usage_totals_groups_by_agent_model_provider() {
+        let db = create_test_db();
+        insert_test_agent(&db, "agent-a");
+        insert_test_agent(&db, "agent-b");
+        // agent-a: two calls on the same model, one on another model.
+        db.insert_token_usage_record(&usage_record(
+            "u1", "agent-a", "claude-sonnet-5", "anthropic", 1000, 100, 0.01, 0,
+        ))
+        .unwrap();
+        db.insert_token_usage_record(&usage_record(
+            "u2", "agent-a", "claude-sonnet-5", "anthropic", 2000, 200, 0.02, 1,
+        ))
+        .unwrap();
+        db.insert_token_usage_record(&usage_record(
+            "u3", "agent-a", "gpt-4o", "openai", 500, 50, 0.002, 0,
+        ))
+        .unwrap();
+        // agent-b: one call.
+        db.insert_token_usage_record(&usage_record(
+            "u4", "agent-b", "claude-sonnet-5", "anthropic", 100, 10, 0.001, 0,
+        ))
+        .unwrap();
+
+        let totals = db.get_agent_usage_totals(None, 7).unwrap();
+        assert_eq!(totals.len(), 3);
+        // Ordered by cost descending: agent-a/sonnet first.
+        assert_eq!(totals[0].agent_id, "agent-a");
+        assert_eq!(totals[0].model, "claude-sonnet-5");
+        assert_eq!(totals[0].tokens_in, 3000);
+        assert_eq!(totals[0].tokens_out, 300);
+        assert_eq!(totals[0].call_count, 2);
+        assert!((totals[0].cost_usd - 0.03).abs() < 1e-9);
+
+        // Scoped to one agent.
+        let agent_b = db.get_agent_usage_totals(Some("agent-b"), 7).unwrap();
+        assert_eq!(agent_b.len(), 1);
+        assert_eq!(agent_b[0].agent_id, "agent-b");
+        assert_eq!(agent_b[0].call_count, 1);
+    }
+
+    #[test]
+    fn test_agent_usage_totals_respects_day_window() {
+        let db = create_test_db();
+        insert_test_agent(&db, "agent-a");
+        db.insert_token_usage_record(&usage_record(
+            "recent", "agent-a", "claude-sonnet-5", "anthropic", 100, 10, 0.001, 0,
+        ))
+        .unwrap();
+        db.insert_token_usage_record(&usage_record(
+            "old", "agent-a", "claude-sonnet-5", "anthropic", 900, 90, 0.009, 10,
+        ))
+        .unwrap();
+
+        let last_week = db.get_agent_usage_totals(Some("agent-a"), 7).unwrap();
+        assert_eq!(last_week.len(), 1);
+        assert_eq!(last_week[0].tokens_in, 100);
+        assert_eq!(last_week[0].call_count, 1);
+
+        let last_month = db.get_agent_usage_totals(Some("agent-a"), 30).unwrap();
+        assert_eq!(last_month[0].tokens_in, 1000);
+        assert_eq!(last_month[0].call_count, 2);
     }
 }

@@ -302,58 +302,109 @@ pub struct AgentStats {
     pub total_tokens_out: u64,
 }
 
+/// USD per million input/output tokens for a model, consulting the
+/// admin-oracle-synced PRICING_REGISTRY first and falling back to static
+/// pricing when the sync hasn't run yet.
+///
+/// Keys are the bare model IDs (without provider prefix) as reported by
+/// OpenClaw usage events. Keep the static table in sync with model_constants.rs.
+pub fn model_pricing_per_million(model: &str) -> (f64, f64) {
+    let registry = PRICING_REGISTRY.read().unwrap();
+    if let Some(&costs) = registry.get(model) {
+        return costs;
+    }
+    match model {
+        "claude-sonnet-5" => (3.00, 15.00),
+        "claude-haiku-4-5" => (1.00, 5.00),
+        "claude-opus-5" => (5.00, 25.00),
+        "claude-fable-5" => (10.00, 50.00),
+        "claude-opus-4-8" => (5.00, 25.00),
+        "claude-opus-4-7" => (5.00, 25.00),
+        "claude-sonnet-4-6" => (3.00, 15.00),
+        "claude-opus-4-6" => (15.00, 75.00),
+        // OpenAI
+        "gpt-5.6-sol" => (5.00, 30.00),
+        "gpt-5.6-terra" => (2.50, 15.00),
+        "gpt-5.6-luna" => (1.00, 6.00),
+        "gpt-4o-mini" => (0.15, 0.60),
+        "gpt-4o" => (2.50, 10.00),
+        // Google
+        "gemini-3.6-flash" => (1.50, 7.50),
+        "gemini-3.5-flash-lite" => (0.30, 2.50),
+        "gemini-3.5-flash" => (1.50, 9.00),
+        "gemini-3.1-pro-preview" => (2.00, 12.00),
+        "gemini-3.1-flash-lite" => (0.25, 1.50),
+        "gemini-2.5-flash" => (0.30, 2.50),
+        "gemini-2.5-pro" => (1.25, 10.00),
+        // xAI
+        "grok-4.5" => (2.00, 6.00),
+        "grok-beta" => (5.00, 15.00),
+        // Unknown model — log and use conservative estimate
+        other => {
+            tracing::warn!(
+                "No pricing entry for model '{}'; using generic fallback",
+                other
+            );
+            (1.00, 5.00)
+        }
+    }
+}
+
+/// Prompt-cache token multipliers relative to the base input price. The synced
+/// registry only carries (input, output) rates, so cache buckets are priced by
+/// the standard provider ratios (Anthropic: 5-minute cache writes bill at
+/// 1.25x input, cache reads at 0.1x; other providers are close enough that one
+/// ratio beats billing cache reads at full input price).
+pub const CACHE_WRITE_INPUT_PRICE_MULTIPLIER: f64 = 1.25;
+pub const CACHE_READ_INPUT_PRICE_MULTIPLIER: f64 = 0.10;
+
+/// Estimate the USD cost of a single model call from its usage buckets.
+pub fn estimate_call_cost_usd(
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
+) -> f64 {
+    let (cost_in_per_m, cost_out_per_m) = model_pricing_per_million(model);
+    let effective_input_tokens = input_tokens as f64
+        + cache_write_tokens as f64 * CACHE_WRITE_INPUT_PRICE_MULTIPLIER
+        + cache_read_tokens as f64 * CACHE_READ_INPUT_PRICE_MULTIPLIER;
+    (effective_input_tokens / 1_000_000.0) * cost_in_per_m
+        + (output_tokens as f64 / 1_000_000.0) * cost_out_per_m
+}
+
+/// Best-effort provider inference from a bare model id, for payloads that
+/// don't carry an explicit provider.
+pub fn infer_provider_from_model(model: &str) -> &'static str {
+    if model.starts_with("gpt") || model.starts_with("o1") || model.starts_with("o3") {
+        "openai"
+    } else if model.starts_with("claude") {
+        "anthropic"
+    } else if model.starts_with("gemini") {
+        "google"
+    } else if model.starts_with("grok") {
+        "xai"
+    } else {
+        "unknown"
+    }
+}
+
 impl AgentStats {
     pub fn record_usage(&mut self, model: &str, in_tokens: u64, out_tokens: u64) {
-        self.total_tokens_in += in_tokens;
-        self.total_tokens_out += out_tokens;
+        self.record_metered_call(
+            in_tokens,
+            out_tokens,
+            estimate_call_cost_usd(model, in_tokens, out_tokens, 0, 0),
+        );
+    }
 
-        let registry = PRICING_REGISTRY.read().unwrap();
-        let (cost_in_per_m, cost_out_per_m) = if let Some(&costs) = registry.get(model) {
-            costs
-        } else {
-            // Static fallback pricing when the admin-oracle sync hasn't run yet.
-            // Keys here are the bare model IDs (without provider prefix) as reported
-            // by OpenClaw usage events. Keep in sync with model_constants.rs.
-            match model {
-                "claude-sonnet-5" => (3.00, 15.00),
-                "claude-haiku-4-5" => (1.00, 5.00),
-                "claude-opus-5" => (5.00, 25.00),
-                "claude-fable-5" => (10.00, 50.00),
-                "claude-opus-4-8" => (5.00, 25.00),
-                "claude-opus-4-7" => (5.00, 25.00),
-                "claude-sonnet-4-6" => (3.00, 15.00),
-                "claude-opus-4-6" => (15.00, 75.00),
-                // OpenAI
-                "gpt-5.6-sol" => (5.00, 30.00),
-                "gpt-5.6-terra" => (2.50, 15.00),
-                "gpt-5.6-luna" => (1.00, 6.00),
-                "gpt-4o-mini" => (0.15, 0.60),
-                "gpt-4o" => (2.50, 10.00),
-                // Google
-                "gemini-3.6-flash" => (1.50, 7.50),
-                "gemini-3.5-flash-lite" => (0.30, 2.50),
-                "gemini-3.5-flash" => (1.50, 9.00),
-                "gemini-3.1-pro-preview" => (2.00, 12.00),
-                "gemini-3.1-flash-lite" => (0.25, 1.50),
-                "gemini-2.5-flash" => (0.30, 2.50),
-                "gemini-2.5-pro" => (1.25, 10.00),
-                // xAI
-                "grok-4.5" => (2.00, 6.00),
-                "grok-beta" => (5.00, 15.00),
-                // Unknown model — log and use conservative estimate
-                other => {
-                    tracing::warn!(
-                        "No pricing entry for model '{}'; using generic fallback",
-                        other
-                    );
-                    (1.00, 5.00)
-                }
-            }
-        };
-
-        let cost_in = (in_tokens as f64 / 1_000_000.0) * cost_in_per_m;
-        let cost_out = (out_tokens as f64 / 1_000_000.0) * cost_out_per_m;
-        self.total_cost_usd += cost_in + cost_out;
+    /// Accumulate a call whose cost was already computed (e.g. with cache-bucket
+    /// pricing), so cumulative stats stay consistent with the usage ledger.
+    pub fn record_metered_call(&mut self, tokens_in: u64, tokens_out: u64, cost_usd: f64) {
+        self.total_tokens_in += tokens_in;
+        self.total_tokens_out += tokens_out;
+        self.total_cost_usd += cost_usd;
     }
 }
 
@@ -833,6 +884,19 @@ pub struct TokenUsageRecord {
     pub cost_usd: f64,
 }
 
+/// One aggregated row of token_usage_history: totals for a single
+/// (agent, model, provider) combination within the queried window.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentUsageTotal {
+    pub agent_id: String,
+    pub model: String,
+    pub provider: String,
+    pub tokens_in: u64,
+    pub tokens_out: u64,
+    pub cost_usd: f64,
+    pub call_count: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemWarning {
     pub id: String,
@@ -845,6 +909,63 @@ pub struct SystemWarning {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn estimate_call_cost_prefers_synced_registry_over_static_fallback() {
+        // Unique model id so parallel tests can't collide on the global registry.
+        let model = "test-model-registry-precedence";
+        PRICING_REGISTRY
+            .write()
+            .unwrap()
+            .insert(model.to_string(), (2.0, 4.0));
+
+        // 1M input + 500k output at (2.0, 4.0) per million.
+        let cost = estimate_call_cost_usd(model, 1_000_000, 500_000, 0, 0);
+        assert!((cost - (2.0 + 2.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_call_cost_uses_static_fallback_for_known_model() {
+        // claude-fable-5 static fallback is (10.00, 50.00) per million.
+        let cost = estimate_call_cost_usd("claude-fable-5", 100_000, 10_000, 0, 0);
+        assert!((cost - (1.0 + 0.5)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn estimate_call_cost_prices_cache_buckets_below_fresh_input() {
+        // claude-sonnet-5 fallback (3.00, 15.00): cache reads bill at 0.1x
+        // input, cache writes at 1.25x.
+        let cost = estimate_call_cost_usd("claude-sonnet-5", 0, 0, 1_000_000, 1_000_000);
+        let expected = 3.0 * CACHE_READ_INPUT_PRICE_MULTIPLIER
+            + 3.0 * CACHE_WRITE_INPUT_PRICE_MULTIPLIER;
+        assert!((cost - expected).abs() < 1e-9);
+
+        // Cached-read-heavy calls must cost far less than fresh-input calls.
+        let cached = estimate_call_cost_usd("claude-sonnet-5", 0, 0, 1_000_000, 0);
+        let fresh = estimate_call_cost_usd("claude-sonnet-5", 1_000_000, 0, 0, 0);
+        assert!(cached < fresh * 0.2);
+    }
+
+    #[test]
+    fn infers_provider_from_model_prefixes() {
+        assert_eq!(infer_provider_from_model("claude-sonnet-5"), "anthropic");
+        assert_eq!(infer_provider_from_model("gpt-5.6-terra"), "openai");
+        assert_eq!(infer_provider_from_model("gemini-2.5-pro"), "google");
+        assert_eq!(infer_provider_from_model("grok-4.5"), "xai");
+        assert_eq!(infer_provider_from_model("mystery-model"), "unknown");
+    }
+
+    #[test]
+    fn record_metered_call_accumulates_stats() {
+        let mut stats = AgentStats::default();
+        stats.record_metered_call(1000, 100, 0.05);
+        stats.record_metered_call(500, 50, 0.01);
+        assert_eq!(stats.total_tokens_in, 1500);
+        assert_eq!(stats.total_tokens_out, 150);
+        assert!((stats.total_cost_usd - 0.06).abs() < 1e-9);
+    }
+
     #[test]
     fn bundled_model_catalog_is_inside_the_repository_and_valid() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../shared/models.json");

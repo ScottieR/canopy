@@ -465,3 +465,113 @@ describe("SpendTab", () => {
     expect(screen.getByText("Provider reference copied for sandbox testing.")).toBeInTheDocument();
   });
 });
+
+// The LLM Usage section reads the internal metering ledger via
+// get_agent_usage_totals (one call per day/week/month window). These tests pin
+// the command name, its per-window arguments, and the rendered aggregation so
+// per-agent cost visibility can't silently disconnect from the ledger.
+describe("SpendTab LLM usage", () => {
+  const emptyDashboard = {
+    agent_id: "agent-pay-1",
+    budget: { daily_spent_cents: 0, monthly_spent_cents: 0, monthly_limit_cents: 10000 },
+    pending_approvals: [],
+    recent_purchases: [],
+    active_virtual_cards: [],
+    recent_transactions: [],
+    recent_audit_entries: [],
+  };
+
+  const usageRow = (over: Record<string, unknown> = {}) => ({
+    agent_id: "agent-pay-1",
+    model: "claude-sonnet-5",
+    provider: "anthropic",
+    tokens_in: 23_324,
+    tokens_out: 167,
+    cost_usd: 0.0264,
+    call_count: 2,
+    ...over,
+  });
+
+  beforeEach(() => {
+    mockInvoke.mockReset();
+  });
+
+  it("requests metered totals for the day, week, and month windows", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "get_payment_dashboard") return emptyDashboard;
+      if (command === "get_agent_usage_totals") return [];
+      return null;
+    });
+
+    render(<SpendTab agent={agent} />);
+    expect(await screen.findByText("LLM Usage")).toBeInTheDocument();
+
+    for (const days of [1, 7, 30]) {
+      expect(mockInvoke).toHaveBeenCalledWith("get_agent_usage_totals", {
+        agentId: "agent-pay-1",
+        days,
+      });
+    }
+  });
+
+  it("renders the per-model breakdown and totals for the selected window", async () => {
+    mockInvoke.mockImplementation(async (command: string, args?: any) => {
+      if (command === "get_payment_dashboard") return emptyDashboard;
+      if (command === "get_agent_usage_totals") {
+        if (args?.days === 7) {
+          return [
+            usageRow(),
+            usageRow({
+              model: "gpt-4o",
+              provider: "openai",
+              tokens_in: 500,
+              tokens_out: 20,
+              cost_usd: 0.0015,
+              call_count: 1,
+            }),
+          ];
+        }
+        return [];
+      }
+      return null;
+    });
+
+    render(<SpendTab agent={agent} />);
+    expect(await screen.findByText("claude-sonnet-5")).toBeInTheDocument();
+    expect(screen.getByText("gpt-4o")).toBeInTheDocument();
+    expect(screen.getByText("anthropic")).toBeInTheDocument();
+    expect(screen.getByText("openai")).toBeInTheDocument();
+
+    // 23_324 tokens in renders as "23.3k"; the window summary sums 2 + 1 calls.
+    expect(screen.getByText("23.3k")).toBeInTheDocument();
+    expect(screen.getByText(/Totals for 3 calls/)).toBeInTheDocument();
+  });
+
+  it("shows an empty state when the window has no metered calls", async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "get_payment_dashboard") return emptyDashboard;
+      if (command === "get_agent_usage_totals") return [];
+      return null;
+    });
+
+    render(<SpendTab agent={agent} />);
+    expect(
+      await screen.findByText("No metered model calls in this window yet."),
+    ).toBeInTheDocument();
+  });
+
+  it("survives a usage command that yields no array", async () => {
+    // The payment-flow tests above return null for unmocked commands, so the
+    // usage section must not assume it always gets rows back.
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === "get_payment_dashboard") return emptyDashboard;
+      return null;
+    });
+
+    render(<SpendTab agent={agent} />);
+    expect(await screen.findByText("LLM Usage")).toBeInTheDocument();
+    expect(
+      screen.getByText("No metered model calls in this window yet."),
+    ).toBeInTheDocument();
+  });
+});
