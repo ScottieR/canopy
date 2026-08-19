@@ -4772,7 +4772,16 @@ mod tests {
     fn test_token_usage_record_round_trip() {
         let db = create_test_db();
         insert_test_agent(&db, "agent-a");
-        let record = usage_record("u1", "agent-a", "claude-sonnet-5", "anthropic", 1000, 50, 0.0075, 0);
+        let record = usage_record(
+            "u1",
+            "agent-a",
+            "claude-sonnet-5",
+            "anthropic",
+            1000,
+            50,
+            0.0075,
+            0,
+        );
         db.insert_token_usage_record(&record).unwrap();
 
         let rows = db
@@ -4792,11 +4801,25 @@ mod tests {
         insert_test_agent(&db, "agent-b");
         // agent-a: two calls on the same model, one on another model.
         db.insert_token_usage_record(&usage_record(
-            "u1", "agent-a", "claude-sonnet-5", "anthropic", 1000, 100, 0.01, 0,
+            "u1",
+            "agent-a",
+            "claude-sonnet-5",
+            "anthropic",
+            1000,
+            100,
+            0.01,
+            0,
         ))
         .unwrap();
         db.insert_token_usage_record(&usage_record(
-            "u2", "agent-a", "claude-sonnet-5", "anthropic", 2000, 200, 0.02, 1,
+            "u2",
+            "agent-a",
+            "claude-sonnet-5",
+            "anthropic",
+            2000,
+            200,
+            0.02,
+            1,
         ))
         .unwrap();
         db.insert_token_usage_record(&usage_record(
@@ -4805,7 +4828,14 @@ mod tests {
         .unwrap();
         // agent-b: one call.
         db.insert_token_usage_record(&usage_record(
-            "u4", "agent-b", "claude-sonnet-5", "anthropic", 100, 10, 0.001, 0,
+            "u4",
+            "agent-b",
+            "claude-sonnet-5",
+            "anthropic",
+            100,
+            10,
+            0.001,
+            0,
         ))
         .unwrap();
 
@@ -4831,11 +4861,25 @@ mod tests {
         let db = create_test_db();
         insert_test_agent(&db, "agent-a");
         db.insert_token_usage_record(&usage_record(
-            "recent", "agent-a", "claude-sonnet-5", "anthropic", 100, 10, 0.001, 0,
+            "recent",
+            "agent-a",
+            "claude-sonnet-5",
+            "anthropic",
+            100,
+            10,
+            0.001,
+            0,
         ))
         .unwrap();
         db.insert_token_usage_record(&usage_record(
-            "old", "agent-a", "claude-sonnet-5", "anthropic", 900, 90, 0.009, 10,
+            "old",
+            "agent-a",
+            "claude-sonnet-5",
+            "anthropic",
+            900,
+            90,
+            0.009,
+            10,
         ))
         .unwrap();
 

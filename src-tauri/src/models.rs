@@ -937,8 +937,8 @@ mod tests {
         // claude-sonnet-5 fallback (3.00, 15.00): cache reads bill at 0.1x
         // input, cache writes at 1.25x.
         let cost = estimate_call_cost_usd("claude-sonnet-5", 0, 0, 1_000_000, 1_000_000);
-        let expected = 3.0 * CACHE_READ_INPUT_PRICE_MULTIPLIER
-            + 3.0 * CACHE_WRITE_INPUT_PRICE_MULTIPLIER;
+        let expected =
+            3.0 * CACHE_READ_INPUT_PRICE_MULTIPLIER + 3.0 * CACHE_WRITE_INPUT_PRICE_MULTIPLIER;
         assert!((cost - expected).abs() < 1e-9);
 
         // Cached-read-heavy calls must cost far less than fresh-input calls.

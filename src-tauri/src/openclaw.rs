@@ -3022,9 +3022,7 @@ pub(crate) fn extract_usage_from_response(body: &Value) -> Option<ExtractedUsage
                 .as_str()
                 .filter(|p| !p.is_empty())
                 .map(String::from)
-                .unwrap_or_else(|| {
-                    crate::models::infer_provider_from_model(&model).to_string()
-                });
+                .unwrap_or_else(|| crate::models::infer_provider_from_model(&model).to_string());
             return Some(ExtractedUsage {
                 input_tokens,
                 output_tokens,
