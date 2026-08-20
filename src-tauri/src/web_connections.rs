@@ -120,8 +120,13 @@ fn validate_token_url(raw: Option<String>) -> Option<String> {
 }
 
 fn clamp_instructions(raw: Option<String>) -> Option<String> {
-    raw.map(|s| s.trim().chars().take(INSTRUCTIONS_MAX_LENGTH).collect::<String>())
-        .filter(|s| !s.is_empty())
+    raw.map(|s| {
+        s.trim()
+            .chars()
+            .take(INSTRUCTIONS_MAX_LENGTH)
+            .collect::<String>()
+    })
+    .filter(|s| !s.is_empty())
 }
 
 // ─── Instance keypair ──────────────────────────────────────────────────────────
@@ -157,7 +162,12 @@ fn decrypt_delivered_secret(
     ephemeral_public_key_b64: &str,
 ) -> Result<String, String> {
     let our_secret = get_or_create_instance_secret()?;
-    decrypt_delivered_secret_with(&our_secret, ciphertext_b64, nonce_b64, ephemeral_public_key_b64)
+    decrypt_delivered_secret_with(
+        &our_secret,
+        ciphertext_b64,
+        nonce_b64,
+        ephemeral_public_key_b64,
+    )
 }
 
 /// Same as [`decrypt_delivered_secret`] but takes the instance secret as a parameter
@@ -275,7 +285,9 @@ pub async fn generate_web_connection_token_impl(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("connections_pending_rejected: HTTP {status} {body}"));
+        return Err(format!(
+            "connections_pending_rejected: HTTP {status} {body}"
+        ));
     }
 
     let record = PendingConnectionRecord {
@@ -496,7 +508,10 @@ mod tests {
         let cipher = ChaCha20Poly1305::new((&aead_key).into());
         let nonce_bytes = [7u8; 12];
         let ciphertext = cipher
-            .encrypt(Nonce::from_slice(&nonce_bytes), b"sk_live_super_secret".as_ref())
+            .encrypt(
+                Nonce::from_slice(&nonce_bytes),
+                b"sk_live_super_secret".as_ref(),
+            )
             .unwrap();
 
         use base64::Engine;

@@ -80,7 +80,12 @@ pub fn build_external_connection_prompt(
         agent_name,
         &request.params,
     );
-    Some(assemble_prompt(text, request, deep_link_url, "Open in Canopy"))
+    Some(assemble_prompt(
+        text,
+        request,
+        deep_link_url,
+        "Open in Canopy",
+    ))
 }
 
 /// Same assembly as [`build_external_connection_prompt`], but pointing the button at an
@@ -91,7 +96,12 @@ pub fn build_external_connection_prompt_with_url(
     button_url: &str,
 ) -> Option<ExternalConnectionPrompt> {
     let request = parse_connection_request_tag(text)?;
-    Some(assemble_prompt(text, request, button_url.to_string(), "Connect"))
+    Some(assemble_prompt(
+        text,
+        request,
+        button_url.to_string(),
+        "Connect",
+    ))
 }
 
 fn assemble_prompt(

@@ -444,10 +444,12 @@ async fn build_post_message_payload(
             .await;
             match result {
                 Ok(web_token) => {
-                    if let Some(prompt) = crate::connection_requests::build_external_connection_prompt_with_url(
-                        text,
-                        &web_token.url,
-                    ) {
+                    if let Some(prompt) =
+                        crate::connection_requests::build_external_connection_prompt_with_url(
+                            text,
+                            &web_token.url,
+                        )
+                    {
                         return json!({
                             "channel": channel_id,
                             "text": prompt.plain_text_message,
@@ -639,8 +641,7 @@ pub async fn send_slack_message(
         .map(|agent| agent.name);
 
     let payload =
-        build_post_message_payload(&db, &channel_id, &text, &agent_id, agent_name.as_deref())
-            .await;
+        build_post_message_payload(&db, &channel_id, &text, &agent_id, agent_name.as_deref()).await;
 
     let response_value = if payload.get("blocks").is_some() {
         make_api_call_json(
