@@ -14,16 +14,35 @@ const VAULT_KEY: &str = "canopy_vault_v2";
 /// Secure credential storage via macOS Keychain.
 /// Agents never see raw tokens — the bridge layer injects them.
 
-fn get_vault() -> HashMap<String, String> {
-    let entry = match Entry::new(service_name(), VAULT_KEY) {
-        Ok(e) => e,
-        Err(_) => return HashMap::new(),
-    };
-    if let Ok(json_str) = entry.get_password() {
-        serde_json::from_str(&json_str).unwrap_or_default()
-    } else {
-        HashMap::new()
+/// Interpret the raw result of reading the vault item from the keychain.
+///
+/// Only `NoEntry` (the vault genuinely doesn't exist yet) maps to an empty map.
+/// Every other outcome — ACL denial on the SecurityAgent prompt, a locked
+/// keychain, corrupt JSON — must propagate as an error: callers that
+/// read-modify-write would otherwise overwrite the real vault with a
+/// near-empty map and destroy every stored credential.
+fn vault_from_read(
+    read: std::result::Result<String, keyring::Error>,
+) -> Result<HashMap<String, String>> {
+    match read {
+        Ok(json_str) => serde_json::from_str(&json_str).map_err(|e| {
+            CanopyError::Keychain(format!(
+                "Vault data could not be parsed (refusing to overwrite it): {}",
+                e
+            ))
+        }),
+        Err(keyring::Error::NoEntry) => Ok(HashMap::new()),
+        Err(e) => Err(CanopyError::Keychain(format!(
+            "Vault read failed (keychain access denied or locked): {}",
+            e
+        ))),
     }
+}
+
+fn get_vault() -> Result<HashMap<String, String>> {
+    let entry =
+        Entry::new(service_name(), VAULT_KEY).map_err(|e| CanopyError::Keychain(e.to_string()))?;
+    vault_from_read(entry.get_password())
 }
 
 fn save_vault(vault: &HashMap<String, String>) -> Result<()> {
@@ -47,7 +66,8 @@ pub fn store_secret(key: &str, value: &str) -> Result<()> {
         ));
     }
 
-    let mut vault = get_vault();
+    // Abort if the vault could not be read — writing here would clobber it.
+    let mut vault = get_vault()?;
     vault.insert(key.to_string(), value.to_string());
     save_vault(&vault)?;
     tracing::info!("Stored secret: {}", key);
@@ -60,7 +80,7 @@ pub fn get_secret(key: &str) -> Result<String> {
         return Err(CanopyError::Validation("Secret key cannot be empty".into()));
     }
 
-    let vault = get_vault();
+    let vault = get_vault()?;
     vault
         .get(key)
         .cloned()
@@ -78,10 +98,16 @@ pub fn get_or_create_internal_secret(key: &str, prefix: &str) -> Result<String> 
             "Internal secret keys must use the internal_ prefix".into(),
         ));
     }
-    if let Ok(existing) = get_secret(key) {
-        if existing.starts_with(prefix) && existing.len() >= prefix.len() + 48 {
-            return Ok(existing);
+    match get_secret(key) {
+        Ok(existing) => {
+            if existing.starts_with(prefix) && existing.len() >= prefix.len() + 48 {
+                return Ok(existing);
+            }
         }
+        Err(CanopyError::NotFound(_)) => {}
+        // A keychain read failure is not "absent" — creating a replacement
+        // secret here would orphan the real one once access is restored.
+        Err(e) => return Err(e),
     }
 
     let secret = format!(
@@ -100,7 +126,7 @@ pub fn delete_secret_internal(key: &str) -> Result<()> {
         return Err(CanopyError::Validation("Secret key cannot be empty".into()));
     }
 
-    let mut vault = get_vault();
+    let mut vault = get_vault()?;
     if vault.remove(key).is_some() {
         save_vault(&vault)?;
         tracing::info!("Deleted secret: {}", key);
@@ -202,7 +228,7 @@ pub fn store_batch_secrets_cmd(secrets: std::collections::HashMap<String, String
         return Err(CanopyError::Validation("No secrets provided".into()));
     }
 
-    let mut vault = get_vault();
+    let mut vault = get_vault()?;
     for (key, value) in secrets {
         validate_secret_key_for_ipc(&key)?;
         if key.is_empty() || value.is_empty() {
@@ -215,6 +241,31 @@ pub fn store_batch_secrets_cmd(secrets: std::collections::HashMap<String, String
     save_vault(&vault)?;
     tracing::info!("Stored batch of {} secrets", vault.len());
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+pub struct KeychainStatus {
+    /// "ok" when the vault is readable (or simply doesn't exist yet),
+    /// "denied" when the keychain refused the read (ACL denial, locked keychain).
+    pub status: &'static str,
+    pub detail: Option<String>,
+}
+
+/// Lets the frontend distinguish "no keys saved" from "keychain refused to open".
+/// Invoking this re-attempts the read, so a Retry button can re-trigger the
+/// macOS SecurityAgent prompt.
+#[tauri::command]
+pub fn keychain_status_cmd() -> KeychainStatus {
+    match get_vault() {
+        Ok(_) => KeychainStatus {
+            status: "ok",
+            detail: None,
+        },
+        Err(e) => KeychainStatus {
+            status: "denied",
+            detail: Some(e.to_string()),
+        },
+    }
 }
 
 #[tauri::command]
@@ -408,7 +459,7 @@ pub fn cleanup_plaintext_keys(keys_to_remove: Vec<String>) -> Result<Vec<String>
 
 #[tauri::command]
 pub fn get_web_credentials_cmd() -> Result<Vec<serde_json::Value>> {
-    let vault = get_vault();
+    let vault = get_vault()?;
     let mut creds = Vec::new();
     for (key, _val) in vault {
         if key.starts_with("web_") {
@@ -524,5 +575,42 @@ mod tests {
                 .is_err()
         );
         assert!(validate_secret_key_for_ipc("internal_gateway_token").is_err());
+    }
+
+    #[test]
+    fn vault_read_missing_item_is_an_empty_vault() {
+        let vault = vault_from_read(Err(keyring::Error::NoEntry)).unwrap();
+        assert!(vault.is_empty());
+    }
+
+    #[test]
+    fn vault_read_access_denied_is_an_error_not_an_empty_vault() {
+        // A denied SecurityAgent prompt surfaces as NoStorageAccess/PlatformFailure,
+        // never NoEntry. Both must propagate so read-modify-write callers abort
+        // instead of persisting a near-empty vault over the real one.
+        let denied = vault_from_read(Err(keyring::Error::NoStorageAccess(
+            "user denied keychain access".into(),
+        )));
+        assert!(matches!(denied, Err(CanopyError::Keychain(_))));
+
+        let platform = vault_from_read(Err(keyring::Error::PlatformFailure(
+            "errSecAuthFailed".into(),
+        )));
+        assert!(matches!(platform, Err(CanopyError::Keychain(_))));
+    }
+
+    #[test]
+    fn vault_read_corrupt_json_is_an_error_not_an_empty_vault() {
+        let corrupt = vault_from_read(Ok("not-json".into()));
+        assert!(matches!(corrupt, Err(CanopyError::Keychain(_))));
+    }
+
+    #[test]
+    fn vault_read_valid_json_parses() {
+        let vault = vault_from_read(Ok(r#"{"OPENAI_API_KEY":"sk-test"}"#.into())).unwrap();
+        assert_eq!(
+            vault.get("OPENAI_API_KEY").map(String::as_str),
+            Some("sk-test")
+        );
     }
 }

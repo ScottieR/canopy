@@ -294,7 +294,29 @@ async fn get_bot_token(agent_id: Option<&str>) -> Result<String, String> {
             )
         });
     }
-    keychain::get_secret("slack-bot-token").map_err(|e| format!("Failed to get bot token: {}", e))
+    match keychain::get_secret("slack-bot-token") {
+        Ok(token) => {
+            crate::system_health::report_ok("slack");
+            Ok(token)
+        }
+        // A missing token just means Slack was never connected — that's a
+        // normal state, not a health problem.
+        Err(e @ crate::errors::CanopyError::NotFound(_)) => {
+            crate::system_health::report_ok("slack");
+            Err(format!("Failed to get bot token: {}", e))
+        }
+        // Anything else (e.g. keychain access denied) means a saved token may
+        // exist but can't be read — surface that instead of looking like
+        // "Slack not connected".
+        Err(e) => {
+            crate::system_health::report_degraded(
+                "slack",
+                format!("Slack token lookup failed — a saved connection may exist but can't be read ({e})"),
+                "Relaunch Canopy and click 'Allow' if macOS asks for keychain access, then re-check the Integrations page.",
+            );
+            Err(format!("Failed to get bot token: {}", e))
+        }
+    }
 }
 
 async fn make_api_call(
@@ -1520,11 +1542,14 @@ mod tests {
         .await;
 
         assert_eq!(payload["channel"], "C123");
+        // Scheme is flavor-dependent (canopy:// prod, canopy-dev:// dev) and tests
+        // build in debug, so derive it rather than hardcoding the prod scheme.
+        let expected_prefix = format!("{}://companion?", crate::flavor::flavor().deep_link_scheme);
         assert!(
             payload["blocks"][1]["elements"][0]["url"]
                 .as_str()
                 .unwrap_or_default()
-                .starts_with("canopy://companion?"),
+                .starts_with(&expected_prefix),
             "should fall back to the Canopy deep link when canopy-admin is unreachable"
         );
     }

@@ -46,6 +46,7 @@ pub mod screen_capture;
 mod security_scanner;
 mod share_publish;
 mod slack;
+mod system_health;
 mod voice;
 mod web_connections;
 mod web_tools;
@@ -832,6 +833,10 @@ pub fn run() {
                     .map_err(|e| format!("Failed to register Canopy deep links: {}", e))?;
             }
 
+            // Wire the startup-subsystem health registry to the app so
+            // report_* calls from startup tasks reach the frontend indicator.
+            system_health::init(handle.clone());
+
             // Initialize AppState with user context
             let app_state = app_state::AppState::new();
             tracing::info!(
@@ -946,6 +951,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Flavor (prod/dev isolation)
             get_flavor,
+            // Startup subsystem health
+            system_health::get_system_health,
             // Docker / OrbStack
             docker::check_orbstack_installed,
             docker::check_docker_installed,
@@ -1104,6 +1111,7 @@ pub fn run() {
             keychain::get_web_credentials_cmd,
             keychain::verify_cloak_passcode,
             keychain::authenticate_mac_user,
+            keychain::keychain_status_cmd,
             // Eddy inference routing (hosted bootstrap, direct provider, or Ollama)
             canopy_helper::get_canopy_helper_config,
             canopy_helper::configure_canopy_helper,

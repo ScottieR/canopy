@@ -187,10 +187,16 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
             // another running Canopy instance) — log and back off instead.
             // See GitHub issue #17.
             error!("Failed to bind JIT port {}: {}", jit_addr, e);
+            crate::system_health::report_failed(
+                "jit_server",
+                format!("Agent authorization server couldn't start: {jit_addr} is unavailable ({e})"),
+                "Is another copy of Canopy running? Quit it (or whatever holds that port) and relaunch.",
+            );
             return;
         }
     };
     info!("JIT Provisioning server listening on {}", jit_addr);
+    crate::system_health::report_ok("jit_server");
 
     loop {
         if let Ok((mut socket, _)) = listener.accept().await {

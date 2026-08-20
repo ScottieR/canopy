@@ -44,6 +44,7 @@ import { TopNav } from './components/shared/TopNav';
 import { ExportInterceptModal } from './components/ExportInterceptModal';
 import { deriveMobileInboxEffects } from "./utils/mobileInbox";
 import { AgentRequestNotifier } from './components/shared/AgentRequestNotifier';
+import { SystemHealthIndicator } from './components/shared/SystemHealthIndicator';
 import { getAssetUrl } from './utils/assets';
 import { LobsterIcon } from './components/World/LobsterIcon';
 import { initializeGlobalBackgroundOrchestrator } from './pages/ForumView/forumOrchestrator';
@@ -2368,6 +2369,11 @@ export default function App() {
           modals. Mounted once at the app root so it works regardless of which view
           is active. See `AgentRequestNotifier.tsx` for the contract. */}
       <AgentRequestNotifier agents={agents.map(a => ({ id: a.id, name: a.name }))} />
+
+      {/* Startup-subsystem health pill (bottom-left). Renders nothing unless a
+          backend startup task reported itself degraded/failed — see
+          `SystemHealthIndicator.tsx` and src-tauri/src/system_health.rs. */}
+      <SystemHealthIndicator />
 
       <style>{`
         @keyframes slideIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
