@@ -43,19 +43,15 @@ function ProgressBar({ value, max = 1, color = "#3c6663", height = 4 }: { value:
 // Cost/token/message figures are sourced from real per-event data
 // (get_token_usage_history's ledger table + get_agent_activity_heatmap's
 // daily interaction/tool counts), NOT from `agent.stats.total_cost_usd` /
-// `messages_handled` / `tasks_today`. Those cumulative fields on the Agent
-// record are effectively dead — `messages_handled`/`tasks_today` are never
-// incremented anywhere in the Rust codebase, and `total_cost_usd` is only
-// ever updated inside the same `if prompt_tokens > 0 || completion_tokens > 0`
-// block in openclaw.rs that also writes the token_usage_history ledger. That
-// block's token extraction reads `body["meta"]["usage"]["prompt_tokens"]`
-// from the openclaw CLI's `--json` output — a path that was apparently never
-// verified against a real payload (only the `payloads[0].text` response-text
-// path has a "confirmed from live run" comment; the usage path doesn't).
-// Until that Rust-side extraction is fixed, `token_usage_history` will stay
-// empty and every cost/token figure on this page will legitimately read
-// zero — this page is now reading the right source, but the source itself
-// is unfed. See the note left in openclaw.rs above that block.
+// `messages_handled` / `tasks_today` (`messages_handled`/`tasks_today` are
+// never incremented anywhere in the Rust codebase).
+//
+// The ledger is fed by extract_usage_from_response in openclaw.rs, which
+// reads the camelCase `meta.agentMeta.usage` block (input/output/cacheRead/
+// cacheWrite) from the openclaw CLI's `--json` output. Rows recorded before
+// 2026-08 are missing: the old extraction read a nonexistent
+// `meta.usage.prompt_tokens` path, so the table stayed empty until that fix
+// landed. Figures on this page only cover usage metered since then.
 
 interface HeatmapEntry {
   date: string;

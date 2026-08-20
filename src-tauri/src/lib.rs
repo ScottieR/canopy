@@ -1160,6 +1160,7 @@ pub fn run() {
             audit::export_audit_log,
             audit::get_security_alerts,
             audit::get_token_usage_history,
+            audit::get_agent_usage_totals,
             audit::get_system_warnings,
             audit::resolve_system_warning,
             // OpenClaw Audit
