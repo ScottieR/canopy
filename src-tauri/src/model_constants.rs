@@ -384,14 +384,14 @@ pub const OPENCLAW_IMAGE_TAG: &str = "2026.7.1";
 /// Catalogue models verified to resolve on OPENCLAW_IMAGE_TAG (Aug 2026 audit:
 /// container catalog grep + live send verification for sonnet-5/haiku/3.5-flash).
 const CONTAINER_SUPPORTED_MODELS: &[&str] = &[
-    ANTHROPIC_CLAUDE_SONNET,   // inline provider def written by preflight
-    ANTHROPIC_CLAUDE_HAIKU,    // in container catalog
-    ANTHROPIC_CLAUDE_OPUS,     // inline provider def written by preflight
-    ANTHROPIC_CLAUDE_FABLE_5,  // in container catalog
-    OPENAI_GPT56_SOL,          // in container default-models
-    GOOGLE_GEMINI_FLASH_35,    // in container catalog
+    ANTHROPIC_CLAUDE_SONNET,     // inline provider def written by preflight
+    ANTHROPIC_CLAUDE_HAIKU,      // in container catalog
+    ANTHROPIC_CLAUDE_OPUS,       // inline provider def written by preflight
+    ANTHROPIC_CLAUDE_FABLE_5,    // in container catalog
+    OPENAI_GPT56_SOL,            // in container default-models
+    GOOGLE_GEMINI_FLASH_35,      // in container catalog
     GOOGLE_GEMINI_31_FLASH_LITE, // in container catalog
-    GOOGLE_GEMINI_31_PRO,      // in container catalog
+    GOOGLE_GEMINI_31_PRO,        // in container catalog
 ];
 
 /// True when the container's OpenClaw runtime can resolve `model`.
@@ -881,7 +881,11 @@ mod tests {
         let chain = default_fallback_chain(ANTHROPIC_CLAUDE_SONNET, true, true, true);
         assert_eq!(
             chain,
-            vec![ANTHROPIC_CLAUDE_HAIKU, OPENAI_GPT56_SOL, GOOGLE_GEMINI_FLASH_35]
+            vec![
+                ANTHROPIC_CLAUDE_HAIKU,
+                OPENAI_GPT56_SOL,
+                GOOGLE_GEMINI_FLASH_35
+            ]
         );
         // Every entry must be a valid, keyed, non-primary model.
         for m in &chain {
@@ -953,9 +957,16 @@ mod tests {
             Some(OPENAI_GPT56_SOL)
         );
         // Supported models need no replacement.
-        assert_eq!(container_supported_replacement(GOOGLE_GEMINI_FLASH_35), None);
+        assert_eq!(
+            container_supported_replacement(GOOGLE_GEMINI_FLASH_35),
+            None
+        );
         // Every replacement must itself be supported and provider-preserving.
-        for unsupported in ["google/gemini-3.5-flash-lite", "openai/gpt-5.6-luna", "xai/grok-4.5"] {
+        for unsupported in [
+            "google/gemini-3.5-flash-lite",
+            "openai/gpt-5.6-luna",
+            "xai/grok-4.5",
+        ] {
             if let Some(r) = container_supported_replacement(unsupported) {
                 assert!(model_supported_by_container(r));
                 assert_eq!(provider_prefix(unsupported), provider_prefix(r));

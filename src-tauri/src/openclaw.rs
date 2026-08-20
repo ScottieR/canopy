@@ -9739,7 +9739,23 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"component\": \"<component_name>\",\n  \"props\": {{ ... }}\n}}\n\
          ```\n\
          This spawns a translucent, frameless window on the host OS. Interactions with it \
-         will route back to your session just like inline widgets.\n",
+         will route back to your session just like inline widgets.\n\n\
+         ## Requesting a provider API key link\n\n\
+         The normal way to ask for a provider API key is the `[request_connection: api_key?...]` \
+         tag described in CANOPY_PROTOCOLS.md — use that for everything except the rare case \
+         where you need the raw capture URL yourself (e.g. to hand it to a channel other than \
+         Slack or the in-app chat). In that case, POST directly:\n\n\
+         ```\n\
+         POST http://host.docker.internal:18802/generate_web_connection_token\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
+         {{\n  \"agent_id\": \"{agent_id}\",\n  \"provider_name\": \"<Display Name>\",\n  \"token_url\": \"<https://... where the user finds the key>\",\n  \"instructions\": \"<short plain-text steps>\",\n  \"placeholder\": \"<optional input hint>\"\n}}\n\
+         ```\n\
+         Returns `{{\"url\": \"https://.../connect/<token>\", \"token\": \"...\", \"expiresAt\": \"...\"}}`. \
+         The link works from any browser — no desktop app reachability required — expires in 15 \
+         minutes, and is single-use. Once the user submits the key there, it's encrypted in transit \
+         and lands directly in your Keychain credential as `agent_{agent_id}_<SECRET_NAME>`; you \
+         still never see the raw value — request it at runtime through the JIT credential flow.\n",
         agent_id    = agent.id,
         skills      = skills_block,
         integrations = integrations_block,
