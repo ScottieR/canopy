@@ -1083,7 +1083,10 @@ fn preflight_sanitize_and_merge_config_with_keys(
     // hiccup into "All models failed" (this is what muted every agent in Aug 2026
     // when the chain walked to an unregistered gemini model).
     for chain_model in std::iter::once(&default_model).chain(default_fallbacks.iter()) {
-        if cfg["agents"]["defaults"]["models"].get(*chain_model).is_none() {
+        if cfg["agents"]["defaults"]["models"]
+            .get(*chain_model)
+            .is_none()
+        {
             cfg["agents"]["defaults"]["models"][*chain_model] = serde_json::json!({});
         }
     }
@@ -2346,7 +2349,10 @@ mod tests {
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
-        assert!(!fallbacks.is_empty(), "keys for two providers must produce a chain");
+        assert!(
+            !fallbacks.is_empty(),
+            "keys for two providers must produce a chain"
+        );
 
         let registered = cfg
             .pointer("/agents/defaults/models")
