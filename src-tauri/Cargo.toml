@@ -1,6 +1,6 @@
 [package]
 name = "canopy"
-version = "0.2.0"
+version = "0.4.0"
 description = "Shelter for your smartest ideas"
 authors = ["Scottie Ryan"]
 edition = "2021"
@@ -57,6 +57,8 @@ pbkdf2 = "0.12"       # Tier 4: derive the Chrome "Safe Storage" cookie-encrypti
 sha1 = "0.10"         # Tier 4: PBKDF2-HMAC-SHA1, per Chromium's macOS os_crypt
 aes = "0.8"           # Tier 4: AES-128-CBC cookie value decryption
 cbc = "0.1"           # Tier 4: CBC mode + PKCS7 padding for the above
+x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 # Follow Me screen capture (Phase 1) — ScreenCaptureKit bridge, macOS only.
 [target.'cfg(target_os = "macos")'.dependencies]

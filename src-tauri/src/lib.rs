@@ -47,6 +47,7 @@ mod security_scanner;
 mod share_publish;
 mod slack;
 mod voice;
+mod web_connections;
 mod web_tools;
 mod workspace_manager;
 
@@ -85,7 +86,7 @@ fn get_flavor() -> FlavorInfo {
     }
 }
 
-fn admin_api_base_url() -> &'static str {
+pub(crate) fn admin_api_base_url() -> &'static str {
     option_env!("CANOPY_API_URL")
         .filter(|value| !value.is_empty())
         .unwrap_or("http://localhost:3001")
@@ -908,6 +909,10 @@ pub fn run() {
             // Start Health Monitor Daemon
             health_monitor::start_health_monitor_daemon(handle.clone());
 
+            // Poll canopy-admin for completed web-hosted connection token captures
+            // (Slack -> web page -> canopy-admin -> here), every 5s.
+            web_connections::start_web_connections_poll_daemon(handle.clone());
+
             // Start the dispatch WebSocket server for mobile clients
             let dispatch_state = std::sync::Arc::new(dispatch::DispatchState::new());
             handle.manage(dispatch_state.clone());
@@ -951,6 +956,8 @@ pub fn run() {
             share_publish::get_share_config,
             share_publish::publish_share_artifact,
             share_publish::revoke_share_artifact,
+            // Web-hosted connection token capture (Slack -> web -> vault)
+            web_connections::generate_web_connection_token,
             docker::configure_orbstack_memory,
             docker::get_container_status,
             docker::start_gateway,
