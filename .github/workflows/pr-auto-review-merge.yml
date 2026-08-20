@@ -104,6 +104,31 @@ jobs:
     if: needs.sensitive-path-guard.outputs.is_sensitive == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # A job-level `permissions:` block REPLACES the workflow-level one for this job
+    # only -- every other job here still inherits the workflow-level grant above, so
+    # none of them need a block of their own. Spelled out per-scope because this job
+    # is the one that runs a third-party action, and it should hold the narrowest set
+    # of rights that still lets its steps work:
+    permissions:
+      contents: read # checkout only -- this job never pushes
+      pull-requests: write # `gh pr review` in the post step
+      issues: write # `gh issue create` for improvement suggestions. NOT covered by
+        # pull-requests: write, and any scope omitted from a permissions block is set
+        # to `none` -- so before this block existed that step was silently 403ing
+        # under `|| true` and no suggestion issue was ever filed.
+      id-token: write # required: anthropics/claude-code-action mints a GitHub OIDC
+        # token and POSTs it to api.anthropic.com/api/github/github-app-token-exchange
+        # for a Claude GitHub App installation token. Without this the action fails
+        # before it ever calls Claude ("Could not fetch an OIDC token"), which took
+        # the review job -- and therefore auto-merge -- down on every PR.
+        #
+        # Note this grant only covers minting the OIDC token. The exchange on the
+        # other end additionally requires the Claude GitHub App to be installed on
+        # this repo; if it isn't, the job fails at the exchange step instead.
+        #
+        # `actions: read` is deliberately NOT granted -- the action only needs it when
+        # `additional_permissions: actions: read` is set to let Claude read CI logs,
+        # which this workflow doesn't use.
     outputs:
       verdict: ${{ steps.post.outputs.verdict }}
       risk_level: ${{ steps.post.outputs.risk_level }}
