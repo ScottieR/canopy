@@ -16,7 +16,9 @@ const VAULT_KEY: &str = "canopy_vault_v2";
 /// keychain, corrupt JSON — must propagate as an error: callers that
 /// read-modify-write would otherwise overwrite the real vault with a
 /// near-empty map and destroy every stored credential.
-fn vault_from_read(read: std::result::Result<String, keyring::Error>) -> Result<HashMap<String, String>> {
+fn vault_from_read(
+    read: std::result::Result<String, keyring::Error>,
+) -> Result<HashMap<String, String>> {
     match read {
         Ok(json_str) => serde_json::from_str(&json_str).map_err(|e| {
             CanopyError::Keychain(format!(
@@ -601,6 +603,9 @@ mod tests {
     #[test]
     fn vault_read_valid_json_parses() {
         let vault = vault_from_read(Ok(r#"{"OPENAI_API_KEY":"sk-test"}"#.into())).unwrap();
-        assert_eq!(vault.get("OPENAI_API_KEY").map(String::as_str), Some("sk-test"));
+        assert_eq!(
+            vault.get("OPENAI_API_KEY").map(String::as_str),
+            Some("sk-test")
+        );
     }
 }
