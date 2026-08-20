@@ -179,8 +179,20 @@ jobs:
             TypeScript frontend in src/) that manages AI agents, including macOS Keychain
             credential handling, payments, and browser automation -- weigh security issues in
             those areas heavily for both verdict and risk_level.
+          # --max-turns 40, not 12: at 12 the review could not finish even a 9-line,
+          # one-file diff (PR #28). The run ended `error_max_turns` having never called
+          # the structured-output tool, so the action failed with "--json-schema was
+          # provided but Claude did not return structured_output" and auto-merge skipped.
+          # The prompt above deliberately asks Claude to go looking for existing utilities
+          # a change might duplicate, and that exploration spends turns before the verdict
+          # is emitted. 40 keeps the schema call reachable on realistic diffs while staying
+          # well inside this job's 15-minute timeout -- the failed run spent 81s on its 12
+          # turns, so 40 lands around 5 minutes.
+          #
+          # NOTE: everything inside `claude_args: |` is a literal CLI argument -- a `#`
+          # line in there would be passed to the CLI, not treated as a comment.
           claude_args: |
-            --max-turns 12
+            --max-turns 40
             --model claude-opus-5
             --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","changes_requested"]},"risk_level":{"type":"string","enum":["low","medium","high"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}},"improvement_suggestions":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"rationale":{"type":"string"}},"required":["title","rationale"]}}},"required":["verdict","risk_level","summary","blocking_issues","improvement_suggestions"]}'
 
