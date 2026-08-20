@@ -451,21 +451,33 @@ pub fn gateway_internal_token() -> &'static str {
     static TOKEN: OnceLock<String> = OnceLock::new();
     TOKEN
         .get_or_init(|| {
-            crate::keychain::get_or_create_internal_secret(
+            match crate::keychain::get_or_create_internal_secret(
                 "internal_gateway_token",
                 "canopy_gateway_",
-            )
-            .unwrap_or_else(|error| {
-                tracing::warn!(
-                    "Could not persist the internal gateway credential; using a process-local credential: {}",
-                    error
-                );
-                format!(
-                    "canopy_gateway_{}{}",
-                    uuid::Uuid::new_v4().simple(),
-                    uuid::Uuid::new_v4().simple()
-                )
-            })
+            ) {
+                Ok(token) => {
+                    crate::system_health::report_ok("keychain");
+                    token
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "Could not persist the internal gateway credential; using a process-local credential: {}",
+                        error
+                    );
+                    crate::system_health::report_degraded(
+                        "keychain",
+                        format!(
+                            "Keychain unavailable — using a temporary gateway credential that dies with this app session ({error})"
+                        ),
+                        "Agents deployed now will lose gateway access when Canopy quits. Relaunch Canopy and click 'Allow' on the keychain prompt.",
+                    );
+                    format!(
+                        "canopy_gateway_{}{}",
+                        uuid::Uuid::new_v4().simple(),
+                        uuid::Uuid::new_v4().simple()
+                    )
+                }
+            }
         })
         .as_str()
 }
