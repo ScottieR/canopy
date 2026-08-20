@@ -1080,6 +1080,7 @@ pub fn run() {
             keychain::get_web_credentials_cmd,
             keychain::verify_cloak_passcode,
             keychain::authenticate_mac_user,
+            keychain::keychain_status_cmd,
             // Eddy inference routing (hosted bootstrap, direct provider, or Ollama)
             canopy_helper::get_canopy_helper_config,
             canopy_helper::configure_canopy_helper,
