@@ -25,7 +25,7 @@ pub fn start_health_monitor_daemon(app_handle: tauri::AppHandle) {
 /// Emits a `gateway-health` Tauri event so the frontend can show a reconnect prompt
 /// if the gateway goes offline mid-session without a user-triggered action.
 async fn check_gateway_health(app_handle: &tauri::AppHandle) {
-    use crate::model_constants::GATEWAY_URL;
+    use crate::model_constants::gateway_url;
     use crate::openclaw::get_docker_command;
 
     // Step 1: Is the container running?
@@ -36,7 +36,7 @@ async fn check_gateway_health(app_handle: &tauri::AppHandle) {
                 "inspect",
                 "--format",
                 "{{.State.Running}}",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
             ])
             .output(),
     )
@@ -66,7 +66,7 @@ async fn check_gateway_health(app_handle: &tauri::AppHandle) {
     };
 
     let gateway_ok = client
-        .get(format!("{}/health/stats", GATEWAY_URL))
+        .get(format!("{}/health/stats", gateway_url()))
         .header(
             "Authorization",
             &crate::model_constants::gateway_bearer_header(),

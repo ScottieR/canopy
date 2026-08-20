@@ -34,7 +34,7 @@ pub async fn audit_openclaw_config(
     let container_name = agent_id
         .as_deref()
         .map(|id| crate::openclaw::get_agent_container_name(&db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     let _ = app_handle.emit(
         "diagnostics-log",
@@ -170,7 +170,7 @@ pub async fn audit_openclaw_config(
     // We check for GATEWAY_HOST_PORT (18799) — the port Canopy connects to from the host.
     // Do NOT check for GATEWAY_CONTAINER_PORT (18789) — that's container-internal only
     // and will always appear missing from the host side, causing a permanent false alarm.
-    let host_port_str = model_constants::GATEWAY_HOST_PORT.to_string();
+    let host_port_str = model_constants::gateway_host_port().to_string();
     let port_mismatch = config
         .pointer("/gateway/controlUi/allowedOrigins")
         .and_then(|v| v.as_array())
@@ -283,7 +283,7 @@ pub async fn repair_openclaw_config(
     let container_name = agent_id
         .as_deref()
         .map(|id| crate::openclaw::get_agent_container_name(&db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     // Decide which model to write.
     // Priority: explicit caller override → keep existing model if it's valid → fall back to expected.
@@ -307,7 +307,7 @@ pub async fn repair_openclaw_config(
                 current
             );
             // Still apply the non-model fixes (trustedProxies, allowedOrigins) then return.
-            let host_port = model_constants::GATEWAY_HOST_PORT;
+            let host_port = model_constants::gateway_host_port();
             let allowed_origins = format!(
                 "[\"http://localhost:{}\", \"tauri://localhost\", \"https://tauri.localhost\"]",
                 host_port
@@ -364,7 +364,7 @@ pub async fn repair_openclaw_config(
         .map_err(|e| format!("Refusing to write invalid model string to gateway: {}", e))?;
 
     // Build the allowedOrigins array using the host port so the port-alignment check passes.
-    let host_port = model_constants::GATEWAY_HOST_PORT;
+    let host_port = model_constants::gateway_host_port();
     let allowed_origins = format!(
         "[\"http://localhost:{}\", \"tauri://localhost\", \"https://tauri.localhost\"]",
         host_port
@@ -446,7 +446,7 @@ pub async fn get_openclaw_status(
     let container_name = agent_id
         .as_deref()
         .map(|id| crate::openclaw::get_agent_container_name(&db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     let status_fut = crate::openclaw::get_docker_command()
         .args([
@@ -492,13 +492,13 @@ mod tests {
         // The allowedOrigins check must look for GATEWAY_HOST_PORT (18799).
         // Looking for GATEWAY_CONTAINER_PORT (18789) always fails from the host side,
         // causing a permanent false `port_mismatch = true` that triggers repair loops.
-        let host_port_str = model_constants::GATEWAY_HOST_PORT.to_string();
+        let host_port_str = model_constants::gateway_host_port().to_string();
         let container_port_str = model_constants::GATEWAY_CONTAINER_PORT.to_string();
 
         // Simulate what the audit does: check if host port appears in some origin string
         let sample_origins = vec![format!(
             "http://localhost:{}",
-            model_constants::GATEWAY_HOST_PORT
+            model_constants::gateway_host_port()
         )];
         let found_host = sample_origins.iter().any(|v| v.contains(&host_port_str));
         let found_container = sample_origins
@@ -508,7 +508,7 @@ mod tests {
         assert!(
             found_host,
             "Host port {} must be detectable in origins",
-            model_constants::GATEWAY_HOST_PORT
+            model_constants::gateway_host_port()
         );
         assert!(
             !found_container,

@@ -11,6 +11,7 @@ import { Toggle, ServiceRow, glass } from "../../App";
 import type { GenerativeResult } from "../../types/generative";
 import { GlobalAlertsFeed } from "../GlobalAlertsFeed";
 import { DecisionQueuePanel } from "../DecisionQueue/DecisionQueuePanel";
+import { useFlavor } from "../../hooks/useFlavor";
 
 export // ═══════════════════════════════════════════════════════════════════════════════
 // TOP NAVIGATION BAR
@@ -18,6 +19,7 @@ export // ═══════════════════════�
 
 function TopNav() {
   const { activeView, setActiveView, setActiveForumId, theme, toggleTheme, agents, setSelectedAgent, pendingDecisions, securityAlerts, systemWarnings, setSecurityAlerts, setSystemWarnings } = useWorldStore();
+  const flavor = useFlavor();
   const [searchQuery, setSearchQuery] = useState("");
   const [showAlertsFeed, setShowAlertsFeed] = useState(false);
   const hasUnreadAlerts = securityAlerts.length > 0 || systemWarnings.length > 0;
@@ -97,6 +99,18 @@ function TopNav() {
           fontFamily: "'Satoshi', 'Manrope', system-ui, sans-serif",
           fontStyle: "italic",
         }}>The Canopy</span>
+        {flavor?.is_dev && (
+          <span title="Dev flavor — isolated containers, ports, keychain, and data dir. Prod agents are untouched." style={{
+            padding: "2px 8px",
+            borderRadius: 6,
+            fontSize: 10.5, fontWeight: 800, letterSpacing: "0.08em",
+            color: "#7a4d00",
+            background: "rgba(255, 191, 71, 0.92)",
+            border: "1px solid rgba(176, 108, 0, 0.45)",
+            textTransform: "uppercase",
+            pointerEvents: "none",
+          }}>DEV</span>
+        )}
       </div>
 
       {/* Center nav */}

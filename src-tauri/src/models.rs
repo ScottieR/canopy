@@ -36,8 +36,8 @@ fn normalize_dynamic_model_id(provider_prefix: &str, value: &str) -> Option<Stri
 /// If the dynamic file would produce a malformed string, the constant fallback is used.
 pub fn get_dynamic_default_model(provider: &str) -> String {
     use std::fs;
-    let data_dir = if let Some(dir) = dirs::data_dir() {
-        dir.join("Canopy").join("models.json")
+    let data_dir = if let Some(dir) = crate::flavor::canopy_data_dir() {
+        dir.join("models.json")
     } else {
         std::path::PathBuf::from("models.json")
     };
