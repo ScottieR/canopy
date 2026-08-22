@@ -59,6 +59,161 @@ type PaymentDashboard = {
 
 type VirtualCardRecord = PaymentDashboard["active_virtual_cards"][number];
 
+// One aggregated row from the internal metering ledger (token_usage_history),
+// as returned by the get_agent_usage_totals command: totals for one
+// (agent, model, provider) combination in the queried window.
+type AgentUsageTotal = {
+  agent_id: string;
+  model: string;
+  provider: string;
+  tokens_in: number;
+  tokens_out: number;
+  cost_usd: number;
+  call_count: number;
+};
+
+type UsageWindowKey = "day" | "week" | "month";
+
+const USAGE_WINDOWS: Array<{ key: UsageWindowKey; label: string; days: number }> = [
+  { key: "day", label: "Today", days: 1 },
+  { key: "week", label: "Last 7 days", days: 7 },
+  { key: "month", label: "Last 30 days", days: 30 },
+];
+
+function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+  return String(count);
+}
+
+function sumUsage(rows: AgentUsageTotal[] | null | undefined) {
+  return (Array.isArray(rows) ? rows : []).reduce(
+    (acc, row) => ({
+      cost: acc.cost + row.cost_usd,
+      tokensIn: acc.tokensIn + row.tokens_in,
+      tokensOut: acc.tokensOut + row.tokens_out,
+      calls: acc.calls + row.call_count,
+    }),
+    { cost: 0, tokensIn: 0, tokensOut: 0, calls: 0 },
+  );
+}
+
+/**
+ * Per-agent LLM spend from the internal metering ledger. Populated by the app
+ * itself on every model call, so it works with a single shared provider key —
+ * no per-agent API keys required.
+ */
+function LlmUsageSection({ agentId }: { agentId: string }) {
+  const [byWindow, setByWindow] = useState<Record<UsageWindowKey, AgentUsageTotal[]> | null>(null);
+  const [selectedWindow, setSelectedWindow] = useState<UsageWindowKey>("week");
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.all(
+      USAGE_WINDOWS.map(w =>
+        invoke<AgentUsageTotal[]>("get_agent_usage_totals", { agentId, days: w.days }),
+      ),
+    )
+      .then(([day, week, month]) => {
+        // Normalize here so a null/absent result can't reach the reducers.
+        const rows = (value: unknown) => (Array.isArray(value) ? (value as AgentUsageTotal[]) : []);
+        if (mounted) setByWindow({ day: rows(day), week: rows(week), month: rows(month) });
+      })
+      .catch(e => {
+        console.error("Failed to load LLM usage totals", e);
+        if (mounted) setError(true);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [agentId]);
+
+  const breakdown = byWindow?.[selectedWindow] ?? [];
+  const selectedTotals = sumUsage(breakdown);
+
+  return (
+    <div style={{ ...glass(0.45), borderRadius: 16, padding: 18, marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>
+          LLM Usage
+        </div>
+        <select
+          value={selectedWindow}
+          onChange={e => setSelectedWindow(e.target.value as UsageWindowKey)}
+          style={{ ...fieldStyle, width: 160, cursor: "pointer" }}
+        >
+          {USAGE_WINDOWS.map(w => (
+            <option key={w.key} value={w.key}>{w.label}</option>
+          ))}
+        </select>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 14 }}>
+        Metered internally per model call — accurate even on a shared provider key.
+      </div>
+
+      {error ? (
+        <div style={{ fontSize: 13, color: "var(--text-sub)" }}>Failed to load LLM usage.</div>
+      ) : !byWindow ? (
+        <div style={{ fontSize: 13, color: "var(--text-sub)" }}>Loading LLM usage...</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 12, marginBottom: 16 }}>
+            {USAGE_WINDOWS.map(w => {
+              const totals = sumUsage(byWindow[w.key]);
+              return (
+                <div key={w.key} style={{ padding: 12, borderRadius: 12, background: "rgba(0,0,0,0.02)", border: "1px solid rgba(0,0,0,0.05)" }}>
+                  <div style={{ fontSize: 12, color: "var(--text-sub)", marginBottom: 6 }}>{w.label}</div>
+                  <div style={{ fontSize: 20, fontWeight: 700, color: "var(--text-main)" }}>
+                    ${totals.cost.toFixed(totals.cost >= 10 ? 2 : 3)}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 4 }}>
+                    {formatTokens(totals.tokensIn)} in · {formatTokens(totals.tokensOut)} out · {totals.calls} calls
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {breakdown.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--text-sub)" }}>
+              No metered model calls in this window yet.
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "var(--border-subtle)", textAlign: "left" }}>
+                  <th style={headerStyle}>Model</th>
+                  <th style={headerStyle}>Provider</th>
+                  <th style={{ ...headerStyle, textAlign: "right" }}>Calls</th>
+                  <th style={{ ...headerStyle, textAlign: "right" }}>Tokens In</th>
+                  <th style={{ ...headerStyle, textAlign: "right" }}>Tokens Out</th>
+                  <th style={{ ...headerStyle, textAlign: "right" }}>Cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {breakdown.map(row => (
+                  <tr key={`${row.model}-${row.provider}`} style={{ borderTop: "1px solid rgba(0,0,0,0.04)" }}>
+                    <td style={{ ...cellStyle, fontWeight: 700 }}>{row.model}</td>
+                    <td style={{ ...cellStyle, color: "var(--text-sub)" }}>{row.provider}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{row.call_count}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{formatTokens(row.tokens_in)}</td>
+                    <td style={{ ...cellStyle, textAlign: "right" }}>{formatTokens(row.tokens_out)}</td>
+                    <td style={{ ...cellStyle, textAlign: "right", fontWeight: 700 }}>${row.cost_usd.toFixed(4)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div style={{ fontSize: 11, color: "var(--text-sub)", marginTop: 10 }}>
+            Totals for {selectedTotals.calls} call{selectedTotals.calls === 1 ? "" : "s"} in the selected window.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 type PurchaseDraft = {
   description: string;
   merchant: string;
@@ -397,6 +552,8 @@ export function SpendTab({ agent }: { agent: AgentData }) {
           </div>
         ))}
       </div>
+
+      <LlmUsageSection agentId={agent.id} />
 
       {feedback && (
         <div style={{ marginBottom: 16, fontSize: 12, color: "var(--text-sub)" }}>

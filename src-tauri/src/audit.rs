@@ -496,6 +496,16 @@ pub async fn get_token_usage_history(
 }
 
 #[tauri::command]
+pub async fn get_agent_usage_totals(
+    db: State<'_, Database>,
+    agent_id: Option<String>,
+    days: u32,
+) -> Result<Vec<crate::models::AgentUsageTotal>, String> {
+    db.get_agent_usage_totals(agent_id.as_deref(), days)
+        .map_err(|e| format!("Failed to aggregate token usage: {}", e))
+}
+
+#[tauri::command]
 pub async fn get_system_warnings(
     db: State<'_, Database>,
 ) -> Result<Vec<crate::models::SystemWarning>, String> {

@@ -2953,6 +2953,98 @@ fn finalize_thread_run(
     clear_thread_cancellation_requested(agent_id, conversation_id);
 }
 
+/// Token usage for a single model call, extracted from an `openclaw agent --json`
+/// response body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExtractedUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub model: String,
+    pub provider: String,
+}
+
+impl ExtractedUsage {
+    /// Total prompt-side tokens sent to the provider (fresh input plus prompt
+    /// cache reads/writes). Matches the gateway's own `promptTokens` convention
+    /// in its model.usage diagnostic events.
+    pub fn billable_input_tokens(&self) -> u64 {
+        self.input_tokens + self.cache_read_tokens + self.cache_write_tokens
+    }
+}
+
+/// Extract per-call token usage from an `openclaw agent --json` response.
+///
+/// Verified shapes (read off /app/dist/agent-command*.js `agentMeta` and
+/// `toNormalizedUsage` in the gateway container, 2026-08-18):
+///
+///   Gateway dispatch:  { "status": "ok", "result": { "payloads": [...],
+///                        "meta": { "agentMeta": { "provider": "anthropic",
+///                        "model": "...", "usage": { "input": N, "output": N,
+///                        "cacheRead": N, "cacheWrite": N, "total": N } } } } }
+///   Embedded/local:    { "payloads": [...], "meta": { "agentMeta": { ... } } }
+///
+/// Absent buckets are simply omitted from `usage` (toNormalizedUsage maps 0 to
+/// undefined), so every key is read as optional. Also handles the legacy
+/// snake_case `meta.usage.prompt_tokens` shape older CLI builds emitted.
+/// Returns None when no shape yields nonzero tokens.
+pub(crate) fn extract_usage_from_response(body: &Value) -> Option<ExtractedUsage> {
+    let agent_meta = [
+        &body["result"]["meta"]["agentMeta"],
+        &body["meta"]["agentMeta"],
+    ]
+    .into_iter()
+    .find(|meta| meta.is_object());
+
+    if let Some(meta) = agent_meta {
+        let usage = &meta["usage"];
+        let input_tokens = usage["input"].as_u64().unwrap_or(0);
+        let output_tokens = usage["output"].as_u64().unwrap_or(0);
+        let cache_read_tokens = usage["cacheRead"].as_u64().unwrap_or(0);
+        let cache_write_tokens = usage["cacheWrite"].as_u64().unwrap_or(0);
+        if input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0 {
+            let model = meta["model"].as_str().unwrap_or("unknown").to_string();
+            let provider = meta["provider"]
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .map(String::from)
+                .unwrap_or_else(|| crate::models::infer_provider_from_model(&model).to_string());
+            return Some(ExtractedUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                model,
+                provider,
+            });
+        }
+    }
+
+    // Legacy snake_case shape from older CLI builds.
+    let legacy_meta = [&body["meta"], &body["result"]["meta"]]
+        .into_iter()
+        .find(|meta| meta["usage"].is_object());
+    if let Some(meta) = legacy_meta {
+        let input_tokens = meta["usage"]["prompt_tokens"].as_u64().unwrap_or(0);
+        let output_tokens = meta["usage"]["completion_tokens"].as_u64().unwrap_or(0);
+        if input_tokens + output_tokens > 0 {
+            let model = meta["model"].as_str().unwrap_or("unknown").to_string();
+            let provider = crate::models::infer_provider_from_model(&model).to_string();
+            return Some(ExtractedUsage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                model,
+                provider,
+            });
+        }
+    }
+
+    None
+}
+
 pub async fn send_message_internal(
     db: &crate::db::Database,
     app: &tauri::AppHandle,
@@ -3505,102 +3597,61 @@ pub async fn send_message_internal_with_context(
         }
     }
 
-    // ── Extract tokens and update stats ───────────────────────────────────────
-    let prompt_tokens = body["meta"]["usage"]["prompt_tokens"]
-        .as_u64()
-        .or_else(|| body["result"]["meta"]["usage"]["prompt_tokens"].as_u64())
-        .unwrap_or(0);
-    let completion_tokens = body["meta"]["usage"]["completion_tokens"]
-        .as_u64()
-        .or_else(|| body["result"]["meta"]["usage"]["completion_tokens"].as_u64())
-        .unwrap_or(0);
-    let model = body["meta"]["model"]
-        .as_str()
-        .or_else(|| body["result"]["meta"]["model"].as_str())
-        .unwrap_or("unknown");
-
-    // DIAGNOSTIC (2026-07): unlike the `payloads[0].text` extraction above
-    // (comment: "confirmed from live run"), the usage/token paths here were
-    // never verified against a real openclaw --json payload — git history
-    // shows they were added without a citation or sample response. Every
-    // downstream cost/token figure (agent.stats.total_cost_usd,
-    // token_usage_history, the My Usage dashboard, admin telemetry) reads
-    // zero as a direct result whenever this stays 0 despite a real reply.
-    // Log the full body (not just the 500-char stdout_preview above) the
-    // first time this happens so the real `meta` shape can be read off and
-    // the extraction paths above fixed precisely instead of re-guessed.
-    if prompt_tokens == 0 && completion_tokens == 0 && !response_text.trim().is_empty() {
+    // ── Extract tokens and record the metered call ────────────────────────────
+    // Usage lives at meta.agentMeta.usage with camelCase keys (input/output/
+    // cacheRead/cacheWrite) — see extract_usage_from_response for the verified
+    // shapes. This feeds the token_usage_history ledger, so per-agent cost
+    // attribution works with a single shared provider key.
+    let extracted_usage = extract_usage_from_response(&body);
+    if extracted_usage.is_none() && !response_text.trim().is_empty() {
+        // A real reply with no recognisable usage block means either an old CLI
+        // version or a new response shape — log the full body so the extraction
+        // paths can be extended precisely instead of re-guessed.
         tracing::warn!(
-            "send_message_internal: token extraction found 0 tokens despite a non-empty reply for agent={} — full body follows (compare against body[\"meta\"][\"usage\"][\"prompt_tokens\"]/[\"completion_tokens\"] paths in the code above this log line): {}",
+            "send_message_internal: no usage block recognised despite a non-empty reply for agent={} — full body follows (compare against the shapes handled in extract_usage_from_response): {}",
             agent_id,
             body
         );
     }
 
-    if prompt_tokens > 0 || completion_tokens > 0 {
+    let (prompt_tokens, completion_tokens, model) = match &extracted_usage {
+        Some(usage) => (
+            usage.billable_input_tokens(),
+            usage.output_tokens,
+            usage.model.as_str(),
+        ),
+        None => (0, 0, "unknown"),
+    };
+
+    if let Some(usage) = &extracted_usage {
+        let cost_usd = crate::models::estimate_call_cost_usd(
+            &usage.model,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_write_tokens,
+        );
+
+        // The ledger row is the source of truth for per-agent attribution —
+        // write it even if the cumulative agent.stats update below fails.
+        let _ = db.insert_token_usage_record(&crate::models::TokenUsageRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            agent_id: agent_id.to_string(),
+            conversation_id: Some(conv_id.clone()),
+            timestamp: chrono::Utc::now().to_rfc3339(),
+            model: usage.model.clone(),
+            provider: usage.provider.clone(),
+            tokens_in: usage.billable_input_tokens(),
+            tokens_out: usage.output_tokens,
+            cost_usd,
+        });
+
         if let Ok(Some(mut agent)) = db.get_agent(agent_id) {
-            agent
-                .stats
-                .record_usage(model, prompt_tokens, completion_tokens);
-
-            // Calculate cost for this specific transaction
-            let registry = crate::models::PRICING_REGISTRY.read().unwrap();
-            let (cost_in_per_m, cost_out_per_m) = if let Some(&costs) = registry.get(model) {
-                costs
-            } else {
-                match model {
-                    "claude-sonnet-5" => (3.00, 15.00),
-                    "claude-haiku-4-5" => (1.00, 5.00),
-                    "claude-opus-5" => (5.00, 25.00),
-                    "claude-fable-5" => (10.00, 50.00),
-                    "claude-opus-4-8" => (5.00, 25.00),
-                    "claude-opus-4-7" => (5.00, 25.00),
-                    "claude-sonnet-4-6" => (3.00, 15.00),
-                    "claude-opus-4-6" => (15.00, 75.00),
-                    "gpt-5.6-sol" => (5.00, 30.00),
-                    "gpt-5.6-terra" => (2.50, 15.00),
-                    "gpt-5.6-luna" => (1.00, 6.00),
-                    "gpt-4o-mini" => (0.15, 0.60),
-                    "gpt-4o" => (2.50, 10.00),
-                    "gemini-3.6-flash" => (1.50, 7.50),
-                    "gemini-3.5-flash-lite" => (0.30, 2.50),
-                    "gemini-3.5-flash" => (1.50, 9.00),
-                    "gemini-3.1-pro-preview" => (2.00, 12.00),
-                    "gemini-3.1-flash-lite" => (0.25, 1.50),
-                    "gemini-2.5-flash" => (0.30, 2.50),
-                    "gemini-2.5-pro" => (1.25, 10.00),
-                    "grok-4.5" => (2.00, 6.00),
-                    "grok-beta" => (5.00, 15.00),
-                    _ => (1.00, 5.00),
-                }
-            };
-            let cost_usd = (prompt_tokens as f64 / 1_000_000.0) * cost_in_per_m
-                + (completion_tokens as f64 / 1_000_000.0) * cost_out_per_m;
-
-            let provider = if model.starts_with("gpt") {
-                "openai"
-            } else if model.starts_with("claude") {
-                "anthropic"
-            } else if model.starts_with("gemini") {
-                "google"
-            } else if model.starts_with("grok") {
-                "xai"
-            } else {
-                "unknown"
-            };
-
-            let _ = db.insert_token_usage_record(&crate::models::TokenUsageRecord {
-                id: uuid::Uuid::new_v4().to_string(),
-                agent_id: agent_id.to_string(),
-                conversation_id: Some(conv_id.clone()),
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                model: model.to_string(),
-                provider: provider.to_string(),
-                tokens_in: prompt_tokens,
-                tokens_out: completion_tokens,
+            agent.stats.record_metered_call(
+                usage.billable_input_tokens(),
+                usage.output_tokens,
                 cost_usd,
-            });
-
+            );
             let _ = db.update_agent(&agent);
         }
     }
@@ -8462,6 +8513,195 @@ mod tests {
     use super::*;
     use crate::model_constants;
     use chrono::Utc;
+
+    // ── Token usage extraction (metering) ─────────────────────────────────
+
+    #[test]
+    fn extracts_usage_from_verbatim_live_gateway_payload() {
+        // Captured from a real `openclaw agent --json` run against the gateway
+        // container on 2026-08-18 (agent-riz, "Reply with exactly: ok"),
+        // trimmed to the fields this extraction reads. Two things this pins:
+        //   1. Zero buckets are OMITTED, not zero — `cacheRead` is absent here.
+        //   2. The old `meta.usage.prompt_tokens` path matches nothing in this
+        //      shape, which is why token_usage_history stayed empty: the
+        //      `prompt_tokens > 0` guard skipped every insert.
+        let body = json!({
+            "runId": "b3f1c0de-run",
+            "status": "ok",
+            "summary": "ok",
+            "result": {
+                "payloads": [{ "text": "ok", "mediaUrl": null }],
+                "meta": {
+                    "durationMs": 8123,
+                    "agentMeta": {
+                        "sessionId": "metering-verify-20260818",
+                        "sessionFile": "/home/node/.openclaw/agents/agent-riz/sessions/x.jsonl",
+                        "provider": "anthropic",
+                        "model": "claude-haiku-4-5",
+                        "contextTokens": 200000,
+                        "agentHarnessId": "embedded",
+                        "usage": { "input": 10, "output": 42, "cacheWrite": 23368, "total": 23420 },
+                        "promptTokens": 23378
+                    },
+                    "stopReason": "end_turn"
+                }
+            }
+        });
+
+        // The old extraction found nothing in this real payload.
+        assert!(body["meta"]["usage"]["prompt_tokens"].as_u64().is_none());
+        assert!(body["result"]["meta"]["usage"]["prompt_tokens"]
+            .as_u64()
+            .is_none());
+
+        let usage = extract_usage_from_response(&body).expect("live payload must meter");
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 42);
+        assert_eq!(usage.cache_read_tokens, 0, "absent bucket reads as zero");
+        assert_eq!(usage.cache_write_tokens, 23368);
+        assert_eq!(usage.model, "claude-haiku-4-5");
+        assert_eq!(usage.provider, "anthropic");
+
+        // Matches the gateway's own promptTokens (input + cacheRead + cacheWrite).
+        assert_eq!(usage.billable_input_tokens(), 23378);
+
+        // Cache-write tokens dominate this call, so ignoring them would
+        // under-report its cost by more than 100x.
+        let cost = crate::models::estimate_call_cost_usd(
+            &usage.model,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_read_tokens,
+            usage.cache_write_tokens,
+        );
+        let ignoring_cache = crate::models::estimate_call_cost_usd(
+            &usage.model,
+            usage.input_tokens,
+            usage.output_tokens,
+            0,
+            0,
+        );
+        assert!(cost > ignoring_cache * 100.0);
+    }
+
+    #[test]
+    fn extracts_usage_from_gateway_dispatch_response() {
+        // Shape verified against the gateway container's agent-command dist
+        // (result.meta.agentMeta.usage with camelCase buckets).
+        let body = json!({
+            "status": "ok",
+            "runId": "run-1",
+            "result": {
+                "payloads": [{ "text": "Hello!", "mediaUrl": null }],
+                "meta": {
+                    "durationMs": 5210,
+                    "agentMeta": {
+                        "sessionId": "conv_123",
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-5",
+                        "contextTokens": 200000,
+                        "usage": {
+                            "input": 7074,
+                            "output": 167,
+                            "cacheRead": 16250,
+                            "total": 23491
+                        }
+                    }
+                }
+            }
+        });
+
+        let usage = extract_usage_from_response(&body).expect("usage should extract");
+        assert_eq!(usage.input_tokens, 7074);
+        assert_eq!(usage.output_tokens, 167);
+        assert_eq!(usage.cache_read_tokens, 16250);
+        assert_eq!(usage.cache_write_tokens, 0);
+        assert_eq!(usage.billable_input_tokens(), 7074 + 16250);
+        assert_eq!(usage.model, "claude-sonnet-5");
+        assert_eq!(usage.provider, "anthropic");
+    }
+
+    #[test]
+    fn extracts_usage_from_embedded_top_level_response() {
+        // Embedded/local runs return {payloads, meta} without the gateway
+        // status/result envelope.
+        let body = json!({
+            "payloads": [{ "text": "Done." }],
+            "meta": {
+                "agentMeta": {
+                    "sessionId": "conv_456",
+                    "provider": "openai",
+                    "model": "gpt-5.6-terra",
+                    "usage": { "input": 1200, "output": 300, "cacheWrite": 500 }
+                }
+            }
+        });
+
+        let usage = extract_usage_from_response(&body).expect("usage should extract");
+        assert_eq!(usage.input_tokens, 1200);
+        assert_eq!(usage.output_tokens, 300);
+        assert_eq!(usage.cache_read_tokens, 0);
+        assert_eq!(usage.cache_write_tokens, 500);
+        assert_eq!(usage.provider, "openai");
+    }
+
+    #[test]
+    fn infers_provider_when_agent_meta_omits_it() {
+        let body = json!({
+            "payloads": [],
+            "meta": {
+                "agentMeta": {
+                    "model": "gemini-2.5-pro",
+                    "usage": { "input": 10, "output": 5 }
+                }
+            }
+        });
+
+        let usage = extract_usage_from_response(&body).expect("usage should extract");
+        assert_eq!(usage.provider, "google");
+    }
+
+    #[test]
+    fn extracts_legacy_snake_case_usage_shape() {
+        let body = json!({
+            "payloads": [{ "text": "hi" }],
+            "meta": {
+                "model": "claude-haiku-4-5",
+                "usage": { "prompt_tokens": 900, "completion_tokens": 40 }
+            }
+        });
+
+        let usage = extract_usage_from_response(&body).expect("usage should extract");
+        assert_eq!(usage.input_tokens, 900);
+        assert_eq!(usage.output_tokens, 40);
+        assert_eq!(usage.billable_input_tokens(), 900);
+        assert_eq!(usage.model, "claude-haiku-4-5");
+        assert_eq!(usage.provider, "anthropic");
+    }
+
+    #[test]
+    fn returns_none_for_zero_or_missing_usage() {
+        // No meta at all (plaintext fallback wrap).
+        assert_eq!(
+            extract_usage_from_response(&json!({ "response": "plain text" })),
+            None
+        );
+        // agentMeta present but all buckets zero/omitted — toNormalizedUsage
+        // omits zero buckets, and error paths omit usage entirely.
+        assert_eq!(
+            extract_usage_from_response(&json!({
+                "payloads": [],
+                "meta": { "agentMeta": { "model": "claude-sonnet-5", "provider": "anthropic" } }
+            })),
+            None
+        );
+        assert_eq!(
+            extract_usage_from_response(&json!({
+                "meta": { "model": "x", "usage": { "prompt_tokens": 0, "completion_tokens": 0 } }
+            })),
+            None
+        );
+    }
 
     // ── Provider auth-failure detection ───────────────────────────────────
 
