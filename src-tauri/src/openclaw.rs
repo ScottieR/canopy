@@ -8517,7 +8517,11 @@ mod tests {
         m
     }
 
-    fn resolved_one(env_key: &str, value: &str, source: CredSource) -> std::collections::HashMap<String, ResolvedCred> {
+    fn resolved_one(
+        env_key: &str,
+        value: &str,
+        source: CredSource,
+    ) -> std::collections::HashMap<String, ResolvedCred> {
         let mut m = std::collections::HashMap::new();
         m.insert(
             env_key.to_string(),
