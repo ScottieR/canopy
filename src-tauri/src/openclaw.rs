@@ -351,7 +351,7 @@ pub async fn create_agent(
     write_app_managed_instruction_files(&agent, &db);
 
     // Sync credentials
-    write_auth_profiles(&agent_id, &get_creds_for_agent(&agent_id)).await;
+    write_auth_profiles_guarded(&agent_id, &resolve_creds_for_agent(&agent_id)).await;
 
     // Populate the per-agent skills array in openclaw.json so the agent isn't stuck on
     // the bare ["gog","summarize"] global default. `sync_agent_skills` does a single
@@ -2564,7 +2564,7 @@ pub async fn set_agent_paused(
 
         if registered_ok {
             tracing::info!("set_agent_paused: {} re-registered in OpenClaw", agent_id);
-            write_auth_profiles(&agent_id, &get_creds_for_agent(&agent_id)).await;
+            write_auth_profiles_guarded(&agent_id, &resolve_creds_for_agent(&agent_id)).await;
         } else {
             match &add_out {
                 Ok(Ok(o)) => tracing::warn!(
@@ -4353,52 +4353,96 @@ pub async fn check_agent_status(
     Ok("offline".to_string())
 }
 
-/// Helper: fetch API keys for a specific agent (falling back to global keys)
-fn get_creds_for_agent(agent_id: &str) -> std::collections::HashMap<String, String> {
+/// Where a resolved provider credential came from. Distinguishing the two is what
+/// makes the fallback-clobber guard possible (Aug 18 2026 incident: a vault clobber
+/// emptied every per-agent slot, so every agent resolved to the shared global key
+/// and boot sync overwrote nine agents' unique runtime keys — unrecoverably).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CredSource {
+    /// The agent's own vault slot (`agent_<id>_<provider>_key`) — agent-specific truth.
+    PerAgent,
+    /// The shared global provider key — a fallback, NOT agent-specific truth. A value
+    /// from here must never replace a different key already live in the agent's
+    /// runtime auth-profiles.json (see `merge_resolved_with_existing`).
+    GlobalFallback,
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedCred {
+    value: String,
+    source: CredSource,
+}
+
+/// (env-style key, per-agent vault slot suffix, global keychain names in priority order)
+const PROVIDER_CRED_SLOTS: [(&str, &str, &[&str]); 4] = [
+    ("ANTHROPIC_API_KEY", "anthropic_key", &["ANTHROPIC_API_KEY"]),
+    ("OPENAI_API_KEY", "openai_key", &["OPENAI_API_KEY"]),
+    ("GEMINI_API_KEY", "gemini_key", &["GEMINI_API_KEY"]),
+    ("XAI_API_KEY", "grok_key", &["XAI_API_KEY", "GROK_API_KEY"]),
+];
+
+/// env-style key name → (auth-profiles profile key, per-agent vault slot suffix).
+fn env_key_profile_slot(env_key: &str) -> Option<(&'static str, &'static str)> {
+    match env_key {
+        "ANTHROPIC_API_KEY" => Some(("anthropic:default", "anthropic_key")),
+        "OPENAI_API_KEY" => Some(("openai:default", "openai_key")),
+        "GEMINI_API_KEY" => Some(("google:default", "gemini_key")),
+        "XAI_API_KEY" => Some(("xai:default", "grok_key")),
+        _ => None,
+    }
+}
+
+/// Helper: fetch API keys for a specific agent (falling back to global keys),
+/// tagging each credential with where it was resolved from.
+fn resolve_creds_for_agent(agent_id: &str) -> std::collections::HashMap<String, ResolvedCred> {
     let mut keys = std::collections::HashMap::new();
     let try_key = |k: &str| crate::keychain::get_secret(k).unwrap_or_default();
-    let ag_anthropic = try_key(&format!("agent_{}_anthropic_key", agent_id));
-    let ag_openai = try_key(&format!("agent_{}_openai_key", agent_id));
-    let ag_gemini = try_key(&format!("agent_{}_gemini_key", agent_id));
-    let ag_grok = try_key(&format!("agent_{}_grok_key", agent_id));
 
-    if !ag_anthropic.trim().is_empty() {
-        keys.insert("ANTHROPIC_API_KEY".into(), ag_anthropic);
-    } else if let Ok(v) = crate::keychain::get_secret("ANTHROPIC_API_KEY") {
-        if !v.trim().is_empty() {
-            keys.insert("ANTHROPIC_API_KEY".into(), v);
+    for (env_key, suffix, global_names) in PROVIDER_CRED_SLOTS {
+        let per_agent = try_key(&format!("agent_{}_{}", agent_id, suffix));
+        if !per_agent.trim().is_empty() {
+            keys.insert(
+                env_key.to_string(),
+                ResolvedCred {
+                    value: per_agent,
+                    source: CredSource::PerAgent,
+                },
+            );
+            continue;
         }
-    }
-
-    if !ag_openai.trim().is_empty() {
-        keys.insert("OPENAI_API_KEY".into(), ag_openai);
-    } else if let Ok(v) = crate::keychain::get_secret("OPENAI_API_KEY") {
-        if !v.trim().is_empty() {
-            keys.insert("OPENAI_API_KEY".into(), v);
-        }
-    }
-
-    if !ag_gemini.trim().is_empty() {
-        keys.insert("GEMINI_API_KEY".into(), ag_gemini);
-    } else if let Ok(v) = crate::keychain::get_secret("GEMINI_API_KEY") {
-        if !v.trim().is_empty() {
-            keys.insert("GEMINI_API_KEY".into(), v);
-        }
-    }
-
-    if !ag_grok.trim().is_empty() {
-        keys.insert("XAI_API_KEY".into(), ag_grok);
-    } else if let Ok(v) = crate::keychain::get_secret("XAI_API_KEY") {
-        if !v.trim().is_empty() {
-            keys.insert("XAI_API_KEY".into(), v);
-        }
-    } else if let Ok(v) = crate::keychain::get_secret("GROK_API_KEY") {
-        if !v.trim().is_empty() {
-            keys.insert("XAI_API_KEY".into(), v);
+        for name in global_names {
+            let v = try_key(name);
+            if !v.trim().is_empty() {
+                keys.insert(
+                    env_key.to_string(),
+                    ResolvedCred {
+                        value: v,
+                        source: CredSource::GlobalFallback,
+                    },
+                );
+                break;
+            }
         }
     }
 
     keys
+}
+
+fn plain_creds(
+    resolved: &std::collections::HashMap<String, ResolvedCred>,
+) -> std::collections::HashMap<String, String> {
+    resolved
+        .iter()
+        .map(|(k, c)| (k.clone(), c.value.clone()))
+        .collect()
+}
+
+/// Helper: fetch API keys for a specific agent (falling back to global keys).
+/// Read-only callers only — anything that WRITES auth-profiles.json from this
+/// key set must go through `write_auth_profiles_guarded` instead, so a global
+/// fallback can't clobber an agent's unique runtime key.
+fn get_creds_for_agent(agent_id: &str) -> std::collections::HashMap<String, String> {
+    plain_creds(&resolve_creds_for_agent(agent_id))
 }
 
 /// True when the agent's key set contains a non-empty key for the given model's provider.
@@ -4560,12 +4604,18 @@ async fn write_auth_profiles(agent_id: &str, keys: &std::collections::HashMap<St
     }))
     .unwrap_or_default();
 
+    let backup_ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let mut success = false;
     for dir in agent_state_dirs(agent_id) {
         // Only write if the agent dir exists
         if dir.exists() {
             let path_subdir = dir.join("agent").join("auth-profiles.json");
             let path_flat = dir.join("auth-profiles.json");
+
+            // Aug 18 2026 incident: these files can be the LAST surviving copy of an
+            // agent's unique key. Never overwrite without a recoverable backup.
+            backup_auth_profile_file(&path_subdir, &auth_json, &backup_ts);
+            backup_auth_profile_file(&path_flat, &auth_json, &backup_ts);
 
             let _ = std::fs::create_dir_all(dir.join("agent"));
             let _ = std::fs::write(&path_subdir, &auth_json);
@@ -4598,6 +4648,140 @@ async fn write_auth_profiles(agent_id: &str, keys: &std::collections::HashMap<St
             agent_id
         );
     }
+}
+
+/// Before overwriting an auth-profiles.json whose content would change, copy it to
+/// `auth-profiles.json.<utc-timestamp>.bak` alongside. Identical content is not
+/// backed up — boot re-syncs every agent on every launch, so unconditional backups
+/// would grow without bound.
+fn backup_auth_profile_file(path: &std::path::Path, new_content: &str, ts: &str) {
+    let Ok(existing) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if existing == new_content {
+        return;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return;
+    };
+    let bak = path.with_file_name(format!("{}.{}.bak", name, ts));
+    if let Err(e) = std::fs::copy(path, &bak) {
+        tracing::warn!(
+            "backup_auth_profile_file: could not back up {} before overwrite: {}",
+            path.display(),
+            e
+        );
+    }
+}
+
+/// Read the agent's current runtime auth-profiles.json (first non-empty copy across
+/// both state layouts and both file locations). Empty map when none exists yet.
+fn read_existing_auth_profiles(agent_id: &str) -> serde_json::Map<String, serde_json::Value> {
+    for dir in agent_state_dirs(agent_id) {
+        for path in [
+            dir.join("agent").join("auth-profiles.json"),
+            dir.join("auth-profiles.json"),
+        ] {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+                continue;
+            };
+            if let Some(profiles) = json.get("profiles").and_then(|p| p.as_object()) {
+                if !profiles.is_empty() {
+                    return profiles.clone();
+                }
+            }
+        }
+    }
+    serde_json::Map::new()
+}
+
+/// Fallback-must-not-clobber merge (Aug 18 2026 incident). A credential resolved
+/// from the GLOBAL fallback may only be written when the agent's runtime
+/// auth-profiles.json has no key for that provider or already holds the same key.
+/// If the runtime file holds a DIFFERENT key, the vault's per-agent slot has most
+/// likely been lost (clobbered) — the runtime file is then the last surviving copy
+/// of the agent's unique key, so it wins.
+///
+/// Returns the final key map to write, plus the `(env_key, runtime_key)` pairs that
+/// were preserved so the caller can warn and self-heal the vault slot.
+fn merge_resolved_with_existing(
+    resolved: &std::collections::HashMap<String, ResolvedCred>,
+    existing_profiles: &serde_json::Map<String, serde_json::Value>,
+) -> (
+    std::collections::HashMap<String, String>,
+    Vec<(String, String)>,
+) {
+    let mut merged = std::collections::HashMap::new();
+    let mut preserved = Vec::new();
+    for (env_key, cred) in resolved {
+        let mut value = cred.value.clone();
+        if cred.source == CredSource::GlobalFallback {
+            if let Some((profile_key, _)) = env_key_profile_slot(env_key) {
+                let existing = existing_profiles
+                    .get(profile_key)
+                    .and_then(|p| p.get("key"))
+                    .and_then(|k| k.as_str())
+                    .map(str::trim)
+                    .unwrap_or("");
+                if !existing.is_empty() && existing != value.trim() {
+                    value = existing.to_string();
+                    preserved.push((env_key.clone(), value.clone()));
+                }
+            }
+        }
+        merged.insert(env_key.clone(), value);
+    }
+    (merged, preserved)
+}
+
+/// Write auth-profiles.json for an agent from vault-resolved credentials, refusing
+/// to let a global-fallback value clobber a different key already live in the
+/// runtime file (see `merge_resolved_with_existing`). Preserved keys are written
+/// back into the agent's vault slot so the vault self-heals and the next resolve
+/// finds them as per-agent keys again.
+///
+/// Every code path that writes auth-profiles.json from `resolve_creds_for_agent` /
+/// `get_creds_for_agent` output MUST use this instead of `write_auth_profiles` —
+/// the only exceptions are explicit user-intent paths (`sync_credentials`,
+/// `sync_global_api_key`, and `sync_agent_api_keys` with overwrite allowed) where
+/// the user is deliberately replacing keys.
+///
+/// Returns the effective key map that was written (resolved values with preserved
+/// runtime keys substituted), for callers that also need the creds elsewhere.
+async fn write_auth_profiles_guarded(
+    agent_id: &str,
+    resolved: &std::collections::HashMap<String, ResolvedCred>,
+) -> std::collections::HashMap<String, String> {
+    let existing = read_existing_auth_profiles(agent_id);
+    let (merged, preserved) = merge_resolved_with_existing(resolved, &existing);
+    for (env_key, runtime_key) in &preserved {
+        tracing::warn!(
+            "write_auth_profiles_guarded: {} for agent {} resolved from the GLOBAL fallback \
+             but the runtime auth-profiles.json holds a different key — keeping the runtime \
+             key (its vault slot was likely lost) and writing it back into the vault",
+            env_key,
+            agent_id
+        );
+        if let Some((_, suffix)) = env_key_profile_slot(env_key) {
+            let slot = format!("agent_{}_{}", agent_id, suffix);
+            match crate::keychain::store_secret(&slot, runtime_key) {
+                Ok(()) => tracing::info!(
+                    "write_auth_profiles_guarded: self-healed vault slot {}",
+                    slot
+                ),
+                Err(e) => tracing::warn!(
+                    "write_auth_profiles_guarded: failed to self-heal vault slot {}: {}",
+                    slot,
+                    e
+                ),
+            }
+        }
+    }
+    write_auth_profiles(agent_id, &merged).await;
+    merged
 }
 
 /// Import legacy auth files into OpenClaw's per-agent sqlite auth store.
@@ -4701,10 +4885,18 @@ fn provider_to_per_agent_suffix(provider: &str) -> Option<&'static str> {
 
 /// Refresh auth-profiles.json for ONE specific agent. Called after the user changes a
 /// per-agent provider key. Never touches other agents.
+///
+/// `allow_fallback_overwrite` controls the fallback-clobber guard: by default a
+/// credential resolved from the GLOBAL fallback will not replace a different key in
+/// the agent's runtime auth-profiles.json (Aug 18 2026 incident — see
+/// `write_auth_profiles_guarded`). Only the per-agent key editor passes `true`,
+/// because there the user may have just deliberately CLEARED a per-agent override
+/// and expects the runtime to fall back to the global key.
 #[tauri::command]
 pub async fn sync_agent_api_keys(
     db: tauri::State<'_, crate::db::Database>,
     agent_id: String,
+    allow_fallback_overwrite: Option<bool>,
 ) -> Result<(), String> {
     // Skip if the agent dir doesn't exist yet — same guard as `sync_credentials`,
     // prevents creating an empty agent dir before `agents add` has registered it.
@@ -4716,15 +4908,19 @@ pub async fn sync_agent_api_keys(
         return Ok(());
     }
 
-    let creds = get_creds_for_agent(&agent_id);
-    if creds.is_empty() {
+    let resolved = resolve_creds_for_agent(&agent_id);
+    if resolved.is_empty() {
         tracing::info!(
             "sync_agent_api_keys: no provider keys available for {}",
             agent_id
         );
         return Ok(());
     }
-    write_auth_profiles(&agent_id, &creds).await;
+    if allow_fallback_overwrite.unwrap_or(false) {
+        write_auth_profiles(&agent_id, &plain_creds(&resolved)).await;
+    } else {
+        write_auth_profiles_guarded(&agent_id, &resolved).await;
+    }
     // The JSON file is legacy-only — import it into the sqlite auth store so the
     // running gateway actually uses the new key. See import_auth_into_store docs.
     import_auth_into_store(&get_agent_container_name(&db, &agent_id)).await;
@@ -4774,6 +4970,13 @@ pub async fn sync_global_api_key(
             continue;
         }
 
+        // Deliberately UNGUARDED: the user just rotated the global key, and for a
+        // legit global-following agent the runtime file necessarily holds the OLD
+        // global key — the fallback-clobber guard would freeze it there forever.
+        // Agents with a per-agent override were already skipped above, and agents
+        // whose vault slot was clobbered get self-healed by the guarded boot sync
+        // before this path can normally reach them; write_auth_profiles also takes
+        // a .bak of anything it changes, so even the worst case is recoverable.
         write_auth_profiles(&agent.id, &creds).await;
         touched_containers.insert(get_agent_container_name(&db, &agent.id));
         updated += 1;
@@ -7303,7 +7506,7 @@ async fn boot_sync_agents_internal(
 
             let _ = sync_user_md_for_agent(&db, id);
             write_app_managed_instruction_files(&agent, &db);
-            write_auth_profiles(id, &get_creds_for_agent(id)).await;
+            write_auth_profiles_guarded(id, &resolve_creds_for_agent(id)).await;
             ok += 1;
             continue;
         }
@@ -7319,8 +7522,12 @@ async fn boot_sync_agents_internal(
             // (e.g. user rotated an API key, or the file was corrupted). Refreshing on
             // every boot is cheap and prevents silent auth failures.
             // Write directly (bypass the host-dir guard — agent IS registered, dir exists in container)
-            let keys_existing = get_creds_for_agent(id);
-            write_auth_profiles(id, &keys_existing).await;
+            // Guarded: this boot-time refresh is exactly the path that clobbered nine
+            // agents' unique keys on 2026-08-18 when a vault wipe made every agent
+            // resolve to the global fallback. keys_existing is the EFFECTIVE set
+            // (preserved runtime keys included) so model resolution below matches
+            // what was actually written.
+            let keys_existing = write_auth_profiles_guarded(id, &resolve_creds_for_agent(id)).await;
             auth_containers.insert(get_agent_container_name(&db, id));
 
             // Sync the agent's model safely using agents edit.
@@ -7641,7 +7848,7 @@ async fn boot_sync_agents_internal(
         tracing::info!("boot_sync_agents: registered agent {}", id);
 
         // Step 3: Write auth-profiles.json — load API keys from keychain and write.
-        write_auth_profiles(id, &get_creds_for_agent(id)).await;
+        write_auth_profiles_guarded(id, &resolve_creds_for_agent(id)).await;
         auth_containers.insert(container_name.clone());
 
         // Step 3b: Populate `agents.list[i].skills` from this agent's capabilities so
@@ -8295,6 +8502,124 @@ mod tests {
             detect_provider_auth_failure("Error: request timed out talking to the gateway"),
             None
         );
+    }
+
+    // ── Fallback-must-not-clobber guard (Aug 18 2026 incident) ────────────────
+
+    fn profiles_with(entries: &[(&str, &str, &str)]) -> serde_json::Map<String, serde_json::Value> {
+        let mut m = serde_json::Map::new();
+        for (profile_key, provider, key) in entries {
+            m.insert(
+                profile_key.to_string(),
+                json!({"type": "api_key", "provider": provider, "key": key}),
+            );
+        }
+        m
+    }
+
+    fn resolved_one(
+        env_key: &str,
+        value: &str,
+        source: CredSource,
+    ) -> std::collections::HashMap<String, ResolvedCred> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            env_key.to_string(),
+            ResolvedCred {
+                value: value.to_string(),
+                source,
+            },
+        );
+        m
+    }
+
+    #[test]
+    fn global_fallback_must_not_clobber_different_runtime_key() {
+        // The 2026-08-18 incident shape: a vault clobber emptied the per-agent slot,
+        // so the cred resolves from the GLOBAL fallback while the runtime file still
+        // holds the agent's unique key — the last surviving copy. It must win, and it
+        // must be reported for vault self-healing.
+        let resolved = resolved_one(
+            "ANTHROPIC_API_KEY",
+            "sk-global-shared",
+            CredSource::GlobalFallback,
+        );
+        let existing = profiles_with(&[("anthropic:default", "anthropic", "sk-agent-unique")]);
+        let (merged, preserved) = merge_resolved_with_existing(&resolved, &existing);
+        assert_eq!(merged["ANTHROPIC_API_KEY"], "sk-agent-unique");
+        assert_eq!(
+            preserved,
+            vec![(
+                "ANTHROPIC_API_KEY".to_string(),
+                "sk-agent-unique".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn guard_covers_every_provider_profile_slot() {
+        // Each provider's env key must map to the right profile key — a mapping
+        // miss would silently disable the guard for that provider.
+        for (env_key, profile_key, provider) in [
+            ("ANTHROPIC_API_KEY", "anthropic:default", "anthropic"),
+            ("OPENAI_API_KEY", "openai:default", "openai"),
+            ("GEMINI_API_KEY", "google:default", "google"),
+            ("XAI_API_KEY", "xai:default", "xai"),
+        ] {
+            let resolved = resolved_one(env_key, "sk-global", CredSource::GlobalFallback);
+            let existing = profiles_with(&[(profile_key, provider, "sk-unique")]);
+            let (merged, preserved) = merge_resolved_with_existing(&resolved, &existing);
+            assert_eq!(merged[env_key], "sk-unique", "guard missed {}", env_key);
+            assert_eq!(preserved.len(), 1);
+        }
+    }
+
+    #[test]
+    fn per_agent_key_still_overwrites_runtime_key() {
+        // A key from the agent's own vault slot is authoritative — rotating a
+        // per-agent key must still reach the runtime file.
+        let resolved = resolved_one("ANTHROPIC_API_KEY", "sk-rotated", CredSource::PerAgent);
+        let existing = profiles_with(&[("anthropic:default", "anthropic", "sk-old")]);
+        let (merged, preserved) = merge_resolved_with_existing(&resolved, &existing);
+        assert_eq!(merged["ANTHROPIC_API_KEY"], "sk-rotated");
+        assert!(preserved.is_empty());
+    }
+
+    #[test]
+    fn global_fallback_writes_when_runtime_key_missing_or_identical() {
+        // No runtime key for the provider → nothing to protect, fallback applies.
+        let resolved = resolved_one("OPENAI_API_KEY", "sk-global", CredSource::GlobalFallback);
+        let (merged, preserved) = merge_resolved_with_existing(&resolved, &serde_json::Map::new());
+        assert_eq!(merged["OPENAI_API_KEY"], "sk-global");
+        assert!(preserved.is_empty());
+
+        // Runtime already holds the same key → overwrite is a harmless no-op.
+        let existing = profiles_with(&[("openai:default", "openai", "sk-global")]);
+        let (merged, preserved) = merge_resolved_with_existing(&resolved, &existing);
+        assert_eq!(merged["OPENAI_API_KEY"], "sk-global");
+        assert!(preserved.is_empty());
+    }
+
+    #[test]
+    fn auth_profile_backup_written_before_change_and_skipped_when_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-profiles.json");
+        std::fs::write(&path, "old-content").unwrap();
+
+        backup_auth_profile_file(&path, "new-content", "20260818T133800Z");
+        let bak = dir.path().join("auth-profiles.json.20260818T133800Z.bak");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "old-content");
+
+        // Identical content → no backup (boot re-syncs every agent every launch;
+        // unconditional backups would grow without bound).
+        backup_auth_profile_file(&path, "old-content", "20260818T133801Z");
+        assert!(!dir
+            .path()
+            .join("auth-profiles.json.20260818T133801Z.bak")
+            .exists());
+
+        // Missing file → quiet no-op.
+        backup_auth_profile_file(&dir.path().join("absent.json"), "x", "20260818T133802Z");
     }
 
     lazy_static::lazy_static! {
