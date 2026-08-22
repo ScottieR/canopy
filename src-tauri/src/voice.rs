@@ -293,7 +293,7 @@ pub async fn send_voice_message(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "Failed to initialize local runtime connection".to_string())?;
-    let gateway_url = crate::model_constants::GATEWAY_URL;
+    let gateway_url = crate::model_constants::gateway_url();
     let resp = client
         .post(format!("{}/api/sessions/main/messages", gateway_url))
         .header(
@@ -383,8 +383,8 @@ pub async fn end_voice_session(
 /// Get the directory path for voice cache files
 #[tauri::command]
 pub fn get_voice_data_dir() -> Result<String, String> {
-    let voice_dir = if let Some(data_dir) = dirs::data_dir() {
-        data_dir.join("Canopy").join("voice_cache")
+    let voice_dir = if let Some(data_dir) = crate::flavor::canopy_data_dir() {
+        data_dir.join("voice_cache")
     } else {
         return Err("Could not determine data directory".to_string());
     };
@@ -402,8 +402,8 @@ pub fn get_voice_data_dir() -> Result<String, String> {
 /// Clean up voice cache files older than 1 hour
 #[tauri::command]
 pub async fn cleanup_voice_cache() -> Result<u32, String> {
-    let voice_dir = if let Some(data_dir) = dirs::data_dir() {
-        data_dir.join("Canopy").join("voice_cache")
+    let voice_dir = if let Some(data_dir) = crate::flavor::canopy_data_dir() {
+        data_dir.join("voice_cache")
     } else {
         return Err("Could not determine data directory".to_string());
     };
@@ -720,8 +720,8 @@ enum NativeTtsProvider {
 }
 
 fn voice_cache_dir() -> Result<PathBuf, String> {
-    let voice_dir = if let Some(data_dir) = dirs::data_dir() {
-        data_dir.join("Canopy").join("voice_cache")
+    let voice_dir = if let Some(data_dir) = crate::flavor::canopy_data_dir() {
+        data_dir.join("voice_cache")
     } else {
         return Err("Could not determine data directory".to_string());
     };

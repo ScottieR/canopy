@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::errors::{CanopyError, Result as CanopyResult};
 use crate::model_constants::{
-    agent_auth_profile_path, agent_soul_path, DEFAULT_ANTHROPIC_MODEL, GATEWAY_URL,
+    agent_auth_profile_path, agent_soul_path, gateway_url, DEFAULT_ANTHROPIC_MODEL,
 };
 use crate::models::{
     Agent, AgentCapabilities, AgentPersonality, AgentStats, AgentStatus, DiscoveredAgent,
@@ -88,8 +88,10 @@ pub fn get_agent_isolated_port(agent_id: &str) -> u16 {
     for b in agent_id.bytes() {
         hash = hash.wrapping_mul(31).wrapping_add(b as u32);
     }
-    // Reserve 18805-18999 for isolated agents
-    18805 + (hash % 195) as u16
+    // Each flavor reserves its own range (prod 18805-18999, dev 19305-19499)
+    // so both flavors' isolated agents can run simultaneously without port fights.
+    let flavor = crate::flavor::flavor();
+    flavor.isolated_port_base + (hash % crate::flavor::ISOLATED_PORT_RANGE as u32) as u16
 }
 
 fn derive_agent_id(name: &str) -> CanopyResult<String> {
@@ -213,7 +215,7 @@ pub async fn create_agent(
     // If this is an isolated agent, its container must be started BEFORE we can
     // execute `openclaw agents add` against it!
     if agent.isolated {
-        let data_dir = dirs::data_dir().unwrap().join("Canopy");
+        let data_dir = crate::flavor::canopy_data_dir().unwrap();
         let port = get_agent_isolated_port(&agent_id);
         let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port);
         let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
@@ -413,7 +415,7 @@ pub async fn list_agents(db: tauri::State<'_, crate::db::Database>) -> Result<Ve
         .unwrap_or_default();
 
     if let Ok(resp) = client
-        .get(format!("{}/api/status", GATEWAY_URL))
+        .get(format!("{}/api/status", gateway_url()))
         .header(
             "Authorization",
             &crate::model_constants::gateway_bearer_header(),
@@ -432,10 +434,10 @@ pub async fn list_agents(db: tauri::State<'_, crate::db::Database>) -> Result<Ve
 
 fn load_configured_agent_models() -> std::collections::HashMap<String, String> {
     let mut models = std::collections::HashMap::new();
-    let Some(data_dir) = dirs::data_dir() else {
+    let Some(data_dir) = crate::flavor::canopy_data_dir() else {
         return models;
     };
-    let canopy_dir = data_dir.join("Canopy");
+    let canopy_dir = data_dir;
 
     let mut config_paths = vec![canopy_dir.join("openclaw-state").join("openclaw.json")];
     if let Ok(entries) = std::fs::read_dir(canopy_dir.join("isolated")) {
@@ -600,7 +602,7 @@ pub async fn get_connectors_config() -> Result<serde_json::Value, String> {
             "node",
             "-e",
             "NODE_OPTIONS=--v8-pool-size=1",
-            "canopy-gateway",
+            crate::flavor::gateway_container(),
             "openclaw",
             "skills",
             "list",
@@ -683,9 +685,8 @@ pub async fn get_openclaw_status_json() -> Result<String, String> {
     // Natively read agent directories to calculate fast status instead of blocking on Docker IPC.
     use std::time::SystemTime;
 
-    let db_path = dirs::data_dir()
+    let db_path = crate::flavor::canopy_data_dir()
         .ok_or("No data dir")?
-        .join("Canopy")
         .join("canopy.db");
 
     let conn = match rusqlite::Connection::open(&db_path) {
@@ -703,9 +704,8 @@ pub async fn get_openclaw_status_json() -> Result<String, String> {
         Err(_) => vec![],
     };
 
-    let workspace_base = dirs::data_dir()
+    let workspace_base = crate::flavor::canopy_data_dir()
         .unwrap()
-        .join("Canopy")
         .join("openclaw-state")
         .join("workspace");
 
@@ -810,9 +810,8 @@ const FRAMEWORK_FILES: &[&str] = &[
 /// homes elsewhere in the UI and would just be noise here.
 #[tauri::command]
 pub async fn list_workspace_files(agent_id: String) -> Result<Vec<WorkspaceFileEntry>, String> {
-    let workspace = dirs::data_dir()
+    let workspace = crate::flavor::canopy_data_dir()
         .ok_or("No data dir")?
-        .join("Canopy")
         .join("openclaw-state")
         .join("workspace")
         .join(&agent_id);
@@ -1094,11 +1093,7 @@ fn harden_agent_workspace_layouts_for_root(
 }
 
 pub(crate) fn canopy_data_root() -> Result<std::path::PathBuf, String> {
-    let data_dir = std::env::var_os("CANOPY_DATA_DIR")
-        .map(std::path::PathBuf::from)
-        .or_else(dirs::data_dir)
-        .ok_or("No data dir")?;
-    Ok(data_dir.join("Canopy"))
+    crate::flavor::canopy_data_dir().ok_or_else(|| "No data dir".to_string())
 }
 
 fn sanitize_thread_segment(session_id: &str) -> String {
@@ -1738,9 +1733,9 @@ pub fn get_agent_container_name(db: &crate::db::Database, agent_id: &str) -> Str
         .map(|a| a.isolated)
         .unwrap_or(false);
     if is_isolated {
-        format!("canopy-isolated-{}", agent_id)
+        crate::flavor::isolated_container_name(agent_id)
     } else {
-        "canopy-gateway".to_string()
+        crate::flavor::gateway_container().to_string()
     }
 }
 
@@ -2336,7 +2331,7 @@ pub async fn toggle_agent_isolation(
                 "node",
                 "-e",
                 "NODE_OPTIONS=--v8-pool-size=1",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "openclaw",
                 "agents",
                 "remove",
@@ -2346,9 +2341,7 @@ pub async fn toggle_agent_isolation(
     )
     .await;
 
-    let data_dir = dirs::data_dir()
-        .ok_or("Could not find data directory")?
-        .join("Canopy");
+    let data_dir = crate::flavor::canopy_data_dir().ok_or("Could not find data directory")?;
 
     let port = get_agent_isolated_port(&agent_id);
     let compose_content = crate::docker::generate_isolated_compose(&agent_id, &data_dir, port); // using stable port offset
@@ -2420,7 +2413,7 @@ pub async fn toggle_agent_isolation(
                     "exec",
                     "-u",
                     "node",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "mkdir",
                     "-p",
                     &workspace_path,
@@ -2434,7 +2427,7 @@ pub async fn toggle_agent_isolation(
             get_docker_command()
                 .args([
                     "exec",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "sh",
                     "-c",
                     "pkill -f 'openclaw agents' 2>/dev/null; true",
@@ -2452,7 +2445,7 @@ pub async fn toggle_agent_isolation(
                     "node",
                     "-e",
                     "NODE_OPTIONS=--v8-pool-size=1 --max-old-space-size=512",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "timeout",
                     "175",
                     "openclaw",
@@ -2490,7 +2483,7 @@ pub async fn set_agent_paused(
                 "node",
                 "-e",
                 "NODE_OPTIONS=--v8-pool-size=1",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "openclaw",
                 "agents",
                 "remove",
@@ -2515,7 +2508,7 @@ pub async fn set_agent_paused(
                     "exec",
                     "-u",
                     "node",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "mkdir",
                     "-p",
                     &workspace_path,
@@ -2537,7 +2530,7 @@ pub async fn set_agent_paused(
                     "node",
                     "-e",
                     "NODE_OPTIONS=--v8-pool-size=1 --max-old-space-size=512",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "timeout",
                     "175",
                     "openclaw",
@@ -2677,10 +2670,8 @@ pub async fn delete_agent(
         .map(|a| a.isolated)
         .unwrap_or(false);
     if is_isolated {
-        if let Some(data_dir) = dirs::data_dir() {
-            let compose_path = data_dir
-                .join("Canopy")
-                .join(format!("docker-compose-{}.yml", agent_id));
+        if let Some(data_dir) = crate::flavor::canopy_data_dir() {
+            let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
             let _ = crate::docker::get_docker_compose_command()
                 .args([
                     "-f",
@@ -2706,7 +2697,7 @@ pub async fn delete_agent(
     // which should propagate to the host. But if the container was OOM-crashing
     // when delete was requested, the script may not have run to completion, leaving
     // the directory on the host. Removing it here guarantees cleanup regardless.
-    if let Some(data_dir) = dirs::data_dir() {
+    if let Some(data_dir) = crate::flavor::canopy_data_dir() {
         let is_isolated_agent = db
             .get_agent(&agent_id)
             .ok()
@@ -2714,7 +2705,7 @@ pub async fn delete_agent(
             .map(|a| a.isolated)
             .unwrap_or(false);
         if is_isolated_agent {
-            let isolated_dir = data_dir.join("Canopy").join("isolated").join(&agent_id);
+            let isolated_dir = data_dir.join("isolated").join(&agent_id);
             if isolated_dir.exists() {
                 let _ = std::fs::remove_dir_all(&isolated_dir);
                 tracing::info!(
@@ -2724,15 +2715,11 @@ pub async fn delete_agent(
             }
         } else {
             let agent_dir = data_dir
-                .join("Canopy")
                 .join("openclaw-state")
                 .join("agents")
                 .join(&agent_id);
             // Strict validation: only delete a direct child of the agents directory
-            let agents_root = data_dir
-                .join("Canopy")
-                .join("openclaw-state")
-                .join("agents");
+            let agents_root = data_dir.join("openclaw-state").join("agents");
             if agent_dir.starts_with(&agents_root) && agent_dir != agents_root {
                 let _ = std::fs::remove_dir_all(&agent_dir);
                 tracing::info!(
@@ -3891,19 +3878,17 @@ pub async fn get_conversation_history(
         .flatten()
         .map(|a| a.isolated)
         .unwrap_or(false);
-    let sessions_dir = dirs::data_dir()
+    let sessions_dir = crate::flavor::canopy_data_dir()
         .map(|d| {
             if is_isolated {
-                d.join("Canopy")
-                    .join("isolated")
+                d.join("isolated")
                     .join(&agent_id)
                     .join("state")
                     .join("agents")
                     .join(&agent_id)
                     .join("sessions")
             } else {
-                d.join("Canopy")
-                    .join("openclaw-state")
+                d.join("openclaw-state")
                     .join("agents")
                     .join(&agent_id)
                     .join("sessions")
@@ -4111,7 +4096,11 @@ pub async fn import_agent(
         .build()
         .unwrap_or_default();
     let resp = client
-        .get(format!("{}/api/agents/{}", GATEWAY_URL, openclaw_agent_id))
+        .get(format!(
+            "{}/api/agents/{}",
+            gateway_url(),
+            openclaw_agent_id
+        ))
         .header(
             "Authorization",
             &crate::model_constants::gateway_bearer_header(),
@@ -4213,7 +4202,7 @@ pub async fn get_agent_health(agent_id: String) -> Result<Value, String> {
         .build()
         .unwrap_or_default();
     let resp = client
-        .get(format!("{}/health/stats", GATEWAY_URL))
+        .get(format!("{}/health/stats", gateway_url()))
         .header(
             "Authorization",
             &crate::model_constants::gateway_bearer_header(),
@@ -4235,7 +4224,7 @@ pub async fn get_gateway_log_tail(lines: u32) -> Result<String, String> {
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(4),
         get_docker_command()
-            .args(["logs", "--tail", &n, "canopy-gateway"])
+            .args(["logs", "--tail", &n, crate::flavor::gateway_container()])
             .output(),
     )
     .await;
@@ -4334,11 +4323,9 @@ pub async fn check_agent_status(
     // IMPORTANT: return "initializing", NOT "active", here. The agent config exists on disk
     // but the IPC socket is still blocked — sending messages now causes "Unknown agent id"
     // errors. The AgentWarmupGate will hold until a real IPC round-trip succeeds.
-    if let Some(config_path) = dirs::data_dir().map(|d| {
-        d.join("Canopy")
-            .join("openclaw-state")
-            .join("openclaw.json")
-    }) {
+    if let Some(config_path) =
+        crate::flavor::canopy_data_dir().map(|d| d.join("openclaw-state").join("openclaw.json"))
+    {
         if let Ok(content) = std::fs::read_to_string(&config_path) {
             if let Ok(cfg) = serde_json::from_str::<Value>(&content) {
                 if let Some(list) = cfg.pointer("/agents/list").and_then(|v| v.as_array()) {
@@ -4560,10 +4547,10 @@ fn resolve_boot_model(
 }
 
 fn agent_state_dirs(agent_id: &str) -> Vec<std::path::PathBuf> {
-    let Some(data_dir) = dirs::data_dir() else {
+    let Some(data_dir) = crate::flavor::canopy_data_dir() else {
         return Vec::new();
     };
-    let canopy_dir = data_dir.join("Canopy");
+    let canopy_dir = data_dir;
     vec![
         canopy_dir
             .join("openclaw-state")
@@ -5078,21 +5065,16 @@ pub async fn sync_credentials(
         .map(|a| a.isolated)
         .unwrap_or(false);
     let agent_dir = if is_isolated {
-        dirs::data_dir().map(|d| {
-            d.join("Canopy")
-                .join("isolated")
+        crate::flavor::canopy_data_dir().map(|d| {
+            d.join("isolated")
                 .join(&agent_id)
                 .join("state")
                 .join("agents")
                 .join(&agent_id)
         })
     } else {
-        dirs::data_dir().map(|d| {
-            d.join("Canopy")
-                .join("openclaw-state")
-                .join("agents")
-                .join(&agent_id)
-        })
+        crate::flavor::canopy_data_dir()
+            .map(|d| d.join("openclaw-state").join("agents").join(&agent_id))
     };
 
     if let Some(ref dir) = agent_dir {
@@ -5792,7 +5774,7 @@ pub async fn scan_local_agents() -> Result<Vec<DiscoveredAgent>, String> {
         .timeout(std::time::Duration::from_millis(800))
         .build()
         .unwrap_or_default();
-    let ports = [crate::model_constants::GATEWAY_HOST_PORT, 18798];
+    let ports = [crate::model_constants::gateway_host_port(), 18798];
     for port in ports {
         if let Ok(resp) = client
             .get(format!("http://localhost:{}/api/status", port))
@@ -5860,12 +5842,9 @@ pub async fn import_discovered_agent(
 
         // Pre-emptively copy any existing markdown files to the target workspace
         // so that `boot_sync_agents` doesn't just create empty versions of them.
-        if let Some(target_workspace) = dirs::data_dir().map(|d| {
-            d.join("Canopy")
-                .join("openclaw-state")
-                .join("workspace")
-                .join(&agent_id)
-        }) {
+        if let Some(target_workspace) = crate::flavor::canopy_data_dir()
+            .map(|d| d.join("openclaw-state").join("workspace").join(&agent_id))
+        {
             let _ = std::fs::create_dir_all(&target_workspace);
             let dirs_to_check = [src_workspace, agent_path];
             for d in dirs_to_check {
@@ -5992,7 +5971,12 @@ pub async fn repair_gateway(
     let inspect = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         get_docker_command()
-            .args(["inspect", "-f", "{{.State.Running}}", "canopy-gateway"])
+            .args([
+                "inspect",
+                "-f",
+                "{{.State.Running}}",
+                crate::flavor::gateway_container(),
+            ])
             .output(),
     )
     .await;
@@ -6026,7 +6010,12 @@ pub async fn repair_gateway(
         let recheck = tokio::time::timeout(
             std::time::Duration::from_secs(5),
             get_docker_command()
-                .args(["inspect", "-f", "{{.State.Running}}", "canopy-gateway"])
+                .args([
+                    "inspect",
+                    "-f",
+                    "{{.State.Running}}",
+                    crate::flavor::gateway_container(),
+                ])
                 .output(),
         )
         .await;
@@ -6069,7 +6058,7 @@ pub async fn repair_gateway(
                         "node",
                         "-e",
                         "NODE_OPTIONS=--v8-pool-size=1",
-                        "canopy-gateway",
+                        crate::flavor::gateway_container(),
                         "timeout",
                         container_secs,
                         "openclaw",
@@ -6093,7 +6082,12 @@ pub async fn repair_gateway(
     let add_output = match add_result {
         Err(_) => {
             let state = get_docker_command()
-                .args(["inspect", "-f", "{{.State.Status}}", "canopy-gateway"])
+                .args([
+                    "inspect",
+                    "-f",
+                    "{{.State.Status}}",
+                    crate::flavor::gateway_container(),
+                ])
                 .output()
                 .await
                 .ok()
@@ -6108,7 +6102,7 @@ pub async fn repair_gateway(
 
             // Auto-restart the container to clear the stuck process
             match get_docker_command()
-                .args(["restart", "canopy-gateway"])
+                .args(["restart", crate::flavor::gateway_container()])
                 .output()
                 .await
             {
@@ -6180,7 +6174,12 @@ pub async fn repair_gateway(
             // Build a meaningful message even when docker produces no output
             let explanation = if detail.is_empty() {
                 let state = get_docker_command()
-                    .args(["inspect", "-f", "{{.State.Status}}", "canopy-gateway"])
+                    .args([
+                        "inspect",
+                        "-f",
+                        "{{.State.Status}}",
+                        crate::flavor::gateway_container(),
+                    ])
                     .output()
                     .await
                     .ok()
@@ -6224,7 +6223,7 @@ pub async fn repair_gateway(
                     "exec",
                     "-u",
                     "node",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "sh",
                     "-c",
                     &format!("cat > {} << 'SOULEOF'\n{}\nSOULEOF", soul_path, soul_md),
@@ -6312,7 +6311,7 @@ console.log('config patched — model set to {model}');
                 "exec",
                 "-u",
                 "node",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "node",
                 "-e",
                 &config_patch_script,
@@ -6348,7 +6347,7 @@ console.log('config patched — model set to {model}');
             "node",
             "-e",
             "NODE_OPTIONS=--v8-pool-size=1",
-            "canopy-gateway",
+            crate::flavor::gateway_container(),
             "openclaw",
             "sessions",
             "cleanup",
@@ -6379,7 +6378,7 @@ console.log('config patched — model set to {model}');
                 "node",
                 "-e",
                 "NODE_OPTIONS=--v8-pool-size=1",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "openclaw",
                 "doctor",
                 "--fix",
@@ -6585,7 +6584,7 @@ pub async fn approve_slack_pairing(
     let container_name = agent_id
         .as_deref()
         .map(|id| get_agent_container_name(&db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     let output = get_docker_command()
         .args([
@@ -6787,7 +6786,7 @@ async fn wait_for_gateway_ready(
                 "inspect",
                 "-f",
                 "{{.State.Running}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
             ])
             .output()
             .await
@@ -6826,7 +6825,7 @@ async fn wait_for_gateway_ready(
 
             if should_retry {
                 last_start_attempt = std::time::Instant::now();
-                let data_dir = dirs::data_dir().unwrap_or_default().join("Canopy");
+                let data_dir = crate::flavor::canopy_data_dir().unwrap_or_default();
                 let compose_path = data_dir.join("docker-compose.yml");
                 if compose_path.exists() {
                     let home_dir = dirs::home_dir().unwrap_or_default();
@@ -6902,7 +6901,7 @@ async fn wait_for_gateway_ready(
                 std::time::Duration::from_secs(5),
                 get_docker_command()
                     // Use a large tail so [gateway] ready isn't pushed off by verbose channel logs
-                    .args(["logs", "--tail", "500", "canopy-gateway"])
+                    .args(["logs", "--tail", "500", crate::flavor::gateway_container()])
                     .output(),
             )
             .await;
@@ -7001,7 +7000,7 @@ async fn wait_for_gateway_ready(
             let logs = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 get_docker_command()
-                    .args(["logs", "--tail", "20", "canopy-gateway"])
+                    .args(["logs", "--tail", "20", crate::flavor::gateway_container()])
                     .output(),
             )
             .await
@@ -7046,9 +7045,8 @@ async fn wait_for_gateway_ready(
 /// only clean, canonical state when it starts — preventing the 18 → 300+ PID spiral.
 #[tauri::command]
 pub fn preflight_cleanup(db: tauri::State<'_, crate::db::Database>) -> Result<String, String> {
-    let data_dir = dirs::data_dir()
+    let data_dir = crate::flavor::canopy_data_dir()
         .ok_or("Could not find data directory")?
-        .join("Canopy")
         .join("openclaw-state");
 
     let agents_dir = data_dir.join("agents");
@@ -7239,7 +7237,7 @@ async fn boot_sync_agents_internal(
         get_docker_command()
             .args([
                 "exec",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "sh",
                 "-c",
                 "pkill -f 'openclaw agents' 2>/dev/null; true",
@@ -7261,7 +7259,7 @@ async fn boot_sync_agents_internal(
                     "exec",
                     "-u",
                     "node",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "cat",
                     "/home/node/.openclaw/openclaw.json",
                 ])
@@ -7333,7 +7331,7 @@ async fn boot_sync_agents_internal(
             let id_clone = id.clone();
             let app_handle_clone = app_handle.clone();
             // Resolve the agent's ACTUAL container before spawning. This was
-            // hardcoded to "canopy-gateway", which silently wrote the CDP env var
+            // hardcoded to crate::flavor::gateway_container(), which silently wrote the CDP env var
             // into the wrong container for isolated agents — their browser env
             // then never pointed anywhere after a reboot.
             let container_name = get_agent_container_name(&db, id);
@@ -7375,10 +7373,9 @@ async fn boot_sync_agents_internal(
         // (agents add timed out on a previous boot, or dirs were wiped), the agent can't
         // respond even though it appears in agents.list. Always fall through to agents add
         // when the dir is missing — agents add is idempotent ("already exists" is success).
-        let host_agent_dir_exists = dirs::data_dir()
+        let host_agent_dir_exists = crate::flavor::canopy_data_dir()
             .map(|d| {
-                d.join("Canopy")
-                    .join("openclaw-state")
+                d.join("openclaw-state")
                     .join("agents")
                     .join(id.as_str())
                     .exists()
@@ -7388,7 +7385,7 @@ async fn boot_sync_agents_internal(
         if agent.isolated {
             tracing::info!("boot_sync_agents: agent {} is isolated — ensuring its dedicated container is running", id);
 
-            if let Some(data_dir) = dirs::data_dir().map(|d| d.join("Canopy")) {
+            if let Some(data_dir) = crate::flavor::canopy_data_dir().map(|d| d) {
                 let port = get_agent_isolated_port(id);
                 let compose_content = crate::docker::generate_isolated_compose(id, &data_dir, port); // using stable port offset
                 let compose_path = data_dir.join(format!("docker-compose-{}.yml", id));
@@ -7405,7 +7402,7 @@ async fn boot_sync_agents_internal(
                     crate::model_constants::gateway_internal_token(),
                 );
 
-                let container_name = format!("canopy-isolated-{}", id);
+                let container_name = crate::flavor::isolated_container_name(id);
 
                 // `compose up -d` is a no-op when the container already exists (running OR
                 // crash-looping). If the container is stuck in a restart loop from a previous
@@ -7550,7 +7547,7 @@ async fn boot_sync_agents_internal(
                         "node",
                         "-e",
                         "NODE_OPTIONS=--v8-pool-size=1 --max-old-space-size=512",
-                        "canopy-gateway",
+                        crate::flavor::gateway_container(),
                         "timeout",
                         "-k",
                         "2",
@@ -7570,7 +7567,7 @@ async fn boot_sync_agents_internal(
             // strict — no failover on 429/billing/overload. Re-patch it into the
             // {primary, fallbacks} object form using this agent's own keys.
             if let Err(error) = patch_agent_model_in_container(
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 id,
                 &agent_model_config(id, &model_to_set),
             )
@@ -7906,7 +7903,7 @@ async fn boot_sync_agents_internal(
             .await;
 
             // Wait for gateway ready (only necessary for the main gateway)
-            if container_name == "canopy-gateway" {
+            if container_name == crate::flavor::gateway_container() {
                 if let Err(e) = wait_for_gateway_ready(60, Some(app_handle.clone())).await {
                     tracing::warn!(
                         "boot_sync_agents: gateway didn't report ready after channel-sync restart: {}. \
@@ -7937,7 +7934,7 @@ async fn boot_sync_agents_internal(
         get_docker_command()
             .args([
                 "stats",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "--no-stream",
                 "--format",
                 "PIDs={{.PIDs}} CPU={{.CPUPerc}} MEM={{.MemUsage}}",
@@ -8350,7 +8347,9 @@ pub async fn sync_gateway_channels(
     // Pass the active agents mapped to canopy-gateway
     let active_agents = db.list_agents().unwrap_or_default();
     let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
-    let changed = sync_container_channels_internal("canopy-gateway", &gateway_agents).await?;
+    let changed =
+        sync_container_channels_internal(crate::flavor::gateway_container(), &gateway_agents)
+            .await?;
 
     // Only bounce the gateway if the channels config actually changed.
     // Instead of a forceful `docker restart` (which kills all active browser sessions),
@@ -8364,7 +8363,7 @@ pub async fn sync_gateway_channels(
                     "exec",
                     "-u",
                     "node",
-                    "canopy-gateway",
+                    crate::flavor::gateway_container(),
                     "openclaw",
                     "gateway",
                     "restart",
@@ -8382,7 +8381,7 @@ pub async fn sync_gateway_channels(
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(15),
                     get_docker_command()
-                        .args(["restart", "canopy-gateway"])
+                        .args(["restart", crate::flavor::gateway_container()])
                         .output(),
                 )
                 .await;
@@ -8415,7 +8414,9 @@ pub async fn sync_agent_slack_config_internal(
     } else {
         let active_agents = db.list_agents().unwrap_or_default();
         let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
-        let changed = sync_container_channels_internal("canopy-gateway", &gateway_agents).await?;
+        let changed =
+            sync_container_channels_internal(crate::flavor::gateway_container(), &gateway_agents)
+                .await?;
         if changed {
             let hot_reload_result = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
@@ -8424,7 +8425,7 @@ pub async fn sync_agent_slack_config_internal(
                         "exec",
                         "-u",
                         "node",
-                        "canopy-gateway",
+                        crate::flavor::gateway_container(),
                         "openclaw",
                         "gateway",
                         "restart",
@@ -8442,7 +8443,7 @@ pub async fn sync_agent_slack_config_internal(
                     let _ = tokio::time::timeout(
                         std::time::Duration::from_secs(15),
                         get_docker_command()
-                            .args(["restart", "canopy-gateway"])
+                            .args(["restart", crate::flavor::gateway_container()])
                             .output(),
                     )
                     .await;
@@ -8761,17 +8762,21 @@ mod tests {
 
     #[test]
     fn gateway_url_constant_uses_host_port() {
-        // GATEWAY_URL must reference the host-side port (18799), not the container-internal
-        // port (18789). If these are swapped, every API call from the Tauri host silently fails.
+        // gateway_url() must reference the flavor's host-side port, not the
+        // container-internal port (18789). If these are swapped, every API call
+        // from the Tauri host silently fails.
+        let url = gateway_url();
+        let host_port = model_constants::gateway_host_port().to_string();
         assert!(
-            GATEWAY_URL.contains("18799"),
-            "GATEWAY_URL '{}' must contain the host port 18799",
-            GATEWAY_URL
+            url.contains(&host_port),
+            "gateway_url() '{}' must contain the host port {}",
+            url,
+            host_port
         );
         assert!(
-            !GATEWAY_URL.contains("18789"),
-            "GATEWAY_URL '{}' must NOT contain the container-internal port 18789",
-            GATEWAY_URL
+            !url.contains("18789"),
+            "gateway_url() '{}' must NOT contain the container-internal port 18789",
+            url
         );
     }
 
@@ -9363,16 +9368,16 @@ mod tests {
         // Port 18789 is container-internal and not reachable from the host.
         // Scanning it produces false positives. The scan list must only contain
         // host-accessible ports.
-        let ports: &[u16] = &[model_constants::GATEWAY_HOST_PORT, 18798];
+        let ports: &[u16] = &[model_constants::gateway_host_port(), 18798];
         assert!(
             !ports.contains(&model_constants::GATEWAY_CONTAINER_PORT),
             "Port scan list must not include container-internal port {} (not reachable from host)",
             model_constants::GATEWAY_CONTAINER_PORT
         );
         assert!(
-            ports.contains(&model_constants::GATEWAY_HOST_PORT),
+            ports.contains(&model_constants::gateway_host_port()),
             "Port scan list must include the host-facing gateway port {}",
-            model_constants::GATEWAY_HOST_PORT
+            model_constants::gateway_host_port()
         );
     }
 
@@ -9512,16 +9517,19 @@ mod tests {
             .map(|path| path.to_string_lossy().to_string())
             .collect();
 
+        let data_root = crate::flavor::canopy_data_dir().unwrap();
+        let root = data_root.file_name().unwrap().to_string_lossy().to_string();
         assert!(
             rendered
                 .iter()
-                .any(|path| path.ends_with("Canopy/openclaw-state/agents/agent-alpha")),
+                .any(|path| path.ends_with(&format!("{}/openclaw-state/agents/agent-alpha", root))),
             "shared OpenClaw state dir should be considered for auth sync"
         );
         assert!(
-            rendered
-                .iter()
-                .any(|path| path.ends_with("Canopy/isolated/agent-alpha/state/agents/agent-alpha")),
+            rendered.iter().any(|path| path.ends_with(&format!(
+                "{}/isolated/agent-alpha/state/agents/agent-alpha",
+                root
+            ))),
             "isolated OpenClaw state dir should be considered for auth sync"
         );
     }
@@ -9605,6 +9613,9 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
     let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
+    // Captured by the `{jit_port}` placeholders in the JIT-bridge curl examples
+    // below — the host port differs per flavor (prod 18802, dev 18796).
+    let jit_port = crate::flavor::flavor().jit_port;
     let workspace_roots = permissions_workspace_roots(&canopy_root, agent);
 
     // Capability skills the agent currently has.
@@ -9628,10 +9639,9 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
     let integrations: Vec<&str> = agent.integrations.iter().map(|s| s.as_str()).collect();
 
     // Web allowlist — read directly from the per-agent file (separate storage).
-    let allowed_domains: Vec<String> = dirs::data_dir()
+    let allowed_domains: Vec<String> = crate::flavor::canopy_data_dir()
         .map(|d| {
-            d.join("Canopy")
-                .join("agent-browsers")
+            d.join("agent-browsers")
                 .join(&agent.id)
                 .join("allowlist.json")
         })
@@ -9789,7 +9799,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
             block.push_str(&format!(
                 "\n**Search** — quick lookups, \"what is\", news, current facts:\n\
                  ```\n\
-                 POST http://host.docker.internal:18802/web/search\n\
+                 POST http://host.docker.internal:{jit_port}/web/search\n\
                  Content-Type: application/json\n\
                  Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
                  {{\n  \"agent_id\": \"{agent_id_str}\",\n  \"query\": \"<search query>\",\n  \"num_results\": 10\n}}\n\
@@ -9801,7 +9811,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
             block.push_str(&format!(
                 "\n**Fetch a specific URL** — use when you already have the page's URL:\n\
                  ```\n\
-                 POST http://host.docker.internal:18802/web/fetch\n\
+                 POST http://host.docker.internal:{jit_port}/web/fetch\n\
                  Content-Type: application/json\n\
                  Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
                  {{\n  \"agent_id\": \"{agent_id_str}\",\n  \"url\": \"<https://...>\"\n}}\n\
@@ -9815,7 +9825,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
             block.push_str(&format!(
                 "\n**Deep research** — a question that needs multiple sources synthesized, not one lookup:\n\
                  ```\n\
-                 POST http://host.docker.internal:18802/web/research\n\
+                 POST http://host.docker.internal:{jit_port}/web/research\n\
                  Content-Type: application/json\n\
                  Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
                  {{\n  \"agent_id\": \"{agent_id_str}\",\n  \"topic\": \"<question>\",\n  \"depth\": 2\n}}\n\
@@ -9857,7 +9867,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
                  Deny — no cookies are touched before that.\n\
                  2. Once granted, fetch the page:\n\
                  ```\n\
-                 POST http://host.docker.internal:18802/web/fetch_authenticated\n\
+                 POST http://host.docker.internal:{jit_port}/web/fetch_authenticated\n\
                  Content-Type: application/json\n\
                  Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
                  {{\n  \"agent_id\": \"{agent_id_str}\",\n  \"url\": \"<https://...>\"\n}}\n\
@@ -10010,7 +10020,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          ## Requesting more access\n\n\
          If you need a permission you don't have, ask the user **once** by POSTing to:\n\n\
          ```\n\
-         POST http://host.docker.internal:18802/request_permission\n\
+         POST http://host.docker.internal:{jit_port}/request_permission\n\
          Content-Type: application/json\n\
          Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"permission_id\": \"<id>\",\n  \"justification\": \"<why you need it>\"\n}}\n\
@@ -10032,7 +10042,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          If you need the user to visually inspect or confirm something on a webpage \
          (CAPTCHA, 2FA prompt, ambiguous result), POST to:\n\n\
          ```\n\
-         POST http://host.docker.internal:18802/request_attention\n\
+         POST http://host.docker.internal:{jit_port}/request_attention\n\
          Content-Type: application/json\n\
          Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"reason\": \"<short reason>\"\n}}\n\
@@ -10054,13 +10064,29 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          (e.g., a stock ticker, a deploy tracker, a live map), you can spawn a native \
          window by POSTing to the JIT bridge:\n\n\
          ```\n\
-         POST http://host.docker.internal:18802/spawn_genui\n\
+         POST http://host.docker.internal:{jit_port}/spawn_genui\n\
          Content-Type: application/json\n\
          Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"component\": \"<component_name>\",\n  \"props\": {{ ... }}\n}}\n\
          ```\n\
          This spawns a translucent, frameless window on the host OS. Interactions with it \
-         will route back to your session just like inline widgets.\n",
+         will route back to your session just like inline widgets.\n\n\
+         ## Requesting a provider API key link\n\n\
+         The normal way to ask for a provider API key is the `[request_connection: api_key?...]` \
+         tag described in CANOPY_PROTOCOLS.md — use that for everything except the rare case \
+         where you need the raw capture URL yourself (e.g. to hand it to a channel other than \
+         Slack or the in-app chat). In that case, POST directly:\n\n\
+         ```\n\
+         POST http://host.docker.internal:18802/generate_web_connection_token\n\
+         Content-Type: application/json\n\
+         Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
+         {{\n  \"agent_id\": \"{agent_id}\",\n  \"provider_name\": \"<Display Name>\",\n  \"token_url\": \"<https://... where the user finds the key>\",\n  \"instructions\": \"<short plain-text steps>\",\n  \"placeholder\": \"<optional input hint>\"\n}}\n\
+         ```\n\
+         Returns `{{\"url\": \"https://.../connect/<token>\", \"token\": \"...\", \"expiresAt\": \"...\"}}`. \
+         The link works from any browser — no desktop app reachability required — expires in 15 \
+         minutes, and is single-use. Once the user submits the key there, it's encrypted in transit \
+         and lands directly in your Keychain credential as `agent_{agent_id}_<SECRET_NAME>`; you \
+         still never see the raw value — request it at runtime through the JIT credential flow.\n",
         agent_id    = agent.id,
         skills      = skills_block,
         integrations = integrations_block,
@@ -10119,11 +10145,9 @@ fn generate_user_md_content(
 
 #[tauri::command]
 pub async fn set_preferences_template(content: String) -> Result<(), String> {
-    if let Some(template_path) = dirs::data_dir().map(|d| {
-        d.join("Canopy")
-            .join("openclaw-state")
-            .join("preferences_template.md")
-    }) {
+    if let Some(template_path) = crate::flavor::canopy_data_dir()
+        .map(|d| d.join("openclaw-state").join("preferences_template.md"))
+    {
         std::fs::write(&template_path, content).map_err(|e| e.to_string())?;
         Ok(())
     } else {

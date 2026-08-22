@@ -71,6 +71,20 @@ struct WebResearchRequest {
     depth: Option<u8>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct WebConnectionTokenRequest {
+    agent_id: String,
+    provider_name: String,
+    #[serde(default)]
+    token_url: Option<String>,
+    #[serde(default)]
+    instructions: Option<String>,
+    #[serde(default)]
+    placeholder: Option<String>,
+    #[serde(default)]
+    secret_key: Option<String>,
+}
+
 fn bearer_token(headers: &str) -> Option<String> {
     headers.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -165,17 +179,24 @@ fn files_broker_response(result: Result<serde_json::Value, String>) -> (u16, Str
 }
 
 pub async fn start_jit_server(app_handle: tauri::AppHandle) {
-    let listener = match TcpListener::bind("0.0.0.0:18802").await {
+    let jit_addr = format!("0.0.0.0:{}", crate::flavor::flavor().jit_port);
+    let listener = match TcpListener::bind(&jit_addr).await {
         Ok(listener) => listener,
         Err(e) => {
             // Don't abort the whole app if the port is already held (e.g. by
             // another running Canopy instance) — log and back off instead.
             // See GitHub issue #17.
-            error!("Failed to bind JIT port 0.0.0.0:18802: {}", e);
+            error!("Failed to bind JIT port {}: {}", jit_addr, e);
+            crate::system_health::report_failed(
+                "jit_server",
+                format!("Agent authorization server couldn't start: {jit_addr} is unavailable ({e})"),
+                "Is another copy of Canopy running? Quit it (or whatever holds that port) and relaunch.",
+            );
             return;
         }
     };
-    info!("JIT Provisioning server listening on 0.0.0.0:18802");
+    info!("JIT Provisioning server listening on {}", jit_addr);
+    crate::system_health::report_ok("jit_server");
 
     loop {
         if let Ok((mut socket, _)) = listener.accept().await {
@@ -390,6 +411,29 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                 Err(_) => (
                                     400,
                                     r#"{"error":"Invalid web research request body"}"#.to_string(),
+                                ),
+                            }
+                        } else if path == "/generate_web_connection_token" {
+                            // Agent -> user provider-key request, delivered as a web link instead
+                            // of a canopy:// deep link — used when the agent knows it's replying
+                            // over Slack, where the desktop app is often unreachable from mobile.
+                            match serde_json::from_slice::<WebConnectionTokenRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) =
+                                        handle_generate_web_connection_token_request(
+                                            app.clone(),
+                                            req,
+                                        )
+                                        .await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
+                                }
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid web connection token request body"}"#
+                                        .to_string(),
                                 ),
                             }
                         } else if path == "/files/list" {
@@ -866,6 +910,34 @@ async fn handle_web_fetch_authenticated_request(
     match crate::web_tools::fetch_authenticated_page_impl(&req.url, &req.agent_id).await {
         Ok(page) => (
             serde_json::to_value(page).unwrap_or_else(|_| json!({})),
+            200,
+        ),
+        Err(e) => (json!({ "error": e }), 502),
+    }
+}
+
+async fn handle_generate_web_connection_token_request(
+    app: tauri::AppHandle,
+    req: WebConnectionTokenRequest,
+) -> (Value, u16) {
+    use tauri::Manager;
+    let db = app.state::<crate::db::Database>();
+    if !matches!(db.get_agent(&req.agent_id), Ok(Some(_))) {
+        return (json!({ "error": "agent not found" }), 404);
+    }
+    match crate::web_connections::generate_web_connection_token_impl(
+        &db,
+        &req.agent_id,
+        &req.provider_name,
+        req.token_url,
+        req.instructions,
+        req.placeholder,
+        req.secret_key,
+    )
+    .await
+    {
+        Ok(token) => (
+            json!({ "url": token.url, "token": token.token, "expiresAt": token.expires_at }),
             200,
         ),
         Err(e) => (json!({ "error": e }), 502),

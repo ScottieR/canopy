@@ -2,7 +2,26 @@
 
 All notable changes to Canopy are documented in this file.
 
-## [0.3.0] - Unreleased
+## [0.4.0] - Unreleased
+
+### Added
+
+- **Web-based API key capture flow** — agents can now request credentials via Slack
+  with a link that works from any browser, no Canopy app connection required. The
+  existing `[request_connection: api_key?...]` tag is automatically rewritten, when
+  delivered over Slack, into a plain `https://` link to a canopy-admin-hosted
+  `/connect/{token}` page instead of the `canopy://` deep link the in-app companion
+  window uses — solving the case where a user replies from their phone and the desktop
+  app isn't reachable. The key is encrypted in the browser to this Canopy install's
+  X25519 public key (ECDH → HKDF-SHA256 → ChaCha20-Poly1305) before it ever reaches
+  canopy-admin, which only ever sees ciphertext; Canopy polls for and decrypts
+  completions locally, storing the plaintext straight into the Keychain vault as
+  before. Falls back to the `canopy://` deep link if minting a web token fails (e.g.
+  canopy-admin unreachable). See `src-tauri/src/web_connections.rs` for the
+  implementation and `WEB_CONNECTIONS.md` for the canopy-admin-side contract this
+  still needs (endpoints + the `/connect/{token}` page — not yet implemented there).
+
+## [0.3.0] - 2026-08-09
 
 ### Added — Web tools (6 tiers)
 

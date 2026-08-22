@@ -192,6 +192,26 @@ pub struct SecurityAlert {
     pub resolved: bool,
 }
 
+/// A web-hosted connection-token capture request, awaiting the user to paste a
+/// provider API key into the `/connect/{token}` page on canopy-admin. Mirrors
+/// (but does not replace) the local companion-window flow — this exists so the
+/// key can be captured from any browser, without the desktop app being reachable.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingConnectionRecord {
+    pub token: String,
+    pub agent_id: String,
+    pub provider_name: String,
+    /// Env-style Keychain key suffix, e.g. `SEATS_AERO_API_KEY`. The key is
+    /// ultimately stored as `agent_<agent_id>_<secret_name>`.
+    pub secret_name: String,
+    pub token_url: Option<String>,
+    pub instructions: Option<String>,
+    pub placeholder: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
 // ─── Database Struct ─────────────────────────────────────────────────────────
 
 /// Thread-safe SQLite database wrapper for Canopy
@@ -203,8 +223,8 @@ impl Database {
     /// Initialize the database, creating tables and migrations as needed
     pub fn init<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) -> SqlResult<Self> {
         // Determine database path
-        let data_dir = if let Some(dir) = dirs::data_dir() {
-            dir.join("Canopy")
+        let data_dir = if let Some(dir) = crate::flavor::canopy_data_dir() {
+            dir
         } else {
             // Fallback to app data directory
             app_handle
@@ -822,6 +842,34 @@ impl Database {
         )?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_feedback_reports_created_at ON feedback_reports(created_at DESC)",
+            [],
+        )?;
+
+        // Web-hosted connection token capture (Slack-reachable, desktop-independent).
+        // Rows are short-lived: created on request, deleted on pickup, and swept once
+        // expired (see delete_expired_pending_connections, polled every 5s alongside
+        // canopy-admin — see web_connections::start_web_connections_poll_daemon).
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pending_connections (
+                token TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                provider_name TEXT NOT NULL,
+                secret_name TEXT NOT NULL,
+                token_url TEXT,
+                instructions TEXT,
+                placeholder TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pending_connections_agent ON pending_connections(agent_id)",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pending_connections_expires ON pending_connections(expires_at)",
             [],
         )?;
 
@@ -4046,6 +4094,71 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    // ─── Web-hosted connection token capture ───────────────────────────────
+
+    pub fn insert_pending_connection(&self, record: &PendingConnectionRecord) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pending_connections
+                (token, agent_id, provider_name, secret_name, token_url, instructions,
+                 placeholder, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                record.token,
+                record.agent_id,
+                record.provider_name,
+                record.secret_name,
+                record.token_url,
+                record.instructions,
+                record.placeholder,
+                record.created_at,
+                record.expires_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_pending_connections(&self) -> SqlResult<Vec<PendingConnectionRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT token, agent_id, provider_name, secret_name, token_url, instructions,
+                    placeholder, created_at, expires_at
+             FROM pending_connections ORDER BY created_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(PendingConnectionRecord {
+                token: row.get(0)?,
+                agent_id: row.get(1)?,
+                provider_name: row.get(2)?,
+                secret_name: row.get(3)?,
+                token_url: row.get(4)?,
+                instructions: row.get(5)?,
+                placeholder: row.get(6)?,
+                created_at: row.get(7)?,
+                expires_at: row.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn delete_pending_connection(&self, token: &str) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM pending_connections WHERE token = ?1",
+            params![token],
+        )?;
+        Ok(())
+    }
+
+    /// Sweep tokens past their TTL. Returns the number removed.
+    pub fn delete_expired_pending_connections(&self, now_iso: &str) -> SqlResult<usize> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM pending_connections WHERE expires_at <= ?1",
+            params![now_iso],
+        )
     }
 }
 

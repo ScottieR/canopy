@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { check as tauriCheck, Update } from '@tauri-apps/plugin-updater';
+import { getFlavor } from '../../utils/flavor';
 const check = async (): Promise<Update | null> => {
   if (typeof window !== "undefined" && (window as any).__TAURI_INTERNALS__) {
     return tauriCheck();
@@ -19,6 +20,13 @@ export function UpdateManager() {
   useEffect(() => {
     async function checkForUpdates() {
       try {
+        // Dev flavor ships without the updater (updates arrive via git pull) —
+        // its tauri.dev.conf.json removes the plugin config entirely.
+        const flavor = await getFlavor();
+        if (flavor.is_dev) {
+          setIsChecking(false);
+          return;
+        }
         const _update = await check();
         if (_update) {
           setUpdate(_update);

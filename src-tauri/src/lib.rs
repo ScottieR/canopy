@@ -29,6 +29,7 @@ mod docker;
 mod durable_content;
 mod engine_install;
 mod feedback;
+pub mod flavor;
 mod google;
 mod health_monitor;
 mod imessage;
@@ -45,7 +46,9 @@ pub mod screen_capture;
 mod security_scanner;
 mod share_publish;
 mod slack;
+mod system_health;
 mod voice;
+mod web_connections;
 mod web_tools;
 mod workspace_manager;
 
@@ -60,7 +63,31 @@ use base64::Engine;
 use tauri::Manager;
 use tokio::time::{sleep, Duration};
 
-fn admin_api_base_url() -> &'static str {
+/// Flavor info for the frontend (DEV badge, port/scheme routing).
+#[derive(serde::Serialize, Clone)]
+struct FlavorInfo {
+    name: &'static str,
+    gateway_host_port: u16,
+    gateway_url: String,
+    jit_port: u16,
+    deep_link_scheme: &'static str,
+    is_dev: bool,
+}
+
+#[tauri::command]
+fn get_flavor() -> FlavorInfo {
+    let f = flavor::flavor();
+    FlavorInfo {
+        name: f.name,
+        gateway_host_port: f.gateway_host_port,
+        gateway_url: flavor::gateway_url(),
+        jit_port: f.jit_port,
+        deep_link_scheme: f.deep_link_scheme,
+        is_dev: f.name == "dev",
+    }
+}
+
+pub(crate) fn admin_api_base_url() -> &'static str {
     option_env!("CANOPY_API_URL")
         .filter(|value| !value.is_empty())
         .unwrap_or("http://localhost:3001")
@@ -806,9 +833,17 @@ pub fn run() {
                     .map_err(|e| format!("Failed to register Canopy deep links: {}", e))?;
             }
 
+            // Wire the startup-subsystem health registry to the app so
+            // report_* calls from startup tasks reach the frontend indicator.
+            system_health::init(handle.clone());
+
             // Initialize AppState with user context
             let app_state = app_state::AppState::new();
-            tracing::info!("AppState initialized for user: {}", app_state.user_id);
+            tracing::info!(
+                "AppState initialized for user: {} (flavor: {})",
+                app_state.user_id,
+                app_state.flavor.name
+            );
             handle.manage(app_state);
 
             // Initialize SQLite database
@@ -879,6 +914,10 @@ pub fn run() {
             // Start Health Monitor Daemon
             health_monitor::start_health_monitor_daemon(handle.clone());
 
+            // Poll canopy-admin for completed web-hosted connection token captures
+            // (Slack -> web page -> canopy-admin -> here), every 5s.
+            web_connections::start_web_connections_poll_daemon(handle.clone());
+
             // Start the dispatch WebSocket server for mobile clients
             let dispatch_state = std::sync::Arc::new(dispatch::DispatchState::new());
             handle.manage(dispatch_state.clone());
@@ -910,6 +949,10 @@ pub fn run() {
         })
         // Agent management commands
         .invoke_handler(tauri::generate_handler![
+            // Flavor (prod/dev isolation)
+            get_flavor,
+            // Startup subsystem health
+            system_health::get_system_health,
             // Docker / OrbStack
             docker::check_orbstack_installed,
             docker::check_docker_installed,
@@ -920,6 +963,8 @@ pub fn run() {
             share_publish::get_share_config,
             share_publish::publish_share_artifact,
             share_publish::revoke_share_artifact,
+            // Web-hosted connection token capture (Slack -> web -> vault)
+            web_connections::generate_web_connection_token,
             docker::configure_orbstack_memory,
             docker::get_container_status,
             docker::start_gateway,
@@ -1066,6 +1111,7 @@ pub fn run() {
             keychain::get_web_credentials_cmd,
             keychain::verify_cloak_passcode,
             keychain::authenticate_mac_user,
+            keychain::keychain_status_cmd,
             // Eddy inference routing (hosted bootstrap, direct provider, or Ollama)
             canopy_helper::get_canopy_helper_config,
             canopy_helper::configure_canopy_helper,

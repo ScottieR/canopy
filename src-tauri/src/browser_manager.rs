@@ -2314,18 +2314,16 @@ struct PreparedBrowserProfile {
 }
 
 fn prepare_agent_browser_profile(agent_id: &str) -> Result<PreparedBrowserProfile> {
-    let data_dir = dirs::data_dir()
+    let data_dir = crate::flavor::canopy_data_dir()
         .context("Could not find data directory")?
-        .join("Canopy")
         .join("agent-browsers")
         .join(agent_id);
 
     std::fs::create_dir_all(&data_dir)?;
     let profile_path = data_dir.to_string_lossy().to_string();
 
-    let openclaw_state_dir = dirs::data_dir()
+    let openclaw_state_dir = crate::flavor::canopy_data_dir()
         .context("Could not find data directory")?
-        .join("Canopy")
         .join("openclaw-state")
         .join("workspace")
         .join(agent_id);
@@ -2370,9 +2368,8 @@ fn prepare_agent_browser_profile(agent_id: &str) -> Result<PreparedBrowserProfil
 /// RFC1918, file://) the automation browser gets; Tier 5 just has no allowlist concept
 /// of its own (that's a `browser`-skill/OpenClaw feature, not part of this capability).
 fn prepare_agent_sandbox_browser_profile(agent_id: &str) -> Result<PreparedBrowserProfile> {
-    let data_dir = dirs::data_dir()
+    let data_dir = crate::flavor::canopy_data_dir()
         .context("Could not find data directory")?
-        .join("Canopy")
         .join("agent-sandbox-browsers")
         .join(agent_id);
     std::fs::create_dir_all(&data_dir)?;
@@ -2589,9 +2586,8 @@ async fn move_browser(state: &BrowserManager, agent_id: &str, left: i32, top: i3
 // alongside cookies/history — single point of truth.
 
 fn allowlist_path_for(agent_id: &str) -> Option<std::path::PathBuf> {
-    dirs::data_dir().map(|d| {
-        d.join("Canopy")
-            .join("agent-browsers")
+    crate::flavor::canopy_data_dir().map(|d| {
+        d.join("agent-browsers")
             .join(agent_id)
             .join("allowlist.json")
     })

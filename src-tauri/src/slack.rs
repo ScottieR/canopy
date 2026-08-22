@@ -294,7 +294,29 @@ async fn get_bot_token(agent_id: Option<&str>) -> Result<String, String> {
             )
         });
     }
-    keychain::get_secret("slack-bot-token").map_err(|e| format!("Failed to get bot token: {}", e))
+    match keychain::get_secret("slack-bot-token") {
+        Ok(token) => {
+            crate::system_health::report_ok("slack");
+            Ok(token)
+        }
+        // A missing token just means Slack was never connected — that's a
+        // normal state, not a health problem.
+        Err(e @ crate::errors::CanopyError::NotFound(_)) => {
+            crate::system_health::report_ok("slack");
+            Err(format!("Failed to get bot token: {}", e))
+        }
+        // Anything else (e.g. keychain access denied) means a saved token may
+        // exist but can't be read — surface that instead of looking like
+        // "Slack not connected".
+        Err(e) => {
+            crate::system_health::report_degraded(
+                "slack",
+                format!("Slack token lookup failed — a saved connection may exist but can't be read ({e})"),
+                "Relaunch Canopy and click 'Allow' if macOS asks for keychain access, then re-check the Integrations page.",
+            );
+            Err(format!("Failed to get bot token: {}", e))
+        }
+    }
 }
 
 async fn make_api_call(
@@ -410,12 +432,77 @@ async fn make_api_call_json(
     Err(format!("API request failed: {}", last_error))
 }
 
-fn build_post_message_payload(
+/// Builds the Slack `chat.postMessage` payload for a message, translating any
+/// `[request_connection: ...]` tag into a channel-appropriate prompt.
+///
+/// `api_key` requests get the web-hosted token capture flow (a plain https:// link
+/// the user can open on any device — no desktop app reachability required); every
+/// other companion type keeps the existing `canopy://` deep-link button, since those
+/// still need the desktop app's companion window to complete the OAuth/bridge dance.
+/// If minting a web token fails (canopy-admin unreachable, etc.), falls back to the
+/// deep link so the request still reaches the user in some form.
+async fn build_post_message_payload(
+    db: &Database,
     channel_id: &str,
     text: &str,
     agent_id: &str,
     agent_name: Option<&str>,
 ) -> Value {
+    if let Some(tag) = crate::connection_requests::parse_connection_request_tag(text) {
+        if tag.companion_type == "api_key" {
+            let provider_name = tag.params.get("providerName").cloned().unwrap_or_default();
+            let result = crate::web_connections::generate_web_connection_token_impl(
+                db,
+                agent_id,
+                &provider_name,
+                tag.params.get("tokenUrl").cloned(),
+                tag.params.get("instructions").cloned(),
+                tag.params.get("placeholder").cloned(),
+                tag.params
+                    .get("secretKey")
+                    .or_else(|| tag.params.get("secretName"))
+                    .cloned(),
+            )
+            .await;
+            match result {
+                Ok(web_token) => {
+                    if let Some(prompt) =
+                        crate::connection_requests::build_external_connection_prompt_with_url(
+                            text,
+                            &web_token.url,
+                        )
+                    {
+                        return json!({
+                            "channel": channel_id,
+                            "text": prompt.plain_text_message,
+                            "blocks": [
+                                {
+                                    "type": "section",
+                                    "text": { "type": "mrkdwn", "text": prompt.body_text }
+                                },
+                                {
+                                    "type": "actions",
+                                    "elements": [
+                                        {
+                                            "type": "button",
+                                            "text": { "type": "plain_text", "text": prompt.button_text, "emoji": true },
+                                            "url": prompt.deep_link_url
+                                        }
+                                    ]
+                                }
+                            ]
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "web connection token generation failed, falling back to Canopy deep link: {e}"
+                    );
+                }
+            }
+        }
+    }
+
     if let Some(prompt) =
         crate::connection_requests::build_external_connection_prompt(text, agent_id, agent_name)
     {
@@ -575,7 +662,8 @@ pub async fn send_slack_message(
         .flatten()
         .map(|agent| agent.name);
 
-    let payload = build_post_message_payload(&channel_id, &text, &agent_id, agent_name.as_deref());
+    let payload =
+        build_post_message_payload(&db, &channel_id, &text, &agent_id, agent_name.as_deref()).await;
 
     let response_value = if payload.get("blocks").is_some() {
         make_api_call_json(
@@ -1006,7 +1094,7 @@ console.log('slack config patched');
 
     let container_name = agent_id
         .map(|id| crate::openclaw::get_agent_container_name(db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -1092,7 +1180,7 @@ console.log('slack disabled in config');
     let container_name = agent_id
         .as_deref()
         .map(|id| crate::openclaw::get_agent_container_name(&db, id))
-        .unwrap_or_else(|| "canopy-gateway".to_string());
+        .unwrap_or_else(|| crate::flavor::gateway_container().to_string());
 
     let patch_out = match tokio::time::timeout(
         std::time::Duration::from_secs(8),
@@ -1205,14 +1293,16 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
     } else {
         let active_agents = db.list_agents().unwrap_or_default();
         let gateway_agents: Vec<_> = active_agents.into_iter().filter(|a| !a.isolated).collect();
-        let changed =
-            crate::openclaw::sync_container_channels_internal("canopy-gateway", &gateway_agents)
-                .await?;
+        let changed = crate::openclaw::sync_container_channels_internal(
+            crate::flavor::gateway_container(),
+            &gateway_agents,
+        )
+        .await?;
         if changed {
             let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(15),
                 crate::openclaw::get_docker_command()
-                    .args(["restart", "canopy-gateway"])
+                    .args(["restart", crate::flavor::gateway_container()])
                     .output(),
             )
             .await;
@@ -1258,7 +1348,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
                 "exec",
                 "-u",
                 "node",
-                "canopy-gateway",
+                crate::flavor::gateway_container(),
                 "node",
                 "-e",
                 patch_script,
@@ -1270,7 +1360,7 @@ fs.writeFileSync(p,JSON.stringify(c,null,2));
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(15),
         crate::openclaw::get_docker_command()
-            .args(["restart", "canopy-gateway"])
+            .args(["restart", crate::flavor::gateway_container()])
             .output(),
     )
     .await;
@@ -1400,21 +1490,27 @@ mod tests {
         assert!(scopes.contains("chat:write"), "Missing chat:write scope");
     }
 
-    #[test]
-    fn slack_connection_requests_render_as_button_payloads() {
+    #[tokio::test]
+    async fn slack_connection_requests_render_as_button_payloads() {
+        // custom_oauth stays on the canopy:// deep-link path — only `api_key` requests
+        // get the web-hosted token flow, so this doesn't need a live canopy-admin.
+        let db = Database::init_in_memory().unwrap();
         let payload = build_post_message_payload(
+            &db,
             "C123",
             "Please connect Airbnb. [request_connection: custom_oauth?providerName=Airbnb&scopes=reservations.read]",
             "agent-1",
             Some("Bridge Bot"),
-        );
+        )
+        .await;
 
         assert_eq!(payload["channel"], "C123");
+        let scheme = crate::flavor::flavor().deep_link_scheme;
         assert!(
             payload["text"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("canopy://companion?"),
+                .contains(&format!("{}://companion?", scheme)),
             "fallback text should contain a Canopy deep link"
         );
         assert_eq!(
@@ -1423,13 +1519,46 @@ mod tests {
         );
         assert_eq!(
             payload["blocks"][1]["elements"][0]["url"],
-            "canopy://companion?companion=custom_oauth&agentId=agent-1&agentName=Bridge+Bot&providerName=Airbnb&scopes=reservations.read"
+            format!(
+                "{}://companion?companion=custom_oauth&agentId=agent-1&agentName=Bridge+Bot&providerName=Airbnb&scopes=reservations.read",
+                scheme
+            )
         );
     }
 
-    #[test]
-    fn plain_slack_messages_stay_plain() {
-        let payload = build_post_message_payload("C123", "Hello from Canopy", "agent-1", None);
+    #[tokio::test]
+    async fn api_key_requests_fall_back_to_deep_link_when_canopy_admin_unreachable() {
+        // No canopy-admin is running in tests, so minting a web token fails and
+        // build_post_message_payload must still deliver *something* usable — the
+        // existing canopy:// deep link — rather than dropping the request entirely.
+        let db = Database::init_in_memory().unwrap();
+        let payload = build_post_message_payload(
+            &db,
+            "C123",
+            "[request_connection: api_key?providerName=Seats.aero&tokenUrl=https%3A%2F%2Fseats.aero%2Faccount]",
+            "agent-1",
+            None,
+        )
+        .await;
+
+        assert_eq!(payload["channel"], "C123");
+        // Scheme is flavor-dependent (canopy:// prod, canopy-dev:// dev) and tests
+        // build in debug, so derive it rather than hardcoding the prod scheme.
+        let expected_prefix = format!("{}://companion?", crate::flavor::flavor().deep_link_scheme);
+        assert!(
+            payload["blocks"][1]["elements"][0]["url"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with(&expected_prefix),
+            "should fall back to the Canopy deep link when canopy-admin is unreachable"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_slack_messages_stay_plain() {
+        let db = Database::init_in_memory().unwrap();
+        let payload =
+            build_post_message_payload(&db, "C123", "Hello from Canopy", "agent-1", None).await;
 
         assert_eq!(payload["channel"], "C123");
         assert_eq!(payload["text"], "Hello from Canopy");
