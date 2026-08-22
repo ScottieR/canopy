@@ -1067,6 +1067,29 @@ pub async fn preflight_agent_connection(
     preflight_agent_connection_internal(&agent_id, &integration).await
 }
 
+/// Maps a raw Slack `auth.test` error code to actionable guidance. Different
+/// codes need different fixes — lumping them into one generic "reconnect"
+/// message hides which one actually applies (e.g. `account_inactive` means the
+/// token's owning user/app-install was deactivated in Slack, not that the
+/// token was simply rotated).
+fn slack_auth_error_hint(reason: Option<&str>) -> &'static str {
+    match reason {
+        Some("account_inactive") => {
+            "The Slack account or app installation behind this token was deactivated — reinstall the Slack app to this workspace and paste the new Bot/App tokens."
+        }
+        Some("invalid_auth") | Some("token_revoked") | Some("token_expired") => {
+            "The token itself was rotated or revoked in Slack — generate a fresh token and paste it in."
+        }
+        Some("missing_scope") => {
+            "The token is valid but missing an OAuth scope Slack now requires — reinstall the app to grant the missing scope."
+        }
+        Some("not_authed") | Some("no_permission") => {
+            "The token lacks permission for this workspace — check the Slack app's installed scopes."
+        }
+        _ => "",
+    }
+}
+
 /// Returns `(gateway_state_is_healthy, human_readable_reason)`.
 ///
 /// Verifies that the live `openclaw.json` actually has this agent's Slack account
@@ -1230,10 +1253,10 @@ pub async fn ping_agent_connections_internal(
         match integration.as_str() {
             "slack" => {
                 // Step 1: is the Slack TOKEN currently valid (auth.test)?
-                let token_ok =
+                let (token_ok, token_reason) =
                     match crate::slack::check_slack_connection(Some(agent_id.to_string())).await {
-                        Ok(s) => (s.connected, s.workspace_name),
-                        Err(_) => (false, None),
+                        Ok(s) => ((s.connected, s.workspace_name), s.error),
+                        Err(_) => ((false, None), None),
                     };
 
                 // Step 2: does the running gateway actually have Slack wired up
@@ -1260,7 +1283,8 @@ pub async fn ping_agent_connections_internal(
                         service: "Slack".to_string(),
                         is_ok: false,
                         message: format!(
-                            "Token invalid AND gateway isn't routing for this agent. {} Reconnect Slack in the Connections tab.",
+                            "Token invalid ({}) AND gateway isn't routing for this agent. {} Reconnect Slack in the Connections tab.",
+                            token_reason.as_deref().unwrap_or("reason unknown"),
                             gw_reason
                         ),
                     });
@@ -1268,7 +1292,11 @@ pub async fn ping_agent_connections_internal(
                     diagnostics.push(ConnectionDiagnostic {
                         service: "Slack".to_string(),
                         is_ok: false,
-                        message: "Slack token failed auth.test — the Slack app may have been deleted, the bot uninstalled from the workspace, or the token rotated. Reconnect in the Connections tab.".to_string(),
+                        message: format!(
+                            "Slack token failed auth.test — Slack says \"{}\". {} Reconnect in the Connections tab.",
+                            token_reason.as_deref().unwrap_or("reason unknown"),
+                            slack_auth_error_hint(token_reason.as_deref())
+                        ),
                     });
                 } else {
                     // Token is fine, but gateway-side is wrong — most common

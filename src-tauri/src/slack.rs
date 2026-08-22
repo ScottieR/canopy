@@ -65,6 +65,12 @@ pub struct SlackConnectionStatus {
     pub connected: bool,
     pub workspace_name: Option<String>,
     pub bot_name: Option<String>,
+    /// Raw Slack `error` code from `auth.test` when `connected` is false (e.g.
+    /// "account_inactive", "invalid_auth", "token_revoked"). `None` when the
+    /// failure happened before we could reach Slack (no token in keychain,
+    /// network error). Callers use this to give users a specific, actionable
+    /// reason instead of a generic "reconnect Slack" message.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -879,22 +885,33 @@ pub async fn check_slack_connection(
             connected: false,
             workspace_name: None,
             bot_name: None,
+            error: None,
         });
     }
 
-    // Test token with auth.test using POST and empty form to ensure Content-Type is set
-    let response: AuthTestResponse = serde_json::from_value(
-        make_api_call(
-            reqwest::Method::POST,
-            "auth.test",
-            Some(&[]),
-            agent_id.as_deref(),
-        )
-        .await
-        .unwrap_or_else(|e| {
+    // Test token with auth.test using POST and empty form to ensure Content-Type is set.
+    // `make_api_call` turns a Slack `{ok: false, error: "..."}` response into an
+    // `Err("Slack API error: <code>")` before we ever see the JSON, so the specific
+    // reason (e.g. "account_inactive" vs "invalid_auth" vs "token_revoked") has to be
+    // pulled back out of that string here rather than off the parsed response.
+    let api_result = make_api_call(
+        reqwest::Method::POST,
+        "auth.test",
+        Some(&[]),
+        agent_id.as_deref(),
+    )
+    .await;
+
+    let raw_error = match &api_result {
+        Err(e) => {
             tracing::error!("check_slack_connection api error: {}", e);
-            json!({"ok": false})
-        }),
+            e.strip_prefix("Slack API error: ").map(|s| s.to_string())
+        }
+        Ok(_) => None,
+    };
+
+    let response: AuthTestResponse = serde_json::from_value(
+        api_result.unwrap_or_else(|_| json!({"ok": false})),
     )
     .unwrap_or(AuthTestResponse {
         ok: false,
@@ -911,12 +928,14 @@ pub async fn check_slack_connection(
             connected: true,
             workspace_name: response.team,
             bot_name: response.user,
+            error: None,
         })
     } else {
         Ok(SlackConnectionStatus {
             connected: false,
             workspace_name: None,
             bot_name: None,
+            error: raw_error.or(response.error),
         })
     }
 }
