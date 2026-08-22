@@ -910,16 +910,18 @@ pub async fn check_slack_connection(
         Ok(_) => None,
     };
 
-    let response: AuthTestResponse = serde_json::from_value(api_result.unwrap_or_else(|_| json!({"ok": false})))
-        .unwrap_or(AuthTestResponse {
-            ok: false,
-            url: None,
-            team: None,
-            user: None,
-            team_id: None,
-            user_id: None,
-            error: None,
-        });
+    let response: AuthTestResponse = serde_json::from_value(
+        api_result.unwrap_or_else(|_| json!({"ok": false})),
+    )
+    .unwrap_or(AuthTestResponse {
+        ok: false,
+        url: None,
+        team: None,
+        user: None,
+        team_id: None,
+        user_id: None,
+        error: None,
+    });
 
     if response.ok {
         Ok(SlackConnectionStatus {
