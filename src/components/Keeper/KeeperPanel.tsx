@@ -154,6 +154,20 @@ const LEGACY_CHAT_KEY = "canopy_keeper_chat";
 const ONBOARDING_AUTOOPEN_KEY = "canopy_helper_onboarding_opened";
 const LEGACY_ONBOARDING_AUTOOPEN_KEY = "canopy_keeper_onboarding_opened";
 const CONTINUITY_KEY = "canopy_helper_continuity";
+// Same durable marker App.tsx and OnboardingWizard use to distinguish a truly
+// fresh profile from an established install having a bad morning.
+const INITIAL_SETUP_COMPLETE_KEY = "canopy_initial_setup_complete";
+
+// A fresh profile has nothing configured yet, so "gateway unreachable" and
+// friends are the expected resting state, not trouble. Eddy must not greet a
+// brand-new user with alarms about infrastructure they haven't set up.
+function isFirstRunSetup(agents: any[]): boolean {
+  try {
+    return agents.length === 0 && localStorage.getItem(INITIAL_SETUP_COMPLETE_KEY) !== "true";
+  } catch {
+    return agents.length === 0;
+  }
+}
 
 const loadChat = (): KeeperMsg[] => {
   try {
@@ -290,7 +304,11 @@ function useKeeperContext() {
     return {
       runtime_ready: gatewayReady,
       active_view: activeView,
-      onboarding: { in_onboarding: activeView === "onboarding", draft_step: onboardingStep },
+      onboarding: {
+        in_onboarding: activeView === "onboarding",
+        draft_step: onboardingStep,
+        first_run_setup: isFirstRunSetup(agents),
+      },
       agents: agents.map(a => ({
         name: a.name,
         status: a.status,
@@ -315,6 +333,11 @@ function offlineDiagnosis(ctx: any, question: string = ""): string {
   const q = question.toLowerCase();
 
   if (!ctx.runtime_ready) {
+    // On a fresh profile the runtime isn't supposed to be up yet — the
+    // onboarding wizard's engine gate installs it. Guidance, not an alarm.
+    if (ctx.onboarding?.first_run_setup) {
+      return "Nothing's wrong — you're just getting set up! Canopy runs your agents in a local engine on your Mac so your data never leaves it, and we'll install and start that engine together in a moment as part of setup. In the meantime, ask me anything about choosing your first agent or connecting a provider key.";
+    }
     return "I can't reach Canopy's local runtime right now — that's why things look frozen. Open the OrbStack app (it's in your Applications folder); once it's running, your agents wake up on their own. If OrbStack isn't installed, grab it from orbstack.dev and I'll take it from there.";
   }
 
@@ -409,7 +432,10 @@ export function KeeperPanel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const gatewayReady = useWorldStore(s => s.gatewayReady);
   const agents = useWorldStore(s => s.agents);
-  const hasTrouble = !gatewayReady || agents.some(a => a.status === "error");
+  // Ambient health warnings are suppressed until initial setup completes:
+  // a fresh profile with no runtime and no agents is a welcome, not a fault.
+  const firstRunSetup = isFirstRunSetup(agents);
+  const hasTrouble = !firstRunSetup && (!gatewayReady || agents.some(a => a.status === "error"));
 
   useEffect(() => {
     invoke<HelperConfig>("get_canopy_helper_config").then(config => {
@@ -638,7 +664,11 @@ export function KeeperPanel() {
               <div style={{ fontSize: 14, fontWeight: 800, color: "var(--text-main, #303330)" }}>Eddy</div>
               <div style={{ fontSize: 11, color: "var(--text-sub, #636E72)", display: "flex", alignItems: "center", gap: 5 }}>
                 <span style={{ width: 7, height: 7, borderRadius: "50%", background: statusDot, display: "inline-block" }} />
-                {hasTrouble ? "Something needs attention" : `All systems healthy · ${helperConfig.mode === "local" ? "On-device" : helperConfig.mode === "provider" ? "Your provider" : "Local guidance"}`}
+                {hasTrouble
+                  ? "Something needs attention"
+                  : firstRunSetup
+                    ? "Here to help you get set up"
+                    : `All systems healthy · ${helperConfig.mode === "local" ? "On-device" : helperConfig.mode === "provider" ? "Your provider" : "Local guidance"}`}
               </div>
             </div>
             <button onClick={() => setShowSettings(v => !v)} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 15, color: "var(--text-sub, #636E72)", padding: 4 }} title="Eddy privacy and model settings">⚙</button>
