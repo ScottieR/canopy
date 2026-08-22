@@ -733,7 +733,7 @@ pub async fn research_impl(
 // migration); once/session approvals live only in memory and are gone on restart.
 
 fn web_auth_dir(agent_id: &str) -> Option<std::path::PathBuf> {
-    dirs::data_dir().map(|d| d.join("Canopy").join("agent-web-auth").join(agent_id))
+    crate::flavor::canopy_data_dir().map(|d| d.join("agent-web-auth").join(agent_id))
 }
 
 fn web_auth_domains_path(agent_id: &str) -> Option<std::path::PathBuf> {

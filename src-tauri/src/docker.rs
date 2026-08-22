@@ -337,6 +337,12 @@ pub async fn get_container_status(
             .unwrap_or_default()
             .trim_start_matches('/')
             .to_string();
+        // The managed label matches BOTH flavors' containers. Reporting the other
+        // flavor's fleet here is how a fresh dev instance "adopted" the prod
+        // gateway and agents as its own (2026-08-15 incident) — skip them.
+        if !crate::flavor::container_belongs_to_active_flavor(&name) {
+            continue;
+        }
         let state = container.state.unwrap_or_default();
 
         statuses.push(ContainerStatus {
@@ -346,7 +352,7 @@ pub async fn get_container_status(
             health: "healthy".to_string(), // TODO: parse from health check
             memory_mb: 0.0,                // TODO: get from stats
             cpu_percent: 0.0,
-            port: crate::model_constants::GATEWAY_HOST_PORT, // host-facing port (18799), not container-internal (18789)
+            port: crate::model_constants::gateway_host_port(), // host-facing port, not container-internal (18789)
         });
     }
 
@@ -355,8 +361,9 @@ pub async fn get_container_status(
 
 /// Generate the docker-compose.yml for the shared gateway.
 ///
-/// Port mapping: HOST 18799 → CONTAINER 18789
-/// - Rust code talking to the gateway from the host uses port 18799 (GATEWAY_HOST_PORT).
+/// Port mapping: HOST gateway_host_port() → CONTAINER 18789 (flavored: prod
+/// 18799, dev 18797 — see `flavor.rs`; container names are flavored too).
+/// - Rust code talking to the gateway from the host uses gateway_host_port().
 /// - The healthcheck curl runs *inside* the container, so it correctly uses 18789
 ///   (GATEWAY_CONTAINER_PORT). Do NOT change the healthcheck URL to 18799.
 ///
@@ -376,19 +383,22 @@ process.on('unhandledRejection', (reason, promise) => {
     let _ = std::fs::create_dir_all(&state_dir);
     let _ = std::fs::write(state_dir.join("crash_guard.cjs"), crash_guard_js);
 
+    let flavor = crate::flavor::flavor();
     format!(
-        r#"services:
-  canopy-gateway:
+        r#"name: {project}
+services:
+  {gateway}:
     image: ghcr.io/openclaw/openclaw:2026.7.1
-    container_name: canopy-gateway
+    container_name: {gateway}
     restart: unless-stopped
     labels:
       - "com.canopy.managed=true"
       - "com.canopy.type=shared-gateway"
+      - "com.canopy.flavor={flavor_name}"
     ports:
-      - "127.0.0.1:18799:18789"   # Loopback only — never expose the gateway on the LAN
-      - "127.0.0.1:18800:18790"
-      - "127.0.0.1:18801:18791"
+      - "127.0.0.1:{gw_port}:18789"   # Loopback only — never expose the gateway on the LAN
+      - "127.0.0.1:{aux0}:18790"
+      - "127.0.0.1:{aux1}:18791"
     volumes:
       # config dir → /home/node/.openclaw  (openclaw.json, agents/, credentials/, etc.)
       - {data}/openclaw-state:/home/node/.openclaw
@@ -451,12 +461,12 @@ process.on('unhandledRejection', (reason, promise) => {
       timeout: 10s
       retries: 3
       
-  canopy-chroma:
+  {chroma}:
     image: chromadb/chroma:0.4.24
-    container_name: canopy-chroma
+    container_name: {chroma}
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:{chroma_port}:8000"
     volumes:
       - {data}/chroma-data:/chroma/chroma
     deploy:
@@ -472,6 +482,14 @@ volumes:
   chroma-data:
   openclaw-workspace:
 "#,
+        project = flavor.compose_project,
+        gateway = flavor.gateway_container,
+        flavor_name = flavor.name,
+        gw_port = flavor.gateway_host_port,
+        aux0 = flavor.gateway_aux_host_ports.0,
+        aux1 = flavor.gateway_aux_host_ports.1,
+        chroma = flavor.chroma_container,
+        chroma_port = flavor.chroma_host_port,
         data = data_dir.display(),
     )
 }
@@ -515,16 +533,19 @@ process.on('unhandledRejection', (reason, promise) => {
         }
     }
 
+    let container_name = crate::flavor::isolated_container_name(agent_id);
     format!(
-        r#"services:
-  canopy-isolated-{id}:
+        r#"name: {name}
+services:
+  {name}:
     image: ghcr.io/openclaw/openclaw:2026.7.1
-    container_name: canopy-isolated-{id}
+    container_name: {name}
     restart: unless-stopped
     labels:
       - "com.canopy.managed=true"
       - "com.canopy.type=isolated"
       - "com.canopy.agent-id={id}"
+      - "com.canopy.flavor={flavor_name}"
     ports:
       - "127.0.0.1:{port}:18789"
     volumes:
@@ -554,7 +575,9 @@ networks:
   isolated-{id}:
     internal: false
 "#,
+        name = container_name,
         id = agent_id,
+        flavor_name = crate::flavor::flavor().name,
         data = data_dir.display(),
         port = host_port,
         extra_volumes = extra_volumes
@@ -569,10 +592,7 @@ pub const ISOLATED_TYPE_LABEL: &str = "com.canopy.type=isolated";
 pub const AGENT_ID_LABEL: &str = "com.canopy.agent-id";
 
 fn canopy_data_dir() -> Option<PathBuf> {
-    std::env::var_os("CANOPY_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(dirs::data_dir)
-        .map(|path| path.join("Canopy"))
+    crate::flavor::canopy_data_dir()
 }
 
 /// Return the container's Docker state (`running`, `exited`, …), or `None` if no such
@@ -609,7 +629,7 @@ async fn container_state(container_name: &str) -> Option<String> {
 /// The agent's `isolated/<id>/state` and `workspace` directories are deliberately
 /// left untouched: re-isolating later must restore the agent exactly as it was.
 pub async fn teardown_isolated_container(agent_id: &str) -> Result<(), String> {
-    let container_name = format!("canopy-isolated-{}", agent_id);
+    let container_name = crate::flavor::isolated_container_name(agent_id);
     let data_dir = canopy_data_dir().ok_or("Could not locate the Canopy data directory")?;
     let compose_path = data_dir.join(format!("docker-compose-{}.yml", agent_id));
 
@@ -763,6 +783,19 @@ pub async fn reconcile_isolated_containers(db: &crate::db::Database) -> usize {
 
     let mut removed = 0usize;
     for (agent_id, container_name) in containers {
+        // The label filter matches BOTH flavors' containers (the labels predate
+        // flavor isolation). A dev instance with an empty database would otherwise
+        // classify every prod container as "agent no longer exists" and tear the
+        // real fleet down — the 2026-08-15 incident. Only containers whose name
+        // exactly matches this flavor's naming are ours to reconcile.
+        if container_name != crate::flavor::isolated_container_name(&agent_id) {
+            tracing::debug!(
+                "reconcile_isolated_containers: skipping {} — not a {} -flavor container",
+                container_name,
+                crate::flavor::flavor().name
+            );
+            continue;
+        }
         let verdict = match db.get_agent(&agent_id) {
             Ok(Some(agent)) if agent.isolated => continue, // legitimate
             Ok(Some(_)) => "agent is shared-gateway in the database",
@@ -1083,7 +1116,10 @@ fn preflight_sanitize_and_merge_config_with_keys(
     // hiccup into "All models failed" (this is what muted every agent in Aug 2026
     // when the chain walked to an unregistered gemini model).
     for chain_model in std::iter::once(&default_model).chain(default_fallbacks.iter()) {
-        if cfg["agents"]["defaults"]["models"].get(*chain_model).is_none() {
+        if cfg["agents"]["defaults"]["models"]
+            .get(*chain_model)
+            .is_none()
+        {
             cfg["agents"]["defaults"]["models"][*chain_model] = serde_json::json!({});
         }
     }
@@ -1316,9 +1352,7 @@ pub async fn start_gateway_internal(
         }
     }
 
-    let data_dir = dirs::data_dir()
-        .ok_or("Could not find data directory")?
-        .join("Canopy");
+    let data_dir = canopy_data_dir().ok_or("Could not find data directory")?;
 
     let state_dir = data_dir.join("openclaw-state");
     std::fs::create_dir_all(&state_dir).map_err(|e| e.to_string())?;
@@ -1425,7 +1459,7 @@ pub async fn start_gateway_internal(
         // but its PID namespace has crashed. A simple exec probe will fail with
         // "error executing setns process". If so, we MUST force a restart.
         if let Ok(exec_out) = get_docker_command()
-            .args(["exec", "canopy-gateway", "true"])
+            .args(["exec", crate::flavor::gateway_container(), "true"])
             .output()
             .await
         {
@@ -1479,18 +1513,20 @@ pub async fn start_gateway_internal(
     // left running. On the next start_gateway call, `docker-compose up -d` sees it,
     // reports it as "Running", and never creates a correctly-named container.
     //
-    // We always scan for containers whose name CONTAINS "canopy-gateway" but is NOT
-    // exactly "canopy-gateway". Those are always stale/mangled — remove them so
+    // We always scan for containers whose name CONTAINS the gateway name but is NOT
+    // exactly the gateway name. Those are always stale/mangled — remove them so
     // compose can create a fresh, correctly-named container.
     //
     // If compose didn't change and the canonical `canopy-gateway` is already running
     // cleanly, we skip removing it (docker-compose up -d will be a no-op).
+    let gateway_name = crate::flavor::gateway_container();
+    let name_filter = format!("name={}", gateway_name);
     if let Ok(ls_out) = get_docker_command()
         .args([
             "ps",
             "-a",
             "--filter",
-            "name=canopy-gateway",
+            name_filter.as_str(),
             "--format",
             "{{.Names}}\t{{.ID}}",
         ])
@@ -1506,7 +1542,14 @@ pub async fn start_gateway_internal(
                 continue;
             }
 
-            if name != "canopy-gateway" {
+            if name != gateway_name {
+                // Docker's `name=` filter is a SUBSTRING match, so a prod scan for
+                // "canopy-gateway" also matches the dev flavor's "canopy-gateway-dev".
+                // Only the hash-prefix mangle (`<id>_<gateway>`) is ours to remove;
+                // anything else is another flavor's healthy container — leave it.
+                if !name.ends_with(&format!("_{}", gateway_name)) {
+                    continue;
+                }
                 // Hash-prefixed stale container (e.g. 53eca6e3188b_canopy-gateway) — always remove
                 tracing::info!(
                     "start_gateway: removing stale mangled container '{}' ({})",
@@ -1742,7 +1785,7 @@ pub async fn start_gateway_internal(
             tracing::info!(
                 "start_gateway: applied-config marker written (container was recreated)"
             );
-            ensure_browser_dependencies("canopy-gateway".to_string());
+            ensure_browser_dependencies(crate::flavor::gateway_container().to_string());
         } else {
             tracing::info!("start_gateway: applied-config marker written (container already running with correct config)");
         }
@@ -1984,9 +2027,7 @@ pub async fn stop_gateway() -> Result<String, String> {
         .check("local-user")
         .map_err(|e| e.to_string())?;
 
-    let data_dir = dirs::data_dir()
-        .ok_or("Could not find data directory")?
-        .join("Canopy");
+    let data_dir = canopy_data_dir().ok_or("Could not find data directory")?;
 
     let compose_path = data_dir.join("docker-compose.yml");
 
@@ -2060,7 +2101,7 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
         tracing::warn!("OrbStack missing... executing generic docker restart.");
         // This won't practically work on Mac's Docker Desktop via CLI reliably, but added as fallback shell
         let _ = tokio::process::Command::new("docker")
-            .args(["restart", "canopy-gateway"])
+            .args(["restart", crate::flavor::gateway_container()])
             .output()
             .await;
     }
@@ -2080,16 +2121,18 @@ pub async fn hard_reset_infrastructure() -> Result<String, String> {
             .unwrap_or_default()
             .join(".orbstack/bin/docker"),
     )
-    .args(["inspect", "-f", "{{.State.Status}}", "canopy-gateway"])
+    .args([
+        "inspect",
+        "-f",
+        "{{.State.Status}}",
+        crate::flavor::gateway_container(),
+    ])
     .output()
     .await
     .ok()
     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     .unwrap_or_else(|| "unknown".into());
-    tracing::info!(
-        "canopy-gateway container state after reset: {}",
-        container_state
-    );
+    tracing::info!("gateway container state after reset: {}", container_state);
 
     Ok("Infrastructure rebooted perfectly.".to_string())
 }
@@ -2148,9 +2191,11 @@ mod tests {
         ] {
             assert!(!compose.contains(secret_name));
         }
-        assert!(compose.contains("127.0.0.1:18799:18789"));
-        assert!(compose.contains("127.0.0.1:8000:8000"));
-        assert!(!compose.contains("\n      - \"8000:8000\""));
+        let flavor = crate::flavor::flavor();
+        assert!(compose.contains(&format!("127.0.0.1:{}:18789", flavor.gateway_host_port)));
+        assert!(compose.contains(&format!("container_name: {}", flavor.gateway_container)));
+        assert!(compose.contains(&format!("127.0.0.1:{}:8000", flavor.chroma_host_port)));
+        assert!(!compose.contains(&format!("\n      - \"{}:8000\"", flavor.chroma_host_port)));
     }
 
     #[cfg(unix)]
@@ -2212,7 +2257,7 @@ mod tests {
 
         let compose = generate_isolated_compose(agent_id, &data_dir, port);
 
-        assert!(compose.contains("canopy-isolated-agent-123"));
+        assert!(compose.contains(&crate::flavor::isolated_container_name("agent-123")));
         assert!(compose.contains("127.0.0.1:18805:18789"));
         assert!(!compose.contains("\n      - \"18805:18789\""));
         assert!(compose.contains("- \"com.canopy.type=isolated\""));
@@ -2346,7 +2391,10 @@ mod tests {
             .iter()
             .filter_map(|v| v.as_str().map(String::from))
             .collect();
-        assert!(!fallbacks.is_empty(), "keys for two providers must produce a chain");
+        assert!(
+            !fallbacks.is_empty(),
+            "keys for two providers must produce a chain"
+        );
 
         let registered = cfg
             .pointer("/agents/defaults/models")

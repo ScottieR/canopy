@@ -28,8 +28,8 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
                 Err(_) => continue,
             };
 
-            let workspace_base = match dirs::data_dir() {
-                Some(dir) => dir.join("Canopy").join("openclaw-state").join("workspace"),
+            let workspace_base = match crate::flavor::canopy_data_dir() {
+                Some(dir) => dir.join("openclaw-state").join("workspace"),
                 None => continue,
             };
 
@@ -139,8 +139,9 @@ pub fn start_sniffer_daemon(app_handle: tauri::AppHandle) {
 fn analyze_command_for_egress(command: &str) -> (bool, String, String) {
     let lower_cmd = command.to_lowercase();
 
-    // Ignore the approved secure export bridge
-    if lower_cmd.contains("18802/export_file") {
+    // Ignore the approved secure export bridge (JIT port is flavor-dependent)
+    let export_bridge_marker = format!("{}/export_file", crate::flavor::flavor().jit_port);
+    if lower_cmd.contains(&export_bridge_marker) {
         return (false, "".to_string(), "".to_string());
     }
 

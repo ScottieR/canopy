@@ -17,7 +17,13 @@ import { MiniAppStandalone } from "./components/MiniAppStandalone";
 import { buildCompanionUrl } from "./utils/connectorCatalog";
 import { parseCompanionDeepLink } from "./utils/connectionRequests";
 import { resolveStandaloneViewKind } from "./utils/standaloneView";
+import { getFlavor } from "./utils/flavor";
 import "./styles/globals.css";
+
+// Warm the prod/dev flavor cache before anything builds a deep link or gateway
+// URL — sync call sites read it via getCachedFlavor(). Fire-and-forget; falls
+// back to prod values outside Tauri.
+getFlavor().catch(() => {});
 
 const companionType = new URLSearchParams(window.location.search).get("companion");
 const browserAgentId = new URLSearchParams(window.location.search).get("browser");

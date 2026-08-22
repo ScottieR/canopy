@@ -158,18 +158,16 @@ fn authenticate_files_bridge_token(token: &str) -> Result<String, String> {
 }
 
 fn shared_broker_dir(agent_id: &str) -> Option<PathBuf> {
-    std::env::var_os("CANOPY_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(dirs::data_dir)
-        .map(|root| {
-            root.join("Canopy")
-                .join("openclaw-state")
-                .join("workspace")
-                .join(agent_id)
-                .join(".canopy")
-        })
+    crate::flavor::canopy_data_dir().map(|root| {
+        root.join("openclaw-state")
+            .join("workspace")
+            .join(agent_id)
+            .join(".canopy")
+    })
 }
 
+// {{CANOPY_JIT_PORT}} is substituted with the active flavor's JIT port at install
+// time (files_bridge_client_source) — prod and dev bind different host ports.
 const FILES_BRIDGE_CLIENT: &str = r#"#!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
@@ -185,7 +183,7 @@ const token = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pa
 const payload = command === 'search'
   ? { root_id: rootId, query: args.join(' ') }
   : { root_id: rootId, path: args[0] || '' };
-const response = await fetch(`http://host.docker.internal:18802/files/${command}`, {
+const response = await fetch(`http://host.docker.internal:{{CANOPY_JIT_PORT}}/files/${command}`, {
   method: 'POST',
   headers: {
     'Authorization': `Bearer ${token}`,
@@ -202,6 +200,13 @@ if (command === 'read') process.stdout.write(body.content || '');
 else process.stdout.write(`${JSON.stringify(body, null, 2)}\n`);
 "#;
 
+fn files_bridge_client_source() -> String {
+    FILES_BRIDGE_CLIENT.replace(
+        "{{CANOPY_JIT_PORT}}",
+        &crate::flavor::flavor().jit_port.to_string(),
+    )
+}
+
 fn install_files_broker_runtime(agent_id: &str) -> Result<(), String> {
     let token = ensure_files_bridge_token(agent_id)?;
     let dir = shared_broker_dir(agent_id)
@@ -210,7 +215,7 @@ fn install_files_broker_runtime(agent_id: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to create Files Bridge runtime: {}", e))?;
     let client_path = dir.join("files-bridge");
     let token_path = dir.join("files-bridge-token");
-    std::fs::write(&client_path, FILES_BRIDGE_CLIENT)
+    std::fs::write(&client_path, files_bridge_client_source())
         .map_err(|e| format!("Failed to install Files Bridge client: {}", e))?;
     std::fs::write(&token_path, token)
         .map_err(|e| format!("Failed to install Files Bridge capability: {}", e))?;

@@ -540,11 +540,17 @@ pub async fn start_websocket_server(state: Arc<DispatchState>, app_handle: tauri
         Ok(l) => l,
         Err(e) => {
             error!("Failed to bind WebSocket server to {}: {}", addr, e);
+            crate::system_health::report_failed(
+                "dispatch",
+                format!("Mobile dispatch relay couldn't start: port 3030 is unavailable ({e})"),
+                "Is another copy of Canopy running? Quit it (or whatever holds port 3030) and relaunch.",
+            );
             return;
         }
     };
 
     info!("WebSocket relay listening on: {}", addr);
+    crate::system_health::report_ok("dispatch");
 
     while let Ok((stream, peer_addr)) = listener.accept().await {
         let state_clone = Arc::clone(&state);
