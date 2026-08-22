@@ -62,7 +62,8 @@ pub fn build_companion_deep_link(
     }
 
     format!(
-        "canopy://{}?{}",
+        "{}://{}?{}",
+        crate::flavor::flavor().deep_link_scheme,
         CANOPY_COMPANION_DEEP_LINK_HOST,
         serializer.finish()
     )
@@ -198,7 +199,10 @@ mod tests {
 
         assert_eq!(
             deep_link,
-            "canopy://companion?companion=custom_oauth&agentId=agent-1&agentName=Bridge+Bot&providerName=Airbnb&scopes=reservations.read%2Creservations.write"
+            format!(
+                "{}://companion?companion=custom_oauth&agentId=agent-1&agentName=Bridge+Bot&providerName=Airbnb&scopes=reservations.read%2Creservations.write",
+                crate::flavor::flavor().deep_link_scheme
+            )
         );
     }
 
@@ -213,6 +217,9 @@ mod tests {
 
         assert_eq!(prompt.button_text, "Connect Airbnb");
         assert!(prompt.body_text.contains("Airbnb setup"));
-        assert!(prompt.plain_text_message.contains("canopy://companion?"));
+        assert!(prompt.plain_text_message.contains(&format!(
+            "{}://companion?",
+            crate::flavor::flavor().deep_link_scheme
+        )));
     }
 }

@@ -42,12 +42,8 @@ struct FolderGrantManifest {
 pub fn get_agent_workspace_config_path(agent_id: &str) -> Result<PathBuf> {
     crate::validators::agent::validate_id(agent_id).map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-    let data_dir = std::env::var_os("CANOPY_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(dirs::data_dir)
-        .context("Could not find data directory")?;
+    let data_dir = crate::flavor::canopy_data_dir().context("Could not find data directory")?;
     let path = data_dir
-        .join("Canopy")
         .join("agent-workspaces")
         .join(agent_id)
         .join("allowed_directories.json");
@@ -228,11 +224,7 @@ pub(crate) fn get_folder_grants_for_agent(agent_id: &str) -> Result<Vec<FolderGr
 }
 
 async fn recreate_isolated_container(agent_id: &str) -> Result<(), String> {
-    let Some(data_dir) = std::env::var_os("CANOPY_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(dirs::data_dir)
-        .map(|path| path.join("Canopy"))
-    else {
+    let Some(data_dir) = crate::flavor::canopy_data_dir() else {
         return Err("Could not locate the Canopy data directory".to_string());
     };
     let port = crate::openclaw::get_agent_isolated_port(agent_id);
@@ -254,7 +246,7 @@ async fn recreate_isolated_container(agent_id: &str) -> Result<(), String> {
         ));
     }
 
-    let container_name = format!("canopy-isolated-{}", agent_id);
+    let container_name = crate::flavor::isolated_container_name(agent_id);
     crate::channels::restore_agent_github_runtime(agent_id, &container_name).await;
     tracing::info!("Refreshed isolated folder mounts for {}", agent_id);
     Ok(())

@@ -48,6 +48,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:flavor": "CANOPY_FLAVOR=dev tauri dev --config src-tauri/tauri.dev.conf.json",
     "build": "vite build",
     "preview": "vite preview",
     "icons:prepare": "CLANG_MODULE_CACHE_PATH=/tmp/canopy-swift-module-cache swift scripts/generate_app_icons.swift",
