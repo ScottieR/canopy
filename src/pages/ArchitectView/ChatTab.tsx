@@ -798,15 +798,32 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
   const STALL_AFTER_MS = 90_000;
   const [loadingStartedAt, setLoadingStartedAt] = useState<number | null>(null);
   const [loadingNow, setLoadingNow] = useState(() => Date.now());
+  // The timer measures quiet time in THIS thread, not time-since-send: it
+  // restarts when the user switches to a different loading thread, and resets
+  // whenever new messages land (review finding on this PR — a healthy long run
+  // that had just produced output shouldn't be called "maybe stuck").
+  const stallTimerConvRef = useRef<string | null>(null);
   useEffect(() => {
     if (!activeThreadLoading) {
       setLoadingStartedAt(null);
+      stallTimerConvRef.current = null;
       return;
     }
-    setLoadingStartedAt(prev => prev ?? Date.now());
+    const conv = agent.activeConversationId || null;
+    if (stallTimerConvRef.current !== conv) {
+      stallTimerConvRef.current = conv;
+      setLoadingStartedAt(Date.now());
+    } else {
+      setLoadingStartedAt(prev => prev ?? Date.now());
+    }
     const tick = setInterval(() => setLoadingNow(Date.now()), 5000);
     return () => clearInterval(tick);
   }, [activeThreadLoading, agent.activeConversationId]);
+  useEffect(() => {
+    // Any new message in the log is activity — push the stall horizon out.
+    if (activeThreadLoading) setLoadingStartedAt(Date.now());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatLog.length]);
   const loadingElapsedMs = loadingStartedAt ? loadingNow - loadingStartedAt : 0;
   const loadingStalled = activeThreadLoading && loadingElapsedMs >= STALL_AFTER_MS;
 

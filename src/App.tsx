@@ -27,7 +27,7 @@ import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
 import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, ChevronDown, ChevronUp, Activity, Terminal, Shield, RefreshCw, Layers, Lock, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, pickNextAction, UserProfile, initializeMiniAppDurablePersistence } from "./store/worldStore";
+import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, effectiveAgentStatus, pickNextAction, UserProfile, initializeMiniAppDurablePersistence } from "./store/worldStore";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { OnboardingWizard } from "./pages/OnboardingWizard";
 import { LockScreen } from "./components/LockScreen";
@@ -285,7 +285,7 @@ function AgentCharacter({ agent }: { agent: AgentData }) {
       <AntennaStalk base={[-0.05, 0.65, -0.02]} h={0.24} c={0.2} color={agent.accentColor} id={agent.id} />
       <AntennaStalk base={[0.05, 0.65, -0.02]} h={0.24} c={-0.2} color={agent.accentColor} id={agent.id} />
 
-      {agent.status === "thinking" && <ThinkBubbles color={agent.accentColor} />}
+      {effectiveAgentStatus(agent) === "thinking" && <ThinkBubbles color={agent.accentColor} />}
     </group>
   );
 }

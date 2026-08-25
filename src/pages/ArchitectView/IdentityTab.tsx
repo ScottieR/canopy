@@ -7,7 +7,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, effectiveAgentStatus } from "../../store/worldStore";
 import type { GenerativeResult } from "../../types/generative";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, TransformControls, Environment } from "@react-three/drei";
@@ -248,7 +248,7 @@ export function IdentityTab({ agent }: { agent: AgentData }) {
                 <GLBAgent
                   fileUrl={stagedVisuals?.baseModelUrl || (["Accountant", "Assistant", "Strategist", "Researcher", "Tutor", "Coder"].includes(agent.role) ? `/models/lobsters/${agent.role}.glb` : undefined)}
                   accessories={stagedVisuals?.accessories || []}
-                  agentStatus={agent.status}
+                  agentStatus={effectiveAgentStatus(agent)}
                   scale={0.25}
                   robeColor={stagedVisuals?.color || agent.color}
                   forceAnimation="Breathe"

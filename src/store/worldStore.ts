@@ -537,6 +537,22 @@ export function deriveAgentDisplayStatus(
   return { state: "idle", label: "Idle" };
 }
 
+// Back-compat adapter for surfaces that still branch on the raw Agent["status"]
+// union (world view, agent cards, dashboard): the health poller no longer emits
+// "thinking" (recent gateway activity is not proof of work — see
+// deriveAgentDisplayStatus), so this reinstates it from live thread runs. New
+// code should prefer deriveAgentDisplayStatus; this exists so the older
+// styling branches keep a reachable working state.
+export function effectiveAgentStatus(
+  agent: Pick<AgentData, "paused" | "status" | "conversations">
+): AgentData["status"] {
+  const hasActiveRun = (agent.conversations || []).some(
+    c => c.threadStatus === "running" || c.threadStatus === "queued" || (c.activeRunCount || 0) > 0
+  );
+  if (hasActiveRun && !agent.paused && agent.status !== "error") return "thinking";
+  return agent.status;
+}
+
 export function injectPrincipalContext(basePrompt: string, profile: UserProfile | null) {
   if (!profile || profile.name === "Admin" && !profile.global_directives) return basePrompt;
 
