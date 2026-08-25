@@ -6,7 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, deriveAgentDisplayStatus } from "../../store/worldStore";
 import type { GenerativeResult } from "../../types/generative";
 import { Toggle, ServiceRow, glass, ProgressBar } from "../../App";
 import { AgentActivityHeatmap } from "../../components/agents/AgentActivityHeatmap";
@@ -20,6 +20,7 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
   const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({});
   const gatewayReady = useWorldStore(s => s.gatewayReady);
+  const displayStatus = deriveAgentDisplayStatus(agent, gatewayReady);
   const { pendingDecisions } = useWorldStore();
   const agentDecisions = useMemo(
     () => pendingDecisions.filter(d => d.agentId === agent.id),
@@ -127,14 +128,16 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
         <div style={{ ...glass(0.5), padding: 16, borderRadius: 14 }}>
           <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.06em", color: "var(--text-sub)", textTransform: "uppercase", marginBottom: 8 }}>Current State</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {/* Same canonical derivation as the header pill (issue #56) — an agent
+                with a live thread run reads "Working…" here, never "Idle". */}
             <div style={{
               width: 10, height: 10, borderRadius: "50%",
-              background: agent.paused ? "var(--text-muted)" : (!gatewayReady || agent.status === "deploying") ? "#F4A83A" : agent.status === "active" ? "#4A9E96" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "var(--text-muted)",
-              boxShadow: agent.paused ? "none" : (!gatewayReady || agent.status === "deploying") ? "0 0 8px rgba(244,168,58,0.5)" : agent.status === "active" ? "0 0 8px rgba(74,158,150,0.5)" : agent.status === "error" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
-              animation: (!agent.paused && (!gatewayReady || agent.status === "deploying")) ? "pulse 1.5s ease-in-out infinite" : "none",
+              background: displayStatus.state === "paused" ? "var(--text-muted)" : displayStatus.state === "waking" ? "#F4A83A" : displayStatus.state === "working" ? "#8B6AAE" : displayStatus.state === "offline" ? "#E57373" : "#4A9E96",
+              boxShadow: displayStatus.state === "waking" ? "0 0 8px rgba(244,168,58,0.5)" : displayStatus.state === "idle" ? "0 0 8px rgba(74,158,150,0.5)" : displayStatus.state === "offline" ? "0 0 8px rgba(229,115,115,0.5)" : "none",
+              animation: (displayStatus.state === "waking" || displayStatus.state === "working") ? "pulse 1.5s ease-in-out infinite" : "none",
             }} />
-            <span style={{ fontSize: 18, fontWeight: 600, color: agent.paused ? "var(--text-muted)" : (!gatewayReady || agent.status === "deploying") ? "#F4A83A" : "var(--text-main)", textTransform: "capitalize" }}>
-              {agent.paused ? "Paused" : (!gatewayReady || agent.status === "deploying") ? "Waking up" : agent.status === "error" ? "Offline" : agent.currentAction || "Idle"}
+            <span style={{ fontSize: 18, fontWeight: 600, color: displayStatus.state === "paused" ? "var(--text-muted)" : displayStatus.state === "waking" ? "#F4A83A" : "var(--text-main)", textTransform: "capitalize" }}>
+              {displayStatus.state === "idle" && agent.currentAction ? agent.currentAction : displayStatus.label}
             </span>
           </div>
           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontSize: 11, color: "var(--text-sub)" }}>

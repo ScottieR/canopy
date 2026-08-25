@@ -2173,8 +2173,12 @@ export default function App() {
                 newStatus = "sleeping" as any;
                 newAction = "idle";
             } else if (agentEntry.lastActiveAgeMs < 60000) {
-                newStatus = "thinking" as any;
-                newAction = "processing task...";
+                // Recent gateway activity alone must never claim "thinking" — a
+                // run that just CRASHED is also "active < 60s ago", which made the
+                // header say Thinking… beside a FAILED thread (issue #56). Actual
+                // work is derived from thread runs in deriveAgentDisplayStatus.
+                newStatus = "active" as any;
+                newAction = "recently active";
             } else if (agentEntry.lastActiveAgeMs < 300000) {
                 newStatus = "active" as any;
                 newAction = "recently active";
