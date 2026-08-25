@@ -6516,6 +6516,45 @@ fn agent_model_config(agent_id: &str, primary: &str) -> serde_json::Value {
     serde_json::json!({ "primary": primary, "fallbacks": fallbacks })
 }
 
+/// Single source for reading the RUNNING gateway's `openclaw.json` for an
+/// agent's container (issue #74). Three near-copies of this docker-exec read
+/// existed — each with its own timeout and its own (divergent) policy for what
+/// a failed read means, which is exactly how a silent false-green slipped into
+/// the model-auth diagnostic. One helper, one failure policy: callers get the
+/// reason a read failed and decide what that means for them.
+/// (audit_openclaw.rs keeps its own variant: it targets the flavor gateway
+/// container directly, not the agent's container, and streams step logs.)
+pub(crate) async fn read_live_gateway_config(
+    db: &crate::db::Database,
+    agent_id: &str,
+) -> Result<serde_json::Value, String> {
+    let container_name = get_agent_container_name(db, agent_id);
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "cat",
+                "/home/node/.openclaw/openclaw.json",
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| "timed out reading the gateway config (4s)".to_string())?
+    .map_err(|e| format!("could not exec into the gateway container: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "gateway container error reading openclaw.json: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("openclaw.json is not valid JSON: {}", e))
+}
+
 #[derive(serde::Serialize, Clone)]
 pub struct ModelAuthDiagnostic {
     pub model: String,
@@ -6551,14 +6590,20 @@ pub async fn ping_agent_model_auth(
     let keys = get_creds_for_agent(&agent_id);
     let has = |k: &str| keys.get(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
 
-    let primary = agent.personality.active_model.clone().unwrap_or_else(|| {
-        crate::model_constants::default_model_from_available_keys(
+    // The row must reflect the model that actually BOOTS, not the raw picker
+    // value (issue #77): boot sync runs resolve_boot_model, which rejects
+    // keyless providers and substitutes a key-backed one — reporting the raw
+    // selection produced a confident false red-X for agents that run fine.
+    let configured = agent.personality.active_model.clone();
+    let primary = match configured.as_deref() {
+        Some(m) => resolve_boot_model(&agent_id, m, &keys),
+        None => crate::model_constants::default_model_from_available_keys(
             has("ANTHROPIC_API_KEY"),
             has("OPENAI_API_KEY"),
             has("GEMINI_API_KEY"),
         )
-        .to_string()
-    });
+        .to_string(),
+    };
 
     let mut rows: Vec<ModelAuthDiagnostic> = Vec::new();
     let mut push_row = |model: &str, role: &str| {
@@ -6584,51 +6629,78 @@ pub async fn ping_agent_model_auth(
     };
 
     push_row(&primary, "primary");
+
+    if let Some(cfg_model) = configured.as_deref() {
+        if cfg_model != primary {
+            let provider = crate::model_constants::provider_prefix(cfg_model)
+                .unwrap_or("unknown")
+                .to_string();
+            rows.push(ModelAuthDiagnostic {
+                model: cfg_model.to_string(),
+                provider: provider.clone(),
+                role: "configured-unused".to_string(),
+                has_key: true,
+                message: format!(
+                    "Selected in the model picker, but boot substitutes {} because no {} key is configured. Runs are unaffected; add the key or re-pick a model to clear this.",
+                    primary,
+                    provider_display_name(&provider)
+                ),
+            });
+        }
+    }
+
+    // Failover summary (issue #76): default_fallback_chain only ever emits
+    // key-backed models, so per-fallback rows were green by construction.
+    // The diagnostic value is the inverse — is there any failover at all?
     let fallbacks = crate::model_constants::default_fallback_chain(
         &primary,
         has("ANTHROPIC_API_KEY"),
         has("OPENAI_API_KEY"),
         has("GEMINI_API_KEY"),
     );
-    for fb in &fallbacks {
-        push_row(fb, "fallback");
+    if fallbacks.is_empty() {
+        let held: Vec<&str> = providers_with_keys(&keys);
+        rows.push(ModelAuthDiagnostic {
+            model: "(no failover)".to_string(),
+            provider: String::new(),
+            role: "failover-gap".to_string(),
+            has_key: true,
+            message: format!(
+                "No failover chain: {} holds a key for {} only, so a quota or billing error on that provider stops the agent. Add a second provider key to enable failover.",
+                agent.name,
+                if held.is_empty() { "no provider".to_string() } else { held.join(", ") }
+            ),
+        });
+    } else {
+        rows.push(ModelAuthDiagnostic {
+            model: fallbacks.join(", "),
+            provider: String::new(),
+            role: "failover".to_string(),
+            has_key: true,
+            message: "Failover chain ready — every model in it has a provider key.".to_string(),
+        });
     }
 
     // Layer 2: what the RUNNING gateway will actually route to. Stale entries
     // here fail runs even when the intended config above is healthy.
-    let container_name = get_agent_container_name(&db, &agent_id);
-    let live_cfg: Option<serde_json::Value> = match tokio::time::timeout(
-        std::time::Duration::from_secs(4),
-        get_docker_command()
-            .args([
-                "exec",
-                "-u",
-                "node",
-                &container_name,
-                "cat",
-                "/home/node/.openclaw/openclaw.json",
-            ])
-            .output(),
-    )
-    .await
-    {
-        Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).ok(),
-        _ => None,
+    let live_cfg: Option<serde_json::Value> = match read_live_gateway_config(&db, &agent_id).await {
+        Ok(cfg) => Some(cfg),
+        Err(reason) => {
+            // Never silently skip this layer: an unreadable container rendered
+            // an all-green card once already. Carry the actual reason.
+            rows.push(ModelAuthDiagnostic {
+                model: "(live gateway config)".to_string(),
+                provider: String::new(),
+                role: "live-config-unverified".to_string(),
+                has_key: true,
+                message: format!(
+                    "Live model routing was NOT verified — {}. The checks above cover the intended config only.",
+                    reason
+                ),
+            });
+            None
+        }
     };
-
-    if live_cfg.is_none() {
-        // Review blocker: silently skipping this layer rendered an all-green
-        // card when the container was unreachable — the exact false-green this
-        // diagnostic exists to eliminate. Say plainly that live routing wasn't
-        // verified.
-        rows.push(ModelAuthDiagnostic {
-            model: "(live gateway config)".to_string(),
-            provider: String::new(),
-            role: "live-config-unverified".to_string(),
-            has_key: true,
-            message: "Could not read the running gateway's config (container unreachable or config unparsable) — live model routing was NOT verified. The checks above cover the intended config only.".to_string(),
-        });
-    }
 
     if let Some(cfg) = live_cfg {
         let mut live_models: Vec<String> = Vec::new();
@@ -6676,6 +6748,24 @@ pub async fn ping_agent_model_auth(
     }
 
     Ok(rows)
+}
+
+fn providers_with_keys(keys: &std::collections::HashMap<String, String>) -> Vec<&'static str> {
+    let has = |k: &str| keys.get(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
+    let mut held = Vec::new();
+    if has("ANTHROPIC_API_KEY") {
+        held.push("Anthropic");
+    }
+    if has("OPENAI_API_KEY") {
+        held.push("OpenAI");
+    }
+    if has("GEMINI_API_KEY") {
+        held.push("Google Gemini");
+    }
+    if has("XAI_API_KEY") {
+        held.push("xAI");
+    }
+    held
 }
 
 fn provider_display_name(provider: &str) -> &str {

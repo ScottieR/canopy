@@ -926,17 +926,27 @@ mod github_token_validation_tests {
 
 // ─── Connection Diagnostics ───────────────────────────────────────────────────
 
+/// Severity for a diagnostic row. Typed (issue #75) so a typo like "warning"
+/// is a compile error instead of silently rendering as a green check.
+#[derive(serde::Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum DiagLevel {
+    Ok,
+    Warn,
+    Error,
+}
+
 #[derive(serde::Serialize)]
 pub struct ConnectionDiagnostic {
     pub service: String,
     pub is_ok: bool,
     pub message: String,
-    /// "ok" | "warn" | "error" — "warn" renders amber in the UI for states that
-    /// aren't failures but shouldn't read as verified-healthy either (untestable
-    /// integrations, missing send-direction capability). Optional so older
-    /// callers/serialized payloads stay valid; absent means derive from is_ok.
+    /// Warn renders amber in the UI for states that aren't failures but
+    /// shouldn't read as verified-healthy either (untestable integrations,
+    /// missing send-direction capability). Optional so older callers /
+    /// serialized payloads stay valid; absent means derive from is_ok.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub level: Option<String>,
+    pub level: Option<DiagLevel>,
 }
 
 async fn preflight_agent_connection_internal(
@@ -1243,25 +1253,10 @@ pub async fn ping_agent_connections_internal(
     // token is valid against the third-party API. A valid token + an unloaded
     // gateway plugin was Poppy's exact failure mode — the old check reported
     // "healthy" while runtime was failing.
-    let container_name = crate::openclaw::get_agent_container_name(db, agent_id);
-    let gateway_cfg: Option<serde_json::Value> = match tokio::time::timeout(
-        std::time::Duration::from_secs(4),
-        crate::openclaw::get_docker_command()
-            .args([
-                "exec",
-                "-u",
-                "node",
-                &container_name,
-                "cat",
-                "/home/node/.openclaw/openclaw.json",
-            ])
-            .output(),
-    )
-    .await
-    {
-        Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).ok(),
-        _ => None,
-    };
+    let gateway_cfg: Option<serde_json::Value> =
+        crate::openclaw::read_live_gateway_config(db, agent_id)
+            .await
+            .ok();
 
     for integration in &agent.integrations {
         match integration.as_str() {
@@ -1371,7 +1366,7 @@ pub async fn ping_agent_connections_internal(
                         service: other.to_string(),
                         is_ok: true,
                         message: "Enabled — no live system-side test available. Use \"Ask the agent about connections\" above for a real end-to-end check.".to_string(),
-                        level: Some("warn".to_string()),
+                        level: Some(DiagLevel::Warn),
                     });
                 }
             }
@@ -1381,18 +1376,8 @@ pub async fn ping_agent_connections_internal(
     // Send-direction visibility (issue #55): a journey that needs to SEND email
     // fails invisibly when the agent only holds email_read. Surface the gap as a
     // warn row instead of leaving the send capability entirely unlisted.
-    let has_email_read = agent.integrations.iter().any(|i| i == "email_read");
-    let has_email_write = agent.integrations.iter().any(|i| i == "email_write");
-    if has_email_read && !has_email_write {
-        diagnostics.push(ConnectionDiagnostic {
-            service: "email_send".to_string(),
-            is_ok: true,
-            message: format!(
-                "Not enabled — {} can read email but cannot send any. Enable write access in the Connections tab if tasks require sending.",
-                agent.name
-            ),
-            level: Some("warn".to_string()),
-        });
+    if let Some(gap) = email_send_gap_diagnostic(&agent.name, &agent.integrations) {
+        diagnostics.push(gap);
     }
 
     // JIT Bug Reporting: Automatically log any detected failures into the bug tracker
@@ -1419,9 +1404,64 @@ pub async fn ping_agent_connections_internal(
     Ok(diagnostics)
 }
 
+/// Pure rule behind the email_send warn row (issue #78): read without write is
+/// a send gap worth surfacing; anything else is not this row's business.
+fn email_send_gap_diagnostic(
+    agent_name: &str,
+    integrations: &[String],
+) -> Option<ConnectionDiagnostic> {
+    let has_read = integrations.iter().any(|i| i == "email_read");
+    let has_write = integrations.iter().any(|i| i == "email_write");
+    if !has_read || has_write {
+        return None;
+    }
+    Some(ConnectionDiagnostic {
+        service: "email_send".to_string(),
+        is_ok: true,
+        message: format!(
+            "Not enabled — {} can read email but cannot send any. Enable write access in the Connections tab if tasks require sending.",
+            agent_name
+        ),
+        level: Some(DiagLevel::Warn),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn integrations(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn email_gap_flags_read_without_write_as_warn() {
+        let gap = email_send_gap_diagnostic("Sloane", &integrations(&["email_read", "imessage"]))
+            .expect("read-only email should produce a gap row");
+        assert_eq!(gap.service, "email_send");
+        assert!(gap.is_ok);
+        assert_eq!(gap.level, Some(DiagLevel::Warn));
+        assert!(gap.message.contains("cannot send"));
+    }
+
+    #[test]
+    fn email_gap_silent_when_write_present_or_email_absent() {
+        assert!(
+            email_send_gap_diagnostic("A", &integrations(&["email_read", "email_write"])).is_none()
+        );
+        assert!(email_send_gap_diagnostic("A", &integrations(&["slack", "imessage"])).is_none());
+        assert!(email_send_gap_diagnostic("A", &integrations(&[])).is_none());
+    }
+
+    #[test]
+    fn diag_level_serializes_lowercase_for_the_frontend() {
+        assert_eq!(serde_json::to_string(&DiagLevel::Warn).unwrap(), "\"warn\"");
+        assert_eq!(serde_json::to_string(&DiagLevel::Ok).unwrap(), "\"ok\"");
+        assert_eq!(
+            serde_json::to_string(&DiagLevel::Error).unwrap(),
+            "\"error\""
+        );
+    }
 
     #[test]
     fn github_token_validation_accepts_known_safe_prefixes() {

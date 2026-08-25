@@ -5,6 +5,18 @@ import {
 } from "lucide-react";
 import { AgentData } from "../../store/worldStore";
 
+// Model-auth rows that are advisory rather than pass/fail: they render amber
+// and keep the card's summary from claiming all-green.
+const MODEL_AUTH_AMBER_ROLES = new Set(["live-config-unverified", "failover-gap", "configured-unused"]);
+const MODEL_AUTH_ROLE_LABELS: Record<string, string> = {
+  primary: "primary",
+  "live-config": "live gateway config",
+  "live-config-unverified": "not verified",
+  failover: "failover chain",
+  "failover-gap": "no failover",
+  "configured-unused": "picker selection",
+};
+
 export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavigate?: (tab: string) => void }) {
   const [runningRouting, setRunningRouting] = useState(false);
   const [routingResult, setRoutingResult] = useState<boolean | null>(null);
@@ -292,7 +304,7 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
               <RefreshCw size={18} className="spin" color="var(--text-sub)" />
             ) : modelAuth.some(r => !r.has_key) ? (
               <X size={24} color="#E57373" />
-            ) : modelAuth.some(r => r.role === "live-config-unverified") ? (
+            ) : modelAuth.some(r => MODEL_AUTH_AMBER_ROLES.has(r.role)) ? (
               <AlertTriangle size={24} color="#B58A2E" />
             ) : modelAuth.length > 0 ? (
               <CheckCircle2 size={24} color="#4A9E96" />
@@ -307,11 +319,11 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
                 <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px", background: "white", borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)" }}>
                   <div style={{ marginTop: 2 }}>
                     {!r.has_key ? <X size={16} color="#E57373" />
-                      : r.role === "live-config-unverified" ? <AlertTriangle size={16} color="#B58A2E" />
+                      : MODEL_AUTH_AMBER_ROLES.has(r.role) ? <AlertTriangle size={16} color="#B58A2E" />
                       : <CheckCircle2 size={16} color="#4A9E96" />}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, color: !r.has_key ? "#aa371c" : r.role === "live-config-unverified" ? "#8A6614" : "var(--text-main)", display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: !r.has_key ? "#aa371c" : MODEL_AUTH_AMBER_ROLES.has(r.role) ? "#8A6614" : "var(--text-main)", display: "flex", alignItems: "center", gap: 6 }}>
                       {r.model}
                       <span style={{
                         fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em",
@@ -319,7 +331,7 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
                         background: r.role.startsWith("live-config") ? "rgba(178,84,38,0.1)" : "rgba(0,0,0,0.04)",
                         borderRadius: 999, padding: "1px 6px",
                       }}>
-                        {r.role === "live-config" ? "live gateway config" : r.role === "live-config-unverified" ? "not verified" : r.role}
+                        {MODEL_AUTH_ROLE_LABELS[r.role] || r.role}
                       </span>
                     </div>
                     <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>
