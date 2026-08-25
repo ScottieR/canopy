@@ -793,6 +793,9 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
   // Process queued messages when loading finishes
   useEffect(() => {
+    // Messages queued while the agents were still waking (issue #66) must wait
+    // for the gateway — dequeueing early would just error the send.
+    if (!gatewayReady) return;
     if (queuedMessages.length > 0) {
       const timer = setTimeout(() => {
         const nextMsg = queuedMessages[0];
@@ -826,7 +829,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [queuedMessages, agent.id, isSessionLoading]);
+  }, [queuedMessages, agent.id, isSessionLoading, gatewayReady]);
 
   const handleScroll = useCallback(() => {
     if (chatContainerRef.current) {
@@ -2727,8 +2730,8 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           onKeyDown={e => { 
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) {
-                 if (activeThreadLoading) handleQueueMessage("same");
+              if ((message.trim() || attachments.length > 0) && !agent.paused) {
+                 if (!gatewayReady || activeThreadLoading) handleQueueMessage("same");
                  else handleSendMessage();
               }
             }
@@ -2749,15 +2752,15 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               }
             }
           }}
-          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? "Agents are waking up..." : activeThreadLoading ? "Type here to queue another task..." : `Talk to ${agent.name}... (Shift+Enter for new line, Paste for screenshot)`}
-          disabled={!gatewayReady || agent.paused}
+          placeholder={agent.paused ? "Agent is paused — resume it to chat..." : !gatewayReady ? `${agent.name} is waking up — type now, it'll send automatically...` : activeThreadLoading ? "Type here to queue another task..." : `Ask ${agent.name} anything...`}
+          disabled={agent.paused}
           rows={1}
           style={{
             flex: 1, padding: "14px 18px", borderRadius: 14,
             border: "1px solid rgba(0,0,0,0.08)",
             background: "var(--glass-light)",
             fontSize: 13, fontFamily: "inherit", color: "var(--text-main)",
-            outline: "none", opacity: (!gatewayReady || agent.paused) ? 0.6 : 1,
+            outline: "none", opacity: agent.paused ? 0.6 : 1,
             resize: "vertical", minHeight: "46px", maxHeight: "200px", boxSizing: "border-box"
           }}
         />
@@ -2779,23 +2782,19 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
           {!activeThreadLoading ? (
             <button
-              onClick={() => handleSendMessage()}
-              disabled={(!message.trim() && attachments.length === 0) || !gatewayReady || agent.paused}
-              title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? "Agents are waking up, please wait..." : undefined}
+              onClick={() => (!gatewayReady ? handleQueueMessage("same") : handleSendMessage())}
+              disabled={(!message.trim() && attachments.length === 0) || agent.paused}
+              title={agent.paused ? "Resume the agent to send messages" : !gatewayReady ? `${agent.name} is waking — your message will queue and send automatically` : undefined}
               style={{
                 padding: "14px 20px", borderRadius: 14, border: "none",
-                background: ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
-                color: ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
-                fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && gatewayReady && !agent.paused) ? "pointer" : "default",
+                background: ((message.trim() || attachments.length > 0) && !agent.paused) ? "#3c6663" : "var(--border-subtle)",
+                color: ((message.trim() || attachments.length > 0) && !agent.paused) ? "var(--surface-card)" : "var(--text-muted)",
+                fontSize: 13, fontWeight: 600, cursor: ((message.trim() || attachments.length > 0) && !agent.paused) ? "pointer" : "default",
                 fontFamily: "inherit",
                 transition: "all 0.15s ease",
                 height: "46px"
               }}
-            >{agent.paused ? "⏸" : !gatewayReady ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: "block" }}>
-                <path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>
-              </svg>
-            ) : "Send"}</button>
+            >{agent.paused ? "⏸" : !gatewayReady ? "Queue" : "Send"}</button>
           ) : (
             <>
                <button
@@ -2831,6 +2830,13 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           )}
         </div>
       </div>
+
+      {/* Shortcut hints live below the box, not crammed into the placeholder */}
+      {!agent.paused && (
+        <div style={{ padding: "0 12px 8px 14px", fontSize: 10.5, color: "var(--text-muted)" }}>
+          Shift+Enter for a new line · paste an image to attach
+        </div>
+      )}
 
       <style>{`
         @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
