@@ -8,3 +8,11 @@ targetRules = ["generic-api-key"]
 paths = ['''src-tauri/src/payment\.rs''']
 regexTarget = "match"
 regexes = ['''transaction_token"\s*:\s*"privacy-txn-1"''']
+
+[[allowlists]]
+description = "Throwaway X25519 recipient key for the JS<->Rust golden-vector interop test. Generated for the vector alone (see WEB_CONNECTIONS.md), never a real instance key, and decrypts only a dummy string. Scoped to this exact literal so any other secret in the file is still caught."
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = '''src-tauri/src/web_connections\.rs'''
+regexTarget = "match"
+regexes = ['''c4638699ecd18d89305520e93dc674921b452c540dbd9af524416fc444382e6f''']

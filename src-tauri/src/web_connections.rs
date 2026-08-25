@@ -526,3 +526,42 @@ mod tests {
         assert_eq!(decrypted, "sk_live_super_secret");
     }
 }
+
+#[cfg(test)]
+mod js_interop_check {
+    use super::*;
+
+    /// Golden-vector regression test: this ciphertext/nonce/ephemeral-key triple was
+    /// produced by the *actual* `encryptToInstance` in canopy-admin's
+    /// `src/connect-widget/main.ts` — the same code the browser runs — by importing
+    /// that module directly under Node (it exports the function and only calls
+    /// `main()` when a DOM exists). Regenerate with the snippet in WEB_CONNECTIONS.md
+    /// if the construction ever legitimately changes.
+    ///
+    /// The recipient keypair below was generated throwaway for this vector alone. It
+    /// has never been a real Canopy instance key, guards nothing, and decrypts only
+    /// the dummy string asserted at the bottom — which is why it is safe to commit to
+    /// a public repo.
+    ///
+    /// If this test fails after a change to the crypto here (curve, HKDF info string,
+    /// AEAD choice, byte layout), canopy-admin's widget needs the matching change.
+    /// The two sides live in different repos and have no other way to catch a protocol
+    /// drift between them — the failure mode this guards is silent: keys encrypted by
+    /// the browser that this install can no longer decrypt.
+    #[test]
+    fn decrypts_ciphertext_produced_by_the_real_js_widget() {
+        let secret_hex = "c4638699ecd18d89305520e93dc674921b452c540dbd9af524416fc444382e6f";
+        let secret_bytes: [u8; 32] = hex::decode(secret_hex).unwrap().try_into().unwrap();
+        let secret = StaticSecret::from(secret_bytes);
+
+        let plaintext = decrypt_delivered_secret_with(
+            &secret,
+            "tXiDeu4hDwUMxzfiqYJDkGIE1DyxHITNI3LuVmm3Oj0FTmbDuzU8IkBD87chWhwN",
+            "V1O4aJsz7/AavyLM",
+            "Jq5H2seM7t3PTq9vDpPKQDxYzp3/STeRWkCj1afYrAs=",
+        )
+        .expect("decrypt should succeed against real JS-produced ciphertext");
+
+        assert_eq!(plaintext, "sk_live_test_12345_interop_check");
+    }
+}

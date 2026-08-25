@@ -194,3 +194,33 @@ this document's crypto description in sync with that file if either changes — 
 sides must agree on: X25519 for ECDH, HKDF-SHA256 with no salt and info
 `"canopy-web-connections-v1"`, and ChaCha20-Poly1305 (IETF, 12-byte nonce) for the AEAD
 step.
+
+## Regenerating the cross-repo golden vector
+
+`web_connections.rs` carries a `js_interop_check` test that decrypts a ciphertext
+produced by canopy-admin's real `encryptToInstance`. It is the only thing that catches
+the two repos drifting apart, because that drift is otherwise silent: the browser keeps
+encrypting, this install just stops being able to decrypt.
+
+Regenerate it only when the construction legitimately changes. Run this from the
+canopy-admin checkout (Node strips the TS types natively; `main.ts` only calls `main()`
+when a DOM exists, so importing it here is safe):
+
+```js
+// gen-vector.mjs — run: node gen-vector.mjs
+import { x25519 } from '@noble/curves/ed25519.js';
+import { encryptToInstance, bytesToBase64 } from './src/connect-widget/main.ts';
+
+// Throwaway recipient keypair, generated for the vector alone. Never use a real
+// instance key here — the vector is committed to a public repo.
+const instance = x25519.keygen();
+const out = encryptToInstance('sk_live_test_12345_interop_check',
+                              bytesToBase64(instance.publicKey));
+
+console.log({ secret_hex: Buffer.from(instance.secretKey).toString('hex'), ...out });
+```
+
+Paste `secret_hex`, `ciphertext`, `nonce`, and `ephemeralPublicKey` into the test, then
+add the new `secret_hex` to the `.gitleaks.toml` allowlist (the old entry can go) —
+otherwise the pre-commit secret scan will block the commit, correctly, since it cannot
+tell a throwaway test key from a real one.
