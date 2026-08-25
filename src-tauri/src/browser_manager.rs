@@ -600,7 +600,7 @@ impl BrowserManager {
 ///
 /// If per-agent bridge routing lands later, gateway agents flip back to their
 /// own id HERE and everything downstream follows.
-fn effective_browsing_profile(app_handle: &tauri::AppHandle, agent_id: &str) -> String {
+pub(crate) fn effective_browsing_profile(app_handle: &tauri::AppHandle, agent_id: &str) -> String {
     use tauri::Manager;
     let db = app_handle.state::<crate::db::Database>();
     match db.get_agent(agent_id) {
