@@ -205,6 +205,13 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
                 </div>
                 {statusMeta && (
                   <span
+                    title={conv.threadStatus === "failed" ? "Open Diagnostics to see why this run failed" : undefined}
+                    onClick={conv.threadStatus === "failed" ? (e => {
+                      // Failed badge deep-links to Diagnostics so the causal check is
+                      // one click away instead of a dead label (issue #65).
+                      e.stopPropagation();
+                      useWorldStore.getState().setArchitectTab("diagnostics");
+                    }) : undefined}
                     style={{
                       fontSize: 9,
                       fontWeight: 700,
@@ -215,9 +222,11 @@ export function ThreadsRail({ agent }: { agent: AgentData }) {
                       border: `1px solid ${statusMeta.color}26`,
                       borderRadius: 999,
                       padding: "1px 6px",
+                      cursor: conv.threadStatus === "failed" ? "pointer" : undefined,
+                      textDecoration: conv.threadStatus === "failed" ? "underline dotted" : undefined,
                     }}
                   >
-                    {statusMeta.label}
+                    {conv.threadStatus === "failed" ? "Failed — why?" : statusMeta.label}
                   </span>
                 )}
                 {(conv.activeRunCount || 0) > 0 && (

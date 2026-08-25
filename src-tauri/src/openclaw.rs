@@ -6516,6 +6516,164 @@ fn agent_model_config(agent_id: &str, primary: &str) -> serde_json::Value {
     serde_json::json!({ "primary": primary, "fallbacks": fallbacks })
 }
 
+#[derive(serde::Serialize, Clone)]
+pub struct ModelAuthDiagnostic {
+    pub model: String,
+    pub provider: String,
+    /// "primary" | "fallback" | "live-config"
+    pub role: String,
+    pub has_key: bool,
+    pub message: String,
+}
+
+/// Diagnostics: does every model this agent can route to have a provider key?
+///
+/// Covers the failure Diagnostics couldn't see in the 2026-08-24 CUJ test
+/// (issue #52 / #65): a run died on `FailoverError: No API key found for
+/// provider "google"` while the Diagnostics tab showed nothing about model
+/// auth at all. Checks two layers:
+///   1. The intended config — the agent's active model plus the fallback chain
+///      `agent_model_config` would compute today from its actual keys.
+///   2. The LIVE container config — `agents.list[i].model` inside the running
+///      gateway's openclaw.json, which can be stale (written before a key was
+///      removed, or by an older build without key-gated fallbacks). A live
+///      entry pointing at a keyless provider is exactly Sloane's failure.
+#[tauri::command]
+pub async fn ping_agent_model_auth(
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+) -> Result<Vec<ModelAuthDiagnostic>, String> {
+    let agent = db
+        .get_agent(&agent_id)
+        .map_err(|e| format!("Failed to get agent: {}", e))?
+        .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+    let keys = get_creds_for_agent(&agent_id);
+    let has = |k: &str| keys.get(k).map(|v| !v.trim().is_empty()).unwrap_or(false);
+
+    let primary = agent.personality.active_model.clone().unwrap_or_else(|| {
+        crate::model_constants::default_model_from_available_keys(
+            has("ANTHROPIC_API_KEY"),
+            has("OPENAI_API_KEY"),
+            has("GEMINI_API_KEY"),
+        )
+        .to_string()
+    });
+
+    let mut rows: Vec<ModelAuthDiagnostic> = Vec::new();
+    let mut push_row = |model: &str, role: &str| {
+        let provider = crate::model_constants::provider_prefix(model)
+            .unwrap_or("unknown")
+            .to_string();
+        let has_key = agent_has_key_for_model(model, &keys);
+        let message = if has_key {
+            format!("{} key configured.", provider_display_name(&provider))
+        } else {
+            format!(
+                "No {} key configured — any message routed to this model fails immediately with a FailoverError. Add the key in the Vault, or change the model in Skills & Access.",
+                provider_display_name(&provider)
+            )
+        };
+        rows.push(ModelAuthDiagnostic {
+            model: model.to_string(),
+            provider,
+            role: role.to_string(),
+            has_key,
+            message,
+        });
+    };
+
+    push_row(&primary, "primary");
+    let fallbacks = crate::model_constants::default_fallback_chain(
+        &primary,
+        has("ANTHROPIC_API_KEY"),
+        has("OPENAI_API_KEY"),
+        has("GEMINI_API_KEY"),
+    );
+    for fb in &fallbacks {
+        push_row(fb, "fallback");
+    }
+
+    // Layer 2: what the RUNNING gateway will actually route to. Stale entries
+    // here fail runs even when the intended config above is healthy.
+    let container_name = get_agent_container_name(&db, &agent_id);
+    let live_cfg: Option<serde_json::Value> = match tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "cat",
+                "/home/node/.openclaw/openclaw.json",
+            ])
+            .output(),
+    )
+    .await
+    {
+        Ok(Ok(out)) if out.status.success() => serde_json::from_slice(&out.stdout).ok(),
+        _ => None,
+    };
+
+    if let Some(cfg) = live_cfg {
+        let mut live_models: Vec<String> = Vec::new();
+        if let Some(list) = cfg["agents"]["list"].as_array() {
+            for entry in list {
+                if entry["id"].as_str() != Some(agent_id.as_str()) {
+                    continue;
+                }
+                match &entry["model"] {
+                    serde_json::Value::String(m) => live_models.push(m.clone()),
+                    obj @ serde_json::Value::Object(_) => {
+                        if let Some(p) = obj["primary"].as_str() {
+                            live_models.push(p.to_string());
+                        }
+                        if let Some(fbs) = obj["fallbacks"].as_array() {
+                            for fb in fbs {
+                                if let Some(m) = fb.as_str() {
+                                    live_models.push(m.to_string());
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for m in live_models {
+            if !agent_has_key_for_model(&m, &keys) {
+                let provider = crate::model_constants::provider_prefix(&m)
+                    .unwrap_or("unknown")
+                    .to_string();
+                rows.push(ModelAuthDiagnostic {
+                    model: m.clone(),
+                    provider: provider.clone(),
+                    role: "live-config".to_string(),
+                    has_key: false,
+                    message: format!(
+                        "The RUNNING gateway config routes this agent to {} but no {} key is configured — runs will fail until the config is rewritten. \"Auto-Repair Configuration\" or re-saving the model in Skills & Access fixes this.",
+                        m,
+                        provider_display_name(&provider)
+                    ),
+                });
+            }
+        }
+    }
+
+    Ok(rows)
+}
+
+fn provider_display_name(provider: &str) -> &str {
+    match provider {
+        "anthropic" => "Anthropic",
+        "openai" => "OpenAI",
+        "google" => "Google Gemini",
+        "xai" => "xAI",
+        _ => "provider",
+    }
+}
+
 /// Patch `agents.list[i].model` in a container's openclaw.json to the full
 /// `{primary, fallbacks}` object, and register every model in the chain under
 /// `agents.defaults.models` so OpenClaw will actually load them.
