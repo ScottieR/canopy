@@ -6616,6 +6616,20 @@ pub async fn ping_agent_model_auth(
         _ => None,
     };
 
+    if live_cfg.is_none() {
+        // Review blocker: silently skipping this layer rendered an all-green
+        // card when the container was unreachable — the exact false-green this
+        // diagnostic exists to eliminate. Say plainly that live routing wasn't
+        // verified.
+        rows.push(ModelAuthDiagnostic {
+            model: "(live gateway config)".to_string(),
+            provider: String::new(),
+            role: "live-config-unverified".to_string(),
+            has_key: true,
+            message: "Could not read the running gateway's config (container unreachable or config unparsable) — live model routing was NOT verified. The checks above cover the intended config only.".to_string(),
+        });
+    }
+
     if let Some(cfg) = live_cfg {
         let mut live_models: Vec<String> = Vec::new();
         if let Some(list) = cfg["agents"]["list"].as_array() {

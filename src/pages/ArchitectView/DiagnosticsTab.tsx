@@ -290,10 +290,12 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
             </div>
             {runningModelAuth ? (
               <RefreshCw size={18} className="spin" color="var(--text-sub)" />
-            ) : modelAuth.length > 0 && modelAuth.every(r => r.has_key) ? (
-              <CheckCircle2 size={24} color="#4A9E96" />
             ) : modelAuth.some(r => !r.has_key) ? (
               <X size={24} color="#E57373" />
+            ) : modelAuth.some(r => r.role === "live-config-unverified") ? (
+              <AlertTriangle size={24} color="#B58A2E" />
+            ) : modelAuth.length > 0 ? (
+              <CheckCircle2 size={24} color="#4A9E96" />
             ) : null}
           </div>
 
@@ -304,18 +306,20 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
               {modelAuth.map((r, i) => (
                 <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px", background: "white", borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)" }}>
                   <div style={{ marginTop: 2 }}>
-                    {r.has_key ? <CheckCircle2 size={16} color="#4A9E96" /> : <X size={16} color="#E57373" />}
+                    {!r.has_key ? <X size={16} color="#E57373" />
+                      : r.role === "live-config-unverified" ? <AlertTriangle size={16} color="#B58A2E" />
+                      : <CheckCircle2 size={16} color="#4A9E96" />}
                   </div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, color: r.has_key ? "var(--text-main)" : "#aa371c", display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: !r.has_key ? "#aa371c" : r.role === "live-config-unverified" ? "#8A6614" : "var(--text-main)", display: "flex", alignItems: "center", gap: 6 }}>
                       {r.model}
                       <span style={{
                         fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em",
-                        color: r.role === "live-config" ? "#B25426" : "var(--text-muted)",
-                        background: r.role === "live-config" ? "rgba(178,84,38,0.1)" : "rgba(0,0,0,0.04)",
+                        color: r.role.startsWith("live-config") ? "#B25426" : "var(--text-muted)",
+                        background: r.role.startsWith("live-config") ? "rgba(178,84,38,0.1)" : "rgba(0,0,0,0.04)",
                         borderRadius: 999, padding: "1px 6px",
                       }}>
-                        {r.role === "live-config" ? "live gateway config" : r.role}
+                        {r.role === "live-config" ? "live gateway config" : r.role === "live-config-unverified" ? "not verified" : r.role}
                       </span>
                     </div>
                     <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>
