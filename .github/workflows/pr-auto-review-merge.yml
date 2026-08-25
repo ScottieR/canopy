@@ -189,10 +189,17 @@ jobs:
           # well inside this job's 15-minute timeout -- the failed run spent 81s on its 12
           # turns, so 40 lands around 5 minutes.
           #
+          # 60, not 40: PR #69 (a diff centered on the 3,000-line ChatTab.tsx) exhausted
+          # 40 turns twice in ~3 minutes without reaching the schema call. Bumped after
+          # confirming the job timeout still bounds the worst case; show_full_output is
+          # on below so the NEXT budget exhaustion shows which turns were spent where
+          # instead of a bare error_max_turns.
+          #
           # NOTE: everything inside `claude_args: |` is a literal CLI argument -- a `#`
           # line in there would be passed to the CLI, not treated as a comment.
+          show_full_output: true
           claude_args: |
-            --max-turns 40
+            --max-turns 60
             --model claude-opus-5
             --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","changes_requested"]},"risk_level":{"type":"string","enum":["low","medium","high"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}},"improvement_suggestions":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"rationale":{"type":"string"}},"required":["title","rationale"]}}},"required":["verdict","risk_level","summary","blocking_issues","improvement_suggestions"]}'
 
