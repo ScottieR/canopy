@@ -18,6 +18,7 @@ import { isolateGeneratedHtml } from "../../security/generatedHtml";
 import { buildCompanionUrl } from "../../utils/connectorCatalog";
 import { parseConnectionRequestTag } from "../../utils/customOAuth";
 import { extractVisibleUserMessageContent } from "../../utils/chatMessageContent";
+import { shouldDequeueQueuedMessage } from "../../utils/messageQueue";
 import {
   detectInsecureCredentialAdvice,
   recoverSecureConnectionRequest,
@@ -800,9 +801,11 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       const timer = setTimeout(() => {
         const nextMsg = queuedMessages[0];
         if (
-          nextMsg.threadMode === "same" &&
-          nextMsg.sessionId &&
-          isSessionLoading(nextMsg.sessionId)
+          !shouldDequeueQueuedMessage(
+            nextMsg,
+            agentRef.current.activeConversationId || null,
+            isSessionLoading
+          )
         ) {
           return;
         }
