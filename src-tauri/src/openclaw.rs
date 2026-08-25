@@ -2751,20 +2751,26 @@ pub async fn delete_agent(
 // Detection here feeds the `agent_provider_auth_failed` Tauri event, which the
 // frontend surfaces as a blocking modal deep-linking to the provider key vault.
 
-/// Returns the Canopy provider id ("anthropic" | "openai" | "gemini" | "grok")
-/// when `text` is a gateway auth failure, `None` otherwise. Only call this on
-/// error-shaped text (gateway log lines, "Error:"/"OpenClaw:" responses) — an
-/// agent merely *quoting* an auth error in normal prose must not trip a modal.
-fn detect_provider_auth_failure(text: &str) -> Option<&'static str> {
-    let lower = text.to_lowercase();
-    let auth_shaped = lower.contains("couldn't sign in to")
-        || lower.contains("couldn\u{2019}t sign in to")
-        || lower.contains("no api key found for provider")
-        || lower.contains("saved login looks expired")
-        || (lower.contains("failovererror") && lower.contains("(auth)"));
-    if !auth_shaped {
-        return None;
-    }
+/// Whether an auth-shaped failure definitively means "no working credential
+/// exists" — no key configured, or the one on file is confirmed revoked/
+/// expired/disabled — versus merely auth-*shaped* text where the underlying
+/// cause isn't confirmed (could be a transient blip during the login
+/// handshake, or a generic failover wrapper that covers several possible
+/// causes). `Deterministic` failures never self-resolve, so
+/// `agent_health::note_agent_auth_failure` acts on the first occurrence
+/// instead of waiting for a second one within the debounce window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthFailureCertainty {
+    Deterministic,
+    Ambiguous,
+}
+
+pub struct AuthFailureSignal {
+    pub provider: &'static str,
+    pub certainty: AuthFailureCertainty,
+}
+
+fn find_provider_in_text(lower: &str) -> Option<&'static str> {
     // Prefer the provider named in the auth phrase itself — a FallbackSummaryError
     // can mention several providers where only one failed auth (the others may be
     // rate limits or unknown models).
@@ -2799,6 +2805,52 @@ fn detect_provider_auth_failure(text: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// Returns the Canopy provider id ("anthropic" | "openai" | "gemini" | "grok")
+/// and failure certainty when `text` is a gateway auth failure, `None`
+/// otherwise. Only call this on error-shaped text (gateway log lines,
+/// "Error:"/"OpenClaw:" responses) — an agent merely *quoting* an auth error
+/// in normal prose must not trip a modal.
+fn detect_provider_auth_failure(text: &str) -> Option<AuthFailureSignal> {
+    let lower = text.to_lowercase();
+
+    // Deterministic: the credential is confirmed missing, revoked, expired, or
+    // disabled. These never self-resolve — recover on the very first failure
+    // rather than waiting for a second one to rule out a transient cause.
+    // Matches both prose OpenClaw already emits ("no api key found for
+    // provider", "saved login looks expired") and the raw error-type tokens
+    // it (or a future version of it) may surface directly.
+    let deterministic = lower.contains("no api key found for provider")
+        || lower.contains("saved login looks expired")
+        || lower.contains("no_credentials")
+        || lower.contains("token_revoked")
+        || lower.contains("token_expired")
+        || lower.contains("auth_profile_disabled")
+        || lower.contains("invalid_auth");
+
+    // Ambiguous: auth-shaped, but the specific cause isn't confirmed — could be
+    // a transient blip (network timeout mid-handshake) rather than a dead
+    // credential. Worth a second consecutive occurrence before bothering the
+    // user with a recovery link.
+    let ambiguous = !deterministic
+        && (lower.contains("couldn't sign in to")
+            || lower.contains("couldn\u{2019}t sign in to")
+            || (lower.contains("failovererror") && lower.contains("(auth)")));
+
+    if !deterministic && !ambiguous {
+        return None;
+    }
+
+    let provider = find_provider_in_text(&lower)?;
+    Some(AuthFailureSignal {
+        provider,
+        certainty: if deterministic {
+            AuthFailureCertainty::Deterministic
+        } else {
+            AuthFailureCertainty::Ambiguous
+        },
+    })
 }
 
 /// Emit `agent_provider_auth_failed`, debounced per provider so seven agents
@@ -3507,8 +3559,18 @@ pub async fn send_message_internal_with_context(
     // "OpenClaw: …" from misconfiguration) so an agent quoting an auth error in
     // ordinary prose can't trigger the modal.
     if response_text.starts_with("Error:") || response_text.starts_with("OpenClaw:") {
-        if let Some(provider) = detect_provider_auth_failure(&response_text) {
-            emit_provider_auth_failure(app, Some(agent_id), provider, &response_text);
+        if let Some(signal) = detect_provider_auth_failure(&response_text) {
+            emit_provider_auth_failure(app, Some(agent_id), signal.provider, &response_text);
+            crate::agent_health::note_agent_auth_failure(
+                db,
+                app,
+                agent_id,
+                signal.provider,
+                signal.certainty,
+                &conv_id,
+                message,
+            )
+            .await;
         }
     }
 
@@ -6986,8 +7048,8 @@ async fn wait_for_gateway_ready(
                         })
                         .unwrap_or(false);
                     if fresh {
-                        if let Some(provider) = detect_provider_auth_failure(line) {
-                            emit_provider_auth_failure(app, None, provider, line);
+                        if let Some(signal) = detect_provider_auth_failure(line) {
+                            emit_provider_auth_failure(app, None, signal.provider, line);
                         }
                     }
                 }
@@ -8177,6 +8239,18 @@ async fn file_channels_match(
 ///                       OR matched the file on disk). Caller should NOT restart
 ///                       — restarting wastefully drops every agent's Socket Mode
 ///                       connection and is a major contributor to Slack flakiness.
+/// Records a Keychain vault-read failure (as opposed to a legitimate
+/// "no secret stored for this key") into `err_slot`, keeping the first one
+/// seen. See the comment in `sync_container_channels_internal` for why this
+/// distinction matters.
+fn note_vault_error(err_slot: &mut Option<String>, result: &Result<String, CanopyError>) {
+    if let Err(CanopyError::Keychain(msg)) = result {
+        if err_slot.is_none() {
+            *err_slot = Some(msg.clone());
+        }
+    }
+}
+
 pub async fn sync_container_channels_internal(
     container_name: &str,
     agents: &[crate::models::Agent],
@@ -8189,6 +8263,17 @@ pub async fn sync_container_channels_internal(
     let mut bindings = Vec::new();
     let mut imessage_enabled = false;
 
+    // A Keychain read failure (locked vault, NoStorageAccess, transient
+    // platform error) must never be treated the same as "this agent has no
+    // token configured" — this loop rebuilds channels.slack.accounts (and
+    // the Google account maps) for every agent from scratch on every call,
+    // and the result gets patched straight into the live gateway config
+    // below with a restart. Silently reading a hiccup as "empty" would wipe
+    // a working fleet-wide Slack/Google config on one bad Keychain access.
+    // So: any such failure aborts the whole sync before the patch script
+    // ever runs, leaving the on-disk config untouched.
+    let mut vault_read_error: Option<String> = None;
+
     for agent in agents {
         if agent.integrations.contains(&"imessage".to_string()) {
             imessage_enabled = true;
@@ -8197,6 +8282,8 @@ pub async fn sync_container_channels_internal(
         // Slack
         let app_token = crate::keychain::get_secret(&format!("agent_{}_slack_app_token", agent.id));
         let bot_token = crate::keychain::get_secret(&format!("agent_{}_slack_bot_token", agent.id));
+        note_vault_error(&mut vault_read_error, &app_token);
+        note_vault_error(&mut vault_read_error, &bot_token);
         if let (Ok(app), Ok(bot)) = (app_token, bot_token) {
             let app = app.trim().to_string();
             let bot = bot.trim().to_string();
@@ -8219,16 +8306,18 @@ pub async fn sync_container_channels_internal(
              _service_prefix: &str,
              channel_key: &str,
              accounts: &mut serde_json::Map<String, serde_json::Value>| {
-                let acc = crate::keychain::get_secret(&format!(
+                let acc_result = crate::keychain::get_secret(&format!(
                     "agent_{}_google_{}_access_token",
                     agent.id, service
-                ))
-                .unwrap_or_default();
-                let ref_tok = crate::keychain::get_secret(&format!(
+                ));
+                let ref_result = crate::keychain::get_secret(&format!(
                     "agent_{}_google_{}_refresh_token",
                     agent.id, service
-                ))
-                .unwrap_or_default();
+                ));
+                note_vault_error(&mut vault_read_error, &acc_result);
+                note_vault_error(&mut vault_read_error, &ref_result);
+                let acc = acc_result.unwrap_or_default();
+                let ref_tok = ref_result.unwrap_or_default();
                 let acc = acc.trim().to_string();
                 if !acc.is_empty() {
                     let mut account = serde_json::Map::new();
@@ -8257,6 +8346,18 @@ pub async fn sync_container_channels_internal(
             &mut calendar_accounts,
         );
         handle_google("drive", "google-drive", "googleDrive", &mut drive_accounts);
+    }
+
+    if let Some(msg) = vault_read_error {
+        tracing::error!(
+            "sync_container_channels ({}): aborting — Keychain vault read failed ({}), refusing to push a possibly-wiped channel config to the live gateway",
+            container_name,
+            msg
+        );
+        return Err(format!(
+            "Keychain vault read failed during channel sync ({}); left the existing gateway config untouched",
+            msg
+        ));
     }
 
     // We compare against THE FILE, not just a process-local cache.
@@ -8712,14 +8813,20 @@ mod tests {
                     looks expired or no longer works. Run `openclaw models auth login \
                     --provider anthropic` or `openclaw configure`. (No API key found for \
                     provider \"anthropic\". Auth store: /home/node/.openclaw/agents/agent-atlas/agent/openclaw-agent.sqlite)";
-        assert_eq!(detect_provider_auth_failure(text), Some("anthropic"));
+        let signal = detect_provider_auth_failure(text).unwrap();
+        assert_eq!(signal.provider, "anthropic");
+        // Contains both "saved login looks expired" and "no api key found for
+        // provider" — a confirmed-dead credential, not a transient blip.
+        assert_eq!(signal.certainty, AuthFailureCertainty::Deterministic);
     }
 
     #[test]
     fn detects_google_key_failure_and_maps_to_gemini_vault_id() {
         let text = "Error: FailoverError: No API key found for provider \"google\". \
                     Configure auth for this agent (openclaw agents add <id>).";
-        assert_eq!(detect_provider_auth_failure(text), Some("gemini"));
+        let signal = detect_provider_auth_failure(text).unwrap();
+        assert_eq!(signal.provider, "gemini");
+        assert_eq!(signal.certainty, AuthFailureCertainty::Deterministic);
     }
 
     #[test]
@@ -8729,18 +8836,50 @@ mod tests {
         let text = "Error: FallbackSummaryError: All models failed (3): \
                     anthropic/claude-sonnet-5: Couldn't sign in to anthropic. (auth) | \
                     google/gemini-3.6-flash: Unknown model: google/gemini-3.6-flash (model_not_found)";
-        assert_eq!(detect_provider_auth_failure(text), Some("anthropic"));
+        let signal = detect_provider_auth_failure(text).unwrap();
+        assert_eq!(signal.provider, "anthropic");
+        // "Couldn't sign in to" alone, with no confirmation the credential is
+        // actually dead — treated as ambiguous (could be transient).
+        assert_eq!(signal.certainty, AuthFailureCertainty::Ambiguous);
+    }
+
+    #[test]
+    fn deterministic_error_codes_trigger_even_without_prose_match() {
+        for code in [
+            "no_credentials",
+            "token_revoked",
+            "token_expired",
+            "auth_profile_disabled",
+            "invalid_auth",
+        ] {
+            let text = format!("Error: openclaw anthropic {code}");
+            let signal = detect_provider_auth_failure(&text)
+                .unwrap_or_else(|| panic!("expected a signal for {code}"));
+            assert_eq!(
+                signal.certainty,
+                AuthFailureCertainty::Deterministic,
+                "code={code}"
+            );
+        }
+    }
+
+    #[test]
+    fn generic_failover_auth_tag_without_confirmation_is_ambiguous() {
+        let text = "Error: FailoverError: openai/gpt-5: something went wrong (auth)";
+        let signal = detect_provider_auth_failure(text).unwrap();
+        assert_eq!(signal.provider, "openai");
+        assert_eq!(signal.certainty, AuthFailureCertainty::Ambiguous);
     }
 
     #[test]
     fn ordinary_prose_mentioning_providers_is_not_an_auth_failure() {
-        assert_eq!(
-            detect_provider_auth_failure("I compared anthropic and google models for you today."),
-            None
-        );
-        assert_eq!(
-            detect_provider_auth_failure("Error: request timed out talking to the gateway"),
-            None
+        assert!(detect_provider_auth_failure(
+            "I compared anthropic and google models for you today."
+        )
+        .is_none());
+        assert!(
+            detect_provider_auth_failure("Error: request timed out talking to the gateway")
+                .is_none()
         );
     }
 

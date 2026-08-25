@@ -4,6 +4,7 @@ use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use futures_util::{SinkExt, StreamExt};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashSet;
@@ -13,6 +14,7 @@ use std::sync::Arc;
 use tauri::{Emitter, State};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, RwLock};
+use tokio::time::{Duration, Instant};
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
@@ -20,6 +22,26 @@ use uuid::Uuid;
 
 const MAX_MOBILE_MESSAGE_CHARS: usize = 64_000;
 const MAX_MOBILE_SYSTEM_COMMAND_CHARS: usize = 4_096;
+
+// A connection with no inbound activity (client pings, RPCs, or protocol
+// frames) for this long is presumed half-open (e.g. a network handover that
+// never sent a clean TCP close) and is force-closed so the mobile client's
+// own reconnect logic kicks in immediately instead of waiting on an OS-level
+// TCP timeout that can take minutes. Set to ~2.3x the mobile client's own
+// 30s keepalive-ping interval so normal jitter never trips it.
+const SERVER_IDLE_TIMEOUT: Duration = Duration::from_secs(70);
+// How often the server independently checks the idle deadline and sends its
+// own liveness probe, rather than relying solely on the client's ping.
+const SERVER_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
+// mDNS/Bonjour advertisement so the mobile app can rediscover the desktop's
+// current LAN address after it changes (DHCP renewal, sleep/wake, network
+// switch) instead of only ever trusting the IP baked into the pairing QR
+// code at scan time.
+const MDNS_SERVICE_TYPE: &str = "_canopy-dispatch._tcp.local.";
+// Re-registering periodically (rather than once at startup) is what actually
+// keeps the advertised address current if the Mac's IP changes mid-session.
+const MDNS_REANNOUNCE_INTERVAL: Duration = Duration::from_secs(120);
 
 // State to hold the current valid pairing token
 pub struct DispatchState {
@@ -533,6 +555,60 @@ fn get_local_ip() -> Option<String> {
     None
 }
 
+fn mac_computer_name() -> Option<String> {
+    let output = Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Registers `_canopy-dispatch._tcp.local.` on the LAN so the mobile client can
+/// rediscover this Mac's current address without needing a stored (and
+/// possibly stale) IP from an earlier pairing QR scan. `enable_addr_auto()`
+/// makes mdns-sd's own daemon track this host's interface addresses and keep
+/// the advertisement current on its own (DHCP renewal, sleep/wake, network
+/// switch) — no manual re-registration loop needed.
+fn start_mdns_advertisement(port: u16) {
+    let daemon = match ServiceDaemon::new() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!("mDNS: failed to start service daemon: {}", e);
+            return;
+        }
+    };
+    let instance_name = mac_computer_name().unwrap_or_else(|| "Canopy".to_string());
+    let host_name = format!("{}.local.", instance_name.replace(' ', "-"));
+
+    match ServiceInfo::new(
+        MDNS_SERVICE_TYPE,
+        &instance_name,
+        &host_name,
+        "",
+        port,
+        None,
+    ) {
+        Ok(service) => {
+            let service = service.enable_addr_auto();
+            if let Err(e) = daemon.register(service) {
+                warn!("mDNS: failed to register dispatch service: {}", e);
+            } else {
+                info!("mDNS: advertising {} on port {}", MDNS_SERVICE_TYPE, port);
+            }
+        }
+        Err(e) => warn!("mDNS: failed to build service info: {}", e),
+    }
+    // Leaked intentionally: this daemon must outlive the app-lifetime
+    // WebSocket server task that registered it, and Tauri has no natural
+    // "server shutdown" hook to unregister it from cleanly today.
+    std::mem::forget(daemon);
+}
+
 // WebSocket Server Task
 pub async fn start_websocket_server(state: Arc<DispatchState>, app_handle: tauri::AppHandle) {
     let addr = "0.0.0.0:3030";
@@ -551,6 +627,7 @@ pub async fn start_websocket_server(state: Arc<DispatchState>, app_handle: tauri
 
     info!("WebSocket relay listening on: {}", addr);
     crate::system_health::report_ok("dispatch");
+    start_mdns_advertisement(3030);
 
     while let Ok((stream, peer_addr)) = listener.accept().await {
         let state_clone = Arc::clone(&state);
@@ -943,14 +1020,41 @@ async fn handle_connection(
     info!("Client {} successfully authenticated", peer_addr);
     let mut updates = state.updates.subscribe();
 
+    // Independent server-side liveness tracking. The client already pings on
+    // its own schedule, but without this the server has no way to notice a
+    // half-open connection (e.g. a network handover with no clean TCP close)
+    // and will otherwise hold the socket, the broadcast subscription, and the
+    // authenticated session open indefinitely.
+    let mut last_activity = Instant::now();
+    let mut heartbeat_interval = tokio::time::interval(SERVER_HEARTBEAT_INTERVAL);
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    heartbeat_interval.tick().await; // first tick fires immediately; skip it
+
     // Message loop. Assignment/resource changes are pushed immediately to
     // connected scoped clients; disconnected devices reconcile on reconnect.
     loop {
         let msg = tokio::select! {
             inbound = read.next() => match inbound {
-                Some(message) => message,
+                Some(message) => { last_activity = Instant::now(); message },
                 None => break,
             },
+            _ = heartbeat_interval.tick() => {
+                if last_activity.elapsed() > SERVER_IDLE_TIMEOUT {
+                    warn!(
+                        "Dispatch connection from {} idle for {:?} — closing so the client reconnects",
+                        peer_addr,
+                        last_activity.elapsed()
+                    );
+                    break;
+                }
+                let _ = send_encrypted(
+                    &mut write,
+                    &mut encryptor,
+                    serde_json::json!({ "type": "server_heartbeat" }).to_string(),
+                )
+                .await;
+                continue;
+            }
             update = updates.recv() => {
                 if let Ok(update) = update {
                     let applies = update

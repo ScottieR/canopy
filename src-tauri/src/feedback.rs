@@ -92,30 +92,18 @@ async fn sync_feedback_report_to_admin(report: &FeedbackReport) -> Result<(), St
     }
 }
 
-async fn notify_feedback_to_slack(report: &FeedbackReport) -> Result<bool, String> {
-    let webhook = match crate::keychain::get_secret(FEEDBACK_SLACK_WEBHOOK_SECRET) {
+/// Posts `text` to the Slack incoming webhook stored under `secret_name`, if one is
+/// configured. Returns `Ok(false)` (not an error) when nothing is configured, so
+/// callers can treat "no webhook set up" the same as "notification skipped" rather
+/// than a failure. Shared by feedback relay and agent_health's credential-recovery
+/// fallback notification — see `agent_health::send_recovery_slack_message`.
+pub async fn post_text_to_slack_webhook(secret_name: &str, text: &str) -> Result<bool, String> {
+    let webhook = match crate::keychain::get_secret(secret_name) {
         Ok(value) if !value.trim().is_empty() => value,
         Ok(_) => return Ok(false),
         Err(crate::errors::CanopyError::NotFound(_)) => return Ok(false),
         Err(e) => return Err(e.to_string()),
     };
-
-    let reporter = if report.reporter_email.trim().is_empty() {
-        report.reporter_name.clone()
-    } else {
-        format!("{} <{}>", report.reporter_name, report.reporter_email)
-    };
-
-    let agent_line = report
-        .agent_id
-        .as_ref()
-        .map(|agent_id| format!("\nAgent: `{}`", agent_id))
-        .unwrap_or_default();
-
-    let text = format!(
-        "*New Canopy feedback received*\nType: `{}`\nTitle: {}\nReporter: {}{}\n\n{}",
-        report.kind, report.title, reporter, agent_line, report.description
-    );
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
@@ -134,6 +122,27 @@ async fn notify_feedback_to_slack(report: &FeedbackReport) -> Result<bool, Strin
     } else {
         Err(format!("slack webhook returned {}", response.status()))
     }
+}
+
+async fn notify_feedback_to_slack(report: &FeedbackReport) -> Result<bool, String> {
+    let reporter = if report.reporter_email.trim().is_empty() {
+        report.reporter_name.clone()
+    } else {
+        format!("{} <{}>", report.reporter_name, report.reporter_email)
+    };
+
+    let agent_line = report
+        .agent_id
+        .as_ref()
+        .map(|agent_id| format!("\nAgent: `{}`", agent_id))
+        .unwrap_or_default();
+
+    let text = format!(
+        "*New Canopy feedback received*\nType: `{}`\nTitle: {}\nReporter: {}{}\n\n{}",
+        report.kind, report.title, reporter, agent_line, report.description
+    );
+
+    post_text_to_slack_webhook(FEEDBACK_SLACK_WEBHOOK_SECRET, &text).await
 }
 
 #[tauri::command]

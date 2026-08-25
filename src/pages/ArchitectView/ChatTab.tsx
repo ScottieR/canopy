@@ -3020,7 +3020,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               const slot = getAgentProviderSecretSlot(agent.id, capitalizeProvider(apiAuthError.provider));
               console.log('[AUTH_DEBUG] Keychain slot:', slot);
 
-              await invoke('set_keychain_item', {
+              await invoke('store_secret_cmd', {
                 key: slot,
                 value: apiKey
               });
