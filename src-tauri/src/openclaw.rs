@@ -3083,7 +3083,10 @@ async fn build_agent_health_context(
     if providers.is_empty() {
         lines.push("- Model provider keys: NONE configured".to_string());
     } else {
-        lines.push(format!("- Model provider keys configured: {}", providers.join(", ")));
+        lines.push(format!(
+            "- Model provider keys configured: {}",
+            providers.join(", ")
+        ));
     }
 
     // Browser process — running or not, from the manager's own state (no probe).
