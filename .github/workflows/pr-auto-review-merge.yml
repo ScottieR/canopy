@@ -132,6 +132,71 @@ jobs:
     outputs:
       verdict: ${{ steps.post.outputs.verdict }}
       risk_level: ${{ steps.post.outputs.risk_level }}
+    env:
+      # Hoisted to job level so the provider attempts below share one prompt and one
+      # arg set instead of triplicating them -- GitHub Actions has no YAML anchors.
+      REVIEW_PROMPT: |
+          Review this pull request's diff against ${{ github.event.pull_request.base.ref }}
+          as a senior engineer doing a real pre-merge review, not a rubber stamp. This has
+          two genuinely separate parts -- do both, and don't let one bleed into the other:
+
+          1. CORRECTNESS AND SAFETY (drives verdict/blocking_issues/risk_level). Look for
+             correctness bugs, security issues (injection, SSRF, secret/credential handling,
+             auth bypass), missing error handling for realistic failure modes, and tests
+             that don't actually exercise the change. `verdict` must be "changes_requested"
+             if there is any issue that could plausibly cause a security incident, data
+             loss, or a broken build -- reserve "approve" for changes you would actually be
+             comfortable auto-merging with no human looking at it first. Separately,
+             `risk_level` captures blast radius/impact even when you found nothing wrong:
+             a bug-free change to auth, payments, or the release pipeline is still "high"
+             risk because of what happens if you're wrong, not because of a specific finding.
+             Use "low" for narrow, easily-reversible changes (docs, tests, small bug fixes,
+             isolated new features behind a flag); "medium" for normal feature work touching
+             a few files; "high" for anything touching credential/payment/auth handling,
+             broad refactors, or changes you'd genuinely want a second pair of eyes on even
+             though you didn't find a specific bug.
+
+          2. APPROACH (drives improvement_suggestions, never gates merge). Separately from
+             "is this correct," consider "is this the best way to do it" -- is there a more
+             current library/API, a simpler design, an existing utility in this codebase
+             that duplicates what was just written, or a pattern that will bite later even
+             though it works today. These are opinions, not corrections: file them as
+             `improvement_suggestions` (each a short title + a 1-3 sentence rationale) for
+             the maintainer to accept or discard later, and do NOT let them affect verdict,
+             blocking_issues, or risk_level. Leave this array empty if you don't have a real
+             suggestion -- don't manufacture nitpicks to fill it.
+
+          This repo is Canopy, a Tauri desktop app (Rust backend in src-tauri/, React/
+          TypeScript frontend in src/) that manages AI agents, including macOS Keychain
+          credential handling, payments, and browser automation -- weigh security issues in
+          those areas heavily for both verdict and risk_level.
+
+      # --max-turns 40, not 12: at 12 the review could not finish even a 9-line,
+      # one-file diff (PR #28). The run ended `error_max_turns` having never called
+      # the structured-output tool, so the action failed with "--json-schema was
+      # provided but Claude did not return structured_output" and auto-merge skipped.
+      # The prompt above deliberately asks Claude to go looking for existing utilities
+      # a change might duplicate, and that exploration spends turns before the verdict
+      # is emitted. 40 keeps the schema call reachable on realistic diffs while staying
+      # well inside this job's 15-minute timeout -- the failed run spent 81s on its 12
+      # turns, so 40 lands around 5 minutes.
+      #
+      # 60, not 40: PR #69 (a diff centered on the 3,000-line ChatTab.tsx) exhausted
+      # 40 turns twice in ~3 minutes without reaching the schema call. Bumped after
+      # confirming the job timeout still bounds the worst case; show_full_output is
+      # on below so the NEXT budget exhaustion shows which turns were spent where
+      # instead of a bare error_max_turns.
+      #
+      # NOTE: everything inside `claude_args: |` is a literal CLI argument -- a `#`
+      # line in there would be passed to the CLI, not treated as a comment.
+      REVIEW_CLAUDE_ARGS: |
+          --max-turns 60
+          --model claude-opus-5
+          --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","changes_requested"]},"risk_level":{"type":"string","enum":["low","medium","high"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}},"improvement_suggestions":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"rationale":{"type":"string"}},"required":["title","rationale"]}}},"required":["verdict","risk_level","summary","blocking_issues","improvement_suggestions"]}'
+      # Provider fallbacks are opt-in: each tier is skipped unless its secret is set,
+      # so a repo with only ANTHROPIC_API_KEY behaves exactly as before.
+      HAS_FALLBACK_KEY: ${{ secrets.ANTHROPIC_API_KEY_FALLBACK != '' }}
+      HAS_BEDROCK: ${{ secrets.AWS_ROLE_TO_ASSUME != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -139,78 +204,115 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Claude review
-        id: claude-review
+      # Three attempts at getting one review. They are tried in order and each is
+      # `continue-on-error`, because a provider failing is an infrastructure fact, not a
+      # statement about the PR. What must never happen is a dead key marking a PR red or
+      # silently gating merges -- see "Resolve review output" below.
+      - name: Claude review (Anthropic API)
+        id: review-primary
+        continue-on-error: true
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            Review this pull request's diff against ${{ github.event.pull_request.base.ref }}
-            as a senior engineer doing a real pre-merge review, not a rubber stamp. This has
-            two genuinely separate parts -- do both, and don't let one bleed into the other:
-
-            1. CORRECTNESS AND SAFETY (drives verdict/blocking_issues/risk_level). Look for
-               correctness bugs, security issues (injection, SSRF, secret/credential handling,
-               auth bypass), missing error handling for realistic failure modes, and tests
-               that don't actually exercise the change. `verdict` must be "changes_requested"
-               if there is any issue that could plausibly cause a security incident, data
-               loss, or a broken build -- reserve "approve" for changes you would actually be
-               comfortable auto-merging with no human looking at it first. Separately,
-               `risk_level` captures blast radius/impact even when you found nothing wrong:
-               a bug-free change to auth, payments, or the release pipeline is still "high"
-               risk because of what happens if you're wrong, not because of a specific finding.
-               Use "low" for narrow, easily-reversible changes (docs, tests, small bug fixes,
-               isolated new features behind a flag); "medium" for normal feature work touching
-               a few files; "high" for anything touching credential/payment/auth handling,
-               broad refactors, or changes you'd genuinely want a second pair of eyes on even
-               though you didn't find a specific bug.
-
-            2. APPROACH (drives improvement_suggestions, never gates merge). Separately from
-               "is this correct," consider "is this the best way to do it" -- is there a more
-               current library/API, a simpler design, an existing utility in this codebase
-               that duplicates what was just written, or a pattern that will bite later even
-               though it works today. These are opinions, not corrections: file them as
-               `improvement_suggestions` (each a short title + a 1-3 sentence rationale) for
-               the maintainer to accept or discard later, and do NOT let them affect verdict,
-               blocking_issues, or risk_level. Leave this array empty if you don't have a real
-               suggestion -- don't manufacture nitpicks to fill it.
-
-            This repo is Canopy, a Tauri desktop app (Rust backend in src-tauri/, React/
-            TypeScript frontend in src/) that manages AI agents, including macOS Keychain
-            credential handling, payments, and browser automation -- weigh security issues in
-            those areas heavily for both verdict and risk_level.
-          # --max-turns 40, not 12: at 12 the review could not finish even a 9-line,
-          # one-file diff (PR #28). The run ended `error_max_turns` having never called
-          # the structured-output tool, so the action failed with "--json-schema was
-          # provided but Claude did not return structured_output" and auto-merge skipped.
-          # The prompt above deliberately asks Claude to go looking for existing utilities
-          # a change might duplicate, and that exploration spends turns before the verdict
-          # is emitted. 40 keeps the schema call reachable on realistic diffs while staying
-          # well inside this job's 15-minute timeout -- the failed run spent 81s on its 12
-          # turns, so 40 lands around 5 minutes.
-          #
-          # 60, not 40: PR #69 (a diff centered on the 3,000-line ChatTab.tsx) exhausted
-          # 40 turns twice in ~3 minutes without reaching the schema call. Bumped after
-          # confirming the job timeout still bounds the worst case; show_full_output is
-          # on below so the NEXT budget exhaustion shows which turns were spent where
-          # instead of a bare error_max_turns.
-          #
-          # NOTE: everything inside `claude_args: |` is a literal CLI argument -- a `#`
-          # line in there would be passed to the CLI, not treated as a comment.
+          prompt: ${{ env.REVIEW_PROMPT }}
           show_full_output: true
-          claude_args: |
-            --max-turns 60
-            --model claude-opus-5
-            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","changes_requested"]},"risk_level":{"type":"string","enum":["low","medium","high"]},"summary":{"type":"string"},"blocking_issues":{"type":"array","items":{"type":"string"}},"improvement_suggestions":{"type":"array","items":{"type":"object","properties":{"title":{"type":"string"},"rationale":{"type":"string"}},"required":["title","rationale"]}}},"required":["verdict","risk_level","summary","blocking_issues","improvement_suggestions"]}'
+          claude_args: ${{ env.REVIEW_CLAUDE_ARGS }}
+
+      # A second Anthropic key, ideally on a DIFFERENT org/account -- this is the tier
+      # that covers the common case: the primary key's org running out of credit.
+      - name: Claude review (fallback Anthropic key)
+        id: review-fallback
+        if: steps.review-primary.outputs.structured_output == '' && env.HAS_FALLBACK_KEY == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY_FALLBACK }}
+          prompt: ${{ env.REVIEW_PROMPT }}
+          show_full_output: true
+          claude_args: ${{ env.REVIEW_CLAUDE_ARGS }}
+
+      # Bedrock bills through AWS, so it survives an Anthropic billing problem entirely.
+      # Needs AWS_ROLE_TO_ASSUME (OIDC, no long-lived keys) and the id-token: write grant
+      # this job already holds. Set AWS_BEDROCK_MODEL to override the model id.
+      - name: Authenticate to AWS (Bedrock fallback)
+        if: steps.review-primary.outputs.structured_output == '' && steps.review-fallback.outputs.structured_output == '' && env.HAS_BEDROCK == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-west-2' }}
+
+      - name: Claude review (Bedrock fallback)
+        id: review-bedrock
+        if: steps.review-primary.outputs.structured_output == '' && steps.review-fallback.outputs.structured_output == '' && env.HAS_BEDROCK == 'true'
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          use_bedrock: "true"
+          prompt: ${{ env.REVIEW_PROMPT }}
+          show_full_output: true
+          claude_args: ${{ env.REVIEW_CLAUDE_ARGS }}
+
+      - name: Resolve review output
+        id: resolve
+        env:
+          PRIMARY: ${{ steps.review-primary.outputs.structured_output }}
+          FALLBACK: ${{ steps.review-fallback.outputs.structured_output }}
+          BEDROCK: ${{ steps.review-bedrock.outputs.structured_output }}
+        run: |
+          set -euo pipefail
+          if [ -n "${PRIMARY:-}" ]; then
+            OUT="$PRIMARY"; SRC="anthropic-api"
+          elif [ -n "${FALLBACK:-}" ]; then
+            OUT="$FALLBACK"; SRC="anthropic-api-fallback"
+          elif [ -n "${BEDROCK:-}" ]; then
+            OUT="$BEDROCK"; SRC="bedrock"
+          else
+            OUT=""; SRC="none"
+          fi
+          echo "source=$SRC" >> "$GITHUB_OUTPUT"
+          {
+            echo "output<<REVIEW_JSON_EOF"
+            printf '%s\n' "$OUT"
+            echo "REVIEW_JSON_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Review provider: $SRC"
 
       - name: Post review + record verdict
         id: post
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
+          OUTPUT: ${{ steps.resolve.outputs.output }}
+          SOURCE: ${{ steps.resolve.outputs.source }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          if [ "$SOURCE" = "none" ]; then
+            # Every configured provider failed to produce a review. That is an
+            # infrastructure problem -- an unfunded or revoked key, a provider outage --
+            # and says nothing about this PR, so this step exits clean rather than
+            # painting the PR red for a failure it did not cause.
+            #
+            # This is NOT a silent approval: auto-merge below requires
+            # verdict == 'approve', and "unavailable" is not that, so nothing merges
+            # itself unreviewed. The PR just sits waiting for a human, with a comment
+            # saying why instead of a misleading red X.
+            echo "verdict=unavailable" >> "$GITHUB_OUTPUT"
+            echo "risk_level=unknown" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body \
+              "## Automated review unavailable
+
+          Every configured review provider failed to return a verdict. This is an
+          infrastructure problem (unfunded/revoked key, or a provider outage), not a
+          finding about this PR.
+
+          Auto-merge is gated on an \`approve\` verdict, so this PR will wait for a
+          human rather than merging itself. Check the \`review\` job logs for the
+          underlying provider error.
+
+          Configure \`ANTHROPIC_API_KEY_FALLBACK\` or \`AWS_ROLE_TO_ASSUME\` to add a
+          backup provider."
+            exit 0
+          fi
           VERDICT=$(echo "$OUTPUT" | jq -r '.verdict')
           RISK=$(echo "$OUTPUT" | jq -r '.risk_level')
           SUMMARY=$(echo "$OUTPUT" | jq -r '.summary')
@@ -219,7 +321,7 @@ jobs:
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
           echo "risk_level=$RISK" >> "$GITHUB_OUTPUT"
           # shellcheck disable=SC2016
-          BODY=$(printf '## Automated review (Claude)\n\n**Verdict: %s** | **Risk: %s**\n\n%s\n\n**Blocking issues:**\n%s\n\n%s improvement suggestion(s) filed as issues for later triage (see repo Issues, label `claude-suggestion`).\n' "$VERDICT" "$RISK" "$SUMMARY" "$BLOCKING" "$SUGGESTION_COUNT")
+          BODY=$(printf '## Automated review (Claude via %s)\n\n**Verdict: %s** | **Risk: %s**\n\n%s\n\n**Blocking issues:**\n%s\n\n%s improvement suggestion(s) filed as issues for later triage (see repo Issues, label `claude-suggestion`).\n' "$SOURCE" "$VERDICT" "$RISK" "$SUMMARY" "$BLOCKING" "$SUGGESTION_COUNT")
           if [ "$VERDICT" = "approve" ]; then
             gh pr review "$PR_NUMBER" --approve --body "$BODY" --repo "${{ github.repository }}"
           else
@@ -227,9 +329,11 @@ jobs:
           fi
 
       - name: File improvement suggestions as issues
+        # Nothing to file when no provider produced a review.
+        if: steps.resolve.outputs.source != 'none'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
+          OUTPUT: ${{ steps.resolve.outputs.output }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
