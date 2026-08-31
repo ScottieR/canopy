@@ -6,7 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS } from "../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, effectiveAgentStatus } from "../store/worldStore";
 import type { GenerativeResult } from "../types/generative";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
@@ -243,7 +243,7 @@ export // ═══════════════════════�
                 <LobsterIcon size={24} role={a.role} agentImage={a.image} shellColor={a.robeColor} accentColor={a.accentColor} />
                 <div style={{
                   position: "absolute", bottom: -1, right: -1, width: 8, height: 8, borderRadius: "50%",
-                  background: a.paused ? "var(--text-muted)" : (!gatewayReady || a.status === "deploying") ? "#F4A83A" : a.status === "active" ? "#4A9E96" : a.status === "thinking" ? "#8B6AAE" : a.status === "error" ? "#E57373" : "var(--text-muted)",
+                  background: a.paused ? "var(--text-muted)" : (!gatewayReady || a.status === "deploying") ? "#F4A83A" : effectiveAgentStatus(a) === "thinking" ? "#8B6AAE" : a.status === "active" ? "#4A9E96" : a.status === "error" ? "#E57373" : "var(--text-muted)",
                   border: "2px solid white",
                   animation: (!a.paused && (!gatewayReady || a.status === "deploying")) ? "pulse 1.5s ease-in-out infinite" : "none",
                 }} />

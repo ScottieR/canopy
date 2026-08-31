@@ -512,6 +512,47 @@ export function reportTelemetryEvent(eventType: string, properties?: Record<stri
   }).catch(() => {});
 }
 
+// ─── Canonical agent display status ──────────────────────────────────────────
+// One derivation for every surface that shows "what is this agent doing".
+// During the 2026-08-24 CUJ test (issues #56/#67) the header pill, the thread
+// badge, and the Activity tab each computed status independently and openly
+// contradicted each other ("Thinking…" beside a FAILED thread; "Idle" beside a
+// RUNNING one). Rule: real thread runs are the only source of "working" — the
+// gateway's recent-activity heartbeat can corroborate but never claim work on
+// its own (a run that just crashed counts as recent activity).
+
+export type AgentDisplayState = "paused" | "waking" | "working" | "offline" | "idle";
+
+export function deriveAgentDisplayStatus(
+  agent: Pick<AgentData, "paused" | "status" | "conversations">,
+  gatewayReady: boolean
+): { state: AgentDisplayState; label: string } {
+  if (agent.paused) return { state: "paused", label: "Paused" };
+  if (!gatewayReady || agent.status === "deploying") return { state: "waking", label: "Waking up…" };
+  const hasActiveRun = (agent.conversations || []).some(
+    c => c.threadStatus === "running" || c.threadStatus === "queued" || (c.activeRunCount || 0) > 0
+  );
+  if (hasActiveRun) return { state: "working", label: "Working…" };
+  if (agent.status === "error") return { state: "offline", label: "Offline" };
+  return { state: "idle", label: "Idle" };
+}
+
+// Back-compat adapter for surfaces that still branch on the raw Agent["status"]
+// union (world view, agent cards, dashboard): the health poller no longer emits
+// "thinking" (recent gateway activity is not proof of work — see
+// deriveAgentDisplayStatus), so this reinstates it from live thread runs. New
+// code should prefer deriveAgentDisplayStatus; this exists so the older
+// styling branches keep a reachable working state.
+export function effectiveAgentStatus(
+  agent: Pick<AgentData, "paused" | "status" | "conversations">
+): AgentData["status"] {
+  const hasActiveRun = (agent.conversations || []).some(
+    c => c.threadStatus === "running" || c.threadStatus === "queued" || (c.activeRunCount || 0) > 0
+  );
+  if (hasActiveRun && !agent.paused && agent.status !== "error") return "thinking";
+  return agent.status;
+}
+
 export function injectPrincipalContext(basePrompt: string, profile: UserProfile | null) {
   if (!profile || profile.name === "Admin" && !profile.global_directives) return basePrompt;
 

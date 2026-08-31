@@ -791,6 +791,42 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
   const activeThreadLoading = isSessionLoading(agent.activeConversationId);
 
+  // Stall detection (issue #56): "thinking…" alone is fine for 10 seconds and
+  // useless for 3 minutes — the CUJ test sat on a dead run with no way to tell
+  // waiting from stuck. Track how long the active session has been loading and
+  // escalate the indicator once it exceeds the stall threshold.
+  const STALL_AFTER_MS = 90_000;
+  const [loadingStartedAt, setLoadingStartedAt] = useState<number | null>(null);
+  const [loadingNow, setLoadingNow] = useState(() => Date.now());
+  // The timer measures quiet time in THIS thread, not time-since-send: it
+  // restarts when the user switches to a different loading thread, and resets
+  // whenever new messages land (review finding on this PR — a healthy long run
+  // that had just produced output shouldn't be called "maybe stuck").
+  const stallTimerConvRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeThreadLoading) {
+      setLoadingStartedAt(null);
+      stallTimerConvRef.current = null;
+      return;
+    }
+    const conv = agent.activeConversationId || null;
+    if (stallTimerConvRef.current !== conv) {
+      stallTimerConvRef.current = conv;
+      setLoadingStartedAt(Date.now());
+    } else {
+      setLoadingStartedAt(prev => prev ?? Date.now());
+    }
+    const tick = setInterval(() => setLoadingNow(Date.now()), 5000);
+    return () => clearInterval(tick);
+  }, [activeThreadLoading, agent.activeConversationId]);
+  useEffect(() => {
+    // Any new message in the log is activity — push the stall horizon out.
+    if (activeThreadLoading) setLoadingStartedAt(Date.now());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatLog.length]);
+  const loadingElapsedMs = loadingStartedAt ? loadingNow - loadingStartedAt : 0;
+  const loadingStalled = activeThreadLoading && loadingElapsedMs >= STALL_AFTER_MS;
+
   // Process queued messages when loading finishes
   useEffect(() => {
     if (queuedMessages.length > 0) {
@@ -2319,13 +2355,52 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           })
         )}
 
-        {activeThreadLoading && (
+        {activeThreadLoading && !loadingStalled && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 12, height: 12, borderRadius: "50%", background: "#3c6663",
               animation: "pulse 1.5s ease-in-out infinite",
             }} />
-            <span style={{ fontSize: 13, color: "var(--text-sub)", fontStyle: "italic" }}>{agent.name} is thinking...</span>
+            <span style={{ fontSize: 13, color: "var(--text-sub)", fontStyle: "italic" }}>
+              {agent.name} is thinking...
+              {loadingElapsedMs >= 30_000 && (
+                <span style={{ marginLeft: 6, fontStyle: "normal", fontSize: 11, color: "var(--text-muted)" }}>
+                  {Math.floor(loadingElapsedMs / 60000) > 0
+                    ? `${Math.floor(loadingElapsedMs / 60000)}m ${Math.floor((loadingElapsedMs % 60000) / 1000)}s`
+                    : `${Math.floor(loadingElapsedMs / 1000)}s`}
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+
+        {loadingStalled && (
+          <div style={{
+            display: "flex", flexDirection: "column", gap: 8, padding: "12px 14px",
+            background: "rgba(244,168,58,0.08)", border: "1px solid rgba(244,168,58,0.3)",
+            borderRadius: 10, maxWidth: 480,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, color: "#8A6614" }}>
+              <div style={{
+                width: 10, height: 10, borderRadius: "50%", background: "#F4A83A",
+                animation: "pulse 1.5s ease-in-out infinite",
+              }} />
+              This is taking longer than usual ({Math.floor(loadingElapsedMs / 60000)}m {Math.floor((loadingElapsedMs % 60000) / 1000)}s)
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.5 }}>
+              {agent.name} hasn't produced anything yet. It may still be working — or it may be stuck.
+              You can keep waiting, press <strong>Stop</strong> below, or check what's wrong in Diagnostics.
+            </div>
+            <button
+              onClick={() => useWorldStore.getState().setArchitectTab("diagnostics")}
+              style={{
+                alignSelf: "flex-start", padding: "5px 12px", borderRadius: 8,
+                border: "1px solid rgba(138,102,20,0.35)", background: "rgba(138,102,20,0.08)",
+                color: "#8A6614", fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}
+            >
+              Check Diagnostics
+            </button>
           </div>
         )}
         </div>
