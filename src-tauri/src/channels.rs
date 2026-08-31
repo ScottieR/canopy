@@ -931,6 +931,12 @@ pub struct ConnectionDiagnostic {
     pub service: String,
     pub is_ok: bool,
     pub message: String,
+    /// "ok" | "warn" | "error" — "warn" renders amber in the UI for states that
+    /// aren't failures but shouldn't read as verified-healthy either (untestable
+    /// integrations, missing send-direction capability). Optional so older
+    /// callers/serialized payloads stay valid; absent means derive from is_ok.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
 }
 
 async fn preflight_agent_connection_internal(
@@ -962,12 +968,14 @@ async fn preflight_agent_connection_internal(
                     } else {
                         "GitHub token invalid. Reconfigure in Connections tab.".to_string()
                     },
+                    level: None,
                 })
             } else {
                 Ok(ConnectionDiagnostic {
                     service: "GitHub".to_string(),
                     is_ok: false,
                     message: "Missing GitHub token.".to_string(),
+                    level: None,
                 })
             }
         }
@@ -987,12 +995,14 @@ async fn preflight_agent_connection_internal(
                     } else {
                         "Invalid Telegram token.".to_string()
                     },
+                    level: None,
                 })
             } else {
                 Ok(ConnectionDiagnostic {
                     service: "Telegram".to_string(),
                     is_ok: false,
                     message: "Missing Telegram token.".to_string(),
+                    level: None,
                 })
             }
         }
@@ -1013,12 +1023,14 @@ async fn preflight_agent_connection_internal(
                     } else {
                         "Invalid Discord token.".to_string()
                     },
+                    level: None,
                 })
             } else {
                 Ok(ConnectionDiagnostic {
                     service: "Discord".to_string(),
                     is_ok: false,
                     message: "Missing Discord token.".to_string(),
+                    level: None,
                 })
             }
         }
@@ -1043,12 +1055,14 @@ async fn preflight_agent_connection_internal(
                     } else {
                         "Invalid Twilio credentials.".to_string()
                     },
+                    level: None,
                 })
             } else {
                 Ok(ConnectionDiagnostic {
                     service: "Twilio".to_string(),
                     is_ok: false,
                     message: "Missing Twilio credentials.".to_string(),
+                    level: None,
                 })
             }
         }
@@ -1249,7 +1263,7 @@ pub async fn ping_agent_connections_internal(
         _ => None,
     };
 
-    for integration in agent.integrations {
+    for integration in &agent.integrations {
         match integration.as_str() {
             "slack" => {
                 // Step 1: is the Slack TOKEN currently valid (auth.test)?
@@ -1277,6 +1291,7 @@ pub async fn ping_agent_connections_internal(
                             "Token valid (workspace: {}) and gateway is routing for this agent.",
                             token_ok.1.unwrap_or_else(|| "unknown".into())
                         ),
+                        level: None,
                     });
                 } else if !token_ok.0 && !gw_ok {
                     diagnostics.push(ConnectionDiagnostic {
@@ -1287,6 +1302,7 @@ pub async fn ping_agent_connections_internal(
                             token_reason.as_deref().unwrap_or("reason unknown"),
                             gw_reason
                         ),
+                        level: None,
                     });
                 } else if !token_ok.0 {
                     diagnostics.push(ConnectionDiagnostic {
@@ -1297,6 +1313,7 @@ pub async fn ping_agent_connections_internal(
                             token_reason.as_deref().unwrap_or("reason unknown"),
                             slack_auth_error_hint(token_reason.as_deref())
                         ),
+                        level: None,
                     });
                 } else {
                     // Token is fine, but gateway-side is wrong — most common
@@ -1309,6 +1326,7 @@ pub async fn ping_agent_connections_internal(
                             "Token is valid but the gateway isn't routing Slack for this agent. {} Try \"Auto-Repair Configuration\" above, or reconnect Slack in the Connections tab.",
                             gw_reason
                         ),
+                        level: None,
                     });
                 }
             }
@@ -1329,12 +1347,14 @@ pub async fn ping_agent_connections_internal(
                         service: "WhatsApp".to_string(),
                         is_ok: true,
                         message: "Credentials configured in keychain.".to_string(),
+                        level: None,
                     });
                 } else {
                     diagnostics.push(ConnectionDiagnostic {
                         service: "WhatsApp".to_string(),
                         is_ok: false,
                         message: "Missing WhatsApp credentials.".to_string(),
+                        level: None,
                     });
                 }
             }
@@ -1343,14 +1363,36 @@ pub async fn ping_agent_connections_internal(
             }
             other => {
                 if !other.starts_with("web_") {
+                    // No live system-side test exists for this integration. Don't
+                    // present a green check as if one ran — during the 2026-08-24
+                    // CUJ test "email_read ✓ Integration enabled." read as verified
+                    // while the agent's actual email search was failing (issue #55).
                     diagnostics.push(ConnectionDiagnostic {
                         service: other.to_string(),
                         is_ok: true,
-                        message: "Integration enabled.".to_string(),
+                        message: "Enabled — no live system-side test available. Use \"Ask the agent about connections\" above for a real end-to-end check.".to_string(),
+                        level: Some("warn".to_string()),
                     });
                 }
             }
         }
+    }
+
+    // Send-direction visibility (issue #55): a journey that needs to SEND email
+    // fails invisibly when the agent only holds email_read. Surface the gap as a
+    // warn row instead of leaving the send capability entirely unlisted.
+    let has_email_read = agent.integrations.iter().any(|i| i == "email_read");
+    let has_email_write = agent.integrations.iter().any(|i| i == "email_write");
+    if has_email_read && !has_email_write {
+        diagnostics.push(ConnectionDiagnostic {
+            service: "email_send".to_string(),
+            is_ok: true,
+            message: format!(
+                "Not enabled — {} can read email but cannot send any. Enable write access in the Connections tab if tasks require sending.",
+                agent.name
+            ),
+            level: Some("warn".to_string()),
+        });
     }
 
     // JIT Bug Reporting: Automatically log any detected failures into the bug tracker

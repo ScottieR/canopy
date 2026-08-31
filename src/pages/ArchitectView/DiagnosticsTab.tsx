@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  Terminal, Server, Globe, RefreshCw, CheckCircle2, X, AlertTriangle, Cpu, Play, MessageCircle
+  Terminal, Server, Globe, RefreshCw, CheckCircle2, X, AlertTriangle, Cpu, Play, MessageCircle, Key
 } from "lucide-react";
 import { AgentData } from "../../store/worldStore";
 
@@ -15,6 +15,10 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
 
   const [runningConnections, setRunningConnections] = useState(false);
   const [connections, setConnections] = useState<any[]>([]);
+
+  const [runningModelAuth, setRunningModelAuth] = useState(false);
+  const [modelAuth, setModelAuth] = useState<any[]>([]);
+  const [modelAuthError, setModelAuthError] = useState<string>("");
   
   const [repairing, setRepairing] = useState(false);
   const [repairMsg, setRepairMsg] = useState("");
@@ -76,8 +80,25 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
     setRunningConnections(false);
   };
 
+  // Model-provider auth — the check that was missing when a run died on
+  // `FailoverError: No API key found for provider "google"` and this tab had
+  // nothing to say about it (issues #52/#65, 2026-08-24 CUJ test).
+  const runModelAuthTest = async () => {
+    setRunningModelAuth(true);
+    setModelAuthError("");
+    try {
+      const rows: any[] = await invoke("ping_agent_model_auth", { agentId: agent.id });
+      setModelAuth(rows);
+    } catch (e) {
+      setModelAuth([]);
+      setModelAuthError(String(e));
+    }
+    setRunningModelAuth(false);
+  };
+
   const runAll = () => {
     runRoutingTest();
+    runModelAuthTest();
     if (agent.capabilities?.browser) runBrowserTest();
     runConnectionsTest();
   };
@@ -151,9 +172,25 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
       setRestartBrowserMsg("Waiting for CDP endpoint to come up...");
       await new Promise(r => setTimeout(r, 3000));
 
+      // Step 4: resolve to a VERIFIED outcome. The old flow re-ran the async
+      // test and cleared the progress message unconditionally — on failure the
+      // card silently reverted to its initial "Browser Unresponsive" state as
+      // if nothing had been attempted (issue #52, 2026-08-24 CUJ test).
       setRestartBrowserMsg("Verifying...");
-      await runBrowserTest();
-      setRestartBrowserMsg("");
+      let verified = false;
+      try {
+        verified = Boolean(await invoke("ping_agent_browser", { agentId: agent.id }));
+      } catch {
+        verified = false;
+      }
+      setBrowserResult(verified);
+      setRestartBrowserMsg(
+        verified
+          ? ""
+          : "Restart didn't work — a fresh browser was requested but the process still isn't responding. " +
+            "The agent's browser container may not exist, or Docker/OrbStack may be down. " +
+            "Check Docker is running, then try \"Auto-Repair Configuration\" under the routing check above."
+      );
     } catch (e: any) {
       console.error("Failed to restart browser", e);
       setRestartBrowserMsg("Restart failed: " + (e?.toString?.() || e));
@@ -239,6 +276,66 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
           )}
         </div>
 
+        {/* Model Provider Keys — every model this agent can route to must have a
+            provider key, including what the LIVE gateway config still references. */}
+        <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontWeight: 600, display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <Key size={18} /> Model Provider Keys
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text-sub)" }}>
+                Checks that {agent.name}'s model — and every fallback it can route to — has an API key configured. A missing key here fails runs instantly.
+              </div>
+            </div>
+            {runningModelAuth ? (
+              <RefreshCw size={18} className="spin" color="var(--text-sub)" />
+            ) : modelAuth.some(r => !r.has_key) ? (
+              <X size={24} color="#E57373" />
+            ) : modelAuth.some(r => r.role === "live-config-unverified") ? (
+              <AlertTriangle size={24} color="#B58A2E" />
+            ) : modelAuth.length > 0 ? (
+              <CheckCircle2 size={24} color="#4A9E96" />
+            ) : null}
+          </div>
+
+          {modelAuthError ? (
+            <div style={{ fontSize: 12, color: "#991B1B" }}>{modelAuthError}</div>
+          ) : modelAuth.length > 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {modelAuth.map((r, i) => (
+                <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px", background: "white", borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)" }}>
+                  <div style={{ marginTop: 2 }}>
+                    {!r.has_key ? <X size={16} color="#E57373" />
+                      : r.role === "live-config-unverified" ? <AlertTriangle size={16} color="#B58A2E" />
+                      : <CheckCircle2 size={16} color="#4A9E96" />}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, color: !r.has_key ? "#aa371c" : r.role === "live-config-unverified" ? "#8A6614" : "var(--text-main)", display: "flex", alignItems: "center", gap: 6 }}>
+                      {r.model}
+                      <span style={{
+                        fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.02em",
+                        color: r.role.startsWith("live-config") ? "#B25426" : "var(--text-muted)",
+                        background: r.role.startsWith("live-config") ? "rgba(178,84,38,0.1)" : "rgba(0,0,0,0.04)",
+                        borderRadius: 999, padding: "1px 6px",
+                      }}>
+                        {r.role === "live-config" ? "live gateway config" : r.role === "live-config-unverified" ? "not verified" : r.role}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>
+                      {r.message}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : !runningModelAuth ? (
+            <div style={{ fontSize: 12, color: "var(--text-sub)", textAlign: "center", padding: "12px 0" }}>
+              No model auth diagnostics ran.
+            </div>
+          ) : null}
+        </div>
+
         {/* Browser Health */}
         {agent.capabilities?.browser && (
           <div style={{ background: "var(--glass-light)", borderRadius: 16, padding: 24, border: "1px solid rgba(0,0,0,0.06)" }}>
@@ -264,7 +361,7 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
                   <AlertTriangle size={14} /> Browser Unresponsive
                 </div>
                 <div style={{ fontSize: 12, color: "#991B1B", marginBottom: 16 }}>
-                  The browser container is either stopped or the process has hung.
+                  The dedicated Chrome process for this agent isn't responding — it was never started, has exited, or has hung.
                 </div>
                 <button
                   onClick={handleRestartBrowser}
@@ -304,21 +401,28 @@ export function DiagnosticsTab({ agent, onNavigate }: { agent: AgentData, onNavi
 
             {connections.length > 0 ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {connections.map((c, i) => (
-                  <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px", background: "white", borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)" }}>
-                    <div style={{ marginTop: 2 }}>
-                      {c.is_ok ? <CheckCircle2 size={16} color="#4A9E96" /> : <X size={16} color="#E57373" />}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, color: c.is_ok ? "var(--text-main)" : "#aa371c" }}>
-                        {c.service}
+                {connections.map((c, i) => {
+                  // "warn" = enabled but unverified / capability gap — amber, so it
+                  // can't be misread as a passed health check (issue #55).
+                  const isWarn = c.level === "warn";
+                  return (
+                    <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "12px", background: "white", borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)" }}>
+                      <div style={{ marginTop: 2 }}>
+                        {!c.is_ok ? <X size={16} color="#E57373" />
+                          : isWarn ? <AlertTriangle size={16} color="#B58A2E" />
+                          : <CheckCircle2 size={16} color="#4A9E96" />}
                       </div>
-                      <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>
-                        {c.message}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, color: !c.is_ok ? "#aa371c" : isWarn ? "#8A6614" : "var(--text-main)" }}>
+                          {c.service}
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>
+                          {c.message}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : runningConnections ? (
               <div style={{ fontSize: 12, color: "var(--text-sub)", textAlign: "center", padding: "20px 0" }}>

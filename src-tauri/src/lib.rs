@@ -972,6 +972,7 @@ pub fn run() {
             docker::hard_reset_infrastructure,
             // OpenClaw agent CRUD
             openclaw::create_agent,
+            openclaw::ping_agent_model_auth,
             openclaw::list_agents,
             openclaw::get_agent,
             openclaw::run_agent_command,

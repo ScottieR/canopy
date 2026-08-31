@@ -3,7 +3,7 @@ import {
   Play, Pause, RefreshCw, Box, Terminal, Zap, Shield, Cpu, 
   Trash2, Plus, LogOut, CheckCircle2, Circle, Settings, ChevronRight, 
   ChevronLeft, Users, Check, X, FileText, Layout, List, Key,
-  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database
+  Mail, Calendar, ExternalLink, HardDrive, Lock, ShieldCheck, Activity, Brain, Server, Search, CheckCircle, Database, AlertTriangle
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -250,10 +250,14 @@ function DiagnosticsView() {
                       {ad.diagnostics.map((diag: any, dIdx: number) => (
                         <div key={dIdx} style={{ display: "flex", gap: 12, alignItems: "flex-start", padding: "8px 12px", background: "white", borderRadius: 8, border: "1px solid rgba(0,0,0,0.05)" }}>
                           <div style={{ marginTop: 2 }}>
-                            {diag.is_ok ? <CheckCircle2 size={16} color="#4A9E96" /> : <X size={16} color="#E57373" />}
+                            {/* level "warn" = enabled but unverified / capability gap —
+                                amber, same semantics as the per-agent Diagnostics tab */}
+                            {!diag.is_ok ? <X size={16} color="#E57373" />
+                              : diag.level === "warn" ? <AlertTriangle size={16} color="#B58A2E" />
+                              : <CheckCircle2 size={16} color="#4A9E96" />}
                           </div>
                           <div style={{ flex: 1 }}>
-                            <div style={{ fontWeight: 600, fontSize: 13, color: diag.is_ok ? "var(--text-main)" : "#aa371c" }}>
+                            <div style={{ fontWeight: 600, fontSize: 13, color: !diag.is_ok ? "#aa371c" : diag.level === "warn" ? "#8A6614" : "var(--text-main)" }}>
                               {diag.service}
                             </div>
                             <div style={{ fontSize: 12, color: "var(--text-sub)", marginTop: 2 }}>
