@@ -3001,6 +3001,25 @@ fn finalize_thread_run(
         let _ = db.checkpoint_thread_run(run_id, checkpoint_payload_json);
     }
     let _ = db.finish_thread_run(run_id, final_status, error_payload_json);
+    // Failed runs must leave a trace in the work log (issue #64): during the
+    // 2026-08-24 CUJ test a fatal send failure left the Activity tab with no
+    // record at all, so the log could neither confirm nor deny what the agent
+    // claimed to be doing. Success already logs "chatted"; this is its
+    // counterpart, at the single chokepoint every failure path goes through.
+    if final_status == "failed" {
+        let summary = error_payload_json
+            .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+            .and_then(|v| v["error"].as_str().map(|e| e.to_string()))
+            .unwrap_or_else(|| "Run failed with no recorded error detail.".to_string());
+        let detail: String = summary.chars().take(300).collect();
+        let _ = db.log_audit(
+            agent_id,
+            "run_failed",
+            Some("openclaw"),
+            &format!("Attempted a task and failed: {}", detail),
+            None,
+        );
+    }
     let _ = refresh_thread_context_files(db, agent_id, conversation_id);
     clear_thread_cancellation_requested(agent_id, conversation_id);
 }
