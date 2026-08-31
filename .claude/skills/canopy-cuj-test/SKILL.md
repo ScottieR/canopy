@@ -86,6 +86,13 @@ fine) — you'll hand this whole thing to the Phase 2 subagent verbatim, plus th
 screenshot files. Save screenshots to the scratchpad directory so they have stable paths
 to reference (use `save_to_disk: true` on the screenshot/computer_batch calls).
 
+**Verify the screenshots actually landed on disk after your FIRST batch** (`ls` the
+scratchpad / search for recent `*.png`) — in the 2026-08-24 run, `save_to_disk: true`
+silently wrote nothing anywhere findable, and the gap was only discovered at Phase 2
+handoff time. If files aren't materializing, don't burn time hunting: write the log
+richly enough to stand alone (quote on-screen copy verbatim, describe layout and state
+changes) and tell the Phase 2 observer explicitly that it's working from the log only.
+
 ## Phase 2 — Review it for UX opportunity (spawned subagent)
 
 Spawn a subagent (`Agent` tool, foreground — you need its output before reporting) with a
