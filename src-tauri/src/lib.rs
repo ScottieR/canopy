@@ -11,6 +11,7 @@ pub mod app_state;
 
 // Rate limiting for expensive operations
 pub mod computer_control;
+mod conductor;
 mod connection_requests;
 pub mod rate_limiter;
 
@@ -1082,6 +1083,8 @@ pub fn run() {
             browser_manager::agent_browser_click,
             browser_manager::agent_browser_type,
             browser_manager::agent_browser_screenshot,
+            // Conductor/worker orchestration
+            conductor::get_active_worker_counts,
             // Integrations / Bridges
             bridge::list_bridges,
             bridge::enable_bridge,

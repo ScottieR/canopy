@@ -771,6 +771,7 @@ pub(crate) const APP_MANAGED_FRAMEWORK_FILES: &[&str] = &[
     "APP_CAPABILITIES.md",
     "APP_OPERATING_MODEL.md",
     "ACTIVE_THREAD.md",
+    "CONDUCTOR_STATE.md",
 ];
 
 /// Files written by the agent runtime itself — *not* work artifacts. These
@@ -801,6 +802,7 @@ const FRAMEWORK_FILES: &[&str] = &[
     "APP_CAPABILITIES.md",
     "APP_OPERATING_MODEL.md",
     "ACTIVE_THREAD.md",
+    "CONDUCTOR_STATE.md",
 ];
 
 /// List files in this agent's workspace directory (one level deep, files only).
@@ -1739,6 +1741,54 @@ pub fn get_agent_container_name(db: &crate::db::Database, agent_id: &str) -> Str
     }
 }
 
+/// Query OpenClaw's own session status for `session_key`, rather than trusting a
+/// worker's self-reported terminal state. Backs `conductor::confirm_worker_terminal` —
+/// the workaround for OpenClaw bug #46719, where a worker can report "completed" while
+/// a child session it spawned is still running.
+pub async fn session_status(
+    db: &crate::db::Database,
+    agent_id: &str,
+    session_key: &str,
+) -> Result<String, String> {
+    let container_name = get_agent_container_name(db, agent_id);
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        get_docker_command()
+            .args([
+                "exec",
+                "-u",
+                "node",
+                &container_name,
+                "openclaw",
+                "sessions",
+                "status",
+                session_key,
+                "--json",
+            ])
+            .output(),
+    )
+    .await
+    .map_err(|_| "session_status timed out".to_string())?
+    .map_err(|e| format!("docker exec failed: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "openclaw sessions status exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|e| format!("could not parse session status JSON: {}", e))?;
+    parsed
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "session status response missing 'status' field".to_string())
+}
+
 pub fn log_terminal_command_internal(
     db: &crate::db::Database,
     agent_id: &str,
@@ -1980,6 +2030,9 @@ pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::mode
     }
     if caps.memory_write {
         skills.push("memory-core".to_string());
+    }
+    if caps.orchestration {
+        skills.push("subagents".to_string());
     }
 
     // An empty list is written verbatim and OVERRIDES OpenClaw's global
@@ -5575,6 +5628,12 @@ fn build_app_capabilities_md(agent: &crate::models::Agent) -> String {
         }
     }
 
+    let conductor_protocol_section = if caps.orchestration {
+        build_conductor_protocol_section(&agent.id)
+    } else {
+        String::new()
+    };
+
     format!(
         "# APP_CAPABILITIES.md\n\n\
 _This file is app-managed and not user-editable. It describes what {name} can actually use right now._\n\n\
@@ -5600,7 +5659,8 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
 {file_write}\n\
 {memory_write}\n\
 {scheduled}\n\
-{autonomous}\n\n\
+{autonomous}\n\
+{orchestration}\n\n\
 ### Access Boundaries\n\
 {ext_network}\n\
 {int_network}\n\
@@ -5609,6 +5669,7 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
 ## Connected Integrations\n\
 {integrations}\n\n\
 {mounted_folders}\
+{conductor_protocol}\
 ## Decision Rule\n\
 - Use the smallest enabled capability that gets the job done.\n\
 - If a missing capability would unlock meaningful user value, request it with a concrete rationale instead of repeatedly failing.\n",
@@ -5631,12 +5692,52 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         memory_write = capability_status("Memory write", caps.memory_write, "Capture durable learnings, not transcript summaries or duplicate noise."),
         scheduled = capability_status("Scheduled tasks", caps.scheduled, "Propose recurring checks when a repeated monitor would create leverage."),
         autonomous = capability_status("Autonomous execution", caps.autonomous, "Execute routine internal loops without asking again; escalate for risky or external actions."),
+        orchestration = capability_status("Conductor/worker orchestration", caps.orchestration, "You are a conductor as well as a worker — see the Conductor Protocol section below for the full contract before spawning anything."),
         ext_network = capability_status("External network", caps.ext_network, "Use external network access for public APIs and websites when it materially improves the result."),
         int_network = capability_status("Internal network", caps.int_network, "Use internal coordination surfaces deliberately; do not assume other agents share your memory."),
         payments = capability_status("Payments", caps.payments, "Never spend or request money casually; follow approval thresholds and user intent strictly."),
         spend_auto = capability_status("Auto-approve spend", caps.spend_auto, "Auto-approval is limited and should still be treated as high-trust behavior."),
         integrations = integrations,
         mounted_folders = mounted_folders_section,
+        conductor_protocol = conductor_protocol_section,
+    )
+}
+
+/// Conductor system-prompt injection for orchestration-capable agents. Only rendered
+/// when `caps.orchestration` is on (see `build_app_capabilities_md`). Kept as a
+/// standalone helper — separate from the per-line `capability_status` calls above —
+/// because this is a multi-paragraph behavioral contract, not a one-line guidance
+/// string, and it references live conductor state (`conductor::render_restart_context`)
+/// rather than just a static description of what the capability does.
+fn build_conductor_protocol_section(agent_id: &str) -> String {
+    let restart_context = crate::conductor::render_restart_context(agent_id)
+        .unwrap_or_else(|| "(no saved topics — this is a fresh conductor)".to_string());
+
+    format!(
+        "## Conductor Protocol\n\n\
+You are both a conductor and a worker. As conductor:\n\
+- For simple questions: respond directly without spawning workers.\n\
+- For complex/multi-step tasks: triage by identifying parallelizable subtasks, spawn \
+workers via `sessions_spawn` with isolated context, yield via `sessions_yield` to \
+receive results, then synthesize.\n\
+- Your context holds a topic registry: `{{task_id: {{worker_ids, status, summary}}}}`. \
+Never store full worker transcripts in your own context — only summaries and artifact \
+paths. Full worker output lives on the shared filesystem; you only need the path.\n\
+- When the user sends a new message while workers are running: if it's a follow-up on \
+the same topic, queue it until the workers yield; if it's a new topic, add it to the \
+registry and spawn fresh workers rather than blocking on the old ones.\n\
+- Worker task prompt format: `{{\"task\": \"...\", \"background\": \"2-3 sentences\", \
+\"output_format\": \"JSON: {{summary, artifacts, status, confidence}}\", \
+\"max_tool_calls\": 10}}`.\n\n\
+### Known runtime bugs to design around\n\
+- The result-delivery callback from a spawned worker only survives one turn on your \
+side. Do not chain yield -> spawn -> yield across multiple turns and expect earlier \
+results to still be there — yield once per batch, receive everything from that batch, \
+synthesize, then you're done with that batch.\n\
+- A worker marked \"completed\" can still have running children. Do not treat a \
+worker's own status as final without cross-checking session status first.\n\n\
+### Recovered topic registry (from CONDUCTOR_STATE.md)\n\
+{restart_context}\n"
     )
 }
 
@@ -5653,6 +5754,11 @@ fn role_specific_wow_examples(role: &str) -> &'static str {
 }
 
 fn build_app_operating_model_md(agent: &crate::models::Agent) -> String {
+    let conductor_startup_step = if agent.capabilities.orchestration {
+        "5. Read `CONDUCTOR_STATE.md` to recover your topic registry — which workers were in flight or just finished when you last ran.\n"
+    } else {
+        ""
+    };
     format!(
         "# APP_OPERATING_MODEL.md\n\n\
 _This file is app-managed and not user-editable. It defines the proactive operating contract for {name}._\n\n\
@@ -5661,7 +5767,8 @@ _This file is app-managed and not user-editable. It defines the proactive operat
 2. If present, read `MEMORY.md` and `HEARTBEAT.md` to recover continuity.\n\
 3. If runtime context identifies current thread files, read `THREAD_PROTOCOL.md`, `THREAD_STATE.md`, `RECENT_HISTORY.md`, and `CHECKPOINTS.md` before answering.\n\
    Read `SESSION_MEMORY.md` when it contains thread-specific notes, and `THREAD_TIMELINE.md` when older context might matter.\n\
-4. Inspect `DIAGNOSTICS.md` before proposing integration-dependent workflows.\n\n\
+4. Inspect `DIAGNOSTICS.md` before proposing integration-dependent workflows.\n\
+{conductor_startup_step}\n\
 ## Proactivity Standard\n\
 - Create leverage, not just answers.\n\
 - If a visible artifact would help more than prose, make the artifact.\n\
@@ -5689,6 +5796,24 @@ _This file is app-managed and not user-editable. It defines the proactive operat
     )
 }
 
+/// Rendered into the workspace as `CONDUCTOR_STATE.md` for orchestration-capable
+/// agents — the durable, file-based twin of `conductor::render_restart_context`, which
+/// is what's actually mirrored into APP_CAPABILITIES.md's Conductor Protocol section on
+/// every regeneration. Written separately too so the topic registry stays visible even
+/// if the app-managed capabilities section is skimmed rather than reread in full.
+fn build_conductor_state_md(agent_id: &str) -> String {
+    let body = crate::conductor::render_restart_context(agent_id)
+        .unwrap_or_else(|| "No active or recent topics.".to_string());
+    format!(
+        "# CONDUCTOR_STATE.md\n\n\
+_This file is app-managed and not user-editable. It mirrors your persisted topic \
+registry so a Canopy restart doesn't lose track of in-flight or recently finished \
+workers._\n\n\
+{}\n",
+        body
+    )
+}
+
 pub(crate) fn write_app_managed_instruction_files(
     agent: &crate::models::Agent,
     db: &crate::db::Database,
@@ -5705,7 +5830,7 @@ pub(crate) fn write_app_managed_instruction_files(
     let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
-    let files = [
+    let mut files = vec![
         ("APP_PROTOCOLS.md", build_app_protocols_md()),
         ("APP_CAPABILITIES.md", build_app_capabilities_md(agent)),
         (
@@ -5713,6 +5838,9 @@ pub(crate) fn write_app_managed_instruction_files(
             build_app_operating_model_md(agent),
         ),
     ];
+    if agent.capabilities.orchestration {
+        files.push(("CONDUCTOR_STATE.md", build_conductor_state_md(&agent.id)));
+    }
     for workspace in agent_workspace_sync_targets_for_root(&canopy_root, db, &agent.id) {
         let _ = std::fs::create_dir_all(&workspace);
         for (name, content) in &files {
