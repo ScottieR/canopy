@@ -56,7 +56,7 @@ scraper = "0.20"      # HTML parsing for fetch_page title/link extraction
 html2text = "0.12"    # HTML -> readable text for fetch_page / research
 pbkdf2 = "0.12"       # Tier 4: derive the Chrome "Safe Storage" cookie-encryption key
 sha1 = "0.10"         # Tier 4: PBKDF2-HMAC-SHA1, per Chromium's macOS os_crypt
-aes = "0.8"           # Tier 4: AES-128-CBC cookie value decryption
+aes = "0.9"           # Tier 4: AES-128-CBC cookie value decryption
 cbc = "0.1"           # Tier 4: CBC mode + PKCS7 padding for the above
 x25519-dalek = { version = "2", features = ["static_secrets", "getrandom"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
