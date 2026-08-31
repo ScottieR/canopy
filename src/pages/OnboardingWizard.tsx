@@ -4635,7 +4635,7 @@ export function OnboardingWizard() {
 
                 try {
                   const slot = getAgentProviderSecretSlot(selectedAgentId, "Anthropic");
-                  await invoke('set_keychain_item', {
+                  await invoke('store_secret_cmd', {
                     key: slot,
                     value: anthropicKey
                   });

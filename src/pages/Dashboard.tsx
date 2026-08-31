@@ -4,6 +4,8 @@ import { useWorldStore } from "../store/worldStore";
 import { TokenSpendChart } from "../components/agents/TokenSpendChart";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { PaymentSummary } from "../components/payments/PaymentSummary";
+import { CredentialRecoverySection } from "../components/shared/CredentialRecoverySection";
+import { MissingCredentialBanner } from "../components/shared/MissingCredentialBanner";
 
 // glass()/ProgressBar are copied locally (rather than imported from ../App,
 // which also exports them) so this page doesn't pull in App.tsx's whole
@@ -488,6 +490,8 @@ export function Dashboard() {
                 <div><strong>{stats.messages}</strong> msgs · <strong>{stats.tools}</strong> tool calls</div>
                 <div><strong>${stats.costUsd.toFixed(2)}</strong> · <strong>{formatTokens(stats.tokensIn + stats.tokensOut)}</strong> tokens</div>
               </div>
+              <MissingCredentialBanner agentId={agent.id} />
+              <CredentialRecoverySection agentId={agent.id} />
             </div>
           );
         })}

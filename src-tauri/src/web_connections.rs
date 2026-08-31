@@ -237,6 +237,33 @@ pub async fn generate_web_connection_token_impl(
     placeholder: Option<String>,
     secret_key: Option<String>,
 ) -> Result<WebConnectionToken, String> {
+    generate_web_connection_token_impl_ex(
+        db,
+        agent_id,
+        provider_name,
+        token_url,
+        instructions,
+        placeholder,
+        secret_key,
+        None,
+    )
+    .await
+}
+
+/// Same as [`generate_web_connection_token_impl`], with an optional
+/// `recovery_provider` marking this token as an Eddy-triggered LLM credential
+/// recovery for that OpenClaw provider id, rather than an agent-initiated
+/// third-party API key request. See [`PendingConnectionRecord::recovery_provider`].
+pub async fn generate_web_connection_token_impl_ex(
+    db: &Database,
+    agent_id: &str,
+    provider_name: &str,
+    token_url: Option<String>,
+    instructions: Option<String>,
+    placeholder: Option<String>,
+    secret_key: Option<String>,
+    recovery_provider: Option<String>,
+) -> Result<WebConnectionToken, String> {
     validators::agent::validate_id(agent_id).map_err(|e| e.to_string())?;
 
     let provider_name = provider_name.trim();
@@ -300,6 +327,7 @@ pub async fn generate_web_connection_token_impl(
         placeholder,
         created_at: now.to_rfc3339(),
         expires_at: expires_at.to_rfc3339(),
+        recovery_provider,
     };
     db.insert_pending_connection(&record)
         .map_err(|e| format!("local pending_connections insert failed: {e}"))?;
@@ -309,6 +337,52 @@ pub async fn generate_web_connection_token_impl(
         token,
         expires_at: record.expires_at,
     })
+}
+
+/// Display name, "where do I find this" link, and paste-in instructions for the
+/// LLM providers Eddy's credential-recovery flow supports. Keyed by the same
+/// lowercase OpenClaw provider id `openclaw::detect_provider_auth_failure` returns.
+pub fn llm_provider_recovery_template(
+    provider: &str,
+) -> Option<(&'static str, &'static str, &'static str)> {
+    match provider {
+        "anthropic" => Some((
+            "Anthropic",
+            "https://console.anthropic.com",
+            "Visit console.anthropic.com → API Keys → Create new key. Paste it below.",
+        )),
+        "gemini" => Some((
+            "Google",
+            "https://console.cloud.google.com",
+            "Visit console.cloud.google.com → APIs & credentials → Create API key. Paste it below.",
+        )),
+        _ => None,
+    }
+}
+
+/// Mints a web connection token for an Eddy-triggered credential recovery, so the
+/// completion is stored at the exact per-agent Keychain key `get_creds_for_agent`
+/// reads and re-synced automatically. See [`llm_provider_recovery_template`] for
+/// which providers are supported.
+pub async fn generate_credential_recovery_token(
+    db: &Database,
+    agent_id: &str,
+    provider: &str,
+) -> Result<WebConnectionToken, String> {
+    let (display_name, token_url, instructions) = llm_provider_recovery_template(provider)
+        .ok_or_else(|| format!("credential recovery is not supported for provider {provider}"))?;
+
+    generate_web_connection_token_impl_ex(
+        db,
+        agent_id,
+        display_name,
+        Some(token_url.to_string()),
+        Some(instructions.to_string()),
+        None,
+        None,
+        Some(provider.to_string()),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -411,7 +485,15 @@ async fn poll_pending_connections(app_handle: &tauri::AppHandle) {
                 &completed.ephemeral_public_key,
             ) {
                 Ok(plaintext) => {
-                    let vault_key = format!("agent_{}_{}", local.agent_id, local.secret_name);
+                    // Credential-recovery tokens must land at the exact Keychain key
+                    // `openclaw::get_creds_for_agent` reads (`agent_<id>_<provider>_key`,
+                    // lowercase) rather than the generic `secret_name`-derived slot
+                    // (which is always uppercase, e.g. `ANTHROPIC_KEY`) — otherwise the
+                    // re-entered key would be stored but never reach the live agent.
+                    let vault_key = match &local.recovery_provider {
+                        Some(provider) => format!("agent_{}_{}_key", local.agent_id, provider),
+                        None => format!("agent_{}_{}", local.agent_id, local.secret_name),
+                    };
                     if let Err(e) = crate::keychain::store_secret(&vault_key, &plaintext) {
                         // Do not log `plaintext` — only the error and identifying metadata.
                         tracing::error!(
@@ -426,14 +508,49 @@ async fn poll_pending_connections(app_handle: &tauri::AppHandle) {
                         local.provider_name,
                         local.agent_id
                     );
-                    let _ = app_handle.emit(
-                        "web-connection-completed",
-                        serde_json::json!({
-                            "agentId": local.agent_id,
-                            "providerName": local.provider_name,
-                            "secretName": local.secret_name,
-                        }),
-                    );
+
+                    if let Some(provider) = &local.recovery_provider {
+                        if let Err(e) = crate::openclaw::sync_agent_api_keys(
+                            db.clone(),
+                            local.agent_id.clone(),
+                            // Guard stays on: this key arrived for THIS agent, so it
+                            // should never be allowed to overwrite a different one via
+                            // the global fallback path. Only the per-agent key editor
+                            // passes true. Matches provider_provisioning.rs.
+                            None,
+                        )
+                        .await
+                        {
+                            tracing::error!(
+                                "web_connections: recovered {} key stored but sync_agent_api_keys failed for {}: {e}",
+                                provider,
+                                local.agent_id
+                            );
+                        }
+                        crate::agent_health::on_credential_recovery_completed(
+                            app_handle,
+                            db.inner(),
+                            &local.agent_id,
+                            provider,
+                        )
+                        .await;
+                        let _ = app_handle.emit(
+                            "credential-recovery-completed",
+                            serde_json::json!({
+                                "agentId": local.agent_id,
+                                "provider": provider,
+                            }),
+                        );
+                    } else {
+                        let _ = app_handle.emit(
+                            "web-connection-completed",
+                            serde_json::json!({
+                                "agentId": local.agent_id,
+                                "providerName": local.provider_name,
+                                "secretName": local.secret_name,
+                            }),
+                        );
+                    }
                 }
                 Err(e) => {
                     tracing::error!(

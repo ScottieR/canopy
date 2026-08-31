@@ -210,6 +210,13 @@ pub struct PendingConnectionRecord {
     pub placeholder: String,
     pub created_at: String,
     pub expires_at: String,
+    /// Set only for Eddy-triggered LLM credential recovery (vs. the original
+    /// agent-initiated third-party API key flow). Lowercase OpenClaw provider id
+    /// ("anthropic" | "openai" | "gemini" | "grok"). When present, completion is
+    /// stored at `agent_<agent_id>_<recovery_provider>_key` — the exact Keychain
+    /// key `openclaw::get_creds_for_agent` reads — instead of the generic
+    /// `secret_name`-derived slot, and triggers `sync_agent_api_keys` afterward.
+    pub recovery_provider: Option<String>,
 }
 
 // ─── Database Struct ─────────────────────────────────────────────────────────
@@ -860,6 +867,7 @@ impl Database {
                 placeholder TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 expires_at TEXT NOT NULL,
+                recovery_provider TEXT,
                 FOREIGN KEY(agent_id) REFERENCES agents(id)
             )",
             [],
@@ -4153,8 +4161,8 @@ impl Database {
         conn.execute(
             "INSERT INTO pending_connections
                 (token, agent_id, provider_name, secret_name, token_url, instructions,
-                 placeholder, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 placeholder, created_at, expires_at, recovery_provider)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 record.token,
                 record.agent_id,
@@ -4164,7 +4172,8 @@ impl Database {
                 record.instructions,
                 record.placeholder,
                 record.created_at,
-                record.expires_at
+                record.expires_at,
+                record.recovery_provider
             ],
         )?;
         Ok(())
@@ -4174,7 +4183,7 @@ impl Database {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT token, agent_id, provider_name, secret_name, token_url, instructions,
-                    placeholder, created_at, expires_at
+                    placeholder, created_at, expires_at, recovery_provider
              FROM pending_connections ORDER BY created_at ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -4188,6 +4197,7 @@ impl Database {
                 placeholder: row.get(6)?,
                 created_at: row.get(7)?,
                 expires_at: row.get(8)?,
+                recovery_provider: row.get(9)?,
             })
         })?;
         rows.collect()

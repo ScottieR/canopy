@@ -15,6 +15,7 @@ mod connection_requests;
 pub mod rate_limiter;
 
 mod activity_sniffer;
+mod agent_health;
 mod audit;
 mod audit_openclaw;
 mod bluetooth;
@@ -965,6 +966,9 @@ pub fn run() {
             share_publish::revoke_share_artifact,
             // Web-hosted connection token capture (Slack -> web -> vault)
             web_connections::generate_web_connection_token,
+            // Eddy credential-failure recovery (auth failure -> Slack link -> re-sync)
+            agent_health::get_credential_recovery_status,
+            agent_health::regenerate_credential_recovery_link,
             docker::configure_orbstack_memory,
             docker::get_container_status,
             docker::start_gateway,

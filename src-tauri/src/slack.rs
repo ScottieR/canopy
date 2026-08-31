@@ -648,9 +648,20 @@ pub async fn send_slack_message(
     channel_id: String,
     text: String,
 ) -> Result<String, String> {
+    send_slack_message_internal(&db, &agent_id, &channel_id, &text).await
+}
+
+/// Core of [`send_slack_message`], callable from non-Tauri-command contexts (e.g.
+/// `agent_health`'s credential-recovery notifier) that only have a `&Database`.
+pub async fn send_slack_message_internal(
+    db: &Database,
+    agent_id: &str,
+    channel_id: &str,
+    text: &str,
+) -> Result<String, String> {
     // Check channel allowlist
-    let allowed_channels = get_allowed_channels_internal(&db, &agent_id)?;
-    if !allowed_channels.is_empty() && !allowed_channels.contains(&channel_id) {
+    let allowed_channels = get_allowed_channels_internal(db, agent_id)?;
+    if !allowed_channels.is_empty() && !allowed_channels.contains(&channel_id.to_string()) {
         return Err(format!("Channel {} not in agent's allowlist", channel_id));
     }
 
@@ -663,28 +674,28 @@ pub async fn send_slack_message(
     }
 
     let agent_name = db
-        .get_agent(&agent_id)
+        .get_agent(agent_id)
         .ok()
         .flatten()
         .map(|agent| agent.name);
 
     let payload =
-        build_post_message_payload(&db, &channel_id, &text, &agent_id, agent_name.as_deref()).await;
+        build_post_message_payload(db, channel_id, text, agent_id, agent_name.as_deref()).await;
 
     let response_value = if payload.get("blocks").is_some() {
         make_api_call_json(
             reqwest::Method::POST,
             "chat.postMessage",
             &payload,
-            Some(&agent_id),
+            Some(agent_id),
         )
         .await?
     } else {
         make_api_call(
             reqwest::Method::POST,
             "chat.postMessage",
-            Some(&[("channel", &channel_id), ("text", &text)]),
-            Some(&agent_id),
+            Some(&[("channel", channel_id), ("text", text)]),
+            Some(agent_id),
         )
         .await?
     };
@@ -711,7 +722,10 @@ pub async fn send_slack_message(
 // ============================================================================
 
 /// Internal: get allowed channels from the Slack bridge in our DB
-fn get_allowed_channels_internal(db: &Database, agent_id: &str) -> Result<Vec<String>, String> {
+pub(crate) fn get_allowed_channels_internal(
+    db: &Database,
+    agent_id: &str,
+) -> Result<Vec<String>, String> {
     let bridge_id = format!("{}-slack", agent_id);
 
     match db.get_bridge(&bridge_id) {
