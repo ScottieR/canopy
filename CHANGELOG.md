@@ -2,7 +2,7 @@
 
 All notable changes to Canopy are documented in this file.
 
-## [0.4.0] - Unreleased
+## [0.4.0] - 2026-09-08
 
 ### Added
 
