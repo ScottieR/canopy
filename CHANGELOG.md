@@ -18,8 +18,9 @@ All notable changes to Canopy are documented in this file.
   completions locally, storing the plaintext straight into the Keychain vault as
   before. Falls back to the `canopy://` deep link if minting a web token fails (e.g.
   canopy-admin unreachable). See `src-tauri/src/web_connections.rs` for the
-  implementation and `WEB_CONNECTIONS.md` for the canopy-admin-side contract this
-  still needs (endpoints + the `/connect/{token}` page — not yet implemented there).
+  implementation and `WEB_CONNECTIONS.md` for the canopy-admin-side contract, which
+  is now implemented there (the `/connect/{token}` page, the register/complete/poll
+  endpoints, and the `pending_connections` store).
 
 ## [0.3.0] - 2026-08-09
 
