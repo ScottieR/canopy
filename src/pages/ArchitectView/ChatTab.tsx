@@ -17,7 +17,7 @@ import { PasswordInput } from "../../components/shared/PasswordInput";
 import { isolateGeneratedHtml } from "../../security/generatedHtml";
 import { buildCompanionUrl } from "../../utils/connectorCatalog";
 import { parseConnectionRequestTag } from "../../utils/customOAuth";
-import { extractVisibleUserMessageContent } from "../../utils/chatMessageContent";
+import { extractVisibleUserMessageContent, stripAgentControlTokens } from "../../utils/chatMessageContent";
 import {
   detectInsecureCredentialAdvice,
   recoverSecureConnectionRequest,
@@ -1127,7 +1127,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             localMessages = resp.map(r => ({
               id: r.id,
               sender: r.role === "user" ? "user" : "agent",
-              text: r.role === "user" ? extractVisibleUserMessageContent(r.content || "") : (r.content || ""),
+              text: r.role === "user" ? extractVisibleUserMessageContent(r.content || "") : stripAgentControlTokens(r.content || ""),
               time: formatMessageTime(r.timestamp),
               ts: new Date(r.timestamp).getTime()
             }));
@@ -1149,7 +1149,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                 const normalizedMessageText = (message: { sender: "user" | "agent"; text: string }) =>
                   message.sender === "user"
                     ? extractVisibleUserMessageContent(message.text)
-                    : message.text;
+                    : stripAgentControlTokens(message.text);
                 if (normalizedMessageText(m) === normalizedMessageText(msg)) return true;
                 const tsRegex = /^(?:System:\s*)?\[(?:[A-Z][a-z]{2}\s+)?\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|\s*[+-]\d{2}:?\d{2}|\s+[A-Z]{3,4})?\]\s*(?:[^:\n]+:\s*)?/;
                 const strippedM = normalizedMessageText(m).replace(tsRegex, '');
@@ -1427,7 +1427,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       let responseText = typeof response === 'object' ? response?.response || response?.content || JSON.stringify(response) : String(response);
 
       const specialRequests = extractSpecialRequests(responseText);
-      responseText = specialRequests.text;
+      responseText = stripAgentControlTokens(specialRequests.text);
 
       const agentMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
@@ -1549,7 +1549,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
             ? retryResponse?.response || retryResponse?.content || JSON.stringify(retryResponse)
             : String(retryResponse);
           const retrySpecialRequests = extractSpecialRequests(retryText);
-          retryText = retrySpecialRequests.text;
+          retryText = stripAgentControlTokens(retrySpecialRequests.text);
           const retryAgentMsg: ChatMessage = {
             id: (Date.now() + 1).toString(),
             sender: "agent",
@@ -1627,6 +1627,16 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           inv("boot_sync_agents").catch((e: any) => console.warn("background boot_sync after timeout:", e));
         }
         friendlyError = "The agent is taking a while to respond. Registration is being refreshed — please try again in 30 seconds.";
+      } else if (friendlyError.includes("No API key found for provider")) {
+        // Missing provider credential — hits when an agent's model (or its
+        // failover chain) selects a provider with no key configured. This was
+        // previously nested inside the quota branch below, which a plain
+        // missing-key error never matches — so the raw FailoverError rendered
+        // verbatim in chat (issue #50, 2026-08-24 CUJ test).
+        const match = friendlyError.match(/No API key found for provider "([^"]+)"/);
+        friendlyError = match
+          ? `**${agent.name} can't respond — the ${match[1].toUpperCase()} model it tried to use has no API key configured.** Add the key in the Vault, or switch ${agent.name} to a provider you have a key for under **Skills & Access → AI model**. The Diagnostics tab can confirm which providers are configured.`
+          : `**${agent.name} can't respond — its model provider has no API key configured.** Add the key in the Vault or switch models under **Skills & Access → AI model**.`;
       } else if (friendlyError.includes("429") || /quota|rate.?limit|RESOURCE_EXHAUSTED/i.test(friendlyError)) {
         // Provider quota/rate-limit — the #1 cause of "my agent doesn't talk."
         // (Part 1D playbook class: rate-limited key.) Name the provider and
@@ -1639,12 +1649,6 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
           `**${agent.name} can't respond right now — your ${provName} key is out of quota.** ` +
           `The provider rejected the request (rate limit / billing cap), so nothing Canopy retries will help until it resets. ` +
           `Options: wait for the quota window to reset, upgrade the key's plan, or switch ${agent.name} to a different model under **Skills & Access → AI model**.`;
-        const match = friendlyError.match(/No API key found for provider "([^"]+)"/);
-        if (match) {
-          friendlyError = `You have selected a **${match[1].toUpperCase()}** model, but no API key is configured. Please set your key in the Vault or run Diagnostics.`;
-        } else {
-          friendlyError = "Your API Key is missing for this model's provider. Please configure your integration.";
-        }
       } else if (friendlyError.includes("Unknown model")) {
         const match = friendlyError.match(/Unknown model: ([^\s]+)/);
         if (match) {
@@ -1657,10 +1661,19 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
         friendlyError = "This agent isn't configured with API keys yet and can't respond. Use the button below to finish setup.";
       }
 
+      // Render as a system-error card, never as agent prose. The friendly text is
+      // the headline; the raw error lives in `rawError` behind a details
+      // disclosure (issue #50 — a raw FailoverError with container paths and CLI
+      // remediation was a parent's first-ever reply from their agent).
+      const wasMapped = friendlyError !== String(error);
       const errorMsg: ChatMessage = {
         id: "err-" + Date.now().toString(),
         sender: "agent",
-        text: `⚠️ **System Error**: ${friendlyError}\n\n*(Raw Error: ${String(error).substring(0, 80)}...)*`,
+        kind: "error",
+        text: wasMapped
+          ? friendlyError
+          : `**${agent.name} hit an unexpected problem and couldn't finish responding.** The technical details below have the specifics, and the Diagnostics tab can help pinpoint the cause.`,
+        rawError: String(error),
         time: formatMessageTime(new Date()),
         ts: Date.now(),
       };
@@ -1914,6 +1927,48 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                         </div>
                       );
                     }
+                  }
+
+                  // ── System-error card (issue #50) ────────────────────────────────────
+                  // Errors never render as agent prose: plain-language headline, raw
+                  // error behind a disclosure, one-click path to Diagnostics. The
+                  // legacy branch covers persisted messages from before this change.
+                  const legacySystemError = textTrimmed.startsWith("⚠️ **System Error**");
+                  if (msg.kind === "error" || legacySystemError) {
+                    const headline = legacySystemError
+                      ? textTrimmed
+                          .replace(/^⚠️ \*\*System Error\*\*:\s*/, "")
+                          .replace(/\n+\*\(Raw Error:[\s\S]*$/, "")
+                      : msg.text;
+                    const rawDetail = msg.rawError
+                      || (legacySystemError ? (textTrimmed.match(/\*\(Raw Error:\s*([\s\S]*?)\)\*\s*$/)?.[1] ?? "") : "");
+                    return (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 700, fontSize: 12, color: "#a4553a" }}>
+                          <AlertTriangle size={14} /> {agent.name} couldn't respond
+                        </div>
+                        <div className="markdown-chat" style={{ color: "inherit", fontSize: "inherit", background: "transparent" }}>
+                          <MDEditor.Markdown source={headline} style={{ background: "transparent", color: "inherit", fontSize: "inherit" }} />
+                        </div>
+                        {rawDetail && (
+                          <details style={{ fontSize: 11, opacity: 0.85 }}>
+                            <summary style={{ cursor: "pointer", fontWeight: 600, outline: "none" }}>Show technical details</summary>
+                            <div style={{ marginTop: 6, fontFamily: "monospace", whiteSpace: "pre-wrap", overflowX: "auto", fontSize: 10.5 }}>{rawDetail}</div>
+                          </details>
+                        )}
+                        <button
+                          onClick={() => useWorldStore.getState().setArchitectTab("diagnostics")}
+                          style={{
+                            alignSelf: "flex-start", padding: "5px 12px", borderRadius: 8,
+                            border: "1px solid rgba(164,85,58,0.35)", background: "rgba(164,85,58,0.08)",
+                            color: "#a4553a", fontSize: 12, fontWeight: 600, cursor: "pointer",
+                            display: "flex", alignItems: "center", gap: 5,
+                          }}
+                        >
+                          <Activity size={12} /> Run Diagnostics
+                        </button>
+                      </div>
+                    );
                   }
 
                   let isSystemDump = false;

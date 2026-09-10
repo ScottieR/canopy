@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractVisibleUserMessageContent } from "./chatMessageContent";
+import { extractVisibleUserMessageContent, stripAgentControlTokens } from "./chatMessageContent";
 
 describe("extractVisibleUserMessageContent", () => {
   it("returns plain user text unchanged", () => {
@@ -33,5 +33,28 @@ Please summarize this company.`;
     expect(extractVisibleUserMessageContent(wrapped)).toBe(
       "Please summarize this company."
     );
+  });
+});
+
+describe("stripAgentControlTokens", () => {
+  it("strips a leading [[reply_to_current]] directive", () => {
+    expect(stripAgentControlTokens("[[reply_to_current]]I'm so sorry about that!")).toBe(
+      "I'm so sorry about that!"
+    );
+  });
+
+  it("strips stacked leading control tokens and surrounding whitespace", () => {
+    expect(stripAgentControlTokens("  [[reply_to_current]] [[urgent]]  Hello")).toBe("Hello");
+  });
+
+  it("leaves double-bracket text that appears mid-message alone", () => {
+    expect(stripAgentControlTokens("The array syntax is [[1, 2], [3, 4]] in this case")).toBe(
+      "The array syntax is [[1, 2], [3, 4]] in this case"
+    );
+  });
+
+  it("leaves normal messages untouched", () => {
+    expect(stripAgentControlTokens("Plain reply with no tokens")).toBe("Plain reply with no tokens");
+    expect(stripAgentControlTokens("")).toBe("");
   });
 });
