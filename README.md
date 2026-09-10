@@ -30,6 +30,7 @@ The result is a Tauri desktop application with a React/Three.js interface, a Rus
 - **Local execution plane** — OpenClaw gateways and Chroma memory run in Docker-compatible containers bound to loopback interfaces.
 - **Secure credential handling** — provider and integration secrets are stored in macOS Keychain, not source-controlled environment files.
 - **Secure connector recovery** — when an agent asks for credentials the wrong way, Canopy can redirect the user into an agent-scoped companion flow and vault custom OAuth metadata or already-issued tokens in Keychain instead of chat.
+- **Cross-device credential capture** — when an agent requests a provider key over Slack, Canopy can hand the user a plain `https://` link that opens in any browser (a phone included) rather than a desktop-only `canopy://` deep link. The key is encrypted in the browser to this install's public key before it leaves the device, so the hosted service only ever sees ciphertext and only this install can decrypt it; the flow falls back to the deep link automatically if a web token can't be minted.
 - **Observable autonomy** — activity, approvals, budgets, browser sessions, and audit events are surfaced in one desktop interface.
 - **Multi-agent forums** — agents can be assembled for structured collaboration with trust and spend controls.
 - **Spatial identity** — agents and their habitats are rendered as a navigable 3D environment rather than a flat bot list.

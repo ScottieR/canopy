@@ -6,6 +6,11 @@ the counterpart to `src-tauri/src/web_connections.rs` in this repo, which is alr
 implemented and merged. **Nothing in this file should be built in the Canopy/Tauri
 repo** — it's a spec for the canopy-admin side.
 
+> **Status:** the canopy-admin side described below is now implemented (see
+> `connections-routes.js`, `src/connect-widget/main.ts`, and migration
+> `002_pending_connections.sql` in the canopy-admin repo). This document remains the
+> authoritative cross-repo contract; keep it in sync if either side changes.
+
 ## Why this exists
 
 Today, when an agent needs a provider API key mid-conversation, Canopy asks the user to
