@@ -33,6 +33,27 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
   // Map tier to a 0–2 position on the green→amber→red gradient track.
   const tierPosition = currentTier?.id === "unrestricted" ? 2 : currentTier?.id === "balanced" ? 1 : 0;
 
+  // Work-log entries speak infrastructure ("FILES_BRIDGE_SYNCED VIA FILES");
+  // the log is for the person deciding whether to trust the agent, so render a
+  // human action narrative and keep the machine code in the hover title
+  // (issue #64, 2026-08-24 CUJ test).
+  const humanizeAuditAction = (action: string, bridgeType?: string | null): string => {
+    const known: Record<string, string> = {
+      chatted: "Chat",
+      created: "Created",
+      updated: "Updated",
+      delete: "Deleted",
+      run_failed: "Task failed",
+      files_bridge_synced: "Files synced",
+      bridge_access: "Used a connected service",
+      bridge_enabled: "Service connected",
+      bridge_disabled: "Service disconnected",
+    };
+    const base = known[action.toLowerCase()] || action.replace(/_/g, " ").toLowerCase();
+    const via = bridgeType && !["openclaw", "files"].includes(bridgeType.toLowerCase()) ? ` via ${bridgeType}` : "";
+    return `${base}${via}`;
+  };
+
   const groupedLogs = useMemo(() => {
     if (!recentLogs || recentLogs.length === 0) return [];
     
@@ -256,8 +277,11 @@ function ActivityTab({ agent, onNavigate }: { agent: AgentData; onNavigate?: (ta
                  return (
                    <div key={group.id} style={{ fontSize: 13, color: "var(--text-main)", padding: "10px 14px", background: "var(--surface-base)", borderRadius: 8, border: "1px solid var(--border-subtle)", display: "flex", flexDirection: "column", gap: 4 }}>
                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                       <strong style={{ color: color, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", background: bg, padding: "2px 6px", borderRadius: 4 }}>
-                         {log.action} {log.bridge_type ? `via ${log.bridge_type}` : ""}
+                       <strong
+                         title={`${log.action}${log.bridge_type ? ` via ${log.bridge_type}` : ""}`}
+                         style={{ color: color, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", background: bg, padding: "2px 6px", borderRadius: 4 }}
+                       >
+                         {humanizeAuditAction(log.action, log.bridge_type)}
                        </strong>
                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                          {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
