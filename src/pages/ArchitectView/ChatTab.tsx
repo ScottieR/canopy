@@ -18,6 +18,7 @@ import { isolateGeneratedHtml } from "../../security/generatedHtml";
 import { buildCompanionUrl } from "../../utils/connectorCatalog";
 import { parseConnectionRequestTag } from "../../utils/customOAuth";
 import { extractVisibleUserMessageContent } from "../../utils/chatMessageContent";
+import { detectTaskPreflightGaps, PreflightGap } from "../../utils/taskPreflight";
 import {
   detectInsecureCredentialAdvice,
   recoverSecureConnectionRequest,
@@ -791,6 +792,11 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
 
   const activeThreadLoading = isSessionLoading(agent.activeConversationId);
 
+  // Preflight capability gaps for the task just sent (issue #60). Non-blocking:
+  // the send proceeds; this banner tells the user NOW what the agent will
+  // discover the hard way, with a one-click path to fix it.
+  const [preflightGaps, setPreflightGaps] = useState<PreflightGap[]>([]);
+
   // Process queued messages when loading finishes
   useEffect(() => {
     if (queuedMessages.length > 0) {
@@ -1324,6 +1330,8 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       const fileNames = activeAttachments.map(a => a.name).join(", ");
       finalMessage += `\n\n[System Context: I have uploaded the following files to your workspace: ${fileNames}. Please analyze them if requested.]`;
     }
+
+    setPreflightGaps(detectTaskPreflightGaps(baseText, agentRef.current));
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -2578,6 +2586,45 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {preflightGaps.length > 0 && (
+        <div style={{
+          margin: "12px 10px 0 10px", padding: "12px 14px", borderRadius: 10,
+          background: "rgba(244,168,58,0.08)", border: "1px solid rgba(244,168,58,0.3)",
+          display: "flex", flexDirection: "column", gap: 8,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, color: "#8A6614" }}>
+              <AlertTriangle size={14} /> Heads up — this task may need things {agent.name} doesn't have yet
+            </div>
+            <button
+              onClick={() => setPreflightGaps([])}
+              style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 2, display: "flex" }}
+            >
+              <X size={13} />
+            </button>
+          </div>
+          {preflightGaps.map(gap => (
+            <div key={gap.key} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-sub)" }}>
+              <span style={{ fontWeight: 700, color: "#8A6614", whiteSpace: "nowrap" }}>{gap.label}:</span>
+              <span style={{ flex: 1 }}>{gap.detail}</span>
+              <button
+                onClick={() => useWorldStore.getState().setArchitectTab(gap.cta)}
+                style={{
+                  padding: "3px 10px", borderRadius: 6, whiteSpace: "nowrap",
+                  border: "1px solid rgba(138,102,20,0.35)", background: "rgba(138,102,20,0.08)",
+                  color: "#8A6614", fontSize: 11, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                {gap.cta === "connections" ? "Fix in Connections" : "Open Diagnostics"}
+              </button>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            {agent.name} will still try — but these gaps are the most likely reason a task like this stalls.
+          </div>
         </div>
       )}
 
