@@ -1190,6 +1190,21 @@ fn preflight_sanitize_and_merge_config_with_keys(
         }
     });
 
+    // Conductor/worker orchestration bounds — a global safety ceiling on agent
+    // subagent-spawning, not gated per-agent. An agent without the `orchestration`
+    // capability never calls sessions_spawn, so these are inert for it; an agent that
+    // does have the capability is bounded regardless of whether its own config rebuild
+    // has landed yet. `maxSpawnDepth: 2` keeps workers as leaf nodes (they cannot spawn
+    // further workers); see conductor.rs for the Canopy-side state/timeout tracking
+    // that layers on top of `runTimeoutSeconds`.
+    required_baseline["agents"]["defaults"]["maxSpawnDepth"] = serde_json::json!(2);
+    required_baseline["agents"]["defaults"]["maxChildrenPerAgent"] = serde_json::json!(5);
+    required_baseline["agents"]["defaults"]["runTimeoutSeconds"] =
+        serde_json::json!(crate::conductor::DEFAULT_WORKER_TIMEOUT_SECS);
+    required_baseline["agents"]["defaults"]["tools"] = serde_json::json!({ "profile": "coding" });
+    required_baseline["agents"]["defaults"]["session"] =
+        serde_json::json!({ "visibility": "tree" });
+
     // ── 5. Context-Aware Injections (gateway vs isolated) ──────────────────────
     if !is_isolated {
         required_baseline["agents"]["defaults"]["memorySearch"] =

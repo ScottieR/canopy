@@ -33,6 +33,29 @@ export // ═══════════════════════�
   // Forum modal
   const [forumModalOpen, setForumModalOpen] = useState(false);
 
+  // Active conductor worker counts, keyed by agent id — only populated for agents with
+  // the orchestration capability on (see conductor::get_active_worker_counts).
+  const [workerCounts, setWorkerCounts] = useState<Record<string, number>>({});
+  const hasOrchestrationAgents = useMemo(
+    () => agents.some(a => a.capabilities?.orchestration),
+    [agents]
+  );
+  useEffect(() => {
+    if (!hasOrchestrationAgents) {
+      setWorkerCounts({});
+      return;
+    }
+    let cancelled = false;
+    const poll = () => {
+      invoke<Record<string, number>>("get_active_worker_counts")
+        .then(counts => { if (!cancelled) setWorkerCounts(counts); })
+        .catch(() => {});
+    };
+    poll();
+    const interval = setInterval(poll, 5000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [hasOrchestrationAgents]);
+
   // Edit Mode State
   const [isEditMode, setIsEditMode] = useState(false);
   const [transformMode, setTransformMode] = useState<"translate" | "rotate">("translate");
@@ -247,6 +270,15 @@ export // ═══════════════════════�
                   border: "2px solid white",
                   animation: (!a.paused && (!gatewayReady || a.status === "deploying")) ? "pulse 1.5s ease-in-out infinite" : "none",
                 }} />
+                {!!workerCounts[a.id] && (
+                  <div title={`${workerCounts[a.id]} worker${workerCounts[a.id] === 1 ? "" : "s"} running`} style={{
+                    position: "absolute", top: -4, right: -4, minWidth: 14, height: 14, borderRadius: 7,
+                    background: "#8B6AAE", border: "2px solid white", color: "white",
+                    fontSize: 9, fontWeight: 700, lineHeight: "10px", textAlign: "center", padding: "0 2px",
+                  }}>
+                    {workerCounts[a.id]}
+                  </div>
+                )}
               </div>
               <div>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-main)" }}>{a.name}</div>
