@@ -27,7 +27,7 @@ import { PasswordInput } from "./components/shared/PasswordInput";
 import MDEditor from '@uiw/react-md-editor';
 import rehypeSanitize from "rehype-sanitize";
 import { Edit2, Calendar, HardDrive, Github, MessageCircle, Link, Cloud, Database, Globe, Play, Pause, Square, Plus, Settings, ChevronRight, ChevronDown, ChevronUp, Activity, Terminal, Shield, RefreshCw, Layers, Lock, AlertTriangle, CheckCircle2 } from "lucide-react";
-import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, pickNextAction, UserProfile, initializeMiniAppDurablePersistence } from "./store/worldStore";
+import { Agent, AgentData, Permission, ChatMessage, DiscoveredAgent, WorldState, ZONES, DEFAULT_PERMISSIONS, AGENT_TYPE_INFO, getDefaultPersonality, injectPrincipalContext, normalizePersonaRole, useWorldStore, effectiveAgentStatus, pickNextAction, UserProfile, initializeMiniAppDurablePersistence } from "./store/worldStore";
 import { LoadingScreen } from "./components/LoadingScreen";
 import { OnboardingWizard } from "./pages/OnboardingWizard";
 import { LockScreen } from "./components/LockScreen";
@@ -285,7 +285,7 @@ function AgentCharacter({ agent }: { agent: AgentData }) {
       <AntennaStalk base={[-0.05, 0.65, -0.02]} h={0.24} c={0.2} color={agent.accentColor} id={agent.id} />
       <AntennaStalk base={[0.05, 0.65, -0.02]} h={0.24} c={-0.2} color={agent.accentColor} id={agent.id} />
 
-      {agent.status === "thinking" && <ThinkBubbles color={agent.accentColor} />}
+      {effectiveAgentStatus(agent) === "thinking" && <ThinkBubbles color={agent.accentColor} />}
     </group>
   );
 }
@@ -2173,8 +2173,12 @@ export default function App() {
                 newStatus = "sleeping" as any;
                 newAction = "idle";
             } else if (agentEntry.lastActiveAgeMs < 60000) {
-                newStatus = "thinking" as any;
-                newAction = "processing task...";
+                // Recent gateway activity alone must never claim "thinking" — a
+                // run that just CRASHED is also "active < 60s ago", which made the
+                // header say Thinking… beside a FAILED thread (issue #56). Actual
+                // work is derived from thread runs in deriveAgentDisplayStatus.
+                newStatus = "active" as any;
+                newAction = "recently active";
             } else if (agentEntry.lastActiveAgeMs < 300000) {
                 newStatus = "active" as any;
                 newAction = "recently active";

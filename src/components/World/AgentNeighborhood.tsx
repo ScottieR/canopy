@@ -3,6 +3,7 @@ import React, { useMemo } from "react";
 import accessoriesData from "../../../shared/accessories.json";
 import habitatsData from "../../../shared/habitats.json";
 import * as THREE from "three";
+import { effectiveAgentStatus } from "../../store/worldStore";
 
 // Admin's HabitatPlacementScene paints decor points with the habitat scaled
 // `(2.2 / maxDim) * 2` for ergonomics. The runtime habitat (TerrariumBase) uses
@@ -40,7 +41,8 @@ class DecorRenderBoundary extends React.Component<
 }
 
 export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 0, 0], onClick, onPointerOver, onPointerOut, hideAgent, hideDecor }: { agent?: any, index?: number, navPoints?: THREE.Vector3[], position?: [number, number, number], onClick?: () => void, onPointerOver?: (e: any) => void, onPointerOut?: () => void, hideAgent?: boolean, hideDecor?: boolean }) {
-  const isWorking = agent?.status === "active" || agent?.status === "thinking";
+  const agentStatus = agent ? effectiveAgentStatus(agent) : undefined;
+  const isWorking = agentStatus === "active" || agentStatus === "thinking";
 
   // Decor items are saved by IdentityTab to `visual_identity.decor` (a dedicated
   // array), which is the canonical source. We also keep a backward-compat path
@@ -127,7 +129,7 @@ export function AgentNeighborhood({ agent, index = 0, navPoints, position = [0, 
           navPoints={filteredNavPoints}
           scale={0.25} 
           isWorking={isWorking} 
-          agentStatus={agent?.status}
+          agentStatus={agentStatus}
           baseColor={agent.color || "#D2D6CE"}
           robeColor={agent.visual_identity?.color || agent.color || agent.robeColor || "#A3C4BC"}
           accentColor={agent.visual_identity?.color || agent.accentColor || "#FFAB91"}
