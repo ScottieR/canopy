@@ -322,6 +322,43 @@ function EmbedPreview({ agentId, refName, title, height, messageId }: { agentId:
   );
 }
 
+// OpenClaw agents sometimes attach files with a `MEDIA: <path>` line, where the path is
+// inside the container (e.g. /home/node/.openclaw/workspace/<agent>/report.pdf). That path
+// is meaningless on the Mac, so render a card whose Save button asks the Rust core to map
+// it onto the agent's bind-mounted host workspace (containment-checked) and run the
+// standard export prompt.
+function MediaFileCard({ agentId, mediaPath }: { agentId: string; mediaPath: string }) {
+  const [status, setStatus] = useState<string | null>(null);
+  const trimmed = mediaPath.trim().replace(/^[`"']+|[`"']+$/g, "");
+  const name = trimmed.split(/[\\/]/).pop() || trimmed;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return (
+      <div style={{ margin: "8px 0", fontSize: 13 }}>
+        <a href={trimmed} target="_blank" rel="noopener noreferrer">{name}</a>
+      </div>
+    );
+  }
+  return (
+    <div style={{ margin: "8px 0", padding: "10px 12px", border: "1px solid var(--border-subtle)", borderRadius: 10, background: "var(--surface-card)", display: "flex", alignItems: "center", gap: 10 }}>
+      <span style={{ fontSize: 13, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={trimmed}>{name}</span>
+      {status && <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{status}</span>}
+      <button
+        onClick={async () => {
+          setStatus(null);
+          try {
+            await invoke("export_agent_workspace_file", { agentId, path: trimmed });
+          } catch (e) {
+            setStatus(`Unavailable: ${String(e)}`);
+          }
+        }}
+        style={{ padding: "6px 12px", background: "#218380", border: "none", borderRadius: 8, color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+      >
+        Save…
+      </button>
+    </div>
+  );
+}
+
 interface AttachmentThumbnailProps {
   agentId: string;
   attachment: { name: string; dataUrl: string };
@@ -2080,6 +2117,8 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                           while ((m = embedRegex.exec(chunkContent)) !== null) tokens.push({type: 'embed', match: m, index: m.index });
                           while ((m = workflowRegex.exec(chunkContent)) !== null) tokens.push({type: 'workflow', match: m, index: m.index });
                           while ((m = authorizeRegex.exec(chunkContent)) !== null) tokens.push({type: 'authorize', match: m, index: m.index });
+                          const mediaRegex = /^[ \t]*MEDIA:[ \t]*(\S[^\n]*?)[ \t]*$/gm;
+                          while ((m = mediaRegex.exec(chunkContent)) !== null) tokens.push({type: 'media', match: m, index: m.index });
                           
                           tokens.sort((a, b) => a.index - b.index);
                           
@@ -2119,6 +2158,8 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
                                   );
                               } else if (token.type === 'workflow') {
                                   elements.push(<WorkflowApprovalCard key={`wf-${elements.length}`} routineName={token.match[1].trim()} />);
+                              } else if (token.type === 'media') {
+                                  elements.push(<MediaFileCard key={`media-${elements.length}`} agentId={agent.id} mediaPath={token.match[1]} />);
                               } else if (token.type === 'authorize') {
                                   elements.push(<AuthorizeConnectionCard key={`auth-${elements.length}`} serviceName={token.match[1].trim()} />);
                               }

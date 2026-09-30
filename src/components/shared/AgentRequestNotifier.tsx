@@ -278,11 +278,19 @@ export function AgentRequestNotifier({
                         console.warn("agent_permission_requested handler error:", err);
                     }
                 });
+                // The bridge gives up after PERMISSION_REQUEST_TIMEOUT and tells the agent
+                // "not granted" — close the stale modal so a late click can't mislead.
+                const unlistenExpired = await listen<{ request_id?: string }>("agent_permission_request_expired", (event) => {
+                    const expiredId = event?.payload?.request_id;
+                    if (typeof expiredId !== "string") return;
+                    setPendingPermission(prev => (prev && prev.request_id === expiredId ? null : prev));
+                });
+                const unlistenBoth = () => { unlisten(); unlistenExpired(); };
 
                 if (isMounted) {
-                    unlistenFn = unlisten;
+                    unlistenFn = unlistenBoth;
                 } else {
-                    try { unlisten(); } catch (e) {}
+                    try { unlistenBoth(); } catch (e) {}
                 }
             } catch (e) {
                 console.warn("Permission listener setup failed", e);
