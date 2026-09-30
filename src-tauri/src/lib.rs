@@ -1214,6 +1214,7 @@ pub fn run() {
             // MCP Interceptor
             jit_server::approve_jit_request,
             jit_server::resolve_export_request,
+            jit_server::export_agent_workspace_file,
             jit_server::request_user_attention,
             jit_server::resolve_permission_request,
             // Activity Sniffer

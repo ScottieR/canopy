@@ -16,6 +16,7 @@ use std::sync::Mutex;
 use tauri::{Emitter, State};
 use tokio::io::AsyncWriteExt;
 
+pub(crate) mod agent_surface;
 pub mod workspace_files;
 pub use workspace_files::{
     copy_file_to_workspace, read_workspace_file, read_workspace_file_base64, upload_workspace_file,
@@ -62,6 +63,35 @@ pub fn get_available_models() -> Vec<crate::model_constants::ModelInfo> {
 /// Prevents concurrent / double-fired boot_sync_agents calls.
 /// React Strict Mode fires effects twice in dev; this guard ensures we only run once at a time.
 static BOOT_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Wall-clock budget for one agent turn. Real tasks (browsing, drafting a document,
+/// several tool calls) routinely exceed a few minutes, so this is deliberately generous.
+const AGENT_TURN_TIMEOUT_SECS: u64 = 15 * 60;
+
+fn agent_turn_process_pattern(agent_id: &str, session_id: &str) -> String {
+    format!(
+        "openclaw agent --agent {}.*--session-id {}",
+        agent_id, session_id
+    )
+}
+
+/// Kill the in-container `openclaw agent` process for one session. Dropping the host
+/// `docker exec` does not stop the process inside the container.
+async fn kill_agent_turn_in_container(container_name: &str, agent_id: &str, session_id: &str) {
+    let pattern = agent_turn_process_pattern(agent_id, session_id);
+    for signal in ["-TERM", "-KILL"] {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            get_docker_command()
+                .args(["exec", container_name, "pkill", signal, "-f", &pattern])
+                .output(),
+        )
+        .await;
+        if signal == "-TERM" {
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        }
+    }
+}
 
 pub fn get_docker_command() -> tokio::process::Command {
     if let Some(home) = dirs::home_dir() {
@@ -1945,42 +1975,28 @@ pub async fn update_agent_personality(
     Ok(())
 }
 
+/// The agent's real OpenClaw tool surface — the one input shared by `sync_agent_skills`
+/// (openclaw.json) and the PERMISSIONS.md / APP_CAPABILITIES.md renderers.
+pub(crate) fn agent_tool_surface(agent: &crate::models::Agent) -> agent_surface::AgentToolSurface {
+    let workspace_skills = canopy_data_root()
+        .ok()
+        .and_then(|root| permissions_workspace_roots(&root, agent).into_iter().next())
+        .map(|ws| agent_surface::discover_workspace_skill_names(&ws))
+        .unwrap_or_default();
+    agent_surface::AgentToolSurface::for_agent(agent, &workspace_skills)
+}
+
 // Helper to sync an agent's combined capabilities and integrations to OpenClaw
 
 pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::models::Agent) {
     use tauri::Manager;
     let db = app_handle.state::<crate::db::Database>();
     let container_name = get_agent_container_name(&db, &agent.id);
-    // Build the canonical skills list from capabilities + integrations.
-    let mut skills: Vec<String> = Vec::new();
     let caps = &agent.capabilities;
-    if caps.browser {
-        skills.push("browser".to_string());
-    }
-    if caps.proxy {
-        skills.push("proxy".to_string());
-    }
-    if caps.vision {
-        skills.push("vision".to_string());
-    }
-    if caps.canvas {
-        skills.push("canvas".to_string());
-    }
-    if caps.coding {
-        skills.push("coding".to_string());
-    }
-    if caps.gog {
-        skills.push("gog".to_string());
-    }
-    if caps.summarize {
-        skills.push("summarize".to_string());
-    }
-    if caps.genui {
-        skills.push("genui".to_string());
-    }
-    if caps.memory_write {
-        skills.push("memory-core".to_string());
-    }
+    // The skills allowlist AND the tool deny-list both come from `AgentToolSurface` —
+    // the same struct PERMISSIONS.md / APP_CAPABILITIES.md render from — so the docs
+    // can never claim a tool the config does not give the agent (or vice versa).
+    let surface = agent_tool_surface(agent);
 
     // An empty list is written verbatim and OVERRIDES OpenClaw's global
     // `["gog","summarize"]` default, so the agent ends up with no tools at all — no
@@ -1989,7 +2005,7 @@ pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::mode
     // failed to load (see the struct-level serde default on AgentCapabilities). Log it
     // loudly so it shows up in the diagnostics bundle instead of being silently shipped
     // into openclaw.json.
-    if skills.is_empty() {
+    if surface.skills.is_empty() {
         tracing::warn!(
             "sync_agent_skills: agent {} resolved to ZERO skills — writing an empty \
              skills array will strip search/browser/summarize. Check its capabilities_json.",
@@ -1997,23 +2013,7 @@ pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::mode
         );
     }
 
-    // Map Canopy integration IDs to OpenClaw plugin/channel names and append.
-    for i in &agent.integrations {
-        if i.starts_with("web_") {
-            continue;
-        }
-        let mapped = match i.as_str() {
-            "calendar" | "cal" | "calendar_read" | "calendar_write" => "googleCalendar".to_string(),
-            "email" => "gmail".to_string(),
-            "drive" => "googleDrive".to_string(),
-            other => other.to_string(),
-        };
-        if !skills.contains(&mapped) {
-            skills.push(mapped);
-        }
-    }
-
-    // Apply skills (and optionally PLAYWRIGHT_CDP_ENDPOINT) via a single `node -e`
+    // Apply skills + tools.deny (and optionally PLAYWRIGHT_CDP_ENDPOINT) via a single `node -e`
     // JSON patch. Previously this used `openclaw config get agents.list` plus up to two
     // `openclaw config set` calls — each set SIGTERMs the gateway. With multiple agents
     // and frequent integration toggles, that cascade would routinely tip the container
@@ -2025,7 +2025,7 @@ pub async fn sync_agent_skills(app_handle: tauri::AppHandle, agent: &crate::mode
     // is a separate spawned task — once the proxy port is known, it patches the same
     // openclaw.json with one more node -e call.
     let agent_id = agent.id.clone();
-    let skills_json = serde_json::to_string(&skills).unwrap_or_else(|_| "[]".to_string());
+    let surface_patch_js = surface.node_patch_js();
 
     let ask_val = if caps.autonomous { "off" } else { "always" };
     let scheduled_bool = if caps.scheduled { "true" } else { "false" };
@@ -2038,7 +2038,8 @@ c.agents=c.agents||{{}};
 c.agents.list=c.agents.list||[];
 const i=c.agents.list.findIndex(a=>a&&a.id==='{id}');
 if(i>=0){{
-  c.agents.list[i].skills={skills};
+  const a=c.agents.list[i];
+  {surface_patch}
   fs.writeFileSync(p,JSON.stringify(c,null,2));
   console.log('capabilities patched for {id}');
 }} else {{
@@ -2046,7 +2047,7 @@ if(i>=0){{
 }}
 "#,
         id = agent_id,
-        skills = skills_json,
+        surface_patch = surface_patch_js,
     );
 
     let cmd_str = format!("[node -e patch] capabilities for {}", agent_id);
@@ -2090,6 +2091,12 @@ if(i>=0){{
         ),
         Err(_) => tracing::warn!("sync_agent_skills: patch timed out for {}", agent_id),
     }
+
+    // Re-render the agent-facing capability docs from the same surface every time the
+    // config is patched. Some callers (e.g. JIT `/request_permission` grants) only call
+    // this function, and used to leave PERMISSIONS.md describing the pre-grant state.
+    write_permissions_md(agent);
+    write_app_managed_instruction_files(agent, &db);
 
     // Browser capability: launch the JIT proxy and tell OpenClaw the resulting
     // websocket endpoint as a per-agent env var.
@@ -3200,7 +3207,7 @@ pub async fn send_message_internal_with_context(
         });
     }
 
-    // Step 4: Send via native OpenClaw CLI — up to 3 attempts with 5s backoff on timeout.
+    // Step 4: Send via native OpenClaw CLI (single attempt, bounded by AGENT_TURN_TIMEOUT_SECS).
     let proxy_port = crate::browser_manager::jit_proxy_port_for(agent_id);
     let ws_endpoint = crate::browser_manager::browser_bridge_url("ws", proxy_port, agent_id);
     let cdp_env = format!("PLAYWRIGHT_CDP_ENDPOINT={}", ws_endpoint);
@@ -3208,40 +3215,27 @@ pub async fn send_message_internal_with_context(
         "<canopy_runtime_context>\n{}\n</canopy_runtime_context>\n\n<user_message>\n{}\n</user_message>",
         merged_runtime_context, message
     );
-    // Timeouts are usually transient (Node event loop momentarily busy); a single retry
-    // resolves the majority of "LLM request timeout" failures without user intervention.
-    let max_attempts: u32 = 3;
+    // A turn that outlives the budget is usually still doing real work inside the
+    // container, so it is never retried: a retry would replay the same message and
+    // duplicate whatever side effects the first run already had. On timeout the
+    // in-container run is killed so it cannot keep acting after we report failure.
     let mut attempt_output: Option<std::process::Output> = None;
     let mut last_timeout_err = String::new();
 
-    for attempt in 0..max_attempts {
+    {
         if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
             db,
             agent_id,
             &conv_id,
             &run_id,
-            "Cancellation was requested before the next execution attempt started.",
+            "Cancellation was requested before the execution attempt started.",
         ) {
             return Err(cancelled_error);
         }
-        if attempt > 0 {
-            tracing::warn!(
-                "send_message_internal: agent={} timeout on attempt {}, retrying in 5s",
-                agent_id,
-                attempt
-            );
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if let Some(cancelled_error) = finalize_thread_cancellation_if_requested(
-                db,
-                agent_id,
-                &conv_id,
-                &run_id,
-                "Cancellation was requested while waiting to retry the thread.",
-            ) {
-                return Err(cancelled_error);
-            }
-        }
 
+        // OpenClaw's own limit (default 600s) sits just inside ours so it ends the turn
+        // cleanly; the host timeout below is only the backstop.
+        let openclaw_timeout = (AGENT_TURN_TIMEOUT_SECS - 30).to_string();
         let docker_args = vec![
             "exec",
             "-u",
@@ -3260,15 +3254,20 @@ pub async fn send_message_internal_with_context(
             "--json",
             "--session-id",
             &conv_id,
+            "--timeout",
+            &openclaw_timeout,
         ];
 
         let cmd_future = get_docker_command().args(docker_args).output();
 
-        // 180-second timeout per attempt — agents can take 20-90s under memory pressure.
-        match tokio::time::timeout(std::time::Duration::from_secs(180), cmd_future).await {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(AGENT_TURN_TIMEOUT_SECS),
+            cmd_future,
+        )
+        .await
+        {
             Ok(Ok(out)) => {
                 attempt_output = Some(out);
-                break;
             }
             Ok(Err(e)) => {
                 // I/O error spawning docker — not a retry-able timeout, bail immediately.
@@ -3300,13 +3299,18 @@ pub async fn send_message_internal_with_context(
                 return Err(format!("Failed to send message: {}", e));
             }
             Err(_) => {
-                last_timeout_err = format!(
-                    "The agent is taking a long time to respond (attempt {}/{}). \
-                     The container may be under load — please wait 30 seconds and try again.",
-                    attempt + 1,
-                    max_attempts
+                tracing::warn!(
+                    "send_message_internal: agent={} session={} exceeded {}s, killing in-container run",
+                    agent_id,
+                    conv_id,
+                    AGENT_TURN_TIMEOUT_SECS
                 );
-                // Loop to retry unless this was the last attempt.
+                kill_agent_turn_in_container(&container_name, agent_id, &conv_id).await;
+                last_timeout_err = format!(
+                    "The agent is taking a long time to respond: it was still working after {} minutes, \
+                     so the run was stopped. Try breaking the task into smaller steps.",
+                    AGENT_TURN_TIMEOUT_SECS / 60
+                );
             }
         }
     }
@@ -3923,10 +3927,7 @@ pub async fn cancel_thread_run(
     mark_thread_cancellation_requested(&agent_id, &session_id);
 
     let container_name = get_agent_container_name(&db, &agent_id);
-    let pattern = format!(
-        "openclaw agent --agent {}.*--session-id {}",
-        agent_id, session_id
-    );
+    let pattern = agent_turn_process_pattern(&agent_id, &session_id);
 
     let term_output = get_docker_command()
         .args(["exec", &container_name, "pkill", "-TERM", "-f", &pattern])
@@ -5541,10 +5542,9 @@ fn generate_soul_md(personality: &AgentPersonality) -> String {
         soul = soul.replace("{{description}}", &personality.communication_style);
     }
 
-    const CANOPY_PROTOCOLS: &str = include_str!("../CANOPY_PROTOCOLS.md");
     if !soul.contains("CANOPY_PROTOCOLS") {
         soul.push_str("\n\n");
-        soul.push_str(CANOPY_PROTOCOLS);
+        soul.push_str(&canopy_protocols_md());
         soul.push_str("\n\n");
     }
 
@@ -5577,28 +5577,31 @@ fn capability_status(label: &str, enabled: bool, guidance: &str) -> String {
     format!("- **{}: {}** — {}", label, status, guidance)
 }
 
+/// CANOPY_PROTOCOLS.md with the `{{CANOPY_JIT_PORT}}` placeholder resolved to this
+/// build flavor's JIT bridge port (prod 18802, dev 18796), so curl examples are exact.
+fn canopy_protocols_md() -> String {
+    render_canopy_protocols(crate::flavor::flavor().jit_port)
+}
+
+fn render_canopy_protocols(jit_port: u16) -> String {
+    include_str!("../CANOPY_PROTOCOLS.md").replace("{{CANOPY_JIT_PORT}}", &jit_port.to_string())
+}
+
 fn build_app_protocols_md() -> String {
     format!(
         "# APP_PROTOCOLS.md\n\n\
 _This file is app-managed and not user-editable. It is authoritative for platform rules, secure escalation, and runtime behavior._\n\n\
 {}\n",
-        include_str!("../CANOPY_PROTOCOLS.md").trim()
+        canopy_protocols_md().trim()
     )
 }
 
 fn build_app_capabilities_md(agent: &crate::models::Agent) -> String {
-    let caps = &agent.capabilities;
-    let integrations = if agent.integrations.is_empty() {
-        "(none connected)".to_string()
-    } else {
-        agent
-            .integrations
-            .iter()
-            .map(|i| format!("- `{}`", i))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let surface = agent_tool_surface(agent);
+    render_app_capabilities_md(agent, &surface, &mounted_folders_section_md(agent))
+}
 
+fn mounted_folders_section_md(agent: &crate::models::Agent) -> String {
     let mut mounted_folders_section = String::new();
     if let Ok(grants) = crate::workspace_manager::get_folder_grants_for_agent(&agent.id) {
         let saved_grant_count = grants.len();
@@ -5636,10 +5639,65 @@ fn build_app_capabilities_md(agent: &crate::models::Agent) -> String {
             mounted_folders_section.push_str("Custom folder grants are saved, but File System Read is disabled. Do not attempt to access them unless the user enables that capability.\n\n");
         }
     }
+    mounted_folders_section
+}
+
+/// The agent's workspace path inside its container. Matches the `workspace` Canopy
+/// registers in `agents.list[i]`.
+fn container_workspace_path(agent_id: &str) -> String {
+    format!("/home/node/.openclaw/workspace/{}", agent_id)
+}
+
+/// Shared "where your files live / how to hand one over" section. This is the ONE
+/// place in the generated docs that talks about file export; the actual export call
+/// is documented only in APP_PROTOCOLS.md ("Handing a file to the user") so that API
+/// details live in a single spot.
+fn workspace_and_export_section_md(agent: &crate::models::Agent) -> String {
+    format!(
+        "## Your Workspace & Handing Files to the User\n\
+- Your workspace is `{ws}` inside your container. It is **bind-mounted from the Canopy host**, so every file you write there is immediately on the user's Mac and reachable by the Canopy app — nothing needs to be uploaded or base64-encoded to \"get it out\" of the container.\n\
+- Use the `read` / `write` / `edit` tools (or `exec` with `ls`, `cat`, `find`) for files in your workspace, using workspace-relative paths.\n\
+- A container path such as `{ws}/report.pdf` means nothing to the user. To deliver a file, write it into your workspace and follow **File Export** in `APP_PROTOCOLS.md` (\"Handing a file to the user\"). That section is the single source of truth for export instructions.\n\
+- Do NOT use `dir_list`, `dir_fetch`, `file_fetch` or `file_write`: those are node-pairing tools, your container has no paired node, and they are removed from your tool list.\n\n",
+        ws = container_workspace_path(&agent.id),
+    )
+}
+
+fn render_app_capabilities_md(
+    agent: &crate::models::Agent,
+    surface: &agent_surface::AgentToolSurface,
+    mounted_folders_section: &str,
+) -> String {
+    let caps = &agent.capabilities;
+    let integrations = if agent.integrations.is_empty() {
+        "(none connected)".to_string()
+    } else {
+        agent
+            .integrations
+            .iter()
+            .map(|i| format!("- {}", integration_summary_line(i, surface)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let shell_guidance = if caps.coding {
+        "`exec` is in your tool list. Use it for structured transforms, analysis, validation, local automation, and for `curl` calls to the Canopy JIT bridge."
+    } else {
+        "`exec` is still in your tool list because every Canopy JIT bridge call (requesting permissions, exporting files, /web/*) is a `curl` through it — but the user has NOT granted Code Execution. Use `exec` only for JIT bridge `curl` calls and simple workspace inspection (`ls`, `cat`, `find`). Do not write or run scripts/programs (python, node, package installs) until you request and receive the `coding` permission."
+    };
+    let code_line = format!(
+        "- **Code execution: {}** — {}",
+        if caps.coding {
+            "ENABLED"
+        } else {
+            "NOT GRANTED (advisory — `exec` remains available)"
+        },
+        shell_guidance
+    );
 
     format!(
         "# APP_CAPABILITIES.md\n\n\
-_This file is app-managed and not user-editable. It describes what {name} can actually use right now._\n\n\
+_This file is app-managed and not user-editable. It describes what {name} can actually use right now. It is generated from the same data that configures your tool list, so ENABLED/DISABLED below matches the tools you actually have._\n\n\
 ## Identity Snapshot\n\
 - **Agent name:** {name}\n\
 - **Role:** {role}\n\
@@ -5647,7 +5705,7 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
 ## Capability Guidance\n\
 ### Web & Discovery\n\
 {browser}\n\
-{gog}\n\
+{builtin_web}\n\
 {web_search}\n\
 {web_browse}\n\
 {web_auth}\n\
@@ -5658,6 +5716,7 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
 {genui}\n\n\
 ### Execution & Files\n\
 {coding}\n\
+{workspace_files}\n\
 {file_read}\n\
 {file_write}\n\
 {memory_write}\n\
@@ -5668,8 +5727,10 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
 {int_network}\n\
 {payments}\n\
 {spend_auto}\n\n\
+{workspace_section}\
 ## Connected Integrations\n\
 {integrations}\n\n\
+See `PERMISSIONS.md` for how to use each one. An integration without a tool is not reachable by you — say so instead of guessing.\n\n\
 {mounted_folders}\
 ## Decision Rule\n\
 - Use the smallest enabled capability that gets the job done.\n\
@@ -5677,19 +5738,20 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         name = agent.personality.name,
         role = agent.role,
         isolation = if agent.isolated { "Dedicated isolated container" } else { "Shared gateway container" },
-        browser = capability_status("Browser", caps.browser, "Use the browser for live websites, authenticated flows, and visual verification. Always use the managed default profile (omit `profile` or pass \"openclaw\") — it already carries the user's saved logins. Never pass `profile: \"user\"`; that mode looks for a Chrome inside your container and always fails."),
-        gog = capability_status("Web search (gog)", caps.gog, "Use web search when recency, market conditions, public facts, or current availability matter. Do NOT use this to read emails, access Gmail, or interact with other integrations."),
-        web_search = capability_status("Web search (structured, JIT bridge)", caps.web_search, "POST to /web/search or /web/research over the JIT bridge for structured results with URLs and snippets — see PERMISSIONS.md for the exact call shape. Prefer this over `gog` when you need URLs to fetch afterward or a multi-source research packet."),
+        browser = capability_status("Browser (`browser` tool)", surface.browser_available(), "Use the browser for live websites, authenticated flows, and visual verification. Always use the managed default profile (omit `profile` or pass \"openclaw\") — it already carries the user's saved logins. Never pass `profile: \"user\"`; that mode looks for a Chrome inside your container and always fails."),
+        builtin_web = capability_status("Web search & fetch (`web_search` / `web_fetch` tools)", surface.builtin_web_available(), "Built-in OpenClaw web tools for public facts, news, and reading a known URL. `web_search` needs a configured search provider — if it errors, fall back to the browser or the JIT bridge web tools below. Never use these for email, Drive, or other integration data. (`gog` is OpenClaw's Google Workspace CLI skill, not web search, and it is not installed in your container.)"),
+        web_search = capability_status("Web search (structured, JIT bridge)", caps.web_search, "POST to /web/search or /web/research over the JIT bridge for structured results with URLs and snippets — see PERMISSIONS.md for the exact call shape. Prefer this when you need URLs to fetch afterward or a multi-source research packet."),
         web_browse = capability_status("Web fetch (JIT bridge)", caps.web_browse, "POST to /web/fetch over the JIT bridge to read a specific URL's full text (with automatic JS-rendering escalation), when you already have the link rather than needing to search for it."),
         web_auth = capability_status("Authenticated fetch (Tier 4)", caps.web_auth, "Request per-domain access via /request_permission (permission_id \"webauth:<domain>\") before POSTing to /web/fetch_authenticated. Never assume access — always request first, and never ask the user for their password directly."),
         web_sandbox_browser = capability_status("Sandboxed agent browser (Tier 5)", caps.web_sandbox_browser, "Implemented as Tauri commands the Canopy app can call, but not yet exposed to you over the JIT bridge — you cannot invoke it yourself right now."),
         browser_control = capability_status("Full Chrome control (Tier 6)", caps.browser_control, "Implemented as Tauri commands the Canopy app can call (each gated behind a per-action user confirmation sheet), but not yet exposed to you over the JIT bridge — you cannot invoke it yourself right now."),
         vision = capability_status("Vision", caps.vision, "Use vision for screenshots, images, and visual UI understanding."),
-        canvas = capability_status("Canvas", caps.canvas, "Use canvas for visual layout, markup, and artifact presentation."),
+        canvas = capability_status("Canvas (`canvas` tool)", surface.canvas_available(), "Use canvas for visual layout, markup, and artifact presentation."),
         genui = capability_status("GenUI", caps.genui, "Use GenUI when a mini-app, dashboard, approval card, or interactive artifact beats prose."),
-        coding = capability_status("Code execution", caps.coding, "Use coding for structured transforms, analysis, validation, and local automation."),
-        file_read = capability_status("File read", caps.file_read, "Read files before asking the user for information that is already available locally."),
-        file_write = capability_status("File write", caps.file_write, "Write files only when an artifact, script, or durable note genuinely helps the user."),
+        coding = code_line,
+        workspace_files = capability_status("Workspace files (`read` / `write` / `edit`)", surface.workspace_files_available(), "Always available for files inside your own workspace (see \"Your Workspace\" below). Read files before asking the user for information that is already available locally; write files when an artifact, script, or durable note genuinely helps the user."),
+        file_read = capability_status("Host folder read (File System Read)", caps.file_read, "Governs access to host folders the user granted outside your workspace — see the host folder section below, if any. It does not affect your own workspace."),
+        file_write = capability_status("Host folder write (File System Write)", caps.file_write, "Governs writing into granted host folders (read & write mounts, isolated agents only). It does not affect your own workspace."),
         memory_write = capability_status("Memory write", caps.memory_write, "Capture durable learnings, not transcript summaries or duplicate noise."),
         scheduled = capability_status("Scheduled tasks", caps.scheduled, "Propose recurring checks when a repeated monitor would create leverage."),
         autonomous = capability_status("Autonomous execution", caps.autonomous, "Execute routine internal loops without asking again; escalate for risky or external actions."),
@@ -5697,9 +5759,36 @@ _This file is app-managed and not user-editable. It describes what {name} can ac
         int_network = capability_status("Internal network", caps.int_network, "Use internal coordination surfaces deliberately; do not assume other agents share your memory."),
         payments = capability_status("Payments", caps.payments, "Never spend or request money casually; follow approval thresholds and user intent strictly."),
         spend_auto = capability_status("Auto-approve spend", caps.spend_auto, "Auto-approval is limited and should still be treated as high-trust behavior."),
+        workspace_section = workspace_and_export_section_md(agent),
         integrations = integrations,
         mounted_folders = mounted_folders_section,
     )
+}
+
+/// One-line, truthful description of how a connected integration is reachable.
+fn integration_summary_line(id: &str, surface: &agent_surface::AgentToolSurface) -> String {
+    use agent_surface::IntegrationReach;
+    match agent_surface::integration_reach(id) {
+        IntegrationReach::Channel { label, .. } => format!(
+            "`{id}` — {label} channel: messages from it are routed to you and your replies go back through it."
+        ),
+        IntegrationReach::CliSkill { label, skill, bin } => format!(
+            "`{id}` — {label} via the `{skill}` skill, which drives the `{bin}` CLI through `exec`. If `{bin}` is not installed in your container, say so instead of guessing."
+        ),
+        IntegrationReach::WebLogin { domain } => {
+            if surface.browser_available() {
+                format!("`{id}` — saved login for `{domain}`: open it in your managed browser; WebVault signs you in.")
+            } else {
+                format!("`{id}` — saved login for `{domain}`, but your browser is disabled, so you cannot use it right now.")
+            }
+        }
+        IntegrationReach::TokenFileRest { label } => format!(
+            "`{id}` — {label} REST API with the token Canopy installs in `.canopy/` (via `exec` + curl; see PERMISSIONS.md)."
+        ),
+        IntegrationReach::NoAgentTool { label, .. } => format!(
+            "`{id}` — {label}: connected in Canopy, but **no tool for it exists in your tool list**. See its note in PERMISSIONS.md for what does work."
+        ),
+    }
 }
 
 fn role_specific_wow_examples(role: &str) -> &'static str {
@@ -10164,34 +10253,25 @@ fn install_jit_capability_file(
     install_agent_private_file(workspace_root, "jit-bridge-token", &capability)
 }
 
+/// Host-side facts PERMISSIONS.md needs besides the agent row itself. Gathered by
+/// `write_permissions_md` (keychain, allowlist file, token installs) so that
+/// `render_permissions_md` stays pure and unit-testable.
+pub(crate) struct PermissionsDocInputs {
+    /// Host port of the JIT bridge — differs per flavor (prod 18802, dev 18796).
+    pub jit_port: u16,
+    pub allowed_domains: Vec<String>,
+    pub saved_login_domains: Vec<String>,
+    pub provider_keys: Vec<&'static str>,
+    /// True only when `.canopy/google-photos-token` was actually installed.
+    pub google_photos_token_installed: bool,
+}
+
 pub fn write_permissions_md(agent: &crate::models::Agent) {
     let Ok(canopy_root) = canopy_data_root() else {
         return;
     };
-    // Captured by the `{jit_port}` placeholders in the JIT-bridge curl examples
-    // below — the host port differs per flavor (prod 18802, dev 18796).
     let jit_port = crate::flavor::flavor().jit_port;
     let workspace_roots = permissions_workspace_roots(&canopy_root, agent);
-
-    // Capability skills the agent currently has.
-    let caps = &agent.capabilities;
-    let skill_lines: Vec<&str> = [
-        ("browser", caps.browser),
-        ("proxy", caps.proxy),
-        ("vision", caps.vision),
-        ("canvas", caps.canvas),
-        ("coding", caps.coding),
-        ("gog", caps.gog),
-        ("summarize", caps.summarize),
-        ("genui", caps.genui),
-    ]
-    .iter()
-    .filter(|(_, on)| *on)
-    .map(|(n, _)| *n)
-    .collect();
-
-    // Integrations (channel/connector access).
-    let integrations: Vec<&str> = agent.integrations.iter().map(|s| s.as_str()).collect();
 
     // Web allowlist — read directly from the per-agent file (separate storage).
     let allowed_domains: Vec<String> = crate::flavor::canopy_data_dir()
@@ -10231,7 +10311,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
 
     // Provider API keys available to this agent (per-agent override OR global fallback).
     let creds = get_creds_for_agent(&agent.id);
-    let mut provider_keys: Vec<&str> = creds
+    let mut provider_keys: Vec<&'static str> = creds
         .keys()
         .filter_map(|k| match k.as_str() {
             "ANTHROPIC_API_KEY" => Some("anthropic"),
@@ -10242,6 +10322,232 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         })
         .collect();
     provider_keys.sort();
+
+    let google_photos_token_installed = agent.integrations.iter().any(|i| i == "google_photos")
+        && crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id))
+            .map(|token| {
+                let mut installed = true;
+                for workspace_root in &workspace_roots {
+                    if let Err(error) =
+                        install_agent_private_file(workspace_root, "google-photos-token", token.trim())
+                    {
+                        installed = false;
+                        tracing::error!(
+                            "write_permissions_md: could not install Google Photos capability for {}: {}",
+                            agent.id,
+                            error
+                        );
+                    }
+                }
+                installed
+            })
+            .unwrap_or(false);
+
+    let inputs = PermissionsDocInputs {
+        jit_port,
+        allowed_domains,
+        saved_login_domains,
+        provider_keys,
+        google_photos_token_installed,
+    };
+    let surface = agent_tool_surface(agent);
+    let content = render_permissions_md(agent, &surface, &inputs);
+
+    for workspace_root in workspace_roots {
+        let _ = std::fs::create_dir_all(&workspace_root);
+        if let Err(error) = install_jit_capability_file(&workspace_root, &agent.id) {
+            tracing::error!(
+                "write_permissions_md: could not install JIT bridge capability for {}: {}",
+                agent.id,
+                error
+            );
+        }
+        let _ = std::fs::write(workspace_root.join("PERMISSIONS.md"), &content);
+        remove_stale_bootstrap_file(&workspace_root);
+    }
+    tracing::debug!(
+        "write_permissions_md: wrote PERMISSIONS.md for agent {}",
+        agent.id
+    );
+}
+
+/// "Your tool surface" section of PERMISSIONS.md — rendered from the exact deny-list
+/// written into `agents.list[i].tools.deny`.
+fn render_tool_surface_md(
+    agent: &crate::models::Agent,
+    surface: &agent_surface::AgentToolSurface,
+) -> String {
+    let on_off = |on: bool| {
+        if on {
+            "available"
+        } else {
+            "NOT available (removed from your tool list)"
+        }
+    };
+    let mut out = String::new();
+    out.push_str(&format!(
+        "  - Workspace files — `read`, `write`, `edit`, `apply_patch`: {}. Your workspace \
+         `{}` is bind-mounted from the Canopy host, so files you write there are \
+         immediately reachable by the app (see APP_CAPABILITIES.md → \"Your Workspace & \
+         Handing Files to the User\").\n",
+        on_off(surface.workspace_files_available()),
+        container_workspace_path(&agent.id),
+    ));
+    out.push_str(&format!(
+        "  - Shell — `exec`, `process`: {}.{}\n",
+        on_off(surface.shell_available()),
+        if agent.capabilities.coding {
+            ""
+        } else {
+            " Code Execution is NOT granted: use `exec` only for JIT bridge `curl` calls and \
+             simple inspection (`ls`, `cat`), not for running scripts, until `coding` is granted."
+        }
+    ));
+    out.push_str(&format!(
+        "  - Browser — `browser`: {}.\n",
+        on_off(surface.browser_available())
+    ));
+    out.push_str(&format!(
+        "  - Built-in web — `web_search`, `web_fetch`: {}.\n",
+        on_off(surface.builtin_web_available())
+    ));
+    out.push_str(&format!(
+        "  - Canvas — `canvas`: {}.\n",
+        on_off(surface.canvas_available())
+    ));
+    out.push_str(
+        "  - `dir_list`, `dir_fetch`, `file_fetch`, `file_write`: NOT available. They only work \
+         on a paired node and your container has none (they fail with \"no paired nodes \
+         available\"). List files with `exec ls` and read them with `read`.\n",
+    );
+    out.push_str(
+        "  - Skills: OpenClaw lists the skills you can load in your system prompt. Only those \
+         exist — a capability or integration name is not a skill unless it appears there.",
+    );
+    out
+}
+
+/// Per-integration "how to actually use it" guidance. Never names a tool that is not
+/// in the agent's surface; for integrations with no tool it says so and gives the real
+/// fallback.
+fn integration_instructions_md(
+    agent: &crate::models::Agent,
+    surface: &agent_surface::AgentToolSurface,
+    inputs: &PermissionsDocInputs,
+) -> String {
+    use agent_surface::IntegrationReach;
+    let integrations: Vec<&str> = agent.integrations.iter().map(|s| s.as_str()).collect();
+    let mut out = String::new();
+
+    let has_drive = integrations.iter().any(|name| {
+        matches!(
+            *name,
+            "drive" | "drive_read" | "drive_write" | "drive_granular"
+        )
+    });
+    if has_drive {
+        let mut fallback = Vec::new();
+        if agent.capabilities.web_auth {
+            fallback.push(
+                "request `webauth:docs.google.com` (or `webauth:drive.google.com`) via \
+                 `/request_permission`, then read the item with `/web/fetch_authenticated` — \
+                 for Docs/Sheets use the `/export?format=txt` or `/export?format=csv` URL",
+            );
+        }
+        if surface.browser_available() {
+            fallback.push(
+                "open the link in your managed browser; if Google shows a sign-in or \
+                 \"browser may not be secure\" wall, use `/request_attention` so the user can \
+                 sign in through Canopy's trusted-login window, then continue",
+            );
+        }
+        let fallback = if fallback.is_empty() {
+            "You currently have no working path to Drive content: tell the user plainly and \
+             ask them to share or paste the specific content you need."
+                .to_string()
+        } else {
+            format!(
+                "What does work, in order: {}. Only if those fail, tell the user exactly what \
+                 you could not reach and ask them to share or paste it.",
+                fallback.join("; ")
+            )
+        };
+        out.push_str(&format!(
+            "**Google Drive / Docs / Sheets**: Canopy holds your Drive OAuth grant on the host, \
+             but there is **no Google Drive tool in your tool list** — do not claim to have one \
+             or to have used it. Do not treat an anonymous fetch that hits a Google login wall as \
+             proof the file is inaccessible. {}\n\n",
+            fallback
+        ));
+        if integrations.contains(&"drive_granular") {
+            out.push_str(
+                "**Google Drive scope**: This agent is on granular Drive access. Only the \
+                 specific Google files or folders the user approved are in scope; do not try to \
+                 reach anything outside that grant.\n\n",
+            );
+        }
+    }
+    if integrations.contains(&"google_photos") {
+        if inputs.google_photos_token_installed && surface.shell_available() {
+            out.push_str(
+                "**Google Photos**: You have read-only API access to the user's Google Photos. \n\
+                DO NOT try to use the browser to log in to Google Photos. \n\
+                Instead, use the Google Photos REST API (https://photoslibrary.googleapis.com/v1/) directly with `exec` (curl, Python, or Node). Read the OAuth token at execution time from `.canopy/google-photos-token`; never print it or include it in a message. For curl, use `Authorization: Bearer $(cat .canopy/google-photos-token)`. The token is short-lived: on HTTP 401, tell the user the Google Photos connection needs to be refreshed in Canopy.\n\n",
+            );
+        } else {
+            out.push_str(
+                "**Google Photos**: Connected in Canopy, but no access token is installed in \
+                 your workspace right now, so you cannot reach it. Ask the user to reconnect \
+                 Google Photos in Canopy.\n\n",
+            );
+        }
+    }
+    for id in &integrations {
+        if let IntegrationReach::NoAgentTool { label, reason } =
+            agent_surface::integration_reach(id)
+        {
+            if matches!(
+                *id,
+                "drive" | "drive_read" | "drive_write" | "drive_granular"
+            ) {
+                continue; // covered above with a concrete fallback
+            }
+            let extra = match *id {
+                "imessage" => {
+                    " Do not use the browser or bluebubbles, and do not try to enable \
+                               `channels.imessage` in the OpenClaw config. If the user wants \
+                               something sent over iMessage, draft the text and ask them to \
+                               send it."
+                }
+                _ => {
+                    " If the user needs something from it, tell them it is not reachable from \
+                      your container instead of guessing or improvising a workaround."
+                }
+            };
+            out.push_str(&format!(
+                "**{label}** (`{id}`): connected in Canopy, but {reason}. There is **no {label} \
+                 tool in your tool list** — never claim to have read or sent anything through \
+                 it.{extra}\n\n"
+            ));
+        }
+    }
+    out
+}
+
+/// Render PERMISSIONS.md. Pure: every claim about a tool comes from `surface`, the same
+/// struct `sync_agent_skills` writes into openclaw.json.
+pub(crate) fn render_permissions_md(
+    agent: &crate::models::Agent,
+    surface: &agent_surface::AgentToolSurface,
+    inputs: &PermissionsDocInputs,
+) -> String {
+    // Captured by the `{jit_port}` placeholders in the JIT-bridge curl examples.
+    let jit_port = inputs.jit_port;
+    let caps = &agent.capabilities;
+    let integrations: Vec<&str> = agent.integrations.iter().map(|s| s.as_str()).collect();
+    let allowed_domains = &inputs.allowed_domains;
+    let saved_login_domains = &inputs.saved_login_domains;
+    let provider_keys = &inputs.provider_keys;
 
     let isolation_note = if agent.isolated {
         "Yes — runs in a dedicated container; cannot reach other agents' workspaces or sessions."
@@ -10275,22 +10581,14 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
             .join("\n")
     };
 
-    let skills_block = if skill_lines.is_empty() {
-        "(none)".to_string()
-    } else {
-        skill_lines
-            .iter()
-            .map(|s| format!("  - `{}`", s))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let tool_surface_block = render_tool_surface_md(agent, surface);
 
     let integrations_block = if integrations.is_empty() {
         "(none)".to_string()
     } else {
         integrations
             .iter()
-            .map(|s| format!("  - `{}`", s))
+            .map(|s| format!("  - {}", integration_summary_line(s, surface)))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -10342,13 +10640,18 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
     // container, these are Canopy's own reqwest+scraper implementation in web_tools.rs.
     let agent_id_str = agent.id.as_str();
     let web_tools_block = if !caps.web_search && !caps.web_browse {
-        "Disabled. If `gog` (web search) or `browser` above are also disabled, you have no \
-         web access at all right now."
-            .to_string()
+        match (surface.builtin_web_available(), surface.browser_available()) {
+            (false, false) => "Disabled. Your built-in `web_search`/`web_fetch` tools and your \
+                 `browser` are also disabled, so you have no web access at all right now."
+                .to_string(),
+            _ => "JIT bridge web tools are disabled. Use the built-in web tools and/or browser \
+                 listed under \"Your tool surface\" above."
+                .to_string(),
+        }
     } else {
         let mut block = String::new();
         block.push_str(
-            "Enabled via the JIT bridge (curl, not a bundled tool) — separate from `gog`/`browser` above:\n",
+            "Enabled via the JIT bridge (curl through `exec`, not a bundled tool) — separate from the built-in `web_search`/`web_fetch`/`browser` tools:\n",
         );
         if caps.web_search {
             block.push_str(&format!(
@@ -10460,72 +10763,19 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         block
     };
 
-    let has_google_drive = integrations.iter().any(|name| {
-        matches!(
-            *name,
-            "drive" | "drive_read" | "drive_write" | "drive_granular"
-        )
-    });
-    let google_drive_is_granular = integrations.contains(&"drive_granular");
+    let custom_instructions = integration_instructions_md(agent, surface, inputs);
 
-    let mut custom_instructions = String::new();
-    if has_google_drive {
-        custom_instructions.push_str(
-            "**Google Drive / Docs / Sheets**: You have OAuth-backed Google Drive access through Canopy's integration bridge. \n\
-            DO NOT treat `drive.google.com` or `docs.google.com` links as generic public webpages, and do NOT conclude access is impossible just because an anonymous browser fetch hits a Google login wall. \n\
-            Instead, use the dedicated Google Drive tools that appear when this integration is connected. When the user shares a Google Drive, Docs, or Sheets URL, extract the file or folder ID from the URL and open it through the Google integration tools instead of generic web fetch or search. \n\
-            Do NOT ask the user to export CSV, paste document contents, or move files manually unless the integration tools truly cannot reach the resource after you've tried the bridge-backed path first.\n\n",
-        );
-        if google_drive_is_granular {
-            custom_instructions.push_str(
-                "**Google Drive scope**: This agent is on granular Drive access. Only the specific Google files or folders the user approved are in scope. If a Drive/Docs/Sheets URL is outside that grant, explain that you need that exact item approved instead of falling back to anonymous browser access.\n\n",
-            );
-        }
-    }
-    if integrations.contains(&"google_photos") {
-        if let Ok(token) =
-            crate::keychain::get_secret(&format!("agent_{}_google_photos_access_token", agent.id))
-        {
-            for workspace_root in &workspace_roots {
-                if let Err(error) =
-                    install_agent_private_file(workspace_root, "google-photos-token", token.trim())
-                {
-                    tracing::error!(
-                        "write_permissions_md: could not install Google Photos capability for {}: {}",
-                        agent.id,
-                        error
-                    );
-                }
-            }
-            custom_instructions.push_str(
-                "**Google Photos**: You have read-only API access to the user's Google Photos. \n\
-                DO NOT try to use the browser to log in to Google Photos. \n\
-                Instead, use the Google Photos REST API (https://photoslibrary.googleapis.com/v1/) directly from your coding tools (e.g., using curl, Python, or Node). Read the OAuth token at execution time from `.canopy/google-photos-token`; never print it or include it in a message. For curl, use `Authorization: Bearer $(cat .canopy/google-photos-token)`.\n\n",
-            );
-        }
-    }
-    if integrations.contains(&"apple_photos") {
-        custom_instructions.push_str(
-            "**Apple Photos (Mac)**: You have Full Disk Access to the user's local Apple Photos database. \n\
-            DO NOT try to use the browser. You can query the SQLite database directly at `~/Pictures/Photos Library.photoslibrary/database/Photos.sqlite` using your coding tools.\n\n"
-        );
-    }
-    if integrations.contains(&"imessage") {
-        custom_instructions.push_str(
-            "**iMessage**: You receive and send iMessage messages via the background MCP bridge. Do NOT use the browser or bluebubbles. Do NOT try to enable `channels.imessage` in the OpenClaw configuration file (it is intentionally disabled because we use MCP instead).\n\n"
-        );
-    }
-
-    let content = format!(
+    format!(
         "# PERMISSIONS.md — What you have access to\n\n\
          _This file is regenerated whenever your permissions change. Read it at the start \
          of each task. If you need something not listed here, request it via the channel \
          described at the bottom — don't try and fail._\n\n\
-         ## Skills enabled\n\
-         {skills}\n\n\
+         ## Your tool surface\n\
+         {tool_surface}\n\n\
          ## Integrations connected\n\
          {integrations}\n\
-         *(Note: When an integration like `gmail` is connected, its dedicated MCP tools are automatically provided. Do NOT use `gog` or generic web search to access integration data.)*\n\n\
+         *(Only integrations marked with a tool/channel above are reachable by you. Never \
+         invent a tool name, and never use generic web search to get at integration data.)*\n\n\
          {custom_instructions}\
          ## LLM provider keys available\n\
          {providers}\n\n\
@@ -10582,16 +10832,19 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          ```\n\n\
          The user will see a modal with four buttons: **Allow once** (single use), \
          **Allow this session** (until next gateway restart), **Allow forever** (persists \
-         to your config), or **Deny**. The HTTP call blocks until they decide. On grant \
-         you'll get `{{\"status\":\"granted\",\"scope\":\"once|session|forever\"}}`; on deny, \
-         `{{\"status\":\"denied\"}}` with HTTP 403.\n\n\
+         to your config), or **Deny**. The HTTP call blocks until they decide, for at most \
+         5 minutes. On grant you'll get `{{\"status\":\"granted\",\"scope\":\"once|session|forever\"}}`; \
+         on deny, `{{\"status\":\"denied\"}}` with HTTP 403. If nobody answers within 5 minutes \
+         you get HTTP 408 `{{\"status\":\"timed_out\",\"granted\":false}}` — treat that exactly \
+         like a denial: tell the user what you needed and why, and do NOT re-request in a loop.\n\n\
          Valid `permission_id` values:\n\
-         - Skill names: `browser`, `proxy`, `vision`, `canvas`, `coding`, `gog`, `summarize`, `genui`, `computer_control`, `screen_record`, `host_control`\n\
+         - Capability names: `browser`, `proxy`, `vision`, `canvas`, `coding`, `gog` (built-in web search/fetch), `summarize`, `genui`, `computer_control`, `screen_record`, `host_control`\n\
          - Web tool names: `web_search`, `web_browse` (JIT bridge — see \"Web search, fetch & research\" above)\n\
          - Web auth / browser control names: `web_auth`, `web_sandbox_browser`, `browser_control` \
          (see \"Authenticated browsing & browser control\" above); `webauth:<domain>` (e.g. \
          `webauth:notion.so`) for one-domain authenticated-fetch consent specifically\n\
-         - Integration names: `gmail`, `googleCalendar`, `googleDrive`, `slack`, `github`, etc.\n\
+         - Integration names: `slack`, `github`, etc. (granting an integration that has no \
+         tool in your container does not create one — see \"Integrations connected\" above)\n\
          - Domain access: `domain:example.com` (adds to your web allowlist)\n\n\
          ## Asking the user to look at your browser\n\n\
          If you need the user to visually inspect or confirm something on a webpage \
@@ -10632,7 +10885,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          where you need the raw capture URL yourself (e.g. to hand it to a channel other than \
          Slack or the in-app chat). In that case, POST directly:\n\n\
          ```\n\
-         POST http://host.docker.internal:18802/generate_web_connection_token\n\
+         POST http://host.docker.internal:{jit_port}/generate_web_connection_token\n\
          Content-Type: application/json\n\
          Authorization: Bearer $(cat .canopy/jit-bridge-token)\n\n\
          {{\n  \"agent_id\": \"{agent_id}\",\n  \"provider_name\": \"<Display Name>\",\n  \"token_url\": \"<https://... where the user finds the key>\",\n  \"instructions\": \"<short plain-text steps>\",\n  \"placeholder\": \"<optional input hint>\"\n}}\n\
@@ -10643,7 +10896,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
          and lands directly in your Keychain credential as `agent_{agent_id}_<SECRET_NAME>`; you \
          still never see the raw value — request it at runtime through the JIT credential flow.\n",
         agent_id    = agent.id,
-        skills      = skills_block,
+        tool_surface = tool_surface_block,
         integrations = integrations_block,
         custom_instructions = custom_instructions,
         providers   = providers_block,
@@ -10654,24 +10907,7 @@ pub fn write_permissions_md(agent: &crate::models::Agent) {
         auth_browsing = auth_browsing_block,
         saved_logins = saved_logins_block,
         isolation   = isolation_note,
-    );
-
-    for workspace_root in workspace_roots {
-        let _ = std::fs::create_dir_all(&workspace_root);
-        if let Err(error) = install_jit_capability_file(&workspace_root, &agent.id) {
-            tracing::error!(
-                "write_permissions_md: could not install JIT bridge capability for {}: {}",
-                agent.id,
-                error
-            );
-        }
-        let _ = std::fs::write(workspace_root.join("PERMISSIONS.md"), &content);
-        remove_stale_bootstrap_file(&workspace_root);
-    }
-    tracing::debug!(
-        "write_permissions_md: wrote PERMISSIONS.md for agent {}",
-        agent.id
-    );
+    )
 }
 
 /// Generates the content for a new agent's USER.md

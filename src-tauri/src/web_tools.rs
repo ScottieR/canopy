@@ -389,8 +389,9 @@ async fn browser_render(
         .map_err(|e| e.to_string())?
     {
         Some(s) if browser_status_connectable(&s) => s,
+        // Never `start_browser` here: it kills any Chrome a bridge spawned meanwhile.
         _ => browser_manager
-            .start_browser(app_handle.clone(), &browser_key)
+            .ensure_automated_browser(app_handle.clone(), &browser_key)
             .await
             .map_err(|e| format!("could not start rendering browser: {e}"))?,
     };
@@ -1646,6 +1647,6 @@ mod network_integration_tests {
 
         let (title, text) = extract_title_and_text(&html);
         assert_eq!(title, "Example Domain");
-        assert!(text.contains("Example Domain"));
+        assert!(text.contains("documentation examples"));
     }
 }
