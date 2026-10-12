@@ -8,6 +8,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage } from "../../store/worldStore";
+import { track } from "../../lib/analytics/client";
 import type { GenerativeResult } from "../../types/generative";
 import { Toggle, ServiceRow, MultiPicker, glass } from "../../App";
 import { PasswordInput } from "../../components/shared/PasswordInput";
@@ -800,6 +801,7 @@ export function ConnectionsTab({ agent: _agent, onOpenTerminal }: { agent: Agent
         const unlisten = await listen('companion-finished', async (e: any) => {
           const { type, key, appToken, botToken } = e.payload || {};
           if (type) {
+            track("connection_added", { type: String(type) });
             checkDynamicStatuses();
             if (type === "slack") {
               setSlackEnabled(true);

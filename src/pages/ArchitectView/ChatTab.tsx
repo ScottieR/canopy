@@ -7,6 +7,7 @@ import {
   AlertTriangle, Camera, Monitor
 } from "lucide-react";
 import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, fireActivationEvent, reportTelemetryEvent } from "../../store/worldStore";
+import { track } from "../../lib/analytics/client";
 import { GenUIRenderer } from "../../components/GenUI/GenUIRenderer";
 import { useForumStore } from "../../store/forumStore";
 import type { GenerativeResult } from "../../types/generative";
@@ -1420,6 +1421,7 @@ function ChatTab({ agent, compact = false, hideHeader = false }: { agent: AgentD
       // product's "aha moment"). Fire-once, see fireActivationEvent. Only the
       // milestone name is sent, never reply content.
       fireActivationEvent("activation_a1_first_reply");
+      track("reply_received", { starter: !!isStarterTask });
       if (isStarterTask) {
         fireActivationEvent("activation_a2_first_deliverable");
       }

@@ -13,6 +13,7 @@ import {
   validateShareableHtml,
 } from "../../utils/sharePublish";
 import { fireActivationEvent } from "../../store/worldStore";
+import { track, trackedLink } from "../../lib/analytics/client";
 
 const SHARES_STORAGE_KEY = "canopy_published_shares";
 
@@ -82,6 +83,7 @@ export function PublishShareModal({
       setShare(stored);
       setPhase("published");
       fireActivationEvent("artifact_published", { shareKey });
+      track("artifact_published");
     } catch (e) {
       setPhase("error");
       const raw = String(e);
@@ -190,7 +192,10 @@ export function PublishShareModal({
               <button
                 onClick={async () => {
                   try {
-                    await navigator.clipboard.writeText(share.url);
+                    // A link of its own for each copy, so opens can be traced to this share (lib/analytics)
+                    const link = trackedLink("artifact", share.url);
+                    await navigator.clipboard.writeText(link.url);
+                    link.sent("copy");
                     setCopied(true);
                     setTimeout(() => setCopied(false), 1800);
                   } catch { /* clipboard denied */ }

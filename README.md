@@ -80,12 +80,16 @@ flowchart TD
     Core -. "managed TTS synthesis + fallback" .-> Providers
     Admin -. "personas, habitats, accessories, assets" .-> UI
     Admin -. "models, pricing, onboarding bootstrap, voice preview" .-> Core
+    UI -. "product analytics events (random id, opt-out)" .-> Admin
+    Admin -. "analytics rows" .-> AnalyticsDB["Shared analytics Postgres"]
     Core -. "Eddy after provider setup" .-> Providers
 ```
 
 The hosted control plane supplies public product configuration such as agent personas, habitats, accessories, visual assets, model metadata, pricing, and the bounded first-run Eddy bootstrap and voice-preview routes. Agent workspaces, credentials, and runtime state are managed locally. OpenClaw mounts each agent workspace into the local container runtime, uses Chroma for memory search and storage, and sends agent inference directly to the provider selected by the user. Single-turn voice playback is still local-first for live agents: the React UI asks the Rust core to synthesize audio for a specific agent, the core first tries that agent's active model provider when it exposes native TTS, then falls through to other configured providers only if needed, writes a short-lived audio file into the managed voice cache, and the UI plays that cached file. Onboarding voice previews use a narrower hosted path so branded premium voices can play before the user has connected any provider or created an agent. Eddy follows a separate direct-from-the-Mac path after provider setup.
 
 First-run onboarding has two deliberate hosted exceptions so Eddie remains useful before a user connects a key. The desktop can call `/api/canopy-helper/bootstrap` with one current setup request plus `runtime_ready`, an `active_view` fixed to `onboarding`, and the bounded onboarding step. Persona drafting and the pre-deploy test drive may include their bounded current task framing (including the current draft personality for a test drive) in that single request. It can also call `/api/canopy-helper/voice-preview` with one short sample plus an allowlisted Canopy voice id for onboarding-only premium voice previews. Prior conversation turns, the agent roster, provider diagnostics, logs, credentials, permissions, workspaces, and instructions from existing agents are not added from app context. Both routes are onboarding-only and rate-limited; once any supported user provider key is present, Eddy automatically switches to direct provider calls from the Mac. An explicit local-only mode remains available.
+
+Product analytics is a third hosted path, and the only one that is on by default. The React UI batches usage events (which screen is open, active time on it, and a short list of milestones such as "an agent was deployed") and posts them to the control plane's `/api/e`, which validates them and stores them in a Postgres database shared with the maintainer's other apps. Events carry a random device id and small enumerated props only; see [Usage stats](#usage-stats). The older opt-in usage telemetry (`/api/telemetry/event`) is separate and unchanged.
 
 ## Quick start
 
@@ -156,6 +160,7 @@ Optional integrations such as Slack, Google, GitHub, Telegram, and Discord requi
 | Prompts and model responses | Sent from the local runtime to the model provider selected by the user |
 | Persona catalogs, model metadata, pricing, and visual assets | Fetched from the hosted Canopy control plane |
 | Usage telemetry | Disabled unless the user opts in; aggregate, anonymized events only |
+| Product analytics | On by default, off with Profile → Product Analytics. Screen names, active time and a fixed list of milestone events under a random device id go to the hosted control plane. Never message content, agent names, files, credentials, or anything typed |
 | Canopy Helper after provider setup | Sent directly from the Mac to the user's provider or local Ollama; Rust allowlists one current message, minimized diagnostics, and short-lived continuity |
 | Canopy Helper during first-run setup | One bounded current setup request plus runtime readiness and onboarding step goes to the hosted bootstrap; no prior turns or general diagnostic context |
 | Onboarding voice preview before provider setup | One short voice sample plus an allowlisted Canopy voice id goes to the hosted preview route; no agent state, credentials, or conversation history |
@@ -205,6 +210,34 @@ Key entry points:
 - `src-tauri/src/openclaw.rs` — agent runtime coordination
 - `src-tauri/src/keychain.rs` — Keychain-backed credential vault and IPC allowlist
 - `src-tauri/src/db.rs` — SQLite persistence
+- `src/lib/analytics/` — product analytics tracker, event list and startup wiring
+
+## Usage stats
+
+Canopy has the `app-analytics` kit (v8), the same first-party usage tracking as the maintainer's other apps, ported to a desktop app. It runs beside the older opt-in telemetry, which is unchanged.
+
+**How it works.** `src/lib/analytics/start.ts` starts the tracker once, in the main window only, and records a pageview whenever the screen changes. A screen is named by the app (`/canopy`, `/architect/overview`, `/forum`), never by an agent or forum id. `client.ts` batches events and posts them to `${VITE_API_URL}/api/e` on the control plane (`canopy-admin/analytics-routes.js`), which checks every event against the list in `events.ts` and stores the rows under `app = 'canopy'`. The stats, funnel and feature declarations, and what the server spends on model APIs live in `canopy-admin/analytics/` and are read from `GET /api/stats` there.
+
+**What is sent.** A random device id and session id kept in the webview's `localStorage`, the screen, active time on it, and the events below. Never the query string, message or file content, agent names, credentials, or anything a person typed. Profile → Product Analytics turns it off for the device; nothing more is recorded or sent while it is off.
+
+| Event | When | Props |
+|---|---|---|
+| `pageview`, `engage` | The tracker, on every screen change and when a screen is left | `ms` (active time) |
+| `onboarding_step_completed` | A step of the add-agent wizard that can't be skipped was finished | `step`: `discovery`, `powerup` |
+| `agent_created` | An agent was deployed, or an existing one imported | `role` (a suggested persona, else `custom`), `imported` |
+| `reply_received` | An agent answered a message the person sent | `starter` (it was the onboarding starter task) |
+| `forum_created` | A forum was started | `agents` (how many) |
+| `forum_completed` | A forum run finished with its deliverable | none |
+| `connection_added` | An integration or provider key was connected from Skills & Access | `type` (the connector's id) |
+| `companion_paired` | An agent was shared to a companion device | `profile`, `experience` |
+| `artifact_published` | A forum deliverable was published as a share page | none |
+| `share_created` | The published page's link was copied | `kind`: `artifact`, `method`: `copy`, `share` (the link's id) |
+
+**Key flows** (declared in `canopy-admin/analytics/flows.ts`). Funnel "First agent": opened the wizard → said what they need → finished power-up → deployed the agent → got a first reply. Features: agents, agent chat, forums, Skills & Access, shared agents, published pages. Activation: `reply_received`.
+
+**Keeping it current.** `events.ts` exists in both repositories and must be the same file in each: the collector drops any event it doesn't list. `canopy-admin/analytics/events-parity.test.ts` fails when they differ.
+
+**Not covered.** The published share page itself has no tracker, so opens of a shared link aren't recorded yet. Companion pairing is a QR code holding a pairing secret, not a link, so it is a milestone and not a tracked share. The server-funded helper and voice-preview calls are made from Rust, so their cost is recorded per call on the server but not per device.
 
 ## Security model
 
