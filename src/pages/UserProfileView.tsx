@@ -10,6 +10,24 @@ import { AgentData, useWorldStore, UserProfile, AGENT_TYPE_INFO, DEFAULT_PERMISS
 import type { GenerativeResult } from "../types/generative";
 import { Toggle, ServiceRow, glass } from "../App";
 import { TokenSpendChart } from "../components/agents/TokenSpendChart";
+import { productAnalyticsOn, setProductAnalytics } from "../lib/analytics/start";
+
+/** The opt-out for product analytics (lib/analytics): on by default, off stops this device sending anything. */
+function ProductAnalyticsRow() {
+  const [on, setOn] = useState(productAnalyticsOn);
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 16, paddingTop: 16, borderTop: "1px solid rgba(0,0,0,0.05)" }}>
+      <div>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text-main)" }}>Product Analytics</div>
+        <div style={{ fontSize: 13, color: "var(--text-sub)", marginTop: 4 }}>
+          Counts which screens and features get used, under a random ID. Never message content, agent names,
+          files, keys or anything you type. Turn off to stop this device sending any of it.
+        </div>
+      </div>
+      <Toggle enabled={on} onChange={() => { setProductAnalytics(!on); setOn(!on); }} />
+    </div>
+  );
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // USER PROFILE VIEW
@@ -210,6 +228,7 @@ export function UserProfileView() {
             onChange={() => useWorldStore.getState().setUsageTelemetryEnabled(!useWorldStore.getState().usageTelemetryEnabled)}
           />
         </div>
+        <ProductAnalyticsRow />
       </div>
 
       <div style={{ background: "var(--glass-light)", backdropFilter: "blur(24px)", borderRadius: 16, border: "1px solid rgba(0,0,0,0.05)", padding: 24, marginBottom: 24 }}>

@@ -18,7 +18,8 @@ import accessoriesCatalog from "../../shared/accessories.json";
 import { TerrariumBase, HabitatErrorBoundary } from "../components/World/WorldScene";
 import { OnboardingCompanion } from "../components/World/OnboardingCompanion";
 import { LoadingScreen } from "../components/LoadingScreen";
-import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission, fireActivationEvent, reportTelemetryEvent } from "../store/worldStore";
+import { useWorldStore, DEFAULT_PERMISSIONS, getPermissionsForRole, getDefaultPersonality, injectPrincipalContext, AgentData, Agent, AGENT_TYPE_INFO, DiscoveredAgent, Permission, fireActivationEvent, reportTelemetryEvent, normalizePersonaRole } from "../store/worldStore";
+import { track } from "../lib/analytics/client";
 import type { GenerativeResult } from "../types/generative";
 import { Toggle } from "../App";
 import { LobsterIcon } from "../components/World/LobsterIcon";
@@ -368,6 +369,19 @@ export function OnboardingWizard() {
     if (name) {
       // Fire-once per step value, see fireActivationEvent.
       fireActivationEvent(`onboarding_step_reached_${name}`, { step, step_name: name });
+    }
+  }, [step]);
+
+  // Product analytics funnel (lib/analytics/flows.ts): the two steps nobody can skip. Reaching the agent's
+  // name or the power-up chat means discovery is done; reaching the deploy screen means power-up is.
+  // Once per wizard, whichever route got there.
+  const completedFunnelSteps = React.useRef(new Set<string>());
+  useEffect(() => {
+    const done = step === 6 ? ["discovery", "powerup"] : step === 2 || step === 3.7 ? ["discovery"] : [];
+    for (const name of done) {
+      if (completedFunnelSteps.current.has(name)) continue;
+      completedFunnelSteps.current.add(name);
+      track("onboarding_step_completed", { step: name });
     }
   }, [step]);
 
@@ -1342,6 +1356,7 @@ export function OnboardingWizard() {
         };
 
         addAgent(enrichedAgent);
+        track("agent_created", { role: "custom", imported: true });
         setActiveView("canopy");
       }
     } catch (e) {
@@ -2465,6 +2480,7 @@ export function OnboardingWizard() {
 
         // A0 activation: agent successfully deployed. Fire-once, see fireActivationEvent.
         fireActivationEvent("activation_a0_deployed");
+        track("agent_created", { role: normalizePersonaRole(selectedRole ?? undefined), imported: false });
 
         // Beat-1 interview facts → shared USER.md (synced to every agent).
         // Fire-and-forget: a failure here must never fail the deploy.

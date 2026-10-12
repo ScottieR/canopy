@@ -18,6 +18,7 @@ import { buildCompanionUrl } from "./utils/connectorCatalog";
 import { parseCompanionDeepLink } from "./utils/connectionRequests";
 import { resolveStandaloneViewKind } from "./utils/standaloneView";
 import { getFlavor } from "./utils/flavor";
+import { startCanopyAnalytics } from "./lib/analytics/start";
 import "./styles/globals.css";
 
 // Warm the prod/dev flavor cache before anything builds a deep link or gateway
@@ -116,6 +117,9 @@ if (!companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload 
 
 const isPrimaryAppWindow =
   !companionType && !browserAgentId && !chatCompanionAgentId && !genuiPayload && !miniappPayload;
+
+// Product analytics (app-analytics kit): once per launch, main window only.
+if (isPrimaryAppWindow) startCanopyAnalytics();
 
 const WindowWrapper = ({ children }: { children: React.ReactNode }) => {
   if (isPrimaryAppWindow) return <>{children}</>;

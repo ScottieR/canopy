@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { applyForumBudgetIncrement } from "./forumBudget";
 import { getQuotaSafeLocalStorage } from "./safeStorage";
+import { track } from "../lib/analytics/client";
 import {
   loadForum,
   loadForumCatalog,
@@ -424,6 +425,7 @@ export const useForumStore = create<ForumState>()(
         };
 
         set(state => ({ forums: [...state.forums, forum], activeForumId: id }));
+        track("forum_created", { agents: agents.length });
         return id;
       },
 
@@ -557,6 +559,8 @@ export const useForumStore = create<ForumState>()(
       },
 
       setForumStatus: (forumId, status) => {
+        // A follow-up run completes the same forum again; each finished run counts.
+        if (status === "completed" && get().forums.some(f => f.id === forumId && f.status !== "completed")) track("forum_completed");
         set(state => ({
           forums: state.forums.map(f =>
             f.id === forumId ? { ...f, status } : f

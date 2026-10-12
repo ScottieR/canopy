@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { BookOpen, Code2, Share2, Smartphone, X } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { MiniApp, useWorldStore, reportTelemetryEvent } from '../../store/worldStore';
+import { track } from '../../lib/analytics/client';
 
 interface MobilePairingModalProps {
   isOpen: boolean;
@@ -221,6 +222,7 @@ export const MobilePairingModal: React.FC<MobilePairingModalProps> = ({
       setPairingData(data);
       // Companion/mobile pairing usage — device metadata only, no names or content.
       reportTelemetryEvent('companion_paired', { profileType, experience });
+      track("companion_paired", { profile: profileType, experience });
       await refreshAssignments();
     } catch (err) {
       setError(String(err));
