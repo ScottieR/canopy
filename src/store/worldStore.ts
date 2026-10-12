@@ -101,6 +101,12 @@ export interface ChatMessage {
   time: string;
   attachments?: { name: string; dataUrl: string }[];
   ts?: number;
+  /** "error" renders as a system-error card (headline + collapsible raw detail),
+   *  never as agent prose. */
+  kind?: "error";
+  /** Full raw error string backing an "error" message; shown only behind the
+   *  card's "Show technical details" disclosure. */
+  rawError?: string;
 }
 
 export interface MiniAppVersion {
