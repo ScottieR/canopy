@@ -27,6 +27,17 @@ struct ExportRequest {
     content: String,
 }
 
+/// Path-based export: `path` is relative to the agent's own workspace (or an absolute
+/// container path inside it, e.g. `/home/node/.openclaw/workspace/<agent_id>/out.pdf`).
+#[derive(Serialize, Deserialize, Debug)]
+struct ExportWorkspaceFileRequest {
+    agent_id: String,
+    path: String,
+    /// Optional suggested filename for the save dialog; defaults to the file's basename.
+    #[serde(default)]
+    filename: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct AttentionRequest {
     agent_id: String,
@@ -178,6 +189,251 @@ fn files_broker_response(result: Result<serde_json::Value, String>) -> (u16, Str
     }
 }
 
+// ─── Request limits & timeouts ─────────────────────────────────────────────────
+
+/// Max bytes of request line + headers.
+const MAX_HEADER_BYTES: usize = 64 * 1024;
+/// Default max body for every bridge route (JSON control messages).
+const MAX_DEFAULT_BODY_BYTES: usize = 64 * 1024;
+/// Largest file an agent may hand back to the user (either export route).
+pub(crate) const MAX_EXPORT_FILE_BYTES: u64 = 50 * 1024 * 1024;
+/// `/export_file` carries the file base64-encoded inside JSON: 4/3 overhead plus
+/// headroom for the JSON envelope / filename.
+const MAX_EXPORT_BODY_BYTES: usize = (MAX_EXPORT_FILE_BYTES as usize).div_ceil(3) * 4 + 64 * 1024;
+/// How many large-body uploads may be buffered at once (bounds host memory, since the
+/// bridge listens before auth can be checked against the body).
+const MAX_CONCURRENT_LARGE_BODIES: usize = 2;
+/// A large upload must finish arriving within this window.
+const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// How long `/request_permission` waits for the user before answering "timed out".
+pub(crate) const PERMISSION_REQUEST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
+/// How long an export waits for the user to Save/Reject. Longer than permissions
+/// because the user may be picking a destination in a native save dialog.
+pub(crate) const EXPORT_REQUEST_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(10 * 60);
+/// If the user's decision is already being applied when the timeout fires (e.g. a
+/// "forever" grant running boot sync), wait this long for it rather than discarding it.
+const DECISION_IN_FLIGHT_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
+lazy_static::lazy_static! {
+    static ref LARGE_BODY_SLOTS: Arc<tokio::sync::Semaphore> =
+        Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_LARGE_BODIES));
+}
+
+fn max_body_bytes_for_path(path: &str) -> usize {
+    match path {
+        "/export_file" => MAX_EXPORT_BODY_BYTES,
+        _ => MAX_DEFAULT_BODY_BYTES,
+    }
+}
+
+fn json_http_response(status: u16, reason: &str, body: &Value) -> String {
+    let body = serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        status,
+        reason,
+        body.len(),
+        body
+    )
+}
+
+fn payload_too_large_response(path: &str, limit: usize) -> String {
+    json_http_response(
+        413,
+        "Payload Too Large",
+        &json!({
+            "error": format!("Request body exceeds the {} byte limit for {}", limit, path),
+            "hint": "To hand a file to the user, write it to your workspace and POST \
+                     {\"agent_id\":\"...\",\"path\":\"<workspace-relative path>\"} to \
+                     /export_workspace_file — the host reads the file directly, so no \
+                     file content goes in the request.",
+        }),
+    )
+}
+
+struct ParsedRequest {
+    is_post: bool,
+    path: String,
+    headers: String,
+    body: Vec<u8>,
+    large_body_permit: Option<tokio::sync::OwnedSemaphorePermit>,
+}
+
+enum ReadOutcome {
+    Request(ParsedRequest),
+    /// Reject before routing; the string is a complete HTTP response.
+    Respond(String),
+    Closed,
+}
+
+/// Read one HTTP/1.1 request, enforcing header and per-route body limits *before*
+/// buffering the body (based on the declared Content-Length).
+async fn read_http_request<S>(socket: &mut S) -> ReadOutcome
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut data: Vec<u8> = Vec::new();
+
+    let header_end = loop {
+        match socket.read(&mut buf).await {
+            Ok(0) | Err(_) => return ReadOutcome::Closed,
+            Ok(n) => data.extend_from_slice(&buf[..n]),
+        }
+        if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos;
+        }
+        if data.len() > MAX_HEADER_BYTES {
+            return ReadOutcome::Respond(
+                "HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string(),
+            );
+        }
+    };
+
+    let headers = String::from_utf8_lossy(&data[..header_end]).to_string();
+    let mut request_line = headers.lines().next().unwrap_or("").split_whitespace();
+    let method = request_line.next().unwrap_or("");
+    let path = request_line.next().unwrap_or("/").to_string();
+    let is_post = method == "POST";
+
+    let mut content_length: usize = 0;
+    let mut expects_continue = false;
+    for line in headers.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("content-length") {
+            match value.parse::<usize>() {
+                Ok(len) => content_length = len,
+                Err(_) => {
+                    return ReadOutcome::Respond(json_http_response(
+                        400,
+                        "Bad Request",
+                        &json!({ "error": "Invalid Content-Length" }),
+                    ))
+                }
+            }
+        } else if name.eq_ignore_ascii_case("transfer-encoding")
+            && !value.eq_ignore_ascii_case("identity")
+        {
+            return ReadOutcome::Respond(json_http_response(
+                411,
+                "Length Required",
+                &json!({ "error": "Chunked uploads are not supported; send a Content-Length" }),
+            ));
+        } else if name.eq_ignore_ascii_case("expect") && value.eq_ignore_ascii_case("100-continue")
+        {
+            expects_continue = true;
+        }
+    }
+
+    if !is_post {
+        return ReadOutcome::Request(ParsedRequest {
+            is_post,
+            path,
+            headers,
+            body: Vec::new(),
+            large_body_permit: None,
+        });
+    }
+
+    let limit = max_body_bytes_for_path(&path);
+    if content_length > limit {
+        return ReadOutcome::Respond(payload_too_large_response(&path, limit));
+    }
+
+    let large_body_permit = if content_length > MAX_DEFAULT_BODY_BYTES {
+        match LARGE_BODY_SLOTS.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                return ReadOutcome::Respond(json_http_response(
+                    503,
+                    "Service Unavailable",
+                    &json!({ "error": "Another large upload is in progress; retry shortly" }),
+                ))
+            }
+        }
+    } else {
+        None
+    };
+
+    // curl sends `Expect: 100-continue` for larger bodies and otherwise stalls ~1s.
+    if expects_continue {
+        let _ = socket.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await;
+    }
+
+    let body_start = header_end + 4;
+    let read_body = async {
+        while data.len() - body_start < content_length {
+            match socket.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => data.extend_from_slice(&buf[..n]),
+            }
+        }
+    };
+    if tokio::time::timeout(BODY_READ_TIMEOUT, read_body)
+        .await
+        .is_err()
+    {
+        return ReadOutcome::Respond(json_http_response(
+            408,
+            "Request Timeout",
+            &json!({ "error": "Timed out waiting for the request body" }),
+        ));
+    }
+    let body_end = (body_start + content_length).min(data.len());
+    let body = data[body_start..body_end].to_vec();
+
+    ReadOutcome::Request(ParsedRequest {
+        is_post,
+        path,
+        headers,
+        body,
+        large_body_permit,
+    })
+}
+
+/// Outcome of waiting for the user to answer a blocking bridge prompt.
+#[derive(Debug, PartialEq, Eq)]
+enum UserDecision<T> {
+    Decided(T),
+    /// The resolver dropped the sender without answering (treated as a denial).
+    Dropped,
+    /// Nobody answered within the timeout; the pending entry has been removed.
+    TimedOut,
+}
+
+/// Wait up to `timeout` for the user's decision on `req_id`. On timeout the pending
+/// entry is removed so a late UI click can't resolve a request the agent already gave
+/// up on. If the resolver had already claimed the sender (decision in flight), wait a
+/// short grace period for it instead of discarding a real answer.
+async fn await_user_decision<T>(
+    mut rx: oneshot::Receiver<T>,
+    timeout: std::time::Duration,
+    pending: &Mutex<HashMap<String, oneshot::Sender<T>>>,
+    req_id: &str,
+) -> UserDecision<T> {
+    match tokio::time::timeout(timeout, &mut rx).await {
+        Ok(Ok(value)) => return UserDecision::Decided(value),
+        Ok(Err(_)) => return UserDecision::Dropped,
+        Err(_) => {}
+    }
+    let still_pending = pending.lock().await.remove(req_id).is_some();
+    if still_pending {
+        return UserDecision::TimedOut;
+    }
+    match tokio::time::timeout(DECISION_IN_FLIGHT_GRACE, rx).await {
+        Ok(Ok(value)) => UserDecision::Decided(value),
+        Ok(Err(_)) => UserDecision::Dropped,
+        Err(_) => UserDecision::TimedOut,
+    }
+}
+
 pub async fn start_jit_server(app_handle: tauri::AppHandle) {
     let jit_addr = format!("0.0.0.0:{}", crate::flavor::flavor().jit_port);
     let listener = match TcpListener::bind(&jit_addr).await {
@@ -202,81 +458,24 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
         if let Ok((mut socket, _)) = listener.accept().await {
             let app = app_handle.clone();
             tokio::spawn(async move {
-                let mut buf = [0; 8192];
-                let mut req_data = Vec::new();
-                let mut content_length = 0;
-                let mut headers_parsed = false;
-                let mut is_post = false;
-
-                // Read until we get the full HTTP request
-                loop {
-                    match socket.read(&mut buf).await {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            req_data.extend_from_slice(&buf[..n]);
-                            if req_data.len() > 64 * 1024 {
-                                let response = "HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
-                                let _ = socket.write_all(response.as_bytes()).await;
-                                return;
-                            }
-
-                            if !headers_parsed {
-                                if let Some(pos) =
-                                    req_data.windows(4).position(|w| w == b"\r\n\r\n")
-                                {
-                                    headers_parsed = true;
-                                    let header_str = String::from_utf8_lossy(&req_data[..pos]);
-
-                                    let mut path = "/";
-                                    if header_str.starts_with("POST ") {
-                                        is_post = true;
-                                        if let Some(p) = header_str.split_whitespace().nth(1) {
-                                            path = p;
-                                        }
-                                    }
-
-                                    for line in header_str.lines() {
-                                        if line.to_lowercase().starts_with("content-length:") {
-                                            if let Some(len_str) = line.split(':').nth(1) {
-                                                content_length =
-                                                    len_str.trim().parse().unwrap_or(0);
-                                            }
-                                        }
-                                    }
-                                    let body_start = pos + 4;
-                                    if req_data.len() - body_start >= content_length {
-                                        break; // Received full body
-                                    }
-                                }
-                            } else {
-                                // Find end of headers again to calculate body length
-                                if let Some(pos) =
-                                    req_data.windows(4).position(|w| w == b"\r\n\r\n")
-                                {
-                                    let body_start = pos + 4;
-                                    if req_data.len() - body_start >= content_length {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        Err(_) => break,
+                let request = match read_http_request(&mut socket).await {
+                    ReadOutcome::Request(request) => request,
+                    ReadOutcome::Respond(response) => {
+                        let _ = socket.write_all(response.as_bytes()).await;
+                        return;
                     }
-                }
+                    ReadOutcome::Closed => return,
+                };
+                // Held (when present) for the lifetime of a large-body request so a
+                // handful of concurrent 50MB uploads can't exhaust host memory.
+                let _large_body_permit = request.large_body_permit;
+                {
+                    let body = request.body.as_slice();
+                    let headers = request.headers.as_str();
+                    let capability = bearer_token(headers);
 
-                if let Some(pos) = req_data.windows(4).position(|w| w == b"\r\n\r\n") {
-                    let body = &req_data[pos + 4..];
-                    let headers = String::from_utf8_lossy(&req_data[..pos]);
-                    let capability = bearer_token(&headers);
-
-                    if is_post {
-                        let path = if let Some(p) =
-                            String::from_utf8_lossy(&req_data).split_whitespace().nth(1)
-                        {
-                            p.to_string()
-                        } else {
-                            "/".to_string()
-                        };
+                    if request.is_post {
+                        let path = request.path.clone();
 
                         // Helper inline-format: produces an HTTP response string given status + body.
                         // Kept as a macro-like format so we don't have to plumb closures through async.
@@ -301,6 +500,26 @@ pub async fn start_jit_server(app_handle: tauri::AppHandle) {
                                 Err(_) => (
                                     400,
                                     r#"{"error":"Invalid export request body"}"#.to_string(),
+                                ),
+                            }
+                        } else if path == "/export_workspace_file" {
+                            // Path-based export: the agent names a file in its own
+                            // bind-mounted workspace and the host reads it directly — no
+                            // file bytes cross the bridge, so size/argv limits don't apply.
+                            match serde_json::from_slice::<ExportWorkspaceFileRequest>(body) {
+                                Ok(req) => {
+                                    let (response, status_code) =
+                                        handle_export_workspace_file_request(app.clone(), req)
+                                            .await;
+                                    (
+                                        status_code,
+                                        serde_json::to_string(&response).unwrap_or_default(),
+                                    )
+                                }
+                                Err(_) => (
+                                    400,
+                                    r#"{"error":"Invalid export request body — expected {\"agent_id\":\"...\",\"path\":\"<workspace-relative path>\"}"}"#
+                                        .to_string(),
                                 ),
                             }
                         } else if path == "/request_attention" {
@@ -540,6 +759,248 @@ lazy_static::lazy_static! {
 }
 
 async fn handle_export_request(app: tauri::AppHandle, req: ExportRequest) -> (Value, u16) {
+    // Content is base64 when the agent followed the docs; fall back to raw text.
+    let content_bytes = match base64::engine::general_purpose::STANDARD.decode(&req.content) {
+        Ok(b) => b,
+        Err(_) => req.content.into_bytes(),
+    };
+    if content_bytes.len() as u64 > MAX_EXPORT_FILE_BYTES {
+        return (
+            json!({ "error": format!("File exceeds the {} byte export limit", MAX_EXPORT_FILE_BYTES) }),
+            413,
+        );
+    }
+    let filename = sanitize_export_filename(&req.filename, "export");
+    deliver_export_to_user(app, req.agent_id, filename, content_bytes).await
+}
+
+/// Agent-scoped, path-based export. Resolves `req.path` inside the agent's own
+/// bind-mounted workspace on the host (rejecting traversal, absolute paths outside the
+/// workspace, symlink escapes, hardlinks and the private `.canopy/` dir), then hands the
+/// bytes to the same user-approval flow as `/export_file`.
+async fn handle_export_workspace_file_request(
+    app: tauri::AppHandle,
+    req: ExportWorkspaceFileRequest,
+) -> (Value, u16) {
+    let (filename, bytes) = {
+        use tauri::Manager;
+        let db = app.state::<crate::db::Database>();
+        match db.get_agent(&req.agent_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => return (json!({ "error": "agent not found" }), 404),
+            Err(e) => return (json!({ "error": format!("db error: {e}") }), 500),
+        }
+        let workspace = match crate::openclaw::get_agent_workspace_dir(&db, &req.agent_id) {
+            Ok(path) => path,
+            Err(e) => {
+                return (
+                    json!({ "error": format!("workspace unavailable: {e}") }),
+                    500,
+                )
+            }
+        };
+        let (resolved, bytes) =
+            match read_agent_workspace_file(&workspace, &req.agent_id, &req.path) {
+                Ok(found) => found,
+                Err((status, message)) => return (json!({ "error": message }), status),
+            };
+        let fallback = resolved
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| "export".to_string());
+        let filename =
+            sanitize_export_filename(req.filename.as_deref().unwrap_or(&fallback), &fallback);
+        let _ = db.log_audit(
+            &req.agent_id,
+            "file_export_requested",
+            None,
+            &format!(
+                "Workspace file export requested: {} ({} bytes)",
+                req.path,
+                bytes.len()
+            ),
+            None,
+        );
+        (filename, bytes)
+    };
+    deliver_export_to_user(app, req.agent_id, filename, bytes).await
+}
+
+/// Keep only the final path component and drop control characters, so the save
+/// dialog's suggested name can't point somewhere unexpected.
+fn sanitize_export_filename(requested: &str, fallback: &str) -> String {
+    let last = requested
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>();
+    let trimmed = last.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Container-side mount point of the workspace volume (see docker.rs compose volumes).
+const CONTAINER_WORKSPACE_ROOT: &str = "/home/node/.openclaw/workspace";
+
+/// Map an agent-supplied path to a path relative to that agent's workspace. Relative
+/// paths pass through; absolute paths are only accepted when they are inside this
+/// agent's own container workspace.
+fn workspace_relative_path(agent_id: &str, requested: &str) -> Result<String, String> {
+    let requested = requested.trim();
+    let requested = requested.strip_prefix("file://").unwrap_or(requested);
+    if requested.is_empty() {
+        return Err("A workspace-relative file path is required".to_string());
+    }
+    if requested.contains('\0') {
+        return Err("Invalid path".to_string());
+    }
+    if !requested.starts_with('/') {
+        return Ok(requested.to_string());
+    }
+    for root in [CONTAINER_WORKSPACE_ROOT, "/workspace"] {
+        let prefix = format!("{}/{}/", root, agent_id);
+        if let Some(rest) = requested.strip_prefix(&prefix) {
+            return Ok(rest.to_string());
+        }
+    }
+    Err(format!(
+        "Absolute paths must be inside your own workspace ({}/{}/...). Pass a path relative to your workspace instead.",
+        CONTAINER_WORKSPACE_ROOT, agent_id
+    ))
+}
+
+fn is_private_workspace_component(component: std::path::Component<'_>) -> bool {
+    matches!(component, std::path::Component::Normal(name) if name == ".canopy")
+}
+
+/// Resolve `requested` to an existing regular file strictly inside `workspace_root`.
+pub(crate) fn resolve_agent_workspace_file(
+    workspace_root: &std::path::Path,
+    agent_id: &str,
+    requested: &str,
+) -> Result<std::path::PathBuf, (u16, String)> {
+    use std::path::{Component, Path};
+    let relative = workspace_relative_path(agent_id, requested).map_err(|e| (400, e))?;
+    let relative_path = Path::new(&relative);
+    if relative_path.components().any(|c| {
+        matches!(
+            c,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err((400, "Path cannot leave your workspace".to_string()));
+    }
+    if relative_path
+        .components()
+        .any(is_private_workspace_component)
+    {
+        return Err((403, "Files under .canopy/ cannot be exported".to_string()));
+    }
+
+    let canonical_root = std::fs::canonicalize(workspace_root).map_err(|_| {
+        (
+            500,
+            "Agent workspace is unavailable on the host".to_string(),
+        )
+    })?;
+    let candidate = std::fs::canonicalize(canonical_root.join(relative_path)).map_err(|_| {
+        (
+            404,
+            format!(
+                "No file at '{}' in your workspace. Paths are relative to your workspace root.",
+                relative
+            ),
+        )
+    })?;
+    // canonicalize resolved every symlink, so this also rejects symlink escapes.
+    let inside = candidate
+        .strip_prefix(&canonical_root)
+        .map_err(|_| (403, "Path resolves outside your workspace".to_string()))?;
+    if inside.components().any(is_private_workspace_component) {
+        return Err((403, "Files under .canopy/ cannot be exported".to_string()));
+    }
+    let metadata =
+        std::fs::metadata(&candidate).map_err(|_| (404, "File is not readable".to_string()))?;
+    if !metadata.is_file() {
+        return Err((400, "Export target is not a regular file".to_string()));
+    }
+    Ok(candidate)
+}
+
+/// Resolve and read a workspace file, re-verifying after open that the handle is the
+/// same inode that passed containment (guards against a path swap between the check
+/// and the read) and that it isn't a hardlink to something outside the workspace.
+fn read_agent_workspace_file(
+    workspace_root: &std::path::Path,
+    agent_id: &str,
+    requested: &str,
+) -> Result<(std::path::PathBuf, Vec<u8>), (u16, String)> {
+    use std::io::Read;
+    let resolved = resolve_agent_workspace_file(workspace_root, agent_id, requested)?;
+    let checked = std::fs::symlink_metadata(&resolved)
+        .map_err(|_| (404, "File is not readable".to_string()))?;
+    let file =
+        std::fs::File::open(&resolved).map_err(|_| (404, "File is not readable".to_string()))?;
+    let opened = file
+        .metadata()
+        .map_err(|_| (404, "File is not readable".to_string()))?;
+    if !opened.is_file() || checked.file_type().is_symlink() {
+        return Err((400, "Export target is not a regular file".to_string()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if opened.dev() != checked.dev() || opened.ino() != checked.ino() {
+            return Err((
+                409,
+                "File changed while it was being exported; retry".to_string(),
+            ));
+        }
+        if opened.nlink() > 1 {
+            return Err((
+                403,
+                "Hard-linked files cannot be exported; copy the file to a new name first"
+                    .to_string(),
+            ));
+        }
+    }
+    if opened.len() > MAX_EXPORT_FILE_BYTES {
+        return Err((
+            413,
+            format!(
+                "File exceeds the {} byte export limit",
+                MAX_EXPORT_FILE_BYTES
+            ),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(opened.len() as usize);
+    file.take(MAX_EXPORT_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| (500, "Failed to read file".to_string()))?;
+    if bytes.len() as u64 > MAX_EXPORT_FILE_BYTES {
+        return Err((
+            413,
+            format!(
+                "File exceeds the {} byte export limit",
+                MAX_EXPORT_FILE_BYTES
+            ),
+        ));
+    }
+    Ok((resolved, bytes))
+}
+
+/// Scan the bytes, show the user the export modal, and wait (bounded) for Save/Reject.
+async fn deliver_export_to_user(
+    app: tauri::AppHandle,
+    agent_id: String,
+    filename: String,
+    content_bytes: Vec<u8>,
+) -> (Value, u16) {
     let req_id = uuid::Uuid::new_v4().to_string();
     let (tx, rx) = oneshot::channel::<bool>();
 
@@ -548,40 +1009,76 @@ async fn handle_export_request(app: tauri::AppHandle, req: ExportRequest) -> (Va
         pending.insert(req_id.clone(), tx);
     }
 
-    // Decode content (assuming base64 if it's sent from the agent, otherwise raw string)
-    // We'll try base64 first, fallback to raw bytes
-    let content_bytes = match base64::engine::general_purpose::STANDARD.decode(&req.content) {
-        Ok(b) => b,
-        Err(_) => req.content.as_bytes().to_vec(),
-    };
-
-    let report = crate::security_scanner::analyze_file(&content_bytes, &req.filename).await;
+    let report = crate::security_scanner::analyze_file(&content_bytes, &filename).await;
+    let size_bytes = content_bytes.len();
+    let content = base64::engine::general_purpose::STANDARD.encode(&content_bytes);
+    drop(content_bytes);
 
     use tauri::Emitter;
     let _ = app.emit(
         "file_export_requested",
         json!({
             "request_id": req_id,
-            "filename": req.filename,
-            "agent_id": req.agent_id,
+            "filename": filename,
+            "agent_id": agent_id,
             "threat_report": report,
-            "content": req.content, // Pass content so frontend can save it natively
+            "size_bytes": size_bytes,
+            "content": content, // base64; the frontend decodes and saves it natively
         }),
     );
 
-    let approved = rx.await.unwrap_or(false);
-
-    if approved {
-        (
+    match await_user_decision(rx, EXPORT_REQUEST_TIMEOUT, &PENDING_EXPORTS, &req_id).await {
+        UserDecision::Decided(true) => (
             json!({"status": "saved", "message": "The user approved and saved the file."}),
             200,
-        )
-    } else {
-        (
+        ),
+        UserDecision::Decided(false) | UserDecision::Dropped => (
             json!({"status": "blocked", "message": "The user blocked the file export."}),
             403,
-        )
+        ),
+        UserDecision::TimedOut => {
+            let _ = app.emit(
+                "file_export_request_expired",
+                json!({ "request_id": req_id, "agent_id": agent_id }),
+            );
+            (
+                json!({
+                    "status": "timed_out",
+                    "message": format!(
+                        "The user did not respond to the export prompt within {} minutes, so the file was NOT saved. It is still in your workspace; tell the user its workspace path and offer to export it again.",
+                        EXPORT_REQUEST_TIMEOUT.as_secs() / 60
+                    ),
+                }),
+                408,
+            )
+        }
     }
+}
+
+/// UI-initiated export of a file an agent referenced in chat (e.g. an OpenClaw
+/// `MEDIA:` line pointing at a container path). Maps the container path to the agent's
+/// host workspace with the same containment checks as the bridge route, then shows the
+/// standard export modal. Returns once the prompt is shown.
+#[tauri::command]
+pub async fn export_agent_workspace_file(
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, crate::db::Database>,
+    agent_id: String,
+    path: String,
+) -> Result<(), String> {
+    crate::validators::agent::validate_id(&agent_id).map_err(|e| e.to_string())?;
+    let workspace = crate::openclaw::get_agent_workspace_dir(&db, &agent_id)?;
+    let (resolved, bytes) =
+        read_agent_workspace_file(&workspace, &agent_id, &path).map_err(|(_, message)| message)?;
+    let fallback = resolved
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "export".to_string());
+    let filename = sanitize_export_filename(&fallback, "export");
+    tokio::spawn(async move {
+        let _ = deliver_export_to_user(app_handle, agent_id, filename, bytes).await;
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -770,7 +1267,24 @@ async fn handle_permission_request(app: tauri::AppHandle, req: PermissionRequest
         }),
     );
 
-    let decision = rx.await.unwrap_or_else(|_| "deny".to_string());
+    let decision = match await_user_decision(
+        rx,
+        PERMISSION_REQUEST_TIMEOUT,
+        &PENDING_PERMISSION_REQUESTS,
+        &req_id,
+    )
+    .await
+    {
+        UserDecision::Decided(decision) => decision,
+        UserDecision::Dropped => "deny".to_string(),
+        UserDecision::TimedOut => {
+            let _ = app.emit(
+                "agent_permission_request_expired",
+                json!({ "request_id": req_id, "agent_id": req.agent_id }),
+            );
+            return permission_timed_out_response(&req.permission_id);
+        }
+    };
 
     match decision.as_str() {
         "deny" => (
@@ -965,6 +1479,18 @@ pub async fn resolve_permission_request(
         other => return Err(format!("Unknown decision: {}", other)),
     };
 
+    // Claim the waiting agent request *before* applying any grant. If it already timed
+    // out (the agent was told "not granted"), don't persist a grant it will never use.
+    // Holding the sender also stops the timeout from racing us while "forever" persists.
+    let tx = PENDING_PERMISSION_REQUESTS.lock().await.remove(&request_id);
+    let Some(tx) = tx else {
+        return Err(
+            "This permission request expired before you answered, so nothing was granted. \
+             The agent can ask again if it still needs access."
+                .to_string(),
+        );
+    };
+
     // Tier 4 authenticated-fetch consent — handled for every scope (not just "forever"):
     // "once"/"session" grant a temporary, in-memory pass; "forever" additionally persists
     // to the agent's approved-domains file so it survives a restart. Unlike "domain:"
@@ -1044,12 +1570,24 @@ pub async fn resolve_permission_request(
         }
     }
 
-    let mut pending = PENDING_PERMISSION_REQUESTS.lock().await;
-    if let Some(tx) = pending.remove(&request_id) {
-        let _ = tx.send(scope);
-    }
+    let _ = tx.send(scope);
 
     Ok(())
+}
+
+fn permission_timed_out_response(permission_id: &str) -> (Value, u16) {
+    (
+        json!({
+            "status":  "timed_out",
+            "granted": false,
+            "message": format!(
+                "The user did not respond to your request for '{}' within {} minutes, so it was NOT granted (treat this as denied). Do not retry in a loop; continue without it or tell the user what you need and why.",
+                permission_id,
+                PERMISSION_REQUEST_TIMEOUT.as_secs() / 60
+            ),
+        }),
+        408,
+    )
 }
 
 /// Pure ack route used by the frontend toast — no agent state to mutate, but we still
@@ -1103,5 +1641,269 @@ mod tests {
         assert!(request_agent_id(br#"{"agent_id":"../../other"}"#).is_err());
         assert!(request_agent_id(br#"{"reason":"missing"}"#).is_err());
         assert!(request_agent_id(b"not-json").is_err());
+    }
+
+    // ─── Body limits ────────────────────────────────────────────────────────────
+
+    async fn send_raw(request: Vec<u8>) -> (ReadOutcome, Vec<u8>) {
+        let (mut client, mut server) = tokio::io::duplex(256 * 1024);
+        let writer = tokio::spawn(async move {
+            let _ = client.write_all(&request).await;
+            let _ = client.shutdown().await;
+            let mut echoed = Vec::new();
+            let _ = client.read_to_end(&mut echoed).await;
+            echoed
+        });
+        let outcome = read_http_request(&mut server).await;
+        drop(server);
+        let echoed = writer.await.unwrap();
+        (outcome, echoed)
+    }
+
+    fn post(path: &str, body: &[u8], extra_headers: &str) -> Vec<u8> {
+        let mut request = format!(
+            "POST {} HTTP/1.1\r\nHost: host.docker.internal\r\nContent-Length: {}\r\n{}\r\n",
+            path,
+            body.len(),
+            extra_headers
+        )
+        .into_bytes();
+        request.extend_from_slice(body);
+        request
+    }
+
+    #[test]
+    fn export_route_allows_document_sized_bodies_and_others_stay_small() {
+        // A 50MB file base64-encoded inside JSON must fit.
+        let encoded_50mb = (MAX_EXPORT_FILE_BYTES as usize).div_ceil(3) * 4;
+        assert!(max_body_bytes_for_path("/export_file") >= encoded_50mb + 1024);
+        assert_eq!(max_body_bytes_for_path("/request_permission"), 64 * 1024);
+        assert_eq!(max_body_bytes_for_path("/export_workspace_file"), 64 * 1024);
+        assert_eq!(max_body_bytes_for_path("/export_file/../x"), 64 * 1024);
+    }
+
+    #[tokio::test]
+    async fn reads_a_body_larger_than_the_old_64kb_cap_on_export() {
+        // ~266KB PDF base64'd — the size that 413'd in the 2026-08-26 CUJ.
+        let body = vec![b'a'; 360 * 1024];
+        let (outcome, _) = send_raw(post("/export_file", &body, "")).await;
+        match outcome {
+            ReadOutcome::Request(request) => {
+                assert!(request.is_post);
+                assert_eq!(request.path, "/export_file");
+                assert_eq!(request.body.len(), body.len());
+                assert!(request.large_body_permit.is_some());
+            }
+            _ => panic!("expected a parsed request"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_declared_length_before_reading_body() {
+        // Declares a huge length but sends no body: must 413 immediately, not buffer.
+        let request = format!(
+            "POST /export_file HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_EXPORT_BODY_BYTES + 1
+        );
+        match send_raw(request.into_bytes()).await.0 {
+            ReadOutcome::Respond(response) => {
+                assert!(response.starts_with("HTTP/1.1 413"));
+                assert!(response.contains("/export_workspace_file"));
+            }
+            _ => panic!("expected a 413"),
+        }
+        let body = vec![b'a'; 64 * 1024 + 1];
+        match send_raw(post("/request_permission", &body, "")).await.0 {
+            ReadOutcome::Respond(response) => assert!(response.starts_with("HTTP/1.1 413")),
+            _ => panic!("expected a 413 for a non-export route"),
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_chunked_uploads_and_bad_lengths() {
+        let chunked =
+            b"POST /export_file HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n".to_vec();
+        match send_raw(chunked).await.0 {
+            ReadOutcome::Respond(response) => assert!(response.starts_with("HTTP/1.1 411")),
+            _ => panic!("expected 411"),
+        }
+        let bad = b"POST /export_file HTTP/1.1\r\nContent-Length: -5\r\n\r\n".to_vec();
+        match send_raw(bad).await.0 {
+            ReadOutcome::Respond(response) => assert!(response.starts_with("HTTP/1.1 400")),
+            _ => panic!("expected 400"),
+        }
+    }
+
+    #[tokio::test]
+    async fn answers_expect_continue() {
+        let body = br#"{"agent_id":"agent-a"}"#;
+        let (outcome, echoed) =
+            send_raw(post("/request_attention", body, "Expect: 100-continue\r\n")).await;
+        assert!(matches!(outcome, ReadOutcome::Request(_)));
+        assert!(String::from_utf8_lossy(&echoed).starts_with("HTTP/1.1 100 Continue"));
+    }
+
+    // ─── Timeouts ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn unanswered_decision_times_out_and_clears_pending_state() {
+        let pending: Mutex<HashMap<String, oneshot::Sender<String>>> = Mutex::new(HashMap::new());
+        let (tx, rx) = oneshot::channel::<String>();
+        pending.lock().await.insert("req-1".to_string(), tx);
+        let outcome =
+            await_user_decision(rx, std::time::Duration::from_millis(20), &pending, "req-1").await;
+        assert_eq!(outcome, UserDecision::TimedOut);
+        assert!(
+            pending.lock().await.is_empty(),
+            "stale request must be removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn answered_decision_is_returned() {
+        let pending: Mutex<HashMap<String, oneshot::Sender<String>>> = Mutex::new(HashMap::new());
+        let (tx, rx) = oneshot::channel::<String>();
+        pending.lock().await.insert("req-2".to_string(), tx);
+        let sender = pending.lock().await.remove("req-2").unwrap();
+        sender.send("once".to_string()).unwrap();
+        let outcome =
+            await_user_decision(rx, std::time::Duration::from_secs(5), &pending, "req-2").await;
+        assert_eq!(outcome, UserDecision::Decided("once".to_string()));
+    }
+
+    #[tokio::test]
+    async fn decision_in_flight_at_timeout_is_not_discarded() {
+        let pending: Mutex<HashMap<String, oneshot::Sender<String>>> = Mutex::new(HashMap::new());
+        let (tx, rx) = oneshot::channel::<String>();
+        // Resolver already claimed the sender (e.g. persisting a "forever" grant)...
+        let claimed = tx;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = claimed.send("forever".to_string());
+        });
+        let outcome =
+            await_user_decision(rx, std::time::Duration::from_millis(10), &pending, "req-3").await;
+        assert_eq!(outcome, UserDecision::Decided("forever".to_string()));
+    }
+
+    #[test]
+    fn timeout_response_is_agent_readable_and_not_a_grant() {
+        let (body, status) = permission_timed_out_response("browser");
+        assert_eq!(status, 408);
+        assert_eq!(body["status"], "timed_out");
+        assert_eq!(body["granted"], false);
+        assert!(body["message"].as_str().unwrap().contains("NOT granted"));
+        assert!(PERMISSION_REQUEST_TIMEOUT >= std::time::Duration::from_secs(60));
+    }
+
+    // ─── Workspace path containment ─────────────────────────────────────────────
+
+    fn workspace_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("workspace").join("agent-a");
+        std::fs::create_dir_all(workspace.join("reports")).unwrap();
+        std::fs::create_dir_all(workspace.join(".canopy")).unwrap();
+        std::fs::write(workspace.join("reports/boots.pdf"), b"%PDF-1.7 test").unwrap();
+        std::fs::write(workspace.join(".canopy/jit-bridge-token"), b"secret").unwrap();
+        std::fs::write(tmp.path().join("outside.txt"), b"host secret").unwrap();
+        let sibling = tmp.path().join("workspace").join("agent-b");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("theirs.txt"), b"other agent").unwrap();
+        (tmp, workspace)
+    }
+
+    #[test]
+    fn resolves_relative_and_container_absolute_paths() {
+        let (_tmp, ws) = workspace_fixture();
+        let expected = std::fs::canonicalize(ws.join("reports/boots.pdf")).unwrap();
+        for path in [
+            "reports/boots.pdf",
+            "./reports/boots.pdf",
+            "/home/node/.openclaw/workspace/agent-a/reports/boots.pdf",
+            "file:///home/node/.openclaw/workspace/agent-a/reports/boots.pdf",
+            "/workspace/agent-a/reports/boots.pdf",
+        ] {
+            assert_eq!(
+                resolve_agent_workspace_file(&ws, "agent-a", path).unwrap(),
+                expected,
+                "{path}"
+            );
+        }
+        let (resolved, bytes) =
+            read_agent_workspace_file(&ws, "agent-a", "reports/boots.pdf").unwrap();
+        assert_eq!(resolved, expected);
+        assert_eq!(bytes, b"%PDF-1.7 test");
+    }
+
+    #[test]
+    fn rejects_traversal_and_foreign_absolute_paths() {
+        let (_tmp, ws) = workspace_fixture();
+        for path in [
+            "",
+            "../outside.txt",
+            "reports/../../outside.txt",
+            "../agent-b/theirs.txt",
+            "/etc/passwd",
+            "/home/node/.openclaw/workspace/agent-b/theirs.txt",
+            "/home/node/.openclaw/workspace/agent-a/../agent-b/theirs.txt",
+            "/home/node/.openclaw/openclaw.json",
+            "reports",
+            "missing.pdf",
+            "reports/boots.pdf\0",
+        ] {
+            assert!(
+                resolve_agent_workspace_file(&ws, "agent-a", path).is_err(),
+                "{path:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_private_canopy_dir() {
+        let (_tmp, ws) = workspace_fixture();
+        assert!(resolve_agent_workspace_file(&ws, "agent-a", ".canopy/jit-bridge-token").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(ws.join(".canopy/jit-bridge-token"), ws.join("token-link"))
+                .unwrap();
+            assert!(resolve_agent_workspace_file(&ws, "agent-a", "token-link").is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlink_escapes_and_hardlinks() {
+        let (tmp, ws) = workspace_fixture();
+        std::os::unix::fs::symlink(tmp.path().join("outside.txt"), ws.join("escape.txt")).unwrap();
+        std::os::unix::fs::symlink(tmp.path(), ws.join("escape-dir")).unwrap();
+        assert!(resolve_agent_workspace_file(&ws, "agent-a", "escape.txt").is_err());
+        assert!(resolve_agent_workspace_file(&ws, "agent-a", "escape-dir/outside.txt").is_err());
+
+        std::fs::hard_link(tmp.path().join("outside.txt"), ws.join("hard.txt")).unwrap();
+        assert_eq!(
+            read_agent_workspace_file(&ws, "agent-a", "hard.txt")
+                .unwrap_err()
+                .0,
+            403
+        );
+
+        // An in-workspace symlink to an in-workspace file is fine.
+        std::os::unix::fs::symlink(ws.join("reports/boots.pdf"), ws.join("latest.pdf")).unwrap();
+        assert!(read_agent_workspace_file(&ws, "agent-a", "latest.pdf").is_ok());
+    }
+
+    #[test]
+    fn export_filename_is_reduced_to_a_basename() {
+        assert_eq!(sanitize_export_filename("../../evil.pdf", "x"), "evil.pdf");
+        assert_eq!(sanitize_export_filename("a\\b\\c.txt", "x"), "c.txt");
+        assert_eq!(
+            sanitize_export_filename("..", "fallback.pdf"),
+            "fallback.pdf"
+        );
+        assert_eq!(
+            sanitize_export_filename("  ", "fallback.pdf"),
+            "fallback.pdf"
+        );
+        assert_eq!(sanitize_export_filename("re\nport.pdf", "x"), "report.pdf");
     }
 }

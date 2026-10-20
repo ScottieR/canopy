@@ -1005,7 +1005,7 @@ fn preflight_sanitize_and_merge_config_with_keys(
     state_dir: &std::path::Path,
     // `Some(agent_id)` → this is an isolated agent container; `None` → main gateway.
     // The id is needed (not just a bool) so the isolated branch can compute the
-    // agent's deterministic JIT-proxy port for its `browser.cdpUrl`.
+    // agent's JIT-proxy port (browser_manager::jit_proxy_port_for) for its `browser.cdpUrl`.
     isolated_agent_id: Option<&str>,
     token: &str,
     key_availability: ProviderKeyAvailability,
@@ -1204,6 +1204,12 @@ fn preflight_sanitize_and_merge_config_with_keys(
                 crate::browser_manager::SHARED_BRIDGE_PORT,
                 "shared-browser"
             ),
+            // The bridge spawns Chrome lazily and holds this first probe open until
+            // it answers; OpenClaw's 1500ms default gave up before a cold Chrome
+            // could, failing with `attachOnly is enabled and profile "openclaw" is
+            // not running`. See OPENCLAW_REMOTE_CDP_TIMEOUT_MS.
+            "remoteCdpTimeoutMs": crate::browser_manager::OPENCLAW_REMOTE_CDP_TIMEOUT_MS,
+            "remoteCdpHandshakeTimeoutMs": crate::browser_manager::OPENCLAW_REMOTE_CDP_TIMEOUT_MS,
             "defaultProfile": "openclaw"
         });
 
@@ -1246,6 +1252,9 @@ fn preflight_sanitize_and_merge_config_with_keys(
                 crate::browser_manager::jit_proxy_port_for(agent_id),
                 agent_id
             ),
+            // Same lazy-spawn cold start as the shared bridge (see above).
+            "remoteCdpTimeoutMs": crate::browser_manager::OPENCLAW_REMOTE_CDP_TIMEOUT_MS,
+            "remoteCdpHandshakeTimeoutMs": crate::browser_manager::OPENCLAW_REMOTE_CDP_TIMEOUT_MS,
             "defaultProfile": "openclaw"
         });
     }
@@ -2307,6 +2316,12 @@ mod tests {
             cfg.pointer("/browser/attachOnly"),
             Some(&serde_json::json!(true))
         );
+        assert_eq!(
+            cfg.pointer("/browser/remoteCdpTimeoutMs")
+                .and_then(|v| v.as_u64()),
+            Some(crate::browser_manager::OPENCLAW_REMOTE_CDP_TIMEOUT_MS),
+            "OpenClaw must wait out the bridge's lazy Chrome spawn"
+        );
     }
 
     #[test]
@@ -2338,6 +2353,12 @@ mod tests {
             cfg.pointer("/browser/cdpUrl").and_then(|v| v.as_str()),
             Some(expected_url.as_str()),
             "gateway must keep pointing at the shared bridge"
+        );
+        assert_eq!(
+            cfg.pointer("/browser/remoteCdpHandshakeTimeoutMs")
+                .and_then(|v| v.as_u64()),
+            Some(crate::browser_manager::OPENCLAW_REMOTE_CDP_TIMEOUT_MS),
+            "OpenClaw must wait out the bridge's lazy Chrome spawn"
         );
         assert_eq!(
             cfg.pointer("/agents/defaults/model/primary")

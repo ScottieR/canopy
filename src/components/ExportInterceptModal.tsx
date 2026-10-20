@@ -14,8 +14,14 @@ export function ExportInterceptModal() {
             setRequest(event.payload);
             setOverrideText("");
         });
+        // The bridge stops waiting after EXPORT_REQUEST_TIMEOUT; drop the stale prompt.
+        const unlistenExpired = listen<{ request_id?: string }>('file_export_request_expired', (event) => {
+            const expiredId = event.payload?.request_id;
+            setRequest((prev: any) => (prev && prev.request_id === expiredId ? null : prev));
+        });
         return () => {
             unlisten.then(f => f());
+            unlistenExpired.then(f => f());
         };
     }, []);
 
