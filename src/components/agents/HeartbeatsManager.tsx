@@ -138,8 +138,8 @@ export function HeartbeatsManager({ agent, mode = "full", onOpenManage }: Heartb
             <Bell size={16} />
           </div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Heartbeats</div>
-            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Recurring routines this agent keeps for you.</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text-main)" }}>Routines</div>
+            <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Recurring tasks {agent.name} runs for you on a schedule.</div>
           </div>
           {onOpenManage && (
             <button
@@ -152,7 +152,7 @@ export function HeartbeatsManager({ agent, mode = "full", onOpenManage }: Heartb
           )}
         </div>
         {loading ? (
-          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Loading heartbeats…</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Loading routines…</div>
         ) : tasks.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {tasks.slice(0, 3).map(task => (
@@ -170,7 +170,7 @@ export function HeartbeatsManager({ agent, mode = "full", onOpenManage }: Heartb
           </div>
         ) : (
           <div style={{ fontSize: 12, color: "var(--text-sub)", lineHeight: 1.6 }}>
-            No recurring heartbeats yet. {readySuggestions.length > 0 ? `${agent.name} already has ${readySuggestions.length} good routine suggestions waiting in Skills & Access.` : "You can add routines once this agent has the right tools connected."}
+            No routines scheduled yet. {readySuggestions.length > 0 ? `${agent.name} has ${readySuggestions.length} ready-to-go suggestion${readySuggestions.length === 1 ? "" : "s"} — click Manage to review.` : "You can add routines once this agent has the right tools connected."}
           </div>
         )}
       </div>
@@ -184,8 +184,8 @@ export function HeartbeatsManager({ agent, mode = "full", onOpenManage }: Heartb
           <Bell size={18} />
         </div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Heartbeats</div>
-          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Recurring routines stored in this agent&apos;s `HEARTBEAT.md`.</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-main)" }}>Routines</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Recurring tasks on a schedule (stored in this agent&apos;s `HEARTBEAT.md`).</div>
         </div>
         <button
           type="button"
@@ -278,7 +278,7 @@ export function HeartbeatsManager({ agent, mode = "full", onOpenManage }: Heartb
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
         {loading ? (
-          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Loading heartbeats…</div>
+          <div style={{ fontSize: 12, color: "var(--text-sub)" }}>Loading routines…</div>
         ) : tasks.length > 0 ? (
           tasks.map(task => (
             <div key={task.id} style={{ padding: 14, borderRadius: 12, border: "1px solid var(--border-subtle)", background: "var(--surface-base)", display: "flex", justifyContent: "space-between", gap: 16 }}>
