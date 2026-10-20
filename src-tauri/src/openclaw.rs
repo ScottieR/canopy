@@ -3107,6 +3107,83 @@ pub async fn send_message_internal(
     send_message_internal_with_context(db, app, agent_id, message, session_id, None).await
 }
 
+/// Compact verified-state block injected into every invocation's runtime
+/// context so the agent's claims about its own capabilities are grounded in
+/// what the host has actually confirmed (issue #53). Every check is best-effort
+/// and cheap — on any failure the corresponding line is simply omitted.
+async fn build_agent_health_context(
+    db: &crate::db::Database,
+    app: &tauri::AppHandle,
+    agent_id: &str,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Model provider keys — the difference between "temporary snag" and
+    // "misconfigured until a human intervenes".
+    let keys = get_creds_for_agent(agent_id);
+    let mut providers: Vec<&str> = Vec::new();
+    for (name, key) in [
+        ("Anthropic", "ANTHROPIC_API_KEY"),
+        ("OpenAI", "OPENAI_API_KEY"),
+        ("Google Gemini", "GEMINI_API_KEY"),
+        ("xAI", "XAI_API_KEY"),
+    ] {
+        if keys.get(key).map(|v| !v.trim().is_empty()).unwrap_or(false) {
+            providers.push(name);
+        }
+    }
+    if providers.is_empty() {
+        lines.push("- Model provider keys: NONE configured".to_string());
+    } else {
+        lines.push(format!(
+            "- Model provider keys configured: {}",
+            providers.join(", ")
+        ));
+    }
+
+    // Browser process — running or not, from the manager's own state (no probe).
+    use tauri::Manager;
+    if let Some(manager) = app.try_state::<crate::browser_manager::BrowserManager>() {
+        let profile_id = crate::browser_manager::effective_browsing_profile(app, agent_id);
+        match manager.get_status(&profile_id).await {
+            Ok(Some(status)) if status.is_running => {
+                lines.push("- Dedicated browser: RUNNING".to_string());
+            }
+            Ok(_) => {
+                lines.push(
+                    "- Dedicated browser: NOT RUNNING (web browsing will fail until it is started)"
+                        .to_string(),
+                );
+            }
+            Err(_) => {}
+        }
+    }
+
+    // Integrations, with the send-direction gap called out explicitly.
+    if let Ok(Some(agent)) = db.get_agent(agent_id) {
+        if !agent.integrations.is_empty() {
+            let mut summary = agent.integrations.join(", ");
+            if agent.integrations.iter().any(|i| i == "email_read")
+                && !agent.integrations.iter().any(|i| i == "email_write")
+            {
+                summary.push_str(" (email is READ-ONLY — you cannot send email)");
+            }
+            lines.push(format!("- Integrations enabled: {}", summary));
+        }
+    }
+
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    format!(
+        "Verified system state (host-confirmed just now — trust this over your own assumptions):\n{}\n\
+         Never tell the user a capability is ready, reconnected, or in progress unless it is healthy above. \
+         If something a task needs is missing here, say so plainly and ask how to proceed instead of promising to start.",
+        lines.join("\n")
+    )
+}
+
 /// Send a message while keeping app-managed companion context out of the
 /// persisted user transcript. The visible `message` is stored as authored;
 /// `runtime_context` is supplied only to the model invocation.
@@ -3149,12 +3226,24 @@ pub async fn send_message_internal_with_context(
 
     let _ = refresh_thread_context_files(db, agent_id, &conv_id);
     let thread_runtime_context = build_thread_runtime_context(&conv_id);
-    let merged_runtime_context = match runtime_context {
+    let mut merged_runtime_context = match runtime_context {
         Some(context) if !context.trim().is_empty() => {
             format!("{}\n\n{}", thread_runtime_context, context)
         }
         _ => thread_runtime_context,
     };
+
+    // Ground the agent's self-reports in verified state (issue #53): during the
+    // 2026-08-24 CUJ test the agent told the user "everything is fully
+    // reconnected and ready now — I'm on it!" while its browser process didn't
+    // exist and its model fallback pointed at a keyless provider. The workspace
+    // DIAGNOSTICS.md already exists but is only read if the agent chooses to;
+    // this block travels inside every invocation's runtime context, where the
+    // agent cannot miss it.
+    let health_context = build_agent_health_context(db, app, agent_id).await;
+    if !health_context.is_empty() {
+        merged_runtime_context = format!("{}\n\n{}", merged_runtime_context, health_context);
+    }
 
     // Step 2.5: Inject live DIAGNOSTICS.md into the agent's workspace
     if let Ok(diagnostics) = crate::channels::ping_agent_connections_internal(db, agent_id).await {
