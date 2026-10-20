@@ -69,6 +69,7 @@ export interface Agent {
     web_auth?: boolean;
     web_sandbox_browser?: boolean;
     browser_control?: boolean;
+    orchestration?: boolean;
   };
   integrations: string[];
   created_at: string;
@@ -376,6 +377,7 @@ export const DEFAULT_PERMISSIONS: Permission[] = [
   { id: "browser_control", label: "Full Chrome Control", description: "Direct control of your real, already-logged-in Chrome via CDP — every action requires your approval", enabled: false, category: "execution" },
   { id: "summarize", label: "Summarization", description: "Condense large documents or web pages", enabled: true, category: "skills" },
   { id: "genui", label: "Generative UI", description: "Render interactive UI components", enabled: true, category: "skills" },
+  { id: "orchestration", label: "Conductor/Worker Orchestration", description: "Let the agent triage its own requests and spawn disposable worker subagents for complex or parallelizable tasks, staying responsive itself", enabled: false, category: "skills" },
 ];
 
 export const AGENT_TYPE_INFO = RAW_AGENT_TYPE_INFO as Record<string, { description: string; color: string; robeColor: string; accentColor: string; habitatColor: string; habitatLabel: string; image?: string; suggest_in_onboarding?: boolean; recommended_isolated?: boolean; recommended_tier?: "guarded" | "balanced" | "unrestricted"; library?: { title: string; author: string; mode: string }[]; readwise_enabled?: boolean; soul_template?: string; identity_template?: string }>;

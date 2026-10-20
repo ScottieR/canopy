@@ -240,6 +240,13 @@ pub struct AgentCapabilities {
     // (capability flag + command signatures + system-prompt injection); CDP control is
     // a TODO stub.
     pub browser_control: bool,
+
+    // Conductor/worker orchestration: lets the agent triage its own requests and spawn
+    // disposable worker subagents for parallelizable or long-running tasks instead of
+    // blocking the main conversation. See conductor.rs for the state/timeout side and
+    // openclaw::build_app_capabilities_md for the system-prompt injection. Default
+    // false: spawning subagents burns tokens/spend the user hasn't opted into.
+    pub orchestration: bool,
 }
 
 impl Default for AgentCapabilities {
@@ -276,6 +283,7 @@ impl Default for AgentCapabilities {
             web_auth: false,
             web_sandbox_browser: false,
             browser_control: false,
+            orchestration: false,
         }
     }
 }
