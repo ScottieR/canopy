@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useWorldStore } from "../store/worldStore";
+import { useWorldStore, effectiveAgentStatus } from "../store/worldStore";
 import { TokenSpendChart } from "../components/agents/TokenSpendChart";
 import { LobsterIcon } from "../components/World/LobsterIcon";
 import { PaymentSummary } from "../components/payments/PaymentSummary";
@@ -296,7 +296,7 @@ export function Dashboard() {
   const toggleSession = (id: string) => setExpandedSessions(prev => ({ ...prev, [id]: !prev[id] }));
 
   // ── Fleet-wide status (instantaneous, not range-scoped) ──────────────────
-  const activeCount = agents.filter(a => a.status === "active" || a.status === "thinking").length;
+  const activeCount = agents.filter(a => { const st = effectiveAgentStatus(a); return st === "active" || st === "thinking"; }).length;
   const errorCount = agents.filter(a => a.status === "error").length;
   const idleCount = agents.length - activeCount - errorCount;
   const isolatedCount = agents.filter(a => a.isolated).length;
@@ -458,7 +458,8 @@ export function Dashboard() {
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
         {agents.map((agent) => {
           const stats = perAgentStats.get(agent.id) || EMPTY_RANGE_STATS;
-          const isActive = agent.status === "active" || agent.status === "thinking";
+          const agentStatus = effectiveAgentStatus(agent);
+          const isActive = agentStatus === "active" || agentStatus === "thinking";
           return (
             <div key={agent.id} style={{ ...glass(0.5), padding: 16, borderRadius: 14 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
@@ -474,7 +475,7 @@ export function Dashboard() {
                     agentImage={agent.image}
                     shellColor={agent.robeColor}
                     accentColor={agent.accentColor}
-                    reactState={agent.paused ? "off" : agent.status === "thinking" ? "thinking" : agent.status === "error" ? "error" : "idle"}
+                    reactState={agent.paused ? "off" : agentStatus === "thinking" ? "thinking" : agent.status === "error" ? "error" : "idle"}
                   />
                 </div>
                 <div>

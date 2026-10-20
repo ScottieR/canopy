@@ -6,7 +6,7 @@ import {
   Mail, Calendar, ExternalLink, HardDrive, Lock, Unlock, ShieldCheck, Activity as ActivityIcon, Brain, Server, Search, CheckCircle, Database, AlertTriangle, ChevronUp, ChevronDown, Share2
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp } from "../../store/worldStore";
+import { AgentData, useWorldStore, AGENT_TYPE_INFO, DEFAULT_PERMISSIONS, ChatMessage, MiniApp, deriveAgentDisplayStatus } from "../../store/worldStore";
 import type { GenerativeResult } from "../../types/generative";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Environment } from "@react-three/drei";
@@ -130,6 +130,7 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
     permissions: _agent.permissions || fallbackPermissions
   };
   const gatewayReady = useWorldStore(s => s.gatewayReady);
+  const displayStatus = deriveAgentDisplayStatus(agent, gatewayReady);
   const [repairLog, setRepairLog] = useState<string | null>(null);
   const [repairSucceeded, setRepairSucceeded] = useState<boolean | null>(null);
   const [hardResetting, setHardResetting] = useState(false);
@@ -608,7 +609,7 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
             agentImage={agent.image}
             shellColor={agent.robeColor}
             accentColor={agent.accentColor}
-            reactState={agent.paused ? "off" : agent.status === "thinking" ? "thinking" : agent.status === "error" ? "error" : "idle"}
+            reactState={displayStatus.state === "paused" ? "off" : displayStatus.state === "working" ? "thinking" : displayStatus.state === "offline" ? "error" : "idle"}
           />
         </div>
         {isEditingDetails ? (
@@ -626,16 +627,18 @@ export function OverviewTab({ agent: _agent, onUpdate, onNavigate, onShareAgent 
             </div>
             {/* Threads now live in the ThreadsRail on the left of the chat —
                 no need for a header switcher. */}
-            {/* Status dot + pill */}
+            {/* Status dot + pill — rendered from deriveAgentDisplayStatus, the same
+                canonical derivation the Activity tab uses (issue #56: these surfaces
+                used to compute status independently and contradict each other). */}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
               <div style={{
                 width: 8, height: 8, borderRadius: "50%",
-                background: agent.paused ? "var(--text-muted)" : (!gatewayReady || agent.status === "deploying") ? "#F4A83A" : agent.status === "thinking" ? "#8B6AAE" : agent.status === "error" ? "#E57373" : "#4A9E96",
-                boxShadow: !agent.paused && agent.status === "active" ? "0 0 6px rgba(74,158,150,0.5)" : "none",
-                animation: (!agent.paused && (!gatewayReady || agent.status === "deploying")) ? "pulse 1.5s ease-in-out infinite" : "none",
+                background: displayStatus.state === "paused" ? "var(--text-muted)" : displayStatus.state === "waking" ? "#F4A83A" : displayStatus.state === "working" ? "#8B6AAE" : displayStatus.state === "offline" ? "#E57373" : "#4A9E96",
+                boxShadow: displayStatus.state === "idle" ? "0 0 6px rgba(74,158,150,0.5)" : "none",
+                animation: (displayStatus.state === "waking" || displayStatus.state === "working") ? "pulse 1.5s ease-in-out infinite" : "none",
               }} />
               <span style={{ fontSize: 11, color: "var(--text-sub)", fontWeight: 500, textTransform: "capitalize" }}>
-                {agent.paused ? "Paused" : (!gatewayReady || agent.status === "deploying") ? "Waking up…" : agent.status === "thinking" ? "Thinking…" : agent.status === "error" ? "Offline" : "Idle"}
+                {displayStatus.label}
               </span>
             </div>
             {onShareAgent && (
